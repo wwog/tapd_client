@@ -58,7 +58,7 @@
 7. 安全网：即使模型忘了调用审核工具，只要本轮结束时有**新出现**的未提交文件（不含任务开始前就存在的本地改动），也会自动进入 `awaiting_approval`。
 8. 兜底：`agent_task_report` 未调用时，输出静默达到「静默完成」阈值、或进程以 0 退出，也会结束本轮。
 
-严格串行：同一时间只有一个任务占用 worker；`preparing/running/waiting_review` 都算运行态，后续任务排队。存在 `awaiting_approval` 时 worker 主动停住；用户「停止并储藏」后还会持久化 `queue_paused`，重启也不会自动继续，直到手动「继续队列」。并发数固定为 1 是刻意约束（同一仓库不接受多个 Agent 同时改写）。
+严格串行：同一时间只有一个任务占用 worker；`preparing/running` 都算运行态，后续任务排队。存在 `awaiting_approval` 时 worker 主动停住；用户「停止并储藏」后还会持久化 `queue_paused`，重启也不会自动继续，直到手动「继续队列」。并发数固定为 1 是刻意约束（同一仓库不接受多个 Agent 同时改写）。
 
 ## 4. Agent tab
 
@@ -75,10 +75,11 @@
 
 - SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
 - 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」用 `opencode --continue` 等 resume 参数在系统终端里续接会话。
-- 状态：`queued | preparing | running | waiting_review | awaiting_approval | succeeded | failed | canceled`（`waiting_review` 仅用于兼容旧任务）
+- 状态：`queued | preparing | running | awaiting_approval | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
 - 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
-- 客户端重启时，遗留的 `preparing/running/waiting_review` 会标记为 failed（“客户端重启”）；`awaiting_approval` 保留，继续出现在待审核页；`queued` 任务在队列未暂停时继续执行。
+- 客户端重启时，遗留的 `preparing/running` 会标记为 failed（“客户端重启”）；`awaiting_approval` 保留，继续出现在待审核页；`queued` 任务在队列未暂停时继续执行。
+- SQLite 读写失败时 Agent 页会显示存储错误横幅；任务变更先保留在内存并在下次写入时重试。
 - 取消会 kill PTY 进程组；开放的其他子进程仍可能残留。
 
 ## 6. TAPD 回写

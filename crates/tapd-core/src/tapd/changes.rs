@@ -79,7 +79,7 @@ pub fn parse_changes_html(html: &str) -> Result<ChangeHistory, String> {
         let closing = lower.starts_with("</");
         let name = element_name(&lower);
 
-        match (closing, name.as_str()) {
+        match (closing, name) {
             (false, "table") => depth += 1,
             (true, "table") => {
                 depth = depth.saturating_sub(1);
@@ -152,17 +152,16 @@ pub fn parse_changes_html(html: &str) -> Result<ChangeHistory, String> {
     })
 }
 
-fn element_name(lower_tag: &str) -> String {
-    let rest = lower_tag
+fn element_name(lower_tag: &str) -> &str {
+    lower_tag
         .trim_start_matches('<')
         .trim_start_matches('/')
-        .trim_start();
-    rest.split(|character: char| {
-        character.is_whitespace() || character == '>' || character == '/'
-    })
-    .next()
-    .unwrap_or_default()
-    .to_string()
+        .trim_start()
+        .split(|character: char| {
+            character.is_whitespace() || character == '>' || character == '/'
+        })
+        .next()
+        .unwrap_or_default()
 }
 
 fn outer_row(row: &Row) -> Option<ChangeEntry> {
@@ -209,10 +208,7 @@ fn total_count(html: &str) -> Option<u32> {
 }
 
 fn clean(value: &str) -> String {
-    crate::tapd::api::decode_entities(value)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::tapd::api::collapse_whitespace(&crate::tapd::api::decode_entities(value))
 }
 
 #[cfg(test)]

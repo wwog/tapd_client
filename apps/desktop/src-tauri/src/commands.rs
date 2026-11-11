@@ -1,32 +1,46 @@
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+//! Tauri command surface.
+//!
+//! Every `#[tauri::command]` stays in this module because `lib.rs` registers it
+//! as `commands::<name>` and the handler macro resolves the generated wrapper
+//! through the same path. The plumbing behind the commands lives in the
+//! submodules below, grouped by responsibility.
+
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tapd_core::{
-    bridge::{BridgeHttpResult, CapturedRequest},
+    bridge::CapturedRequest,
     config::McpPolicy,
-    export::MediaKind,
     tapd::{
         api::{
-            bug_detail_body, bug_detail_url, bug_list_url, parse_bug_detail, parse_bug_list,
-            parse_workspace_members, parse_workspaces, user_chooser_all_body, user_chooser_url,
-            user_workspace_url, workspace_members_url, BugQuery,
+            bug_list_url, parse_bug_list, parse_workspace_members, parse_workspaces,
+            user_chooser_all_body, user_chooser_url, user_workspace_url, workspace_members_url,
+            BugQuery,
         },
-        changes_list_url, parse_changes_html, BugDetail, BugListPage, ChangeHistory, Workspace,
-        WorkspaceMember,
+        BugDetail, BugListPage, Workspace, WorkspaceMember,
     },
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     bug_write::{self, normalize_user_value, EDITABLE_USER_FIELDS},
     mcp_audit::McpAuditEntry,
-    media, notification, open_with, session,
+    open_with, session,
     state::SharedState,
 };
+
+use auth::{
+    current_user_avatar, is_logged_in, logout_session, reset_session_and_open_login,
+    session_request_json, string_field,
+};
+use bugs::{fetch_bug_detail, fetch_workspace_members, main_window_focused};
+use open::{download_media, is_tapd_media_url, open_local, run_open, selected_open_target};
+
+pub(crate) mod auth;
+pub(crate) mod bugs;
+pub(crate) mod open;
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,12 +163,7 @@ pub async fn session_login_state(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<LoginQrState, String> {
-    let logged_in = {
-        let config = state.config.lock().expect("config lock");
-        config.logged_in
-    };
-
-    if logged_in {
+    if is_logged_in(state.inner()) {
         return Ok(LoginQrState {
             phase: "logged_in".to_string(),
             qr_url: None,
@@ -190,11 +199,7 @@ pub async fn session_reload_login(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let logged_in = {
-        let config = state.config.lock().expect("config lock");
-        config.logged_in
-    };
-    if logged_in {
+    if is_logged_in(state.inner()) {
         return Ok(());
     }
 
@@ -228,185 +233,6 @@ pub fn session_cache_avatar(
 pub async fn session_logout(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
     logout_session(&app, state.inner(), "logout").await;
     Ok(())
-}
-
-/// Clears the TAPD session in config, cache, cookies and the hidden webview.
-///
-/// Shared by the explicit "退出登录" action and automatic expiry detection, so
-/// both paths leave the app on the login screen with no stale identity left.
-pub(crate) async fn logout_session(app: &AppHandle, state: &SharedState, reason: &str) {
-    if let Err(error) = state.update_config(|config| {
-        config.logged_in = false;
-        config.me = None;
-        config.me_avatar = None;
-        config.last_session_url = None;
-    }) {
-        tracing::warn!(%error, reason, "failed to clear session config");
-    }
-
-    // Drop cached user/project/bug data: it belongs to the session being ended.
-    // Best effort — a broken cache must never block logging out.
-    if let Err(error) = state.cache.clear() {
-        tracing::warn!(%error, "failed to clear offline cache on logout");
-    }
-    // Cards and de-duplication state belong to the account being ended.
-    notification::reset_session();
-
-    // Keep the URL watcher from resurrecting the old session while TAPD boots.
-    // The login page takes a few seconds to settle, so cover the whole window.
-    session::begin_logout_guard(30_000);
-    let _ = app.emit("session://changed", ());
-
-    if let Some(window) = app.get_webview_window(session::SESSION_LABEL) {
-        let app_for_emit = app.clone();
-        let reason = reason.to_string();
-        tauri::async_runtime::spawn(async move {
-            reset_session_and_open_login(&window).await;
-
-            // Stay hidden: the login screen shows the new QR code in place.
-            let _ = app_for_emit.emit("session://changed", ());
-            tracing::info!(reason, "session cleared");
-        });
-    }
-}
-
-/// Clears the TAPD session in the hidden webview and opens a clean login form.
-///
-/// Order matters: page storage is cleared while the document is still on the
-/// TAPD origin, then the page is parked on `about:blank` so the old SPA cannot
-/// re-issue request cookies while the jar is being emptied. The login page is
-/// only opened after the cookies are actually gone; otherwise TAPD redirects
-/// straight back into the workspace and the hidden window has no QR to publish
-/// (the login screen then looks stuck at "正在接入").
-async fn reset_session_and_open_login(window: &tauri::WebviewWindow) {
-    let _ = session::eval_sync_json(
-        window,
-        "try { localStorage.clear(); sessionStorage.clear(); } catch (error) {}; true",
-        Duration::from_secs(2),
-    )
-    .await;
-
-    if let Ok(blank) = tauri::Url::parse("about:blank") {
-        let _ = window.navigate(blank);
-    }
-    for _ in 0..12 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if window
-            .url()
-            .map(|url| url.as_str() == "about:blank")
-            .unwrap_or(false)
-        {
-            break;
-        }
-    }
-
-    // Deleting cookies explicitly is more reliable than the bulk clear on
-    // macOS, where the removal is asynchronous.
-    let _ = clear_tapd_cookies(window);
-    let _ = window.clear_all_browsing_data();
-
-    // Give WKWebsiteDataStore the same grace period the manual "refresh QR"
-    // path uses, then keep polling until the jar is empty. The completion time
-    // varies with the number of TAPD cookies.
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    for _ in 0..15 {
-        let _ = clear_tapd_cookies(window);
-        if tapd_cookie_count(window) == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-
-    let remaining = tapd_cookie_count(window);
-    if remaining > 0 {
-        // Proceed anyway, but leave a trail: a surviving session cookie makes
-        // the login page bounce straight back into the workspace.
-        tracing::warn!(remaining, "TAPD cookies survived session cleanup");
-    }
-
-    if let Ok(login) = tauri::Url::parse(session::TAPD_LOGIN) {
-        let _ = window.navigate(login);
-    }
-    let _ = window.hide();
-}
-
-/// A TAPD response proves the session is gone: an explicit 401, a redirect
-/// that landed on the login page, or the login shell returned in place of an
-/// API body. Transient network errors never match.
-fn session_expired(http: &BridgeHttpResult) -> bool {
-    if http.status == 401 || session::looks_like_auth_page(&http.url) {
-        return true;
-    }
-
-    let content_type = http
-        .content_type
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if !content_type.contains("text/html") {
-        return false;
-    }
-
-    let head = http
-        .body
-        .chars()
-        .take(2400)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    head.contains("wwlogin") || head.contains("<title>登录") || head.contains("<title>企业微信")
-}
-
-/// Guards against several in-flight requests all clearing the session at once.
-static EXPIRING: AtomicBool = AtomicBool::new(false);
-
-/// Signs out once when an authenticated TAPD call reports an expired session.
-pub(crate) async fn expire_session(app: &AppHandle) {
-    let Some(state) = app.try_state::<SharedState>() else {
-        return;
-    };
-    let logged_in = state.config.lock().expect("config lock").logged_in;
-    if !logged_in || EXPIRING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    tracing::warn!("TAPD session expired; signing out");
-    logout_session(app, state.inner(), "expired").await;
-    EXPIRING.store(false, Ordering::SeqCst);
-}
-
-/// Removes every TAPD cookie from a webview and returns how many were deleted.
-fn clear_tapd_cookies(window: &tauri::WebviewWindow) -> usize {
-    let Ok(cookies) = window.cookies() else {
-        return 0;
-    };
-
-    let mut removed = 0usize;
-    for cookie in cookies {
-        if is_tapd_cookie_domain(cookie.domain().unwrap_or_default())
-            && window.delete_cookie(cookie).is_ok()
-        {
-            removed += 1;
-        }
-    }
-    removed
-}
-
-/// How many TAPD cookies are still in the jar.
-fn tapd_cookie_count(window: &tauri::WebviewWindow) -> usize {
-    window
-        .cookies()
-        .map(|cookies| {
-            cookies
-                .iter()
-                .filter(|cookie| is_tapd_cookie_domain(cookie.domain().unwrap_or_default()))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-fn is_tapd_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
-    domain == "tapd.cn" || domain.ends_with(".tapd.cn")
 }
 
 #[tauri::command]
@@ -495,13 +321,6 @@ pub async fn bug_list(
     Ok(page)
 }
 
-/// Whether the main window has keyboard focus right now.
-fn main_window_focused(app: &AppHandle) -> bool {
-    app.get_webview_window("main")
-        .and_then(|window| window.is_focused().ok())
-        .unwrap_or(false)
-}
-
 #[tauri::command]
 pub async fn bug_detail(
     app: AppHandle,
@@ -554,14 +373,6 @@ pub async fn workspace_members(
     }
 
     Ok(members)
-}
-
-async fn fetch_workspace_members(
-    app: &AppHandle,
-    url: String,
-) -> Result<Vec<WorkspaceMember>, String> {
-    let root = session_request_json(app, "GET", &url, None, Duration::from_secs(30)).await?;
-    Ok(parse_workspace_members(&root))
 }
 
 /// Appends a plain-text comment to a bug.
@@ -693,88 +504,6 @@ pub async fn bug_transition(
         label: outcome.label,
         changed: !outcome.steps.is_empty(),
     })
-}
-
-/// Loads a bug together with its change history.
-///
-/// The history lives in a legacy HTML page, so a failure there only degrades
-/// that section instead of failing the whole detail.
-pub(crate) async fn fetch_bug_detail(
-    app: &AppHandle,
-    workspace_id: &str,
-    bug_id: &str,
-) -> Result<BugDetail, String> {
-    let body = bug_detail_body(workspace_id, bug_id);
-    let url = bug_detail_url();
-    let detail_future =
-        session_request_json(app, "POST", &url, Some(body), Duration::from_secs(45));
-    let changes_future = fetch_change_history(app, workspace_id, bug_id);
-
-    let (root, changes) = tokio::join!(detail_future, changes_future);
-    let mut detail = parse_bug_detail(&root?)?;
-    detail.changes = changes.unwrap_or_else(|error| ChangeHistory {
-        error: Some(error),
-        ..ChangeHistory::default()
-    });
-
-    Ok(detail)
-}
-
-/// The legacy page returns at most one page of changes per request.
-const MAX_CHANGE_PAGES: u32 = 10;
-
-pub(crate) async fn fetch_change_history(
-    app: &AppHandle,
-    workspace_id: &str,
-    bug_id: &str,
-) -> Result<ChangeHistory, String> {
-    let mut history = ChangeHistory::default();
-    let mut previous_first_seq: Option<u32> = None;
-
-    for page in 1..=MAX_CHANGE_PAGES {
-        let http = session_request_text(
-            app,
-            "GET",
-            &changes_list_url(workspace_id, bug_id, page),
-            None,
-            Duration::from_secs(30),
-        )
-        .await?;
-        let parsed = parse_changes_html(&http.body)?;
-
-        if page == 1 {
-            history.total = parsed.total;
-        }
-        let Some(first_seq) = parsed.changes.first().map(|change| change.seq) else {
-            break;
-        };
-        // Guard against the server ignoring `page` and repeating the first page.
-        if page > 1 && previous_first_seq == Some(first_seq) {
-            break;
-        }
-        previous_first_seq = Some(first_seq);
-
-        for change in parsed.changes {
-            if history
-                .changes
-                .iter()
-                .any(|existing| existing.seq == change.seq)
-            {
-                continue;
-            }
-            history.changes.push(change);
-        }
-
-        if history.changes.len() as u32 >= history.total {
-            break;
-        }
-    }
-
-    if history.total < history.changes.len() as u32 {
-        history.total = history.changes.len() as u32;
-    }
-
-    Ok(history)
 }
 
 #[derive(Serialize)]
@@ -1011,106 +740,6 @@ pub fn set_last_workspace(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) async fn session_request_json(
-    app: &AppHandle,
-    method: &str,
-    url: &str,
-    body: Option<Value>,
-    timeout: Duration,
-) -> Result<Value, String> {
-    let http = session_request_text(app, method, url, body, timeout).await?;
-
-    serde_json::from_str(&http.body).map_err(|error| format!("invalid TAPD JSON response: {error}"))
-}
-
-/// Same as [`session_request_json`] but returns the raw body, for the legacy
-/// pages TAPD renders as HTML.
-pub(crate) async fn session_request_text(
-    app: &AppHandle,
-    method: &str,
-    url: &str,
-    body: Option<Value>,
-    timeout: Duration,
-) -> Result<BridgeHttpResult, String> {
-    let window = app
-        .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建，请稍后重试".to_string())?;
-
-    let payload = serde_json::json!({
-        "method": method,
-        "url": url,
-        "body": body.map(|body| body.to_string()),
-    });
-    let expression = format!("window.__TAPDCB__.request({payload})");
-    let value = session::eval_async_json(&window, &expression, timeout).await?;
-    let http: BridgeHttpResult = serde_json::from_value(value)
-        .map_err(|error| format!("unexpected bridge payload: {error}"))?;
-
-    // An expired TAPD session usually surfaces as a 401 or a redirect to the
-    // login page. Detect it on every authenticated call so cached data never
-    // makes the app look signed in after the cookie has gone stale.
-    if session_expired(&http) {
-        expire_session(app).await;
-        return Err("TAPD 登录状态已失效，请重新扫码登录".to_string());
-    }
-
-    if !http.ok {
-        let preview: String = http.body.chars().take(240).collect();
-        return Err(format!(
-            "TAPD 请求失败（HTTP {}）：{}",
-            http.status, preview
-        ));
-    }
-
-    Ok(http)
-}
-
-fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// Reads the avatar URL from a TAPD user object.
-///
-/// `img_src` is what the web app uses, but older/other endpoints answer with
-/// `avatar`/`head`, and a relative path is common. Anything that is not an
-/// absolute http(s) URL after resolving against `www.tapd.cn` is ignored.
-fn current_user_avatar(user: &Value) -> Option<String> {
-    [
-        "img_src",
-        "imgsrc",
-        "avatar",
-        "avatar_url",
-        "head",
-        "user_avatar",
-    ]
-    .iter()
-    .find_map(|key| user.get(*key).and_then(Value::as_str))
-    .and_then(normalize_avatar_url)
-}
-
-fn normalize_avatar_url(raw: &str) -> Option<String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-
-    let url = if let Some(rest) = raw.strip_prefix("//") {
-        format!("https://{rest}")
-    } else if raw.starts_with("https://") || raw.starts_with("http://") {
-        raw.to_string()
-    } else if raw.starts_with('/') {
-        format!("https://www.tapd.cn{raw}")
-    } else {
-        return None;
-    };
-
-    Some(url)
-}
-
 #[tauri::command]
 pub async fn capture_snapshot(app: AppHandle) -> Result<Vec<CapturedRequest>, String> {
     snapshot_captures(&app).await
@@ -1194,13 +823,7 @@ pub async fn open_directory(
         return Err(format!("项目目录不存在：{}", dir.display()));
     }
 
-    let selected = match target {
-        Some(target) if !target.trim().is_empty() => target,
-        _ => {
-            let open_with = state.config.lock().expect("config lock").open_with.clone();
-            open_with::selected_target("directory", &open_with)
-        }
-    };
+    let selected = selected_open_target(state.inner(), target, "directory");
 
     open_local(&dir, &selected)
 }
@@ -1235,13 +858,7 @@ pub async fn open_media(
         }
         "file" => {
             let kind = open_with::normalize_kind(kind.as_deref().unwrap_or("file"));
-            let selected = match target {
-                Some(target) if !target.trim().is_empty() => target,
-                _ => {
-                    let open_with = state.config.lock().expect("config lock").open_with.clone();
-                    open_with::selected_target(kind, &open_with)
-                }
-            };
+            let selected = selected_open_target(state.inner(), target, kind);
 
             if selected == open_with::BROWSER_TARGET {
                 run_open(&[url.as_str()])?;
@@ -1262,32 +879,6 @@ pub async fn open_media(
             Ok(path.to_string_lossy().to_string())
         }
         other => Err(format!("不支持的打开方式：{other}")),
-    }
-}
-
-/// Opens a downloaded file with the selected target app (or the system default).
-fn open_local(path: &std::path::Path, target: &str) -> Result<(), String> {
-    let path = path.to_string_lossy().to_string();
-    if target == open_with::SYSTEM_TARGET {
-        return run_open(&[path.as_str()]);
-    }
-
-    let app =
-        open_with::app_path_for(target).ok_or_else(|| format!("找不到要使用的应用：{target}"))?;
-    run_open(&["-a", &app.to_string_lossy(), path.as_str()])
-}
-
-/// Runs `open` and waits for it, so a bad app path surfaces as an error instead
-/// of silently doing nothing.
-fn run_open(args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new("open")
-        .args(args)
-        .status()
-        .map_err(|error| format!("启动打开命令失败：{error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("打开失败（open 退出码 {status}）"))
     }
 }
 
@@ -1409,88 +1000,6 @@ pub fn set_open_target(
         .map_err(|error| error.to_string())
 }
 
-/// Downloads into `media-cache`, reusing a previous download for the same URL.
-async fn download_media(
-    app: &AppHandle,
-    paths: &tapd_core::paths::AppPaths,
-    url: &str,
-) -> Result<std::path::PathBuf, String> {
-    let dir = paths.data_dir.join("media-cache");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-
-    let name = format!(
-        "{:016x}-{}",
-        media::fnv1a(url.as_bytes()),
-        media_filename(url)
-    );
-    let path = dir.join(&name);
-    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0) {
-        return Ok(path);
-    }
-
-    let window = app
-        .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建".to_string())?;
-    let cookie = session::cookie_header(&window)?;
-
-    let response = reqwest::Client::builder()
-        .user_agent(media::USER_AGENT)
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|error| error.to_string())?
-        .get(url)
-        .header(reqwest::header::COOKIE, cookie)
-        .header(reqwest::header::REFERER, media::REFERER)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("下载失败（HTTP {status}）"));
-    }
-    if response.content_length().unwrap_or(0) > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
-    }
-
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
-    }
-    if media::content_type_is_html(&content_type) && !bytes.starts_with(b"\x89PNG") {
-        return Err(format!("下载被拒绝（{content_type}）"));
-    }
-
-    // `MediaKind::File` keeps the old cache-name behavior: an unknown content
-    // type does not invent an extension.
-    let name = media::with_extension(&name, &content_type, MediaKind::File);
-    let path = dir.join(name);
-    std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-fn media_filename(url: &str) -> String {
-    let path = url.split(['?', '#']).next().unwrap_or(url);
-    let raw = path.rsplit('/').next().unwrap_or_default();
-    let cleaned: String = raw
-        .chars()
-        .filter(|character| character.is_alphanumeric() || matches!(character, '.' | '-' | '_'))
-        .take(90)
-        .collect();
-    let cleaned = cleaned.trim_matches(['.', '-', '_']).to_string();
-    if cleaned.is_empty() {
-        "media".to_string()
-    } else {
-        cleaned
-    }
-}
-
 /// Deletes every entry under the app data directory and restarts the app.
 ///
 /// The wipe runs on the next launch, before logging or SQLite opens anything,
@@ -1504,88 +1013,4 @@ pub fn clear_app_data(app: AppHandle, state: State<'_, SharedState>) -> Result<(
         app.restart();
     });
     Ok(())
-}
-
-/// Accepts any `tapd.cn` host, so avatars served from `viper.tapd.cn` are
-/// proxied with the session cookie just like captures and attachments.
-pub(crate) fn is_tapd_media_url(url: &str) -> bool {
-    let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    else {
-        return false;
-    };
-
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('.')
-        .to_ascii_lowercase();
-
-    host == "tapd.cn" || host.ends_with(".tapd.cn")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_allows_tapd_media_urls() {
-        assert!(is_tapd_media_url(
-            "https://www.tapd.cn/tfl/captures/2026-11/a.png"
-        ));
-        assert!(is_tapd_media_url(
-            "https://file.tapd.cn/1/attachments/download/2/a.png"
-        ));
-        assert!(is_tapd_media_url("https://viper.tapd.cn/user_logo/123.jpg"));
-        assert!(is_tapd_media_url("http://tapd.cn/a.png"));
-        assert!(!is_tapd_media_url("https://evil.example.com/a.png"));
-        assert!(!is_tapd_media_url("https://tapd.cn.evil.example/a.png"));
-        assert!(!is_tapd_media_url("file:///etc/passwd"));
-    }
-
-    #[test]
-    fn resolves_current_user_avatar_urls() {
-        let user = serde_json::json!({
-            "img_src": "/users/avatar/2015551610/abc.png",
-        });
-        assert_eq!(
-            current_user_avatar(&user).as_deref(),
-            Some("https://www.tapd.cn/users/avatar/2015551610/abc.png")
-        );
-
-        let user = serde_json::json!({
-            "img_src": "//viper.tapd.cn/user_logo/2015551610.jpg",
-        });
-        assert_eq!(
-            current_user_avatar(&user).as_deref(),
-            Some("https://viper.tapd.cn/user_logo/2015551610.jpg")
-        );
-
-        let user = serde_json::json!({ "imgsrc": "https://wework.qpic.cn/a.png" });
-        assert_eq!(
-            current_user_avatar(&user).as_deref(),
-            Some("https://wework.qpic.cn/a.png")
-        );
-
-        assert!(current_user_avatar(&serde_json::json!({})).is_none());
-        assert!(current_user_avatar(&serde_json::json!({ "img_src": "" })).is_none());
-    }
-
-    #[test]
-    fn builds_stable_cache_names() {
-        assert_eq!(media::fnv1a(b"abc"), media::fnv1a(b"abc"));
-        assert_ne!(media::fnv1a(b"abc"), media::fnv1a(b"abd"));
-        assert_eq!(
-            media_filename("https://file.tapd.cn/1/attachments/download/2/log.ips?x=1"),
-            "log.ips"
-        );
-        assert_eq!(media_filename("https://www.tapd.cn/"), "media");
-        assert_eq!(media_filename("https://www.tapd.cn/a/../b"), "b");
-    }
 }

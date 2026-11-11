@@ -19,6 +19,10 @@
 //!   `agent://state` plus the lightweight `agent://summary`. Terminal output is
 //!   batched and sent via `agent://output`.
 
+mod git;
+mod pty;
+mod persist;
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{Read, Write},
@@ -38,6 +42,10 @@ use tapd_core::store::{read_json, write_json_atomic};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::{shell_path, state::SharedState};
+use git::{
+    committed_since_baseline, git_head, stash_changes, uncommitted_files,
+};
+use pty::{AgentRuntime, PromptGuard, PtyOutcome};
 
 pub const MAIN_LABEL: &str = "main";
 
@@ -540,8 +548,6 @@ pub enum TaskStatus {
     Queued,
     Preparing,
     Running,
-    /// opencode asked for a permission decision (edit / bash / ...).
-    WaitingReview,
     /// The agent finished a complex change and is waiting for the user to
     /// approve the commit. The working tree keeps the diff; the queue is
     /// blocked until the user approves or stops the task.
@@ -552,12 +558,10 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    /// A task occupying the single worker slot. `WaitingReview` still owns the
-    /// slot: the agent is blocked on a human decision, not finished.
-    /// `AwaitingApproval` also blocks the queue, but through the explicit
-    /// awaiting-review check so the worker does not mistake it for a live turn.
+    /// A task occupying the single worker slot. `AwaitingApproval` blocks the
+    /// queue through the explicit awaiting-review check, not through this.
     fn is_active(self) -> bool {
-        matches!(self, Self::Preparing | Self::Running | Self::WaitingReview)
+        matches!(self, Self::Preparing | Self::Running)
     }
 
     fn is_terminal(self) -> bool {
@@ -565,7 +569,7 @@ impl TaskStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTask {
     pub id: String,
@@ -734,11 +738,12 @@ pub struct AgentTasksState {
     tasks: Vec<AgentTask>,
     active_task_id: Option<String>,
     queued_count: usize,
-    waiting_review_count: usize,
     awaiting_approval_count: usize,
     /// True after the user stopped a review; the worker stays idle until
     /// `agent_queue_resume`.
     queue_paused: bool,
+    /// Last persistence failure, cleared by the next successful write.
+    storage_error: Option<String>,
     /// Fresh external AI claims. Stale ones are dropped when read.
     external_claims: Vec<ExternalClaim>,
 }
@@ -791,7 +796,6 @@ pub struct AgentSummary {
 struct TaskCounts {
     queued: usize,
     active: usize,
-    waiting_review: usize,
     awaiting_approval: usize,
 }
 
@@ -970,20 +974,14 @@ fn task_counts(tasks: &[AgentTask]) -> TaskCounts {
     let mut counts = TaskCounts {
         queued: 0,
         active: 0,
-        waiting_review: 0,
         awaiting_approval: 0,
     };
     for task in tasks {
         match task.status {
             TaskStatus::Queued => counts.queued += 1,
-            TaskStatus::Preparing | TaskStatus::Running | TaskStatus::WaitingReview => {
-                counts.active += 1
-            }
+            TaskStatus::Preparing | TaskStatus::Running => counts.active += 1,
             TaskStatus::AwaitingApproval => counts.awaiting_approval += 1,
             _ => {}
-        }
-        if task.status == TaskStatus::WaitingReview {
-            counts.waiting_review += 1;
         }
     }
     counts
@@ -1052,137 +1050,15 @@ fn finish_status(canceled: bool, exit_code: Option<i32>) -> TaskStatus {
     }
 }
 
-/// Parses `git status --porcelain` output into changed file paths.
-fn parse_porcelain_files(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim_end();
-            if line.len() < 4 {
-                return None;
-            }
-            let path = line.get(3..)?.trim();
-            if path.is_empty() {
-                return None;
-            }
-            // Renames are reported as `old -> new`; keep the new path.
-            let path = path.rsplit(" -> ").next().unwrap_or(path);
-            Some(path.trim_matches('"').to_string())
-        })
-        .take(50)
-        .collect()
-}
-
-/// Files still uncommitted in the task's repository. Empty on a clean tree or
-/// when git is unavailable, so a failed check never blocks a task.
-fn uncommitted_files(repo_path: &str) -> Vec<String> {
-    let repo_path = repo_path.trim();
-    if repo_path.is_empty() {
-        return Vec::new();
-    }
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["status", "--porcelain"])
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            parse_porcelain_files(&String::from_utf8_lossy(&output.stdout))
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Current HEAD of the task repository, used to tell "committed" from "left
-/// uncommitted changes".
-fn git_head(repo_path: &str) -> Option<String> {
-    let repo_path = repo_path.trim();
-    if repo_path.is_empty() {
-        return None;
-    }
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!sha.is_empty()).then_some(sha)
-}
-
-/// True when the task's repository gained a commit since the run started.
-fn committed_since_baseline(task: &AgentTask) -> bool {
-    let Some(before) = task.baseline_head.as_deref() else {
-        return false;
-    };
-    git_head(&task.repo_path).is_some_and(|after| after != before)
-}
-
-/// Stashes the reviewed files (tracked and untracked) so a rejected review
-/// never loses the agent's work. Restricting the pathspec keeps unrelated local
-/// changes out of the stash. Returns a human-readable stash ref.
-fn stash_changes(repo_path: &str, label: &str, files: &[String]) -> Result<String, String> {
-    let mut command = std::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo_path)
-        .args(["stash", "push", "--include-untracked", "-m", label]);
-    if !files.is_empty() {
-        // Agent-supplied paths may be absolute; git pathspecs are repo-relative.
-        let prefix = format!("{}/", repo_path.trim_end_matches('/'));
-        command.arg("--");
-        for file in files {
-            let file = file.trim();
-            if file.is_empty() {
-                continue;
-            }
-            command.arg(file.strip_prefix(&prefix).unwrap_or(file));
-        }
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("无法执行 git：{error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "git stash 失败".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.contains("No local changes") {
-        return Ok("无未提交改动".to_string());
-    }
-
-    let reference = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-parse", "--short", "refs/stash"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|reference| !reference.is_empty());
-    Ok(match reference {
-        Some(reference) => format!("stash@{{0}} ({reference})"),
-        None => "stash@{0}".to_string(),
-    })
-}
-
 /// Moves a task into the post-work review state without touching the working
-/// tree. Returns whether the status changed.
+/// tree.
 fn set_awaiting_approval(
     task: &mut AgentTask,
     summary: String,
     files: Vec<String>,
     risk: Option<String>,
     now: &str,
-) -> bool {
+) {
     task.status = TaskStatus::AwaitingApproval;
     task.finished_at = None;
     task.error = None;
@@ -1194,7 +1070,6 @@ fn set_awaiting_approval(
         approved_at: None,
         stash: None,
     });
-    true
 }
 
 /// Applies a PTY/event outcome to a task. Returns whether anything changed.
@@ -1206,7 +1081,7 @@ fn apply_finish(task: &mut AgentTask, outcome: &PtyOutcome, now: &str) -> bool {
         return false;
     }
 
-    if task.status == TaskStatus::Canceled || outcome.canceled {
+    if outcome.canceled {
         task.status = TaskStatus::Canceled;
         task.finished_at = Some(now.to_string());
         if task.error.is_none() {
@@ -1261,196 +1136,6 @@ fn recover_incomplete(tasks: &mut [AgentTask], now: &str) -> Vec<AgentTask> {
 // PTY plumbing
 // ---------------------------------------------------------------------------
 
-struct PtyHandles {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    reader: Box<dyn Read + Send>,
-    child: Box<dyn Child + Send + Sync>,
-}
-
-fn open_pty(
-    binary: &str,
-    args: &[String],
-    envs: &[(String, String)],
-    cwd: &Path,
-    cols: u16,
-    rows: u16,
-) -> Result<PtyHandles, String> {
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: rows.max(1),
-            cols: cols.max(1),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|error| error.to_string())?;
-
-    let mut command = CommandBuilder::new(binary);
-    command.cwd(cwd);
-    command.env("TERM", "xterm-256color");
-    command.env("COLORTERM", "truecolor");
-    // Finder-launched apps inherit a minimal PATH; hand the TUI (and whatever
-    // it shells out to) the user's shell PATH instead.
-    command.env("PATH", shell_path::user_path());
-    for arg in args {
-        command.arg(arg);
-    }
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|error| error.to_string())?;
-    drop(pair.slave);
-    let master = pair.master;
-    let reader = master
-        .try_clone_reader()
-        .map_err(|error| error.to_string())?;
-    let writer = master.take_writer().map_err(|error| error.to_string())?;
-
-    Ok(PtyHandles {
-        master,
-        writer,
-        reader,
-        child,
-    })
-}
-
-const SIGTERM: i32 = 15;
-const SIGKILL: i32 = 9;
-
-#[cfg(unix)]
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-
-/// Signals a whole process group. The TUI is spawned through portable-pty,
-/// which puts it in its own session, so its pid is also the group id.
-fn kill_process_group(pid: u32, signal: i32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    // SAFETY: plain syscall wrapper, no memory is shared.
-    unsafe { kill(-(pid as i32), signal) == 0 }
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32, _signal: i32) -> bool {
-    false
-}
-
-struct AgentRuntime {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
-    /// The TUI is started with `setsid`, so its pid is also the process-group
-    /// id used to kill the whole TUI tree.
-    pid: Option<u32>,
-    canceled: Arc<AtomicBool>,
-}
-
-impl AgentRuntime {
-    /// Signals the TUI process group and the direct child.
-    fn kill(&mut self) {
-        if let Some(pid) = self.pid {
-            kill_process_group(pid, SIGTERM);
-        }
-        // portable-pty sends SIGHUP to the direct child on Unix.
-        let _ = self.killer.kill();
-        if let Some(pid) = self.pid {
-            // The TUI is in its own session, so this also reaps grandchildren
-            // (MCP servers, tool subprocesses) that ignore SIGHUP/SIGTERM.
-            kill_process_group(pid, SIGKILL);
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct PtyOutcome {
-    exit_code: Option<i32>,
-    canceled: bool,
-    /// The turn was ended by the client (MCP report or idle fallback) instead
-    /// of the TUI exiting on its own.
-    completed: bool,
-    warning: Option<String>,
-    error: Option<String>,
-}
-
-/// Tracks whether the initial prompt has been written to the TUI.
-#[derive(Debug, Default)]
-struct PromptGuard {
-    injected: AtomicBool,
-}
-
-impl PromptGuard {
-    fn mark_injected(&self) {
-        self.injected.store(true, Ordering::SeqCst);
-    }
-
-    fn injected(&self) -> bool {
-        self.injected.load(Ordering::SeqCst)
-    }
-}
-
-/// Takes the longest complete UTF-8 prefix out of `buffer` and keeps an
-/// incomplete trailing sequence for the next batch.
-///
-/// PTY reads are chunked, so a multi-byte character (e.g. Chinese text in the
-/// TUI) can be split in half. Decoding such a batch used to surface as U+FFFD
-/// in the terminal, which looked like corrupted output.
-fn take_utf8_prefix(buffer: &mut Vec<u8>) -> Vec<u8> {
-    let cut = match std::str::from_utf8(buffer) {
-        Ok(_) => buffer.len(),
-        Err(error) => {
-            let valid = error.valid_up_to();
-            if error.error_len().is_some() {
-                // A genuinely invalid byte would block the buffer forever;
-                // emit it (the terminal shows U+FFFD) and keep going.
-                valid.max(1)
-            } else {
-                valid
-            }
-        }
-    };
-    if cut == 0 {
-        return Vec::new();
-    }
-    let rest = buffer.split_off(cut);
-    std::mem::replace(buffer, rest)
-}
-
-/// Output is flushed on a display-frame cadence, not when the stream goes
-/// quiet. A full-screen TUI repaints every ~17 ms while it animates, so an
-/// idle-gated flush never fires and seconds of output pile up in memory before
-/// the console sees the first byte — that is what made typing feel dead.
-const OUTPUT_FRAME: Duration = Duration::from_millis(16);
-/// Hard cap per emit, so the terminal never parses tens of thousands of escape
-/// sequences in a single write.
-const OUTPUT_BATCH_MAX: usize = 32 * 1024;
-/// Idle wait when nothing is buffered; the next chunk wakes the thread early.
-const OUTPUT_IDLE_WAIT: Duration = Duration::from_millis(250);
-
-/// Ships the buffered PTY bytes to the console. Nothing is recorded: the live
-/// terminal is the only place the agent's output exists.
-fn flush_output(app: &AppHandle, task_id: &str, pending: &mut Vec<u8>) {
-    if pending.is_empty() {
-        return;
-    }
-    let bytes = take_utf8_prefix(pending);
-    if bytes.is_empty() {
-        return;
-    }
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    if text.is_empty() {
-        return;
-    }
-    let _ = app.emit("agent://output", json!({ "taskId": task_id, "data": text }));
-}
-
-/// Quotes one shell word so a path with spaces/quotes survives `zsh -c`.
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -1526,9 +1211,11 @@ pub struct AgentCore {
     /// External AI claims, keyed by workspace + bug (see `ExternalClaim`).
     external: Mutex<Vec<ExternalClaim>>,
     runtimes: Mutex<HashMap<String, Arc<Mutex<AgentRuntime>>>>,
-    /// Per-task cancel flag; created when the worker takes a queued task so a
-    /// cancel can interrupt startup before the PTY exists.
-    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Serializes "who owns this bug" decisions. Enqueue, retry and an external
+    /// claim all check the other side and then write; without one lock in front
+    /// of that check-then-act, both sides can win and two agents edit the same
+    /// repository.
+    admission: tokio::sync::Mutex<()>,
     /// Terminal size the UI asked for. The console can be opened before the
     /// PTY exists, so the size is remembered and applied when it starts.
     sizes: Mutex<HashMap<String, (u16, u16)>>,
@@ -1545,6 +1232,9 @@ pub struct AgentCore {
     persist_lock: Mutex<()>,
     /// The queue-paused flag needs a write.
     paused_dirty: AtomicBool,
+    /// Last SQLite failure. Surfaced in the Agent header so a broken store is
+    /// visible instead of looking like a queue that simply lost history.
+    storage_error: Mutex<Option<String>>,
     wake: tokio::sync::Notify,
 }
 
@@ -1557,13 +1247,14 @@ impl AgentCore {
             tasks: Mutex::new(Vec::new()),
             external: Mutex::new(Vec::new()),
             runtimes: Mutex::new(HashMap::new()),
-            cancels: Mutex::new(HashMap::new()),
+            admission: tokio::sync::Mutex::new(()),
             sizes: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(false),
             pending_tasks: Mutex::new(HashMap::new()),
             removed_tasks: Mutex::new(HashSet::new()),
             persist_lock: Mutex::new(()),
             paused_dirty: AtomicBool::new(false),
+            storage_error: Mutex::new(None),
             wake: tokio::sync::Notify::new(),
         }
     }
@@ -1581,8 +1272,20 @@ impl AgentCore {
         }
         *self.config.lock().expect("agent config lock") = loaded;
 
-        // SQLite is the only task store.
-        let (mut tasks, paused) = self.state.cache.load_agent_tasks().unwrap_or_default();
+        // SQLite is the only task store. A failed read is a startup error, not
+        // an empty queue: log it loudly so the user can find the cause instead
+        // of watching their history disappear.
+        let mut load_failed = false;
+        let (mut tasks, paused) = match self.state.cache.load_agent_tasks() {
+            Some(loaded) => loaded,
+            None => {
+                tracing::error!(
+                    "failed to load agent tasks from SQLite; starting with an empty queue"
+                );
+                load_failed = true;
+                (Vec::new(), false)
+            }
+        };
         self.paused.store(paused, Ordering::SeqCst);
         self.paused_dirty.store(false, Ordering::SeqCst);
 
@@ -1608,6 +1311,13 @@ impl AgentCore {
         // versions left behind instead of keeping unread files forever.
         remove_legacy_logs(&self.state.paths.data_dir);
         self.persist_tasks();
+        if load_failed {
+            // `persist_tasks` may have cleared a write error; a failed read is
+            // still a real data-loss signal and must stay visible.
+            self.set_storage_error(Some(
+                "本地任务存储不可用，历史任务可能无法读取".to_string(),
+            ));
+        }
     }
 
     fn config_snapshot(&self) -> AgentConfig {
@@ -1681,6 +1391,10 @@ impl AgentCore {
         let note = truncate_text(request.note.trim(), 500);
         let now = now();
 
+        // Serialized with enqueue/retry: the desktop queue and an external
+        // claim cannot both pass their ownership check.
+        let _admission = self.admission.lock().await;
+
         // Our own queue owns the bug: a queued task yields, a live one wins.
         let live = {
             let tasks = self.tasks.lock().expect("agent tasks lock");
@@ -1711,16 +1425,16 @@ impl AgentCore {
                         return Err(error);
                     }
                 }
-                let _ = crate::notification::raise_system_note(
+                let _ = crate::notification::ai::raise_system_note(
                     "外部 AI 接管任务",
-                    crate::notification::AiTone::Warning,
+                    crate::notification::model::AiTone::Warning,
                     &format!("“{client}”接管了「{label}」，队列中的 Agent 任务已取消"),
                     Some(&format!("external-claim:{workspace_id}:{bug_id}:takeover")),
                 );
             } else {
-                let _ = crate::notification::raise_system_note(
+                let _ = crate::notification::ai::raise_system_note(
                     "外部 AI 接管被拒绝",
-                    crate::notification::AiTone::Warning,
+                    crate::notification::model::AiTone::Warning,
                     &format!("“{client}”想接管「{label}」，桌面 Agent 正在处理，已拒绝"),
                     Some(&format!("external-claim:{workspace_id}:{bug_id}:rejected")),
                 );
@@ -1839,129 +1553,42 @@ impl AgentCore {
         client: Option<&str>,
     ) -> Result<bool, String> {
         let now_secs = chrono::Utc::now().timestamp();
-        let mut blocked_by: Option<String> = None;
-        let removed = {
-            let mut claims = self.external.lock().expect("external claims lock");
-            let before = claims.len();
-            claims.retain(|claim| {
-                if claim.workspace_id != workspace_id || claim.bug_id != bug_id {
-                    return true;
-                }
-                if !external_claim_fresh_at(claim, now_secs) {
-                    return false;
-                }
-                if let Some(client) = client {
-                    if claim.client != client {
-                        blocked_by = Some(claim.client.clone());
-                        return true;
-                    }
-                }
-                false
-            });
-            before != claims.len()
+
+        // Decide before mutating. Removing first and then failing on a foreign
+        // claim would leave memory ahead of SQLite: the claim reappears on the
+        // next launch even though the caller saw an error.
+        let blocked_by = {
+            let claims = self.external.lock().expect("external claims lock");
+            claims
+                .iter()
+                .find(|claim| {
+                    claim.workspace_id == workspace_id
+                        && claim.bug_id == bug_id
+                        && external_claim_fresh_at(claim, now_secs)
+                        && client.is_some_and(|caller| claim.client != caller)
+                })
+                .map(|claim| claim.client.clone())
         };
         if let Some(client) = blocked_by {
             return Err(format!("该缺陷当前由“{client}”占用"));
         }
+
+        let removed = {
+            let mut claims = self.external.lock().expect("external claims lock");
+            let before = claims.len();
+            // No fresh foreign claim is left at this point: drop every matching
+            // row (stale or the caller's own). `client = None` is the user's
+            // cancel button and may clear any claim.
+            claims.retain(|claim| {
+                claim.workspace_id != workspace_id || claim.bug_id != bug_id
+            });
+            before != claims.len()
+        };
         if removed {
             self.persist_external_claims();
             self.emit_state();
         }
         Ok(removed)
-    }
-
-    fn mark_task_dirty(&self, task: AgentTask) {
-        self.pending_tasks
-            .lock()
-            .expect("agent pending lock")
-            .insert(task.id.clone(), task);
-    }
-
-    fn mark_tasks_dirty<I>(&self, tasks: I)
-    where
-        I: IntoIterator<Item = AgentTask>,
-    {
-        let mut pending = self.pending_tasks.lock().expect("agent pending lock");
-        for task in tasks {
-            pending.insert(task.id.clone(), task);
-        }
-    }
-
-    /// Updates the queue flag and marks it for persistence when it changes.
-    fn set_paused(&self, paused: bool) {
-        if self.paused.swap(paused, Ordering::SeqCst) != paused {
-            self.paused_dirty.store(true, Ordering::SeqCst);
-        }
-    }
-
-    fn persist_tasks(&self) {
-        // One writer at a time: a drained older snapshot must not be written
-        // after a newer one.
-        let _writer = self.persist_lock.lock().expect("agent persist lock");
-
-        // Drain the pending snapshots first: only tasks touched since the last
-        // write are serialized, so persistence is O(changed).
-        let tasks: Vec<AgentTask> = {
-            let mut pending = self.pending_tasks.lock().expect("agent pending lock");
-            if pending.is_empty() {
-                Vec::new()
-            } else {
-                pending.drain().map(|(_, task)| task).collect()
-            }
-        };
-        let removed: Vec<String> = {
-            let mut removed = self.removed_tasks.lock().expect("agent removed lock");
-            if removed.is_empty() {
-                Vec::new()
-            } else {
-                removed.drain().collect()
-            }
-        };
-        let paused_dirty = self.paused_dirty.swap(false, Ordering::SeqCst);
-        if tasks.is_empty() && removed.is_empty() && !paused_dirty {
-            return;
-        }
-
-        let paused = self.paused.load(Ordering::SeqCst);
-        let persisted = self.state.cache.save_agent_tasks(&tasks, paused, &removed);
-        if !persisted {
-            // SQLite is unavailable. Re-read the latest in-memory state (a
-            // mutation may have landed while the write was failing) so the
-            // retry never resurrects an older snapshot.
-            let failed: HashSet<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
-            let latest: Vec<AgentTask> = {
-                let current = self.tasks.lock().expect("agent tasks lock");
-                current
-                    .iter()
-                    .filter(|task| failed.contains(task.id.as_str()))
-                    .cloned()
-                    .collect()
-            };
-            let found: HashSet<&str> = latest.iter().map(|task| task.id.as_str()).collect();
-            let missing: Vec<String> = failed
-                .into_iter()
-                .filter(|id| !found.contains(id))
-                .map(str::to_string)
-                .collect();
-
-            self.mark_tasks_dirty(latest);
-            if !missing.is_empty() {
-                self.removed_tasks
-                    .lock()
-                    .expect("agent removed lock")
-                    .extend(missing);
-            }
-            if !removed.is_empty() {
-                self.removed_tasks
-                    .lock()
-                    .expect("agent removed lock")
-                    .extend(removed);
-            }
-            if paused_dirty {
-                self.paused_dirty.store(true, Ordering::SeqCst);
-            }
-            return;
-        }
     }
 
     fn tasks_state(&self) -> AgentTasksState {
@@ -1976,9 +1603,13 @@ impl AgentCore {
         AgentTasksState {
             active_task_id: active_task_id(tasks.as_slice()),
             queued_count: counts.queued,
-            waiting_review_count: counts.waiting_review,
             awaiting_approval_count: counts.awaiting_approval,
             queue_paused: self.paused.load(Ordering::SeqCst),
+            storage_error: self
+                .storage_error
+                .lock()
+                .expect("agent storage error lock")
+                .clone(),
             tasks: live,
             external_claims,
         }
@@ -1997,7 +1628,9 @@ impl AgentCore {
 
     fn emit_state(&self) {
         let state = self.tasks_state();
-        let summary = agent_summary(&state.tasks);
+        // Same source as the `agent_summary` command: the full task list, not
+        // the live-only slice carried by `state.tasks`.
+        let summary = self.summary();
         let _ = self.app.emit("agent://state", state);
         let _ = self.app.emit("agent://summary", summary);
     }
@@ -2010,12 +1643,20 @@ impl AgentCore {
     {
         let changed = {
             let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            mutate(&mut tasks)
+            let changed = mutate(&mut tasks);
+            if !changed.is_empty() {
+                // Mark dirty before releasing the tasks lock: two concurrent
+                // mutations must not leave an older snapshot pending last.
+                let mut pending = self.pending_tasks.lock().expect("agent pending lock");
+                for task in &changed {
+                    pending.insert(task.id.clone(), task.clone());
+                }
+            }
+            changed
         };
         if changed.is_empty() {
             return false;
         }
-        self.mark_tasks_dirty(changed);
         self.persist_tasks();
         self.emit_state();
         true
@@ -2025,15 +1666,25 @@ impl AgentCore {
     where
         F: FnOnce(&mut AgentTask),
     {
-        let snapshot = {
+        let (snapshot, changed) = {
             let mut tasks = self.tasks.lock().expect("agent tasks lock");
             let task = tasks.iter_mut().find(|task| task.id == task_id)?;
+            let before = task.clone();
             mutate(task);
-            task.clone()
+            let changed = *task != before;
+            let snapshot = task.clone();
+            if changed {
+                self.pending_tasks
+                    .lock()
+                    .expect("agent pending lock")
+                    .insert(snapshot.id.clone(), snapshot.clone());
+            }
+            (snapshot, changed)
         };
-        self.mark_task_dirty(snapshot.clone());
-        self.persist_tasks();
-        self.emit_state();
+        if changed {
+            self.persist_tasks();
+            self.emit_state();
+        }
         Some(snapshot)
     }
 
@@ -2104,12 +1755,17 @@ impl AgentCore {
         next
     }
 
-    fn enqueue(&self, request: &EnqueueRequest, source: &str) -> Result<AgentTask, String> {
+    async fn enqueue(&self, request: &EnqueueRequest, source: &str) -> Result<AgentTask, String> {
         let workspace_id = request.workspace_id.trim();
         let bug_id = request.bug_id.trim();
         if workspace_id.is_empty() || bug_id.is_empty() {
             return Err("缺少 workspaceId 或 bugId".to_string());
         }
+
+        // Admission is serialized with retry and external claims so the
+        // "external owns it?" / "a desktop task owns it?" checks cannot both
+        // pass and start two agents on one repository.
+        let _admission = self.admission.lock().await;
 
         let id = uuid::Uuid::new_v4().simple().to_string();
 
@@ -2203,6 +1859,19 @@ impl AgentCore {
 
     /// Cancels a task: sets the cancel flag and kills the TUI process group.
     async fn cancel(&self, task_id: &str) -> Result<AgentTask, String> {
+        let status = self
+            .current_status(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if status == TaskStatus::AwaitingApproval {
+            // A paused review owns an uncommitted diff. Cancelling it through
+            // the generic path would drop that diff and leave the queue
+            // unpaused; stop_review stashes it and keeps the queue halted.
+            return self.stop_review(task_id).await;
+        }
+        if status.is_terminal() {
+            return Err("任务已经结束，无需取消".to_string());
+        }
+
         let snapshot = {
             let mut tasks = self.tasks.lock().expect("agent tasks lock");
             let task = tasks
@@ -2221,20 +1890,13 @@ impl AgentCore {
             task.clone()
         };
 
-        if let Some(flag) = self
-            .cancels
-            .lock()
-            .expect("agent cancels lock")
-            .get(task_id)
-            .cloned()
-        {
-            flag.store(true, Ordering::SeqCst);
-        }
-
         self.stop_runtime(task_id);
         self.mark_task_dirty(snapshot.clone());
         self.persist_tasks();
         self.emit_state();
+        // If the worker was parked because this was the only task, let it
+        // re-check the queue instead of sleeping until the next enqueue.
+        self.wake.notify_one();
         Ok(snapshot)
     }
 
@@ -2252,18 +1914,9 @@ impl AgentCore {
         }
     }
 
-    /// Full teardown for a task: cancel flag and TUI process group. Safe to
-    /// call repeatedly.
+    /// Full teardown for a task: TUI process group and remembered console size.
+    /// Safe to call repeatedly.
     fn teardown_task(&self, task_id: &str) {
-        if let Some(flag) = self
-            .cancels
-            .lock()
-            .expect("agent cancels lock")
-            .remove(task_id)
-        {
-            flag.store(true, Ordering::SeqCst);
-        }
-
         self.stop_runtime(task_id);
         self.sizes.lock().expect("agent sizes lock").remove(task_id);
     }
@@ -2522,13 +2175,15 @@ impl AgentCore {
         Ok(())
     }
 
-    fn retry(&self, task_id: &str) -> Result<AgentTask, String> {
+    async fn retry(&self, task_id: &str) -> Result<AgentTask, String> {
         let original = self
             .task_snapshot(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if !original.status.is_terminal() {
             return Err("任务仍在队列或运行中，不能重试".to_string());
         }
+
+        let _admission = self.admission.lock().await;
 
         let id = uuid::Uuid::new_v4().simple().to_string();
         let mut task = original;
@@ -2541,10 +2196,26 @@ impl AgentCore {
         task.error = None;
         task.approval = None;
 
-        self.tasks
-            .lock()
-            .expect("agent tasks lock")
-            .push(task.clone());
+        // Retry is a new admission, not a bypass: the same bug may have been
+        // claimed externally or re-queued while this task was terminal.
+        if let Some(claim) = self.fresh_external_claim(&task.workspace_id, &task.bug_id) {
+            return Err(format!(
+                "{}，请稍后再试或先在列表中取消外部占用",
+                external_claim_phrase(&claim)
+            ));
+        }
+        {
+            let mut tasks = self.tasks.lock().expect("agent tasks lock");
+            if let Some(existing) =
+                live_task_for_bug(&tasks, &task.workspace_id, &task.bug_id)
+            {
+                return Err(format!(
+                    "该缺陷已有未结束的任务（{}），请先处理",
+                    task_status_key(existing.status)
+                ));
+            }
+            tasks.push(task.clone());
+        }
         self.mark_task_dirty(task.clone());
         self.persist_tasks();
         self.emit_state();
@@ -2697,10 +2368,6 @@ impl AgentCore {
             task.started_at = Some(now());
             task.clone()
         };
-        self.cancels
-            .lock()
-            .expect("agent cancels lock")
-            .insert(task.id.clone(), Arc::new(AtomicBool::new(false)));
         self.mark_task_dirty(task.clone());
         self.persist_tasks();
         self.emit_state();
@@ -2835,7 +2502,10 @@ impl AgentCore {
             )
         };
         let Some(running_task) = self.update_task(&task.id, |current| {
-            if current.status == TaskStatus::Canceled {
+            // A late report or a review request may have finished/parked this
+            // task while it was preparing; never restart it from a terminal or
+            // awaiting state.
+            if current.status.is_terminal() || current.status == TaskStatus::AwaitingApproval {
                 return;
             }
             current.md_path = task.md_path.clone();
@@ -2852,7 +2522,7 @@ impl AgentCore {
             return;
         };
 
-        if running_task.status == TaskStatus::Canceled {
+        if running_task.status != TaskStatus::Running {
             return;
         }
 
@@ -2862,7 +2532,7 @@ impl AgentCore {
             .run_tui_task(&running_task, &config, &descriptor)
             .await;
         self.teardown_task(&task.id);
-        self.finish_task(&task.id, outcome);
+        self.finish_task(&task.id, outcome).await;
     }
 
     /// Runs one task through the generic TUI adapter: launch the CLI with the
@@ -2950,374 +2620,6 @@ impl AgentCore {
         }
     }
 
-    fn run_pty(
-        &self,
-        task: &AgentTask,
-        config: &AgentConfig,
-        args: Vec<String>,
-        envs: Vec<(String, String)>,
-        guard: Arc<PromptGuard>,
-        inject_prompt: bool,
-        idle_complete: Option<Duration>,
-    ) -> PtyOutcome {
-        // A cancel can land between the status update and this thread starting;
-        // don't spawn a process that is already doomed.
-        if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
-            return PtyOutcome {
-                canceled: true,
-                ..PtyOutcome::default()
-            };
-        }
-
-        let handles = match open_pty(
-            &config.binary_path,
-            &args,
-            &envs,
-            Path::new(&task.repo_path),
-            120,
-            32,
-        ) {
-            Ok(handles) => handles,
-            Err(error) => {
-                return PtyOutcome {
-                    error: Some(format!("启动 Agent 终端失败：{error}")),
-                    ..PtyOutcome::default()
-                }
-            }
-        };
-
-        let PtyHandles {
-            master,
-            writer,
-            mut reader,
-            mut child,
-        } = handles;
-
-        let canceled = Arc::new(AtomicBool::new(false));
-        let runtime = Arc::new(Mutex::new(AgentRuntime {
-            master,
-            writer,
-            killer: child.clone_killer(),
-            pid: child.process_id(),
-            canceled: canceled.clone(),
-        }));
-        self.runtimes
-            .lock()
-            .expect("agent runtimes lock")
-            .insert(task.id.clone(), runtime.clone());
-
-        // The console may already be open and have asked for a size before the
-        // PTY existed; apply it now so the TUI lays out for that panel.
-        let requested = self
-            .sizes
-            .lock()
-            .ok()
-            .and_then(|sizes| sizes.get(&task.id).copied());
-        if let Some((cols, rows)) = requested {
-            if let Ok(runtime) = runtime.lock() {
-                let _ = runtime.master.resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-            }
-        }
-
-        // Close the race where a cancel arrived just before the runtime became
-        // visible to `agent_task_cancel`.
-        if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
-            canceled.store(true, Ordering::SeqCst);
-            if let Ok(mut runtime) = runtime.lock() {
-                runtime.kill();
-            }
-        }
-
-        let has_output = Arc::new(AtomicBool::new(false));
-        let last_output = Arc::new(Mutex::new(Instant::now()));
-
-        // Reader: blocking reads on its own thread, forwarded as raw chunks.
-        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let reader_has_output = has_output.clone();
-        let reader_last_output = last_output.clone();
-        let reader_handle = std::thread::Builder::new()
-            .name(format!("agent-reader-{}", task.id))
-            .spawn(move || {
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => {
-                            reader_has_output.store(true, Ordering::SeqCst);
-                            if let Ok(mut last) = reader_last_output.lock() {
-                                *last = Instant::now();
-                            }
-                            if chunk_tx.send(buffer[..count].to_vec()).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
-            .ok();
-
-        // Batcher: coalesces chunks into one event per display frame. A burst
-        // still gets split at `OUTPUT_BATCH_MAX`.
-        let batch_app = self.app.clone();
-        let batch_task_id = task.id.clone();
-        let batcher_handle = std::thread::Builder::new()
-            .name(format!("agent-batch-{}", task.id))
-            .spawn(move || {
-                let mut pending: Vec<u8> = Vec::new();
-                // Deadline of the frame currently being collected, if any.
-                let mut deadline: Option<Instant> = None;
-
-                loop {
-                    let wait = match deadline {
-                        Some(at) => at
-                            .saturating_duration_since(Instant::now())
-                            .max(Duration::from_millis(1)),
-                        None => OUTPUT_IDLE_WAIT,
-                    };
-                    match chunk_rx.recv_timeout(wait) {
-                        Ok(chunk) => {
-                            pending.extend_from_slice(&chunk);
-                            if deadline.is_none() {
-                                deadline = Some(Instant::now() + OUTPUT_FRAME);
-                            }
-                            if pending.len() >= OUTPUT_BATCH_MAX {
-                                flush_output(&batch_app, &batch_task_id, &mut pending);
-                                deadline = None;
-                            }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            // Either the frame deadline passed or the stream is
-                            // idle; both mean "ship what is buffered".
-                            flush_output(&batch_app, &batch_task_id, &mut pending);
-                            deadline = None;
-                        }
-                        Err(RecvTimeoutError::Disconnected) => {
-                            flush_output(&batch_app, &batch_task_id, &mut pending);
-                            break;
-                        }
-                    }
-                }
-            })
-            .ok();
-
-        // Wait for the TUI to settle before injecting the prompt. argv/flag
-        // runtimes already received the prompt at spawn, so there is nothing to
-        // wait for and nothing to write.
-        let mut warning: Option<String> = None;
-        // argv/flag modes started the turn at spawn; stdin starts it after the
-        // write below. The timestamp is the no-output watchdog anchor.
-        let mut injected_at: Option<Instant> = if inject_prompt {
-            None
-        } else {
-            Some(Instant::now())
-        };
-        if inject_prompt {
-            let ready_quiet = Duration::from_millis(config.ready_quiet_ms.clamp(100, 10_000));
-            let ready_timeout = Duration::from_millis(config.ready_timeout_ms.clamp(1_000, 120_000));
-            let started = Instant::now();
-            let mut ready = false;
-
-            while started.elapsed() < ready_timeout {
-                if canceled.load(Ordering::SeqCst) {
-                    break;
-                }
-                let produced_output = has_output.load(Ordering::SeqCst);
-                let quiet_for = last_output
-                    .lock()
-                    .map(|last| last.elapsed())
-                    .unwrap_or_default();
-                if produced_output && quiet_for >= ready_quiet {
-                    ready = true;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-
-            if !canceled.load(Ordering::SeqCst) {
-                if !ready {
-                    warning = Some(if has_output.load(Ordering::SeqCst) {
-                        "TUI 就绪检测超时，已强制注入任务".to_string()
-                    } else {
-                        "未检测到 TUI 输出，已按超时注入任务".to_string()
-                    });
-                    tracing::warn!(task_id = %task.id, warning = ?warning, "agent ready detection timed out");
-                }
-
-                // Bracketed paste keeps multi-line prompts intact instead of
-                // letting the TUI submit at the first newline.
-                let mut payload = Vec::with_capacity(task.prompt.len() + 8);
-                payload.extend_from_slice(b"\x1b[200~");
-                payload.extend_from_slice(task.prompt.as_bytes());
-                payload.extend_from_slice(b"\x1b[201~\r");
-                let injected = {
-                    let mut runtime = runtime.lock().expect("agent runtime lock");
-                    runtime
-                        .writer
-                        .write_all(&payload)
-                        .and_then(|_| runtime.writer.flush())
-                };
-                match injected {
-                    Ok(()) => {
-                        guard.mark_injected();
-                        injected_at = Some(Instant::now());
-                    }
-                    Err(error) => {
-                        warning = Some(match warning {
-                            Some(existing) => format!("{existing}；注入任务失败：{error}"),
-                            None => format!("注入任务失败：{error}"),
-                        });
-                    }
-                }
-            }
-        }
-
-        // Wait for the agent process to exit. TUI runtimes usually keep their
-        // TUI open after the turn, so `idle_complete` is the fallback that lets
-        // the queue advance when the agent never calls agent_task_report.
-        let mut outcome = PtyOutcome {
-            canceled: canceled.load(Ordering::SeqCst),
-            warning,
-            ..PtyOutcome::default()
-        };
-        let idle_after = idle_complete.filter(|duration| !duration.is_zero());
-        loop {
-            if canceled.load(Ordering::SeqCst) {
-                outcome.canceled = true;
-                break;
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    outcome.exit_code = Some(status.exit_code() as i32);
-                    if let Some(signal) = status.signal() {
-                        outcome.error = Some(format!("Agent 进程被信号终止：{signal}"));
-                    }
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    outcome.error = Some(format!("等待 Agent 进程失败：{error}"));
-                    break;
-                }
-            }
-
-            if let Some(idle) = idle_after {
-                let produced_output = has_output.load(Ordering::SeqCst);
-                let quiet_for = last_output
-                    .lock()
-                    .map(|last| last.elapsed())
-                    .unwrap_or_default();
-                // argv/flag modes have no injection handshake; output is the
-                // only proof that the prompt actually started.
-                let prompt_started = !inject_prompt || guard.injected();
-                if produced_output && prompt_started && quiet_for >= idle {
-                    let message = format!(
-                        "Agent 未回报完成，输出静默 {}s，已结束本轮",
-                        idle.as_secs()
-                    );
-                    tracing::warn!(task_id = %task.id, %message, "agent idle completion");
-                    outcome.completed = true;
-                    outcome.warning = Some(match outcome.warning.take() {
-                        Some(existing) => format!("{existing}；{message}"),
-                        None => message,
-                    });
-                    if let Ok(mut runtime) = runtime.lock() {
-                        runtime.kill();
-                    }
-                    // Reap the process so the PTY reader sees EOF.
-                    if let Ok(status) = child.wait() {
-                        outcome.exit_code = Some(status.exit_code() as i32);
-                    }
-                    break;
-                }
-
-                // A TUI that never produced any output after the prompt was
-                // delivered is stuck (trust menu, crash, wrong CLI flags). Fail
-                // instead of blocking the serial queue forever.
-                let no_output_for = injected_at
-                    .map(|at| at.elapsed())
-                    .unwrap_or_default();
-                if prompt_started && !produced_output && no_output_for >= idle {
-                    outcome.error = Some(format!(
-                        "Agent 启动后 {}s 没有任何输出，请检查命令、登录态或首次启动的信任提示",
-                        idle.as_secs()
-                    ));
-                    if let Ok(mut runtime) = runtime.lock() {
-                        runtime.kill();
-                    }
-                    let _ = child.wait();
-                    break;
-                }
-            }
-
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        outcome.canceled = outcome.canceled || canceled.load(Ordering::SeqCst);
-
-        // Do not block forever on the readers: a grandchild process may keep
-        // the slave fd open after the TUI exits, which delays EOF.
-        join_with_timeout(reader_handle, Duration::from_millis(500));
-        join_with_timeout(batcher_handle, Duration::from_millis(500));
-
-        self.runtimes
-            .lock()
-            .expect("agent runtimes lock")
-            .remove(&task.id);
-
-        outcome
-    }
-
-    fn finish_task(&self, task_id: &str, outcome: PtyOutcome) {
-        let warning = outcome.warning.clone();
-        let review_files = match self.task_snapshot(task_id) {
-            Some(task)
-                if !task.commit_only
-                    && !task.status.is_terminal()
-                    && task.status != TaskStatus::AwaitingApproval
-                    && !committed_since_baseline(&task) =>
-            {
-                uncommitted_files(&task.repo_path)
-                    .into_iter()
-                    .filter(|file| !task.baseline_dirty.contains(file))
-                    .collect()
-            }
-            _ => Vec::new(),
-        };
-        let snapshot = self.update_task(task_id, |task| {
-            let at = now();
-            apply_finish(task, &outcome, &at);
-            if task.status == TaskStatus::Succeeded && !review_files.is_empty() {
-                set_awaiting_approval(
-                    task,
-                    "Agent 已完成修改但未提交，等待确认后提交。".to_string(),
-                    review_files,
-                    Some("存在未提交的改动".to_string()),
-                    &at,
-                );
-            }
-        });
-
-        if let Some(task) = &snapshot {
-            if task.status == TaskStatus::Succeeded {
-                if let Some(warning) = warning {
-                    tracing::warn!(task_id, %warning, "agent finished with a warning");
-                }
-                tracing::info!(task_id, exit_code = ?task.exit_code, "agent task succeeded");
-            } else if task.status == TaskStatus::Failed || task.status == TaskStatus::Canceled {
-                tracing::warn!(
-                    task_id,
-                    status = ?task.status,
-                    error = ?task.error,
-                    "agent task did not succeed"
-                );
-            }
-        }
-    }
 }
 
 fn now() -> String {
@@ -3329,7 +2631,6 @@ fn task_status_key(status: TaskStatus) -> &'static str {
         TaskStatus::Queued => "queued",
         TaskStatus::Preparing => "preparing",
         TaskStatus::Running => "running",
-        TaskStatus::WaitingReview => "waiting_review",
         TaskStatus::AwaitingApproval => "awaiting_approval",
         TaskStatus::Succeeded => "succeeded",
         TaskStatus::Failed => "failed",
@@ -3478,19 +2779,6 @@ fn truncate_text(text: &str, max: usize) -> String {
     truncated
 }
 
-fn join_with_timeout(handle: Option<std::thread::JoinHandle<()>>, timeout: Duration) {
-    let Some(handle) = handle else {
-        return;
-    };
-    let started = Instant::now();
-    while !handle.is_finished() && started.elapsed() < timeout {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if handle.is_finished() {
-        let _ = handle.join();
-    }
-    // Dropping a JoinHandle detaches the thread; it will exit once the fds close.
-}
 
 /// Accepts either an absolute/relative path or a bare command name resolved
 /// through the user's shell `PATH` (the default `opencode` is normally installed
@@ -3704,9 +2992,12 @@ pub fn init(app: &AppHandle, state: SharedState) {
     app.listen("agent://enqueue", move |event| {
         match serde_json::from_str::<EnqueueRequest>(event.payload()) {
             Ok(request) => {
-                if let Err(error) = listener_core.enqueue(&request, "notification") {
-                    tracing::warn!(%error, "failed to enqueue agent task from notification");
-                }
+                let core = listener_core.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = core.enqueue(&request, "notification").await {
+                        tracing::warn!(%error, "failed to enqueue agent task from notification");
+                    }
+                });
             }
             Err(error) => {
                 tracing::warn!(%error, payload = event.payload(), "invalid agent://enqueue payload");
@@ -3908,6 +3199,20 @@ pub async fn task_report_from_mcp(app: &AppHandle, arguments: &Value) -> Result<
         .filter(|message| !message.is_empty())
         .map(|message| truncate_text(message, 2_000));
 
+    // A report for a missing or already-finished task must be visible as an
+    // error, not silently accepted as if it changed something.
+    if matches!(status.as_str(), "completed" | "failed" | "needs_review") {
+        let current = core
+            .task_snapshot(&task_id)
+            .ok_or_else(|| format!("任务不存在：{task_id}"))?;
+        if current.status.is_terminal() {
+            return Err(format!(
+                "任务已结束（{}），不能再次回报",
+                task_status_key(current.status)
+            ));
+        }
+    }
+
     match status.as_str() {
         "completed" => {
             core.finish_task(
@@ -3917,7 +3222,8 @@ pub async fn task_report_from_mcp(app: &AppHandle, arguments: &Value) -> Result<
                     completed: true,
                     ..PtyOutcome::default()
                 },
-            );
+            )
+            .await;
             core.stop_runtime(&task_id);
             Ok(json!({ "status": "completed", "taskId": task_id }))
         }
@@ -3988,7 +3294,9 @@ pub async fn command(
         "agent_enqueue_bug" => {
             let request: EnqueueRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的入队参数：{error}"))?;
-            let task = core.enqueue(&request, request.source.as_deref().unwrap_or("manual"))?;
+            let task = core
+                .enqueue(&request, request.source.as_deref().unwrap_or("manual"))
+                .await?;
             Ok(json!({ "task": task }))
         }
         "agent_save_resource" => {
@@ -4043,7 +3351,7 @@ pub async fn command(
             if request.task_id.trim().is_empty() {
                 return Err("缺少 taskId".to_string());
             }
-            let task = core.retry(request.task_id.trim())?;
+            let task = core.retry(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_task_delete" => {
@@ -4129,6 +3437,8 @@ pub async fn command(
 
 #[cfg(test)]
 mod tests {
+    use super::git::parse_porcelain_files;
+    use super::pty::{open_pty, take_utf8_prefix, PtyHandles};
     use super::*;
 
     fn sample_claim(last_seen_at: &str) -> ExternalClaim {
@@ -4532,7 +3842,6 @@ mod tests {
             (TaskStatus::Queued, "\"queued\""),
             (TaskStatus::Preparing, "\"preparing\""),
             (TaskStatus::Running, "\"running\""),
-            (TaskStatus::WaitingReview, "\"waiting_review\""),
             (TaskStatus::AwaitingApproval, "\"awaiting_approval\""),
             (TaskStatus::Succeeded, "\"succeeded\""),
             (TaskStatus::Failed, "\"failed\""),
@@ -4615,13 +3924,13 @@ mod tests {
     #[test]
     fn awaiting_approval_is_not_downgraded_by_finish() {
         let mut task = sample_task("a", TaskStatus::Running);
-        assert!(set_awaiting_approval(
+        set_awaiting_approval(
             &mut task,
             "改了 3 个文件".to_string(),
             vec!["src/a.rs".to_string()],
             Some("公共接口变化".to_string()),
             "2026-11-10T01:00:00Z",
-        ));
+        );
         assert_eq!(task.status, TaskStatus::AwaitingApproval);
         assert_eq!(
             task.approval.as_ref().map(|approval| approval.files.len()),
@@ -4675,19 +3984,18 @@ mod tests {
 
     #[test]
     fn state_and_summary_serialize_camel_case() {
-        let tasks = vec![sample_task("a", TaskStatus::WaitingReview)];
+        let tasks = vec![sample_task("a", TaskStatus::Running)];
         let state = AgentTasksState {
             tasks: tasks.clone(),
             active_task_id: Some("a".to_string()),
             queued_count: 0,
-            waiting_review_count: 1,
             awaiting_approval_count: 0,
             queue_paused: false,
+            storage_error: None,
             external_claims: vec![sample_claim("2026-11-11T08:00:00Z")],
         };
         let value = serde_json::to_value(&state).unwrap();
         assert_eq!(value["queuedCount"], 0);
-        assert_eq!(value["waitingReviewCount"], 1);
         assert_eq!(value["externalClaims"][0]["client"], "Zcode");
         assert_eq!(value["activeTaskId"], "a");
 
@@ -4703,11 +4011,10 @@ mod tests {
         let mut tasks = vec![
             sample_task("done", TaskStatus::Succeeded),
             sample_task("running", TaskStatus::Running),
-            sample_task("waiting", TaskStatus::WaitingReview),
             sample_task("queued", TaskStatus::Queued),
             sample_task("approval", TaskStatus::AwaitingApproval),
         ];
-        tasks[4].approval = Some(TaskApproval {
+        tasks[3].approval = Some(TaskApproval {
             summary: "改了 2 个文件".to_string(),
             files: vec!["src/a.rs".to_string()],
             risk: None,
@@ -4718,7 +4025,7 @@ mod tests {
 
         let counts = task_counts(&tasks);
         assert_eq!(counts.queued, 1);
-        assert_eq!(counts.active, 2);
+        assert_eq!(counts.active, 1);
         assert_eq!(counts.awaiting_approval, 1);
 
         let summary = agent_summary(&tasks);
@@ -4736,14 +4043,6 @@ mod tests {
         assert_eq!(summary.title.as_deref(), Some("示例缺陷"));
         assert_eq!(summary.workspace_name.as_deref(), Some("UU"));
         assert_eq!(summary.bug_id.as_deref(), Some("1145336192001234567"));
-
-        let mut only_waiting = vec![sample_task("waiting", TaskStatus::WaitingReview)];
-        assert_eq!(
-            agent_summary(&only_waiting).active_task_id.as_deref(),
-            Some("waiting")
-        );
-        only_waiting.clear();
-        assert_eq!(agent_summary(&only_waiting), AgentSummary::default());
     }
 
     #[test]
@@ -4782,7 +4081,7 @@ mod tests {
 
     #[test]
     fn cancellation_and_failure_are_applied() {
-        let mut task = sample_task("a", TaskStatus::WaitingReview);
+        let mut task = sample_task("a", TaskStatus::Running);
         let outcome = PtyOutcome {
             canceled: true,
             ..PtyOutcome::default()
@@ -4806,12 +4105,11 @@ mod tests {
             sample_task("queued", TaskStatus::Queued),
             sample_task("preparing", TaskStatus::Preparing),
             sample_task("running", TaskStatus::Running),
-            sample_task("waiting", TaskStatus::WaitingReview),
             sample_task("done", TaskStatus::Succeeded),
         ];
         let recovered = recover_incomplete(&mut tasks, "2026-11-10T01:00:00Z");
         let ids: Vec<&str> = recovered.iter().map(|task| task.id.as_str()).collect();
-        assert_eq!(ids, vec!["preparing", "running", "waiting"]);
+        assert_eq!(ids, vec!["preparing", "running"]);
         assert_eq!(tasks[0].status, TaskStatus::Queued);
         assert_eq!(tasks[1].status, TaskStatus::Failed);
         assert_eq!(tasks[1].error.as_deref(), Some("客户端重启"));
@@ -4820,8 +4118,7 @@ mod tests {
             Some("2026-11-10T01:00:00Z")
         );
         assert_eq!(tasks[2].status, TaskStatus::Failed);
-        assert_eq!(tasks[3].status, TaskStatus::Failed);
-        assert_eq!(tasks[4].status, TaskStatus::Succeeded);
+        assert_eq!(tasks[3].status, TaskStatus::Succeeded);
     }
 
     #[test]

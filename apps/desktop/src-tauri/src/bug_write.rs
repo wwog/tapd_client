@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::{commands::session_request_json, session};
+use crate::{commands::auth::session_request_json, session};
 
 const COMMENT_URL: &str = "https://www.tapd.cn/api/entity/comments/add_comment";
 const INLINE_UPDATE_URL: &str = "https://www.tapd.cn/api/entity/bugs/inline_update";

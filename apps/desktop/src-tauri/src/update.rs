@@ -18,22 +18,31 @@
 //!
 //! The plugin installs the new bundle on macOS but does not relaunch, so a
 //! successful install calls `AppHandle::restart`.
+//!
+//! Layout: [`model`] holds the serialized state, [`notes`] the release-note and
+//! version policy, and [`screen`] the window choreography. This file is the
+//! state machine plus the Tauri commands.
 
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
     },
     time::{Duration, Instant},
 };
 
 use chrono::Local;
-use semver::Version;
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::{notification, state::SharedState};
+use crate::state::SharedState;
+
+mod model;
+mod notes;
+mod screen;
+
+use model::{AvailableUpdate, Inner, UpdatePhase, UpdateProgress, UpdateState};
+use notes::{parse_notes, recorded_force};
 
 const RELEASES_URL: &str = "https://github.com/wwog/tapd_client/releases";
 const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
@@ -46,76 +55,6 @@ pub const FORCE_UPDATE_MARKER: &str = "<!-- force-update -->";
 
 static SERVICE: OnceLock<Arc<UpdateService>> = OnceLock::new();
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum UpdatePhase {
-    /// No update (or not checked yet).
-    #[default]
-    Idle,
-    Checking,
-    /// A newer release is known and ready to install.
-    Available,
-    Downloading,
-    Installing,
-    /// Package installed; the process is about to restart.
-    Ready,
-    /// Install failed. The main window stays hidden until the user cancels.
-    Error,
-}
-
-impl UpdatePhase {
-    /// Phases that own the screen: main hidden, island expanded.
-    fn owns_screen(self) -> bool {
-        matches!(
-            self,
-            Self::Downloading | Self::Installing | Self::Ready | Self::Error
-        )
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvailableUpdate {
-    pub version: String,
-    pub notes: String,
-    pub date: Option<String>,
-    /// The release notes carried `FORCE_UPDATE_MARKER`: the upgrade cannot be
-    /// dismissed or skipped.
-    pub forced: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateProgress {
-    pub received: u64,
-    pub total: Option<u64>,
-    pub percent: Option<f64>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateState {
-    pub phase: UpdatePhase,
-    pub current_version: String,
-    pub checked_at: Option<String>,
-    pub available: Option<AvailableUpdate>,
-    pub progress: Option<UpdateProgress>,
-    pub error: Option<String>,
-    /// Release page for the manual-download fallback.
-    pub manual_url: String,
-}
-
-#[derive(Default)]
-struct Inner {
-    phase: UpdatePhase,
-    checked_at: Option<String>,
-    available: Option<AvailableUpdate>,
-    progress: Option<UpdateProgress>,
-    error: Option<String>,
-    /// Last progress event time, used to throttle high-frequency chunks.
-    last_emit: Option<Instant>,
-}
-
 pub struct UpdateService {
     app: AppHandle,
     state: SharedState,
@@ -124,8 +63,19 @@ pub struct UpdateService {
 }
 
 impl UpdateService {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().expect("update state lock")
+    }
+
     fn snapshot(&self) -> UpdateState {
-        let inner = self.inner.lock().expect("update state lock");
+        let inner = self.lock();
+        self.snapshot_locked(&inner)
+    }
+
+    /// Builds the public state from an already-held guard. Callers inside a
+    /// `lock()` scope must use this: `snapshot()` would re-lock the same
+    /// non-reentrant mutex and deadlock.
+    fn snapshot_locked(&self, inner: &Inner) -> UpdateState {
         UpdateState {
             phase: inner.phase,
             current_version: self.current_version.clone(),
@@ -148,7 +98,7 @@ impl UpdateService {
     /// Applies a phase change and keeps the window choreography in sync.
     fn transition(&self, phase: UpdatePhase) {
         let previous = {
-            let mut inner = self.inner.lock().expect("update state lock");
+            let mut inner = self.lock();
             let previous = inner.phase;
             inner.phase = phase;
             if !phase.owns_screen() {
@@ -162,35 +112,17 @@ impl UpdateService {
 
         if previous.owns_screen() != phase.owns_screen() {
             if phase.owns_screen() {
-                self.hide_main_and_show_island();
+                screen::hide_main_and_show_island(&self.app, &self.state);
             } else {
-                self.restore_main_and_island();
+                screen::restore_main_and_island(&self.app, &self.state);
             }
         }
         self.emit();
     }
 
-    fn hide_main_and_show_island(&self) {
-        if let Some(main) = self.app.get_webview_window("main") {
-            let _ = main.hide();
-        }
-        notification::set_update_mode(true);
-        notification::refresh_island_layout(&self.app, &self.state);
-    }
-
-    fn restore_main_and_island(&self) {
-        notification::set_update_mode(false);
-        notification::refresh_island_layout(&self.app, &self.state);
-        if let Some(main) = self.app.get_webview_window("main") {
-            let _ = main.show();
-            let _ = main.unminimize();
-            let _ = main.set_focus();
-        }
-    }
-
     fn set_progress(&self, received: u64, total: Option<u64>, force: bool) {
         let should_emit = {
-            let mut inner = self.inner.lock().expect("update state lock");
+            let mut inner = self.lock();
             let now = Instant::now();
             let should_emit = force
                 || inner
@@ -218,7 +150,7 @@ impl UpdateService {
     fn record_check_time(&self) {
         let now = Local::now().to_rfc3339();
         {
-            let mut inner = self.inner.lock().expect("update state lock");
+            let mut inner = self.lock();
             inner.checked_at = Some(now.clone());
         }
         if let Err(error) = self
@@ -264,64 +196,7 @@ pub fn is_updating() -> bool {
     let Some(service) = SERVICE.get() else {
         return false;
     };
-    let phase = service.inner.lock().expect("update state lock").phase;
-    phase.owns_screen()
-}
-
-/// Splits release notes into their display text and the forced-update flag.
-fn parse_notes(raw: &str) -> (String, bool) {
-    let mut forced = false;
-    let mut kept: Vec<&str> = Vec::new();
-    for line in raw.lines() {
-        if is_force_marker(line) {
-            forced = true;
-            continue;
-        }
-        kept.push(line);
-    }
-    let notes = kept.join("\n").trim().to_string();
-    let notes = if notes.is_empty() {
-        "该版本没有提供更新说明。".to_string()
-    } else {
-        notes
-    };
-    (notes, forced)
-}
-
-/// Whitespace-insensitive marker match so `<!--force-update-->` also counts.
-fn is_force_marker(line: &str) -> bool {
-    let normalize = |text: &str| -> String {
-        text.chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect::<String>()
-            .to_ascii_lowercase()
-    };
-    normalize(line) == normalize(FORCE_UPDATE_MARKER)
-}
-
-/// Whether `candidate` is a strictly newer semantic version than `current`.
-fn version_is_newer(candidate: &str, current: &str) -> bool {
-    match (
-        Version::parse(candidate.trim()),
-        Version::parse(current.trim()),
-    ) {
-        (Ok(candidate), Ok(current)) => candidate > current,
-        _ => false,
-    }
-}
-
-/// The recorded mandatory update, while the running version is still older.
-fn recorded_force(state: &SharedState, current_version: &str) -> Option<AvailableUpdate> {
-    let record = state.config_snapshot().forced_update?;
-    if !version_is_newer(&record.version, current_version) {
-        return None;
-    }
-    Some(AvailableUpdate {
-        version: record.version,
-        notes: String::new(),
-        date: None,
-        forced: true,
-    })
+    service.lock().phase.owns_screen()
 }
 
 pub fn init(app: &AppHandle, state: SharedState) {
@@ -342,14 +217,14 @@ pub fn init(app: &AppHandle, state: SharedState) {
     // Restore the persisted check time so the UI can show it before the first
     // request completes.
     if let Some(checked_at) = state.config_snapshot().last_update_check_at {
-        service.inner.lock().expect("update state lock").checked_at = Some(checked_at);
+        service.lock().checked_at = Some(checked_at);
     }
 
     // A mandatory update recorded in an earlier session is shown immediately,
     // even on the login screen and before the network check returns (or when
     // the machine is offline).
     if let Some(forced) = recorded_force(&state, &service.current_version) {
-        let mut inner = service.inner.lock().expect("update state lock");
+        let mut inner = service.lock();
         if inner.available.is_none() {
             inner.available = Some(forced);
             inner.phase = UpdatePhase::Available;
@@ -362,7 +237,7 @@ pub fn init(app: &AppHandle, state: SharedState) {
         // Check as soon as the app opens: the login page must be able to show
         // a forced-update modal without waiting for the first interval.
         loop {
-            let phase = service.inner.lock().expect("update state lock").phase;
+            let phase = service.lock().phase;
             if !phase.owns_screen() && phase != UpdatePhase::Checking {
                 let _ = check(&app_for_loop, &state_for_loop, false).await;
             }
@@ -377,11 +252,14 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
         .ok_or_else(|| "update service not initialized".to_string())?;
 
     {
-        let phase = service.inner.lock().expect("update state lock").phase;
+        let phase = service.lock().phase;
         if phase.owns_screen() || phase == UpdatePhase::Checking {
             return Ok(service.snapshot());
         }
-        service.inner.lock().expect("update state lock").phase = UpdatePhase::Checking;
+    }
+    {
+        let mut inner = service.lock();
+        inner.phase = UpdatePhase::Checking;
     }
     service.emit();
 
@@ -390,13 +268,8 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
     // Installing may have started while the request was in flight (the forced
     // modal makes this likely). Never pull the main window back by writing an
     // "available" phase over a download that owns the screen.
-    if service
-        .inner
-        .lock()
-        .expect("update state lock")
-        .phase
-        .owns_screen()
-    {
+    let owns_screen = service.lock().phase.owns_screen();
+    if owns_screen {
         return Ok(service.snapshot());
     }
 
@@ -412,7 +285,7 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
                 update.forced = true;
             }
             {
-                let mut inner = service.inner.lock().expect("update state lock");
+                let mut inner = service.lock();
                 inner.available = Some(update);
                 inner.error = None;
             }
@@ -425,40 +298,31 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
             let forced = recorded_force(state, &service.current_version);
             let still_forced = forced.is_some();
             {
-                let mut inner = service.inner.lock().expect("update state lock");
+                let mut inner = service.lock();
                 inner.available = forced;
                 inner.error = None;
             }
             service.record_check_time();
-            service.transition(if still_forced {
-                UpdatePhase::Available
-            } else {
-                UpdatePhase::Idle
-            });
+            service.transition(UpdatePhase::settled(still_forced));
         }
         Err(error) => {
             tracing::warn!(%error, manual, "update check failed");
             service.record_check_time();
             {
-                let mut inner = service.inner.lock().expect("update state lock");
+                let mut inner = service.lock();
                 inner.error = Some(error.clone());
             }
             // A failed background check is not worth a modal; the recorded
             // mandatory update (if any) keeps its modal, everything else
             // stays idle and Settings shows the message.
             let still_forced = recorded_force(state, &service.current_version).is_some();
-            service.transition(if still_forced {
-                UpdatePhase::Available
-            } else {
-                UpdatePhase::Idle
-            });
+            service.transition(UpdatePhase::settled(still_forced));
             if manual {
                 return Err(error);
             }
         }
     }
 
-    let _ = state;
     Ok(service.snapshot())
 }
 
@@ -502,9 +366,9 @@ pub fn update_install() -> Result<UpdateState, String> {
         .clone();
 
     {
-        let inner = service.inner.lock().expect("update state lock");
+        let inner = service.lock();
         if inner.phase.owns_screen() {
-            return Ok(service.snapshot());
+            return Ok(service.snapshot_locked(&inner));
         }
         if inner.available.is_none() {
             return Err("当前没有可用的更新".to_string());
@@ -513,7 +377,7 @@ pub fn update_install() -> Result<UpdateState, String> {
 
     service.transition(UpdatePhase::Downloading);
     {
-        let mut inner = service.inner.lock().expect("update state lock");
+        let mut inner = service.lock();
         inner.error = None;
         inner.progress = Some(UpdateProgress::default());
     }
@@ -524,7 +388,7 @@ pub fn update_install() -> Result<UpdateState, String> {
         if let Err(error) = install(&service_for_task).await {
             tracing::error!(%error, "update install failed");
             {
-                let mut inner = service_for_task.inner.lock().expect("update state lock");
+                let mut inner = service_for_task.lock();
                 inner.error = Some(error);
             }
             service_for_task.transition(UpdatePhase::Error);
@@ -596,14 +460,14 @@ pub fn update_cancel() -> Result<UpdateState, String> {
         .ok_or_else(|| "update service not initialized".to_string())?;
 
     {
-        let inner = service.inner.lock().expect("update state lock");
+        let inner = service.lock();
         if inner.phase != UpdatePhase::Error {
-            return Ok(service.snapshot());
+            return Ok(service.snapshot_locked(&inner));
         }
     }
 
     {
-        let mut inner = service.inner.lock().expect("update state lock");
+        let mut inner = service.lock();
         inner.error = None;
         inner.progress = None;
     }
@@ -623,45 +487,4 @@ pub fn update_open_manual() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn force_marker_is_stripped_and_flagged() {
-        let notes = format!("# TAPD Client v1.1.2\n\n{FORCE_UPDATE_MARKER}\n\n## 修复\n- 必须升级");
-        let (display, forced) = parse_notes(&notes);
-        assert!(forced);
-        assert!(!display.contains("force-update"));
-        assert!(display.starts_with("# TAPD Client v1.1.2"));
-        assert!(display.ends_with("- 必须升级"));
-    }
-
-    #[test]
-    fn force_marker_tolerates_spacing_and_case() {
-        assert!(is_force_marker("  <!--force-update-->  "));
-        assert!(is_force_marker("<!--  FORCE-UPDATE  -->"));
-        assert!(!is_force_marker("<!-- 普通注释 -->"));
-    }
-
-    #[test]
-    fn ordinary_notes_are_untouched() {
-        let (display, forced) = parse_notes("# TAPD Client v1.1.2\n\n- 内容");
-        assert!(!forced);
-        assert_eq!(display, "# TAPD Client v1.1.2\n\n- 内容");
-
-        let (empty, forced) = parse_notes("   ");
-        assert!(!forced);
-        assert_eq!(empty, "该版本没有提供更新说明。");
-    }
-
-    #[test]
-    fn version_comparison_is_semver() {
-        assert!(version_is_newer("1.1.2", "1.1.1"));
-        assert!(!version_is_newer("1.1.1", "1.1.1"));
-        assert!(!version_is_newer("1.1.0", "1.1.1"));
-        assert!(!version_is_newer("not-a-version", "1.1.1"));
-    }
 }

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::cache::Cache;
-use crate::notification::{
+use crate::notification::model::{
     NotificationItem, NotificationKind, NotificationScope, NotificationSettings, NotificationState,
     NotificationStore, SeenBug,
 };
@@ -54,7 +54,7 @@ fn load_conn(conn: &Connection) -> Option<NotificationStore> {
                     include_transferred: row.get::<_, i64>(3)? != 0,
                     include_reopened: row.get::<_, i64>(4)? != 0,
                     poll_interval_secs: row.get::<_, i64>(5)? as u64,
-                    quiet_hours: crate::notification::QuietHours {
+                    quiet_hours: crate::notification::model::QuietHours {
                         enabled: row.get::<_, i64>(6)? != 0,
                         start: row.get(7)?,
                         end: row.get(8)?,
@@ -91,7 +91,7 @@ fn load_conn(conn: &Connection) -> Option<NotificationStore> {
                 detected_at: row.get(11)?,
                 state: state_from(&row.get::<_, String>(12)?),
                 // Persisted items are always TAPD bugs; AI cards are in-memory.
-                source: crate::notification::NotificationSource::Tapd,
+                source: crate::notification::model::NotificationSource::Tapd,
                 ai: None,
             })
         })
@@ -354,7 +354,7 @@ fn insert_item_row(conn: &Connection, item: &NotificationItem) -> rusqlite::Resu
             item.workspace_name,
             item.bug_id,
             item.title,
-            kind_str(item.kind),
+            item.kind.as_str(),
             item.owner,
             item.creator,
             item.severity,
@@ -423,10 +423,6 @@ fn scope_from(raw: &str) -> NotificationScope {
         "project" => NotificationScope::Project,
         _ => NotificationScope::Mine,
     }
-}
-
-fn kind_str(kind: NotificationKind) -> &'static str {
-    kind.as_str()
 }
 
 fn kind_from(raw: &str) -> NotificationKind {
@@ -519,7 +515,7 @@ mod tests {
             created: "2026-11-10 11:00:00".to_string(),
             detected_at: "2026-11-10 11:01:00".to_string(),
             state: NotificationState::Pending,
-            source: crate::notification::NotificationSource::Tapd,
+            source: crate::notification::model::NotificationSource::Tapd,
             ai: None,
         };
         let seen = SeenBug {

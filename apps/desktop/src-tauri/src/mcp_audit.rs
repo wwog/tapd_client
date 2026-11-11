@@ -11,7 +11,7 @@
 use std::{
     fs, io,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use rusqlite::{params, Connection};
@@ -66,7 +66,7 @@ impl McpAudit {
     /// logged by the caller; auditing must never break a tool call.
     pub fn record(&self, entry: McpAuditEntry) -> io::Result<()> {
         {
-            let mut entries = self.entries.lock().expect("mcp audit lock");
+            let mut entries = self.entries();
             entries.push(entry.clone());
             let excess = entries.len().saturating_sub(MAX_ENTRIES);
             if excess > 0 {
@@ -89,7 +89,7 @@ impl McpAudit {
     }
 
     pub fn list(&self, limit: usize) -> Vec<McpAuditEntry> {
-        let entries = self.entries.lock().expect("mcp audit lock");
+        let entries = self.entries();
         entries
             .iter()
             .rev()
@@ -106,7 +106,7 @@ impl McpAudit {
             Some(Err(error)) => Err(io::Error::other(error.to_string())),
             // SQLite disabled: clearing the in-memory copy is all we can do.
             Some(Ok(_)) | None => {
-                self.entries.lock().expect("mcp audit lock").clear();
+                self.entries().clear();
                 Ok(())
             }
         }
@@ -117,10 +117,16 @@ impl McpAudit {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let entries = self.entries.lock().expect("mcp audit lock").clone();
+        let entries = self.entries().clone();
         let raw = serde_json::to_vec_pretty(&AuditFile { entries })
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::write(path, raw)
+    }
+
+    /// The in-memory copy. Every accessor takes the same lock with the same
+    /// message, so a poisoned lock is diagnosed the same way everywhere.
+    fn entries(&self) -> MutexGuard<'_, Vec<McpAuditEntry>> {
+        self.entries.lock().expect("mcp audit lock")
     }
 }
 
