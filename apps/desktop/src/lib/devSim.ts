@@ -100,7 +100,6 @@ export function devSimTask(entry: DevSimEntry): AgentTask {
     status: queued ? "queued" : "running",
     createdAt: new Date(entry.startedAt).toISOString(),
     startedAt: queued ? undefined : new Date(entry.startedAt).toISOString(),
-    logPath: "",
     prompt: "",
     source: "dev-sim",
   };

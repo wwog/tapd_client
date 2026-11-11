@@ -163,8 +163,8 @@ export function AgentPage({
   /** Human-readable runtime name for a task; falls back to the stored id. */
   const runtimeName = (id?: string) =>
     runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "Agent";
-  /** The PTY log file exists once the task is actually running. */
-  const logReady = selectedTask !== null && selectedTask.status === "running";
+  /** The PTY is live only while the task is actually running. */
+  const live = selectedTask !== null && selectedTask.status === "running";
 
   const counts = useMemo(() => {
     const queued =
@@ -241,8 +241,6 @@ export function AgentPage({
     runAction("queue:resume", () => agentApi.resumeQueue());
 
   const canCancel = selectedTask !== null && ACTIVE_STATUSES.includes(selectedTask.status);
-  /** Every runtime runs in a PTY, so any live task accepts keystrokes. */
-  const interactive = selectedTask !== null && selectedTask.status === "running";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4 pt-2.5">
@@ -299,7 +297,7 @@ export function AgentPage({
                   </div>
                   <h3
                     className="mt-3 text-ui-base text-slate-800"
-                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」中查看终端与日志。"
+                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」里可以打开系统终端继续处理。"
                   >
                     当前没有运行中的任务
                   </h3>
@@ -336,7 +334,7 @@ export function AgentPage({
                   runtimeName={runtimeName(selectedTask.runtimeId)}
                   canCancel={canCancel}
                   actionBusy={actionBusy}
-                  logReady={logReady}
+                  live={live}
                   onCancel={() =>
                     void runAction(`cancel:${selectedTask.id}`, () =>
                       agentApi.cancel(selectedTask.id),
@@ -354,13 +352,12 @@ export function AgentPage({
                   </div>
                 ) : null}
 
-                {logReady ? (
+                {live ? (
                   <div className="min-h-0 flex-1 bg-zinc-950 p-1.5">
                     <AgentTerminal
                       key={selectedTask.id}
                       taskId={selectedTask.id}
-                      interactive={interactive}
-                      convertEol={!interactive}
+                      interactive={live}
                       className="h-full w-full"
                     />
                   </div>
@@ -375,9 +372,6 @@ export function AgentPage({
                         title="任务开始后，opencode TUI 会直接显示在这里，可以像命令行一样操作。"
                       >
                         任务尚未开始
-                      </p>
-                      <p className="mt-2 break-all font-mono text-ui-xs text-slate-400">
-                        {selectedTask.logPath}
                       </p>
                     </div>
                   </div>

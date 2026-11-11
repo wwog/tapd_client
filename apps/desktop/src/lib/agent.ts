@@ -99,7 +99,6 @@ export type AgentTask = {
   startedAt?: string;
   finishedAt?: string;
   exitCode?: number;
-  logPath: string;
   error?: string;
   prompt: string;
   source: string;
@@ -369,8 +368,9 @@ export const agentApi = {
   /** Unified diff of the paused change, for the review card. */
   reviewDiff: (taskId: string) =>
     featureCommand<{ diff: string }>("agent_review_diff", { taskId }),
-  taskLog: (taskId: string) =>
-    featureCommand<{ data: string }>("agent_task_log", { taskId }),
+  /** 在系统终端里续接该任务结束后的 Agent 会话。 */
+  openTerminal: (taskId: string) =>
+    featureCommand<{ ok: boolean }>("agent_open_terminal", { taskId }),
   /** Focus the main window and select this task in the Agent tab. */
   openTask: (taskId: string) =>
     featureCommand<{ opened: boolean }>("agent_open_task", { taskId }),

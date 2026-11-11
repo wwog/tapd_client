@@ -86,7 +86,7 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 5. 复杂改动：prompt 要求调用 `tapd_request_review`，任务进入 `awaiting_approval` 并中止本轮；工作区保留 diff，队列停住。未调用时，本轮结束若出现新的未提交文件也会自动进入待审核。
 6. 待审核页「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
 7. 客户端在 MCP 层拒绝未提交时的 TAPD 写操作，保证 commit 先于评论/状态更新。
-8. 输出写日志文件，并实时渲染到右侧内嵌终端。
+8. 输出不落盘，实时渲染到右侧内嵌终端；任务结束后可在历史里用系统终端续接该会话。
 
 ### 3.5 MCP 调用
 
@@ -142,6 +142,8 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。
 - Agent 改动审核：待审核卡片展示摘要、文件与风险，通过后重新入队提交，停止则按文件 `git stash` 并暂停队列；主窗口标题栏与顶部胶囊都会提示待审核数量。
 - Agent 运行时：所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定。任务 JSON 同步写入 `agent_tasks.payload`。
+- 终端输出：后端按显示帧节拍（16ms，单次上限 32KB）合批推送，**不能**用「输出静默 N ms 才发」——TUI 的 spinner 每 ~17ms 重绘一次，静默判断永远不触发，会把几秒的输出攒在内存里，表现为输入无回显；前端 xterm 走 WebGL 渲染器（DOM 渲染器跟不上 60fps 全屏重绘），无上下文时自动回退。
+- 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude `--continue`、codex `resume`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。
 - 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 区只放 agent 参数，默认提示词模板自带 `{{project_rule}}` 段落；未配置目录时点 Agent 修复会先要求选择目录。
 
 ### MCP 与运维

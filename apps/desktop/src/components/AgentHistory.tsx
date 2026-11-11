@@ -5,8 +5,8 @@ import {
   FolderOpen,
   Loader2,
   RotateCcw,
-  ScrollText,
   Search,
+  Terminal,
 } from "lucide-react";
 
 import {
@@ -21,7 +21,6 @@ import {
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
-import { AgentLogViewer } from "./AgentLogViewer";
 import { Badge, Button, selectClass } from "./ui";
 
 // History only contains terminal tasks; active ones live in the run tab.
@@ -58,7 +57,7 @@ export function AgentHistory({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [logTask, setLogTask] = useState<AgentTask | null>(null);
+  const [terminalBusy, setTerminalBusy] = useState<string | null>(null);
   const [retryBusy, setRetryBusy] = useState<string | null>(null);
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const appliedFocusRef = useRef<string | null>(null);
@@ -163,6 +162,22 @@ export function AgentHistory({
       toast("error", String(error));
     } finally {
       setRetryBusy(null);
+    }
+  };
+
+  /**
+   * Hands the task over to a system terminal that resumes the agent session in
+   * its repository. No success toast: the terminal window coming to the front
+   * is the feedback.
+   */
+  const openTerminal = async (task: AgentTask) => {
+    setTerminalBusy(task.id);
+    try {
+      await agentApi.openTerminal(task.id);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setTerminalBusy(null);
     }
   };
 
@@ -310,11 +325,11 @@ export function AgentHistory({
                 <Button
                   size="sm"
                   variant="secondary"
-                  icon={<ScrollText size={12} />}
-                  disabled={!selected.logPath}
-                  onClick={() => setLogTask(selected)}
+                  icon={<Terminal size={12} />}
+                  disabled={!selected.repoPath || terminalBusy === selected.id}
+                  onClick={() => void openTerminal(selected)}
                 >
-                  查看终端
+                  打开系统终端
                 </Button>
                 <Button
                   size="sm"
@@ -358,7 +373,7 @@ export function AgentHistory({
               </dl>
 
               {selected.error ? (
-                <div className="mt-3 break-all rounded-lg bg-rose-50 px-2.5 py-2 text-ui-sm leading-5 text-rose-700 border border-rose-100">
+                <div className="select-text mt-3 break-all rounded-lg bg-rose-50 px-2.5 py-2 text-ui-sm leading-5 text-rose-700 border border-rose-100">
                   <div className="mb-0.5 font-normal">错误</div>
                   {selected.error}
                 </div>
@@ -368,7 +383,7 @@ export function AgentHistory({
                 <summary className="cursor-pointer select-none px-2.5 py-1.5 text-ui-sm font-normal text-slate-600">
                   提示词
                 </summary>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-ui-sm leading-5 text-slate-600">
+                <pre className="select-text max-h-64 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-ui-sm leading-5 text-slate-600">
                   {selected.prompt || "（空）"}
                 </pre>
               </details>
@@ -377,11 +392,6 @@ export function AgentHistory({
         </div>
       </div>
 
-      <AgentLogViewer
-        task={logTask}
-        onClose={() => setLogTask(null)}
-        toast={toast}
-      />
     </div>
   );
 }

@@ -24,11 +24,11 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::RecvTimeoutError,
         Arc, Mutex,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -42,20 +42,14 @@ use crate::{shell_path, state::SharedState};
 pub const MAIN_LABEL: &str = "main";
 
 const CONFIG_FILE: &str = "agent.json";
-const LOG_DIR: &str = "agent-logs";
 /// Pasted screenshots/videos; only their paths are handed to the agent.
 const RESOURCE_DIR: &str = "agent-resources";
-/// Keep per-task logs for the newest N tasks; older artifacts are pruned so
-/// the data directory cannot grow without bound.
-const ARTIFACT_TASK_LIMIT: usize = 200;
-const ARTIFACT_PRUNE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 const DEFAULT_BINARY: &str = "opencode";
 const DEFAULT_RUNTIME_ID: &str = "opencode";
 /// TUI 运行时在提示词注入后，输出静默多久视为本轮结束。
 /// MCP 的 `agent_task_report` 是主信号，这里只是防止 Agent 忘记回报时任务永远卡住。
 const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
-const MAX_LOG_TAIL_BYTES: usize = 400 * 1024;
 /// Cap the diff preview so a huge refactor cannot freeze the review panel.
 const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
 
@@ -591,7 +585,6 @@ pub struct AgentTask {
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    pub log_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub prompt: String,
@@ -1429,12 +1422,20 @@ fn take_utf8_prefix(buffer: &mut Vec<u8>) -> Vec<u8> {
     std::mem::replace(buffer, rest)
 }
 
-fn flush_output(
-    app: &AppHandle,
-    task_id: &str,
-    log: &mut Option<std::fs::File>,
-    pending: &mut Vec<u8>,
-) {
+/// Output is flushed on a display-frame cadence, not when the stream goes
+/// quiet. A full-screen TUI repaints every ~17 ms while it animates, so an
+/// idle-gated flush never fires and seconds of output pile up in memory before
+/// the console sees the first byte — that is what made typing feel dead.
+const OUTPUT_FRAME: Duration = Duration::from_millis(16);
+/// Hard cap per emit, so the terminal never parses tens of thousands of escape
+/// sequences in a single write.
+const OUTPUT_BATCH_MAX: usize = 32 * 1024;
+/// Idle wait when nothing is buffered; the next chunk wakes the thread early.
+const OUTPUT_IDLE_WAIT: Duration = Duration::from_millis(250);
+
+/// Ships the buffered PTY bytes to the console. Nothing is recorded: the live
+/// terminal is the only place the agent's output exists.
+fn flush_output(app: &AppHandle, task_id: &str, pending: &mut Vec<u8>) {
     if pending.is_empty() {
         return;
     }
@@ -1442,16 +1443,75 @@ fn flush_output(
     if bytes.is_empty() {
         return;
     }
-    if let Some(file) = log.as_mut() {
-        let _ = file.write_all(&bytes);
-        let _ = file.flush();
-    }
-
     let text = String::from_utf8_lossy(&bytes).to_string();
     if text.is_empty() {
         return;
     }
     let _ = app.emit("agent://output", json!({ "taskId": task_id, "data": text }));
+}
+
+/// Quotes one shell word so a path with spaces/quotes survives `zsh -c`.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Launcher body: enter the repository, then exec the agent CLI.
+fn terminal_script(cwd: &Path, binary: &str, args: &[&str]) -> String {
+    let mut command = shell_quote(binary);
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    format!(
+        "#!/bin/zsh\ncd {} || exit 1\nexec {command}\n",
+        shell_quote(&cwd.to_string_lossy())
+    )
+}
+
+/// Opens Terminal.app on a generated `.command` launcher that enters the
+/// repository and runs the agent CLI. The launcher lives in the system temp
+/// directory: it is a handle for one session, never a transcript, so nothing
+/// about the agent's output is recorded.
+fn launch_system_terminal(cwd: &Path, binary: &str, args: &[&str]) -> Result<(), String> {
+    let script = terminal_script(cwd, binary, args);
+    let path = std::env::temp_dir().join(format!(
+        "tapd-agent-{}.command",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(&path, script).map_err(|error| format!("写入终端启动脚本失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("设置终端启动脚本权限失败：{error}"))?;
+    }
+
+    let status = std::process::Command::new("open")
+        .arg("-a")
+        .arg("Terminal")
+        .arg(&path)
+        .status()
+        .map_err(|error| format!("打开系统终端失败：{error}"))?;
+    if !status.success() {
+        return Err("打开系统终端失败".to_string());
+    }
+    Ok(())
+}
+
+/// Earlier versions kept per-task artifacts in the data directory
+/// (`agent-logs/<id>.log` plus `agent-events/` from the removed ACP path).
+/// Neither is written any more, so the leftovers are removed instead of
+/// lingering.
+fn remove_legacy_logs(data_dir: &Path) {
+    for name in ["agent-logs", "agent-events"] {
+        let dir = data_dir.join(name);
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(%error, path = %dir.display(), "failed to remove legacy agent artifacts");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,8 +1545,6 @@ pub struct AgentCore {
     persist_lock: Mutex<()>,
     /// The queue-paused flag needs a write.
     paused_dirty: AtomicBool,
-    /// Unix seconds of the last artifact scan (pruning is throttled).
-    last_prune_secs: AtomicU64,
     wake: tokio::sync::Notify,
 }
 
@@ -1506,17 +1564,12 @@ impl AgentCore {
             removed_tasks: Mutex::new(HashSet::new()),
             persist_lock: Mutex::new(()),
             paused_dirty: AtomicBool::new(false),
-            last_prune_secs: AtomicU64::new(0),
             wake: tokio::sync::Notify::new(),
         }
     }
 
     fn config_path(&self) -> PathBuf {
         self.state.paths.data_dir.join(CONFIG_FILE)
-    }
-
-    fn logs_dir(&self) -> PathBuf {
-        self.state.paths.data_dir.join(LOG_DIR)
     }
 
     fn load(&self) {
@@ -1551,7 +1604,9 @@ impl AgentCore {
             .unwrap_or_default();
         *self.external.lock().expect("external claims lock") = claims;
 
-        let _ = std::fs::create_dir_all(self.logs_dir());
+        // The agent console no longer records per-task logs; drop what earlier
+        // versions left behind instead of keeping unread files forever.
+        remove_legacy_logs(&self.state.paths.data_dir);
         self.persist_tasks();
     }
 
@@ -1907,35 +1962,6 @@ impl AgentCore {
             }
             return;
         }
-
-        self.maybe_prune_artifacts();
-    }
-
-    /// Prunes per-task logs/events at most once per `ARTIFACT_PRUNE_INTERVAL_SECS`.
-    fn maybe_prune_artifacts(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let last = self.last_prune_secs.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < ARTIFACT_PRUNE_INTERVAL_SECS {
-            return;
-        }
-        self.last_prune_secs.store(now, Ordering::Relaxed);
-
-        let keep: HashSet<String> = {
-            let tasks = self.tasks.lock().expect("agent tasks lock");
-            tasks
-                .iter()
-                .rev()
-                .take(ARTIFACT_TASK_LIMIT)
-                .map(|task| task.id.clone())
-                .collect()
-        };
-        if keep.is_empty() {
-            return;
-        }
-        prune_agent_artifacts(&self.logs_dir(), &keep);
     }
 
     fn tasks_state(&self) -> AgentTasksState {
@@ -2086,8 +2112,6 @@ impl AgentCore {
         }
 
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let log_path = self.logs_dir().join(format!("{id}.log"));
-        let _ = std::fs::create_dir_all(self.logs_dir());
 
         let config = self.config_snapshot();
         let workspace_name = request
@@ -2138,7 +2162,6 @@ impl AgentCore {
             started_at: None,
             finished_at: None,
             exit_code: None,
-            log_path: log_path.to_string_lossy().to_string(),
             error: None,
             prompt: String::new(),
             source: source.to_string(),
@@ -2486,7 +2509,6 @@ impl AgentCore {
         }
 
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let _ = std::fs::create_dir_all(self.logs_dir());
         let mut task = original;
         task.id = id.clone();
         task.status = TaskStatus::Queued;
@@ -2496,11 +2518,6 @@ impl AgentCore {
         task.exit_code = None;
         task.error = None;
         task.approval = None;
-        task.log_path = self
-            .logs_dir()
-            .join(format!("{id}.log"))
-            .to_string_lossy()
-            .to_string();
 
         self.tasks
             .lock()
@@ -2511,24 +2528,6 @@ impl AgentCore {
         self.emit_state();
         self.wake.notify_one();
         Ok(task)
-    }
-
-    fn read_log(&self, task_id: &str) -> Result<String, String> {
-        let task = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        let bytes = std::fs::read(&task.log_path).map_err(|error| error.to_string())?;
-        let slice = if bytes.len() > MAX_LOG_TAIL_BYTES {
-            let tail = &bytes[bytes.len() - MAX_LOG_TAIL_BYTES..];
-            // 从下一行开始：否则终端会先收到半条转义序列/半个字符。
-            match tail.iter().position(|byte| *byte == b'\n') {
-                Some(index) => &tail[index + 1..],
-                None => tail,
-            }
-        } else {
-            &bytes[..]
-        };
-        Ok(String::from_utf8_lossy(slice).to_string())
     }
 
     fn write_input(&self, task_id: &str, data: &str) -> Result<(), String> {
@@ -2545,6 +2544,33 @@ impl AgentCore {
             .write_all(data.as_bytes())
             .and_then(|_| runtime.writer.flush())
             .map_err(|error| error.to_string())
+    }
+
+    /// 在系统终端里接着跑这个任务的 Agent（尽量续接上次会话），用来在任务
+    /// 结束后继续处理同一个缺陷。运行中的任务不允许：内嵌 PTY 还占着同一
+    /// 会话，两个客户端会互相打架。
+    fn open_system_terminal(&self, task_id: &str) -> Result<(), String> {
+        let task = self
+            .task_snapshot(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if task.status.is_active() {
+            return Err("任务仍在运行，请先在嵌入式终端里操作".to_string());
+        }
+        if task.repo_path.trim().is_empty() {
+            return Err("该任务没有本地仓库".to_string());
+        }
+        let repo = Path::new(&task.repo_path);
+        if !repo.is_dir() {
+            return Err(format!("本地仓库不存在：{}", task.repo_path));
+        }
+
+        let config = self.config_snapshot();
+        let binary = validate_binary(&binary_for_task(&config, &task.runtime_id))?;
+        let mut args: Vec<&str> = runtime_descriptor(&task.runtime_id)
+            .map(|descriptor| descriptor.args.clone())
+            .unwrap_or_default();
+        args.extend_from_slice(resume_args(&task.runtime_id));
+        launch_system_terminal(repo, &binary.to_string_lossy(), &args)
     }
 
     fn resize(&self, task_id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -2719,13 +2745,7 @@ impl AgentCore {
         // 3. Resolve the agent binary. A queued task keeps the runtime it was
         //    enqueued with: `binary_path` only overrides the currently selected
         //    runtime, otherwise the descriptor's default command is used.
-        let task_binary = if config.runtime_id == task.runtime_id {
-            config.binary_path.clone()
-        } else {
-            runtime_descriptor(&task.runtime_id)
-                .map(|descriptor| descriptor.binary.to_string())
-                .unwrap_or_else(|| config.binary_path.clone())
-        };
+        let task_binary = binary_for_task(&config, &task.runtime_id);
         // Bare names are looked up on the user's shell PATH and replaced with
         // the absolute path, so every spawn (serve / TUI) works even when the
         // app was launched from Finder with a minimal PATH.
@@ -2823,18 +2843,6 @@ impl AgentCore {
         self.finish_task(&task.id, outcome);
     }
 
-    fn append_task_log(&self, log_path: &str, message: &str) {
-        let line = format!("\r\n[tapd-client] {message}\r\n");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
-            let _ = file.write_all(line.as_bytes());
-            let _ = file.flush();
-        }
-    }
-
     /// Runs one task through the generic TUI adapter: launch the CLI with the
     /// prompt delivered per the descriptor, then wait for the PTY to exit or
     /// for the idle fallback. Completion normally arrives through the TAPD MCP
@@ -2860,9 +2868,9 @@ impl AgentCore {
                 None => {
                     // Descriptor bug: fall back to typing the prompt instead of
                     // launching an agent that never receives it.
-                    self.append_task_log(
-                        &task.log_path,
-                        "运行时未声明提示词参数，回退为终端注入",
+                    tracing::warn!(
+                        task_id = %task.id,
+                        "runtime declares no prompt flag, falling back to stdin"
                     );
                     true
                 }
@@ -2870,19 +2878,17 @@ impl AgentCore {
             PromptInjection::Stdin => true,
         };
 
-        self.append_task_log(
-            &task.log_path,
-            &format!(
-                "启动 {}：{} {}（{}）",
-                descriptor.name,
-                config.binary_path,
-                descriptor.args.join(" "),
-                match descriptor.prompt_injection {
-                    PromptInjection::Argv => "提示词随 argv 传入",
-                    PromptInjection::Flag => "提示词随 flag 传入",
-                    PromptInjection::Stdin => "启动后写入提示词",
-                }
-            ),
+        tracing::info!(
+            task_id = %task.id,
+            runtime = descriptor.name,
+            binary = %config.binary_path,
+            args = %descriptor.args.join(" "),
+            injection = match descriptor.prompt_injection {
+                PromptInjection::Argv => "argv",
+                PromptInjection::Flag => "flag",
+                PromptInjection::Stdin => "stdin",
+            },
+            "starting agent tui"
         );
 
         let idle_complete = if config.idle_complete_ms == 0 {
@@ -3034,34 +3040,43 @@ impl AgentCore {
             })
             .ok();
 
-        // Batcher: coalesces chunks (20-40 ms window) then emits + writes log.
+        // Batcher: coalesces chunks into one event per display frame. A burst
+        // still gets split at `OUTPUT_BATCH_MAX`.
         let batch_app = self.app.clone();
         let batch_task_id = task.id.clone();
-        let log_path = task.log_path.clone();
         let batcher_handle = std::thread::Builder::new()
             .name(format!("agent-batch-{}", task.id))
             .spawn(move || {
-                let mut log = std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&log_path)
-                    .ok();
                 let mut pending: Vec<u8> = Vec::new();
+                // Deadline of the frame currently being collected, if any.
+                let mut deadline: Option<Instant> = None;
 
                 loop {
-                    match chunk_rx.recv_timeout(Duration::from_millis(30)) {
+                    let wait = match deadline {
+                        Some(at) => at
+                            .saturating_duration_since(Instant::now())
+                            .max(Duration::from_millis(1)),
+                        None => OUTPUT_IDLE_WAIT,
+                    };
+                    match chunk_rx.recv_timeout(wait) {
                         Ok(chunk) => {
                             pending.extend_from_slice(&chunk);
-                            if pending.len() >= 256 * 1024 {
-                                flush_output(&batch_app, &batch_task_id, &mut log, &mut pending);
+                            if deadline.is_none() {
+                                deadline = Some(Instant::now() + OUTPUT_FRAME);
+                            }
+                            if pending.len() >= OUTPUT_BATCH_MAX {
+                                flush_output(&batch_app, &batch_task_id, &mut pending);
+                                deadline = None;
                             }
                         }
                         Err(RecvTimeoutError::Timeout) => {
-                            flush_output(&batch_app, &batch_task_id, &mut log, &mut pending);
+                            // Either the frame deadline passed or the stream is
+                            // idle; both mean "ship what is buffered".
+                            flush_output(&batch_app, &batch_task_id, &mut pending);
+                            deadline = None;
                         }
                         Err(RecvTimeoutError::Disconnected) => {
-                            flush_output(&batch_app, &batch_task_id, &mut log, &mut pending);
+                            flush_output(&batch_app, &batch_task_id, &mut pending);
                             break;
                         }
                     }
@@ -3419,55 +3434,6 @@ fn build_history_page(tasks: &[AgentTask], query: HistoryQuery) -> AgentTasksPag
     }
 }
 
-/// Deletes logs that belong to tasks outside the newest `ARTIFACT_TASK_LIMIT`.
-/// Only files matching the task-artifact naming scheme are touched, so user
-/// exports or unrelated files survive.
-fn prune_agent_artifacts(logs_dir: &Path, keep: &HashSet<String>) {
-    prune_artifact_dir(logs_dir, keep, task_log_id);
-}
-
-fn prune_artifact_dir(dir: &Path, keep: &HashSet<String>, task_id_of: fn(&str) -> Option<&str>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        let Some(id) = task_id_of(name) else {
-            continue;
-        };
-        if keep.contains(id) {
-            continue;
-        }
-        if let Err(error) = std::fs::remove_file(entry.path()) {
-            tracing::warn!(
-                %error,
-                path = %entry.path().display(),
-                "failed to prune agent artifact"
-            );
-        }
-    }
-}
-
-/// `<id>.log`, `<id>-server.log`, `<id>-acp.ndjson` -> task id.
-fn task_log_id(name: &str) -> Option<&str> {
-    let stem = name
-        .strip_suffix(".log")
-        .or_else(|| name.strip_suffix(".ndjson"))?;
-    let id = stem
-        .strip_suffix("-server")
-        .or_else(|| stem.strip_suffix("-acp"))
-        .unwrap_or(stem);
-    is_task_id(id).then_some(id)
-}
-
-/// Task ids are simple UUIDs (32 hex characters).
-fn is_task_id(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 fn truncate_text(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -3527,6 +3493,33 @@ fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     Err(format!(
         "在 PATH 中找不到 Agent 可执行文件：{binary}（可在 Agent 设置里填写绝对路径）"
     ))
+}
+
+/// CLI arguments that pick the previous session back up in the task's working
+/// directory, used by the "打开系统终端" recovery path. Only runtimes whose
+/// resume entry point is known are listed; everything else opens a plain
+/// terminal in the repository.
+fn resume_args(runtime_id: &str) -> &'static [&'static str] {
+    match runtime_id {
+        "opencode" => &["--continue"],
+        "claude" => &["--continue"],
+        "codex" => &["resume"],
+        _ => &[],
+    }
+}
+
+/// The command a task runs with: the configured path while it points at the
+/// task's runtime, otherwise that runtime's default binary. Queued tasks keep
+/// the runtime they were enqueued with, so switching settings later cannot
+/// change how an existing task (or its recovery terminal) starts.
+fn binary_for_task(config: &AgentConfig, runtime_id: &str) -> String {
+    if config.runtime_id == runtime_id {
+        config.binary_path.clone()
+    } else {
+        runtime_descriptor(runtime_id)
+            .map(|descriptor| descriptor.binary.to_string())
+            .unwrap_or_else(|| config.binary_path.clone())
+    }
 }
 
 /// True when the configured agent is opencode (MCP injection only applies to it).
@@ -3924,12 +3917,11 @@ pub async fn task_report_from_mcp(app: &AppHandle, arguments: &Value) -> Result<
             core.request_review(&task_id, summary, files, risk).await
         }
         "progress" => {
-            if let Some(task) = core.task_snapshot(&task_id) {
-                core.append_task_log(
-                    &task.log_path,
-                    message.as_deref().unwrap_or("Agent 进度更新"),
-                );
-            }
+            tracing::info!(
+                task_id = %task_id,
+                message = message.as_deref().unwrap_or("Agent 进度更新"),
+                "agent progress"
+            );
             Ok(json!({ "status": "progress", "taskId": task_id }))
         }
         other => Err(format!("未知 status：{other}")),
@@ -4051,11 +4043,15 @@ pub async fn command(
                 .map_err(|error| format!("读取差异失败：{error}"))??;
             Ok(json!({ "diff": diff }))
         }
-        "agent_task_log" => {
+        "agent_open_terminal" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的日志参数：{error}"))?;
-            let data = core.read_log(request.task_id.trim())?;
-            Ok(json!({ "data": data }))
+                .map_err(|error| format!("无效的终端参数：{error}"))?;
+            let core = core.inner().clone();
+            let task_id = request.task_id.trim().to_string();
+            tokio::task::spawn_blocking(move || core.open_system_terminal(&task_id))
+                .await
+                .map_err(|error| format!("打开终端失败：{error}"))??;
+            Ok(json!({ "ok": true }))
         }
         "agent_input" => {
             let request: TaskInputRequest = serde_json::from_value(payload)
@@ -4175,7 +4171,6 @@ mod tests {
             started_at: None,
             finished_at: None,
             exit_code: None,
-            log_path: "/tmp/agent.log".to_string(),
             error: None,
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
@@ -4804,6 +4799,17 @@ mod tests {
     }
 
     #[test]
+    fn terminal_script_quotes_repo_path_and_resume_args() {
+        let script = terminal_script(Path::new("/tmp/it's repo"), "opencode", &["--continue"]);
+        assert!(script.starts_with("#!/bin/zsh\n"), "{script}");
+        assert!(script.contains(r#"cd '/tmp/it'\''s repo' || exit 1"#), "{script}");
+        assert!(script.contains("exec 'opencode' '--continue'"), "{script}");
+        // Runtimes without a resume entry point still open the repository.
+        let plain = terminal_script(Path::new("/tmp/repo"), "/opt/bin/zcode", &[]);
+        assert!(plain.contains("exec '/opt/bin/zcode'\n"), "{plain}");
+    }
+
+    #[test]
     fn validates_bare_command_names() {
         assert!(validate_binary("").is_err());
         assert!(validate_binary("/definitely/not/a/binary").is_err());
@@ -4859,36 +4865,6 @@ mod tests {
         assert_eq!(failed.tasks[0].id, "new");
     }
 
-    #[test]
-    fn prunes_artifacts_outside_the_newest_tasks() {
-        let dir = std::env::temp_dir().join(format!(
-            "tapd-agent-artifacts-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let logs = dir.join("logs");
-        std::fs::create_dir_all(&logs).expect("logs");
-
-        let keep = "a".repeat(32);
-        let drop = "b".repeat(32);
-        for id in [&keep, &drop] {
-            std::fs::write(logs.join(format!("{id}.log")), "log").expect("log");
-            // Legacy artifacts from the removed opencode server path.
-            std::fs::write(logs.join(format!("{id}-server.log")), "log").expect("server log");
-            std::fs::write(logs.join(format!("{id}-acp.ndjson")), "log").expect("acp log");
-        }
-        std::fs::write(logs.join("notes.txt"), "keep me").expect("unrelated");
-
-        let keep_ids: HashSet<String> = [keep.clone()].into_iter().collect();
-        prune_agent_artifacts(&logs, &keep_ids);
-
-        for suffix in [".log", "-server.log", "-acp.ndjson"] {
-            assert!(logs.join(format!("{keep}{suffix}")).exists());
-            assert!(!logs.join(format!("{drop}{suffix}")).exists());
-        }
-        assert!(logs.join("notes.txt").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[cfg(unix)]
     #[test]

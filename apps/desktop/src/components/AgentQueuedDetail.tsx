@@ -99,9 +99,14 @@ export function AgentQueuedDetail(props: Props) {
               队列已暂停，点击右上角「继续队列」恢复执行。
             </p>
           ) : null}
-          <p className="mt-2 break-all font-mono text-ui-xs text-slate-400">
-            {task.logPath}
-          </p>
+          {task.repoPath ? (
+            <p
+              className="mt-2 break-all font-mono text-ui-xs text-slate-400"
+              title={task.repoPath}
+            >
+              {task.repoPath}
+            </p>
+          ) : null}
         </div>
       </div>
     </>

@@ -15,7 +15,7 @@ type Props = {
   runtimeName?: string;
   canCancel: boolean;
   actionBusy: string | null;
-  logReady: boolean;
+  live: boolean;
   onCancel: () => void;
   onOpenExportDir: () => void;
   onOpenBug: () => void;
@@ -28,7 +28,7 @@ export function AgentTaskHeader(props: Props) {
     runtimeName,
     canCancel,
     actionBusy,
-    logReady,
+    live,
     onCancel,
     onOpenExportDir,
     onOpenBug,
@@ -70,7 +70,7 @@ export function AgentTaskHeader(props: Props) {
                 开始于 {relativeTime(task.startedAt)}
               </span>
             ) : null}
-            {logReady ? (
+            {live ? (
               <span className="shrink-0">Option+拖动选中文本</span>
             ) : null}
             {task.exitCode !== undefined ? (

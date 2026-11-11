@@ -1,6 +1,6 @@
 # Agent 修复队列
 
-把「处理缺陷」接到本机已安装的编码 Agent：导出 Markdown → 串行队列 → 在 PTY 中启动 Agent 的 TUI → 自动投递任务 → 输出写入日志（可查看或在右侧终端接管）；复杂改动通过 MCP 暂停等待审核。
+把「处理缺陷」接到本机已安装的编码 Agent：导出 Markdown → 串行队列 → 在 PTY 中启动 Agent 的 TUI → 自动投递任务 → 输出直接渲染到右侧终端（不落盘，可随时键盘接管）；复杂改动通过 MCP 暂停等待审核。
 
 支持的运行时由 `runtime_catalog()` 统一定义，新增 Agent 只需加一条描述符，不改队列与界面。
 
@@ -65,7 +65,7 @@
 - 子页分「运行 / 待审核 / 历史」。运行只显示 `queued / preparing / running`；待审核显示 `awaiting_approval`；历史只显示终态任务。
 - 头部显示任务标题、状态、项目/缺陷、仓库路径、队列/运行/待审核数量与退出码。
 - 操作：中断、打开导出目录、打开关联缺陷；右侧终端可直接接管键盘。
-- 日志：PTY 的 IO 输出写入 `agent-logs/<taskId>.log`；右侧用 xterm 实时渲染，可直接键盘操作。
+- 终端：PTY 输出只走实时通道（WebGL 渲染的 xterm），不写日志文件；面板中途打开时靠一次尺寸抖动让 TUI 整屏重绘。
 - 权限确认：直接在右侧终端里操作；能力声明里 `externalDecision=false`，桌面不会代为回执。
 - 改动审核：任务卡片展示 Agent 给出的改动摘要、涉及文件与风险点，以及 `git status` 安全网自动生成的信息；「查看改动」按需读取 `git diff HEAD`（只含已跟踪文件，最多 12 万字符）。两个选择：
   - **通过并提交**：任务重新入队，状态回到 `queued`，下一轮使用「审核已通过」提示词，只核对、提交并回写 TAPD，不重做修复。
@@ -74,10 +74,10 @@
 ## 5. 任务与历史
 
 - SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
-- 日志：`agent-logs/`（TUI 输出与启动命令）；保留最近 200 个任务的产物，更早的自动清理。
+- 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」用 `opencode --continue` 等 resume 参数在系统终端里续接会话。
 - 状态：`queued | preparing | running | waiting_review | awaiting_approval | succeeded | failed | canceled`（`waiting_review` 仅用于兼容旧任务）
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
-- 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「查看日志」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
+- 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
 - 客户端重启时，遗留的 `preparing/running/waiting_review` 会标记为 failed（“客户端重启”）；`awaiting_approval` 保留，继续出现在待审核页；`queued` 任务在队列未暂停时继续执行。
 - 取消会 kill PTY 进程组；开放的其他子进程仍可能残留。
 
@@ -115,7 +115,7 @@ MCP 提供：
 - 简单改动由 agent 自行 commit（不 push）；复杂改动必须经用户审核。未提交前 TAPD 写接口会被客户端拒绝。
 - 停止审核只会 `git stash` 本次涉及的文件；任务开始前就存在的其它改动不受影响。储藏信息记录在任务的 `approval.stash` 与错误信息里，可用 `git stash list` / `git stash pop` 找回。
 - 权限确认由用户在右侧终端里自行完成，桌面不会自动批准。
-- 输出按批解码，极端情况下批边界可能拆开多字节字符；日志文件保存原始字节，不受影响。
+- 输出按帧节拍（16ms）解码后推送，极端情况下批边界可能拆开多字节字符，下一批会补齐。
 
 ## 9. 人工验收
 
@@ -127,6 +127,6 @@ MCP 提供：
 6. 让 agent 做一次复杂改动：它应调用 `tapd_request_review` 并暂停，任务进入「待审核」。点「通过并提交」后重新入队并在提交后回写 TAPD；点「停止并储藏」后确认 `git stash list` 有 `tapd-agent` 记录、任务进入历史、队列显示暂停。
 7. 手工验证写保护：在任务未提交时调用 `tapd_update_bug_status`，应被拒绝并提示先 commit。
 8. 通用 TUI 完成后应调用 `agent_task_report`；不调用时等待「静默完成」阈值，确认任务能自动结束。
-9. 历史子页确认日志、退出码与「打开缺陷」跳转；测试中断/重试与重启恢复（含待审核/队列暂停状态）。
+9. 历史子页确认退出码、「打开系统终端」（应打开 Terminal 并续接会话）与「打开缺陷」跳转；测试中断/重试与重启恢复（含待审核/队列暂停状态）。
 
 如需不依赖真实 CLI 做 PTY 冒烟测试，可将 binaryPath 临时指向 `fixtures/fake-agent.sh`（会打印 READY 并回显输入），测试完恢复。

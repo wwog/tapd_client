@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
@@ -10,10 +11,6 @@ type Props = {
   taskId: string;
   /** Forward keystrokes and PTY resizes; only while the task is alive. */
   interactive: boolean;
-  /** Translate LF to CRLF for non-interactive output such as history logs. */
-  convertEol?: boolean;
-  /** Increment to move keyboard focus into the terminal (e.g. "去终端处理"). */
-  focusToken?: number;
   className?: string;
 };
 
@@ -46,27 +43,45 @@ const THEME = {
  * Terminal modes the opencode TUI turns on at startup: mouse reporting
  * (click/drag/wheel) plus bracketed paste.
  *
- * The replay starts mid-stream, so these one-time sequences are not in the log
- * tail. Without them xterm keeps the mouse for text selection, which is why
- * clicking the TUI did nothing but select text.
+ * The console can attach mid-turn, so these one-time sequences were emitted
+ * before the panel existed and are never replayed. Without them xterm keeps the
+ * mouse for text selection, which is why clicking the TUI did nothing but
+ * select text.
  */
 const TUI_MODES = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h";
 
 /**
- * Terminal view for a task's opencode TUI.
- *
- * The PTY output is replayed into a real terminal emulator, so colours, cursor
- * movement and full-screen redraws look like opencode running in a shell.
- * While the task is alive the panel is bidirectional: keystrokes go back to the
- * PTY and the PTY is resized to the panel, which makes the TUI re-layout.
+ * GPU-backed renderer. Without it xterm repaints cell by cell through the DOM,
+ * which cannot keep up with a TUI that redraws the screen ~60 times a second.
+ * Returns null when the webview has no usable WebGL context; the DOM renderer
+ * stays as the fallback.
  */
-export function AgentTerminal({
-  taskId,
-  interactive,
-  convertEol = false,
-  focusToken,
-  className,
-}: Props) {
+function attachWebgl(term: Terminal): WebglAddon | null {
+  try {
+    const addon = new WebglAddon();
+    // Drivers drop the context when the window is occluded or the GPU is
+    // reclaimed; releasing the addon lets xterm fall back to the DOM renderer
+    // instead of leaving a blank canvas.
+    addon.onContextLoss(() => addon.dispose());
+    term.loadAddon(addon);
+    return addon;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Live terminal view for a task's TUI.
+ *
+ * The PTY stream is rendered by a real terminal emulator, so colours, cursor
+ * movement and full-screen redraws look like the agent running in a shell. The
+ * panel is bidirectional while the task is alive: keystrokes go back to the PTY
+ * and the PTY is resized to the panel, which makes the TUI re-layout.
+ *
+ * Nothing is recorded, so the panel starts blank when opened mid-turn and asks
+ * the TUI for a full repaint instead (see the resize nudge below).
+ */
+export function AgentTerminal({ taskId, interactive, className }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   // Read from the terminal callbacks without re-creating the emulator.
@@ -78,7 +93,6 @@ export function AgentTerminal({
     if (!host) return;
 
     const term = new Terminal({
-      convertEol,
       cursorBlink: interactiveRef.current,
       // 鼠标上报打开后，macOS 上用 Option+拖动才能选中文本（同 iTerm）。
       macOptionClickForcesSelection: true,
@@ -91,9 +105,16 @@ export function AgentTerminal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    try {
+      // Size the canvas before the GPU renderer allocates its glyph atlas.
+      fit.fit();
+    } catch {
+      // Panel not laid out yet (hidden/zero width); `applySize` retries.
+    }
+    const webgl = attachWebgl(term);
     termRef.current = term;
     if (interactiveRef.current) {
-      // 日志回放是从中途开始的，TUI 启动时打开的鼠标上报/括号粘贴序列不在尾部，
+      // 面板可能是中途挂上来的，TUI 启动时发出的鼠标上报/括号粘贴序列看不到，
       // 不补上的话鼠标只会在本地选中文本，点击传不到 TUI。
       term.write(TUI_MODES);
     }
@@ -130,17 +151,8 @@ export function AgentTerminal({
     });
 
     void (async () => {
-      // Replay what is already on disk, then subscribe: doing it in this order
-      // keeps the stream free of duplicates from the just-read file.
-      try {
-        const { data } = await agentApi.taskLog(taskId);
-        if (disposed) return;
-        if (data) term.write(data);
-      } catch {
-        // No log yet (task just started): live output is enough.
-      }
-      if (disposed) return;
-
+      // Nothing is recorded, so live output is all there is: subscribe first so
+      // no frame is missed while the panel is still setting up.
       unlisten = await listen<AgentOutputPayload>("agent://output", (event) => {
         if (event.payload.taskId !== taskId) return;
         term.write(event.payload.data);
@@ -152,7 +164,21 @@ export function AgentTerminal({
       }
 
       applySize();
-      if (interactiveRef.current) term.focus();
+      if (!interactiveRef.current) return;
+      term.focus();
+      // Opening the console mid-turn starts from a blank screen: the TUI only
+      // sends diffs, so nudge the PTY size to make it redraw the whole screen.
+      const cols = term.cols;
+      const rows = term.rows;
+      if (cols > 1) {
+        void agentApi
+          .resize(taskId, cols - 1, rows)
+          .catch(() => {})
+          .finally(() => {
+            if (disposed) return;
+            window.setTimeout(() => applySize(), 40);
+          });
+      }
     })();
 
     return () => {
@@ -161,10 +187,11 @@ export function AgentTerminal({
       observer.disconnect();
       inputSub.dispose();
       if (unlisten) unlisten();
+      webgl?.dispose();
       term.dispose();
       termRef.current = null;
     };
-  }, [taskId, convertEol]);
+  }, [taskId]);
 
   // The task can finish while the panel stays open: stop accepting input and
   // sync the size one last time.
@@ -176,12 +203,6 @@ export function AgentTerminal({
     term.focus();
     void agentApi.resize(taskId, term.cols, term.rows).catch(() => {});
   }, [interactive, taskId]);
-
-  // External "focus terminal" request; the terminal effect above owns creation.
-  useEffect(() => {
-    if (focusToken === undefined) return;
-    termRef.current?.focus();
-  }, [focusToken]);
 
   return <div ref={hostRef} data-agent-terminal className={className} />;
 }

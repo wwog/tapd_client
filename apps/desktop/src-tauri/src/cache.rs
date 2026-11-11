@@ -811,7 +811,6 @@ mod tests {
             started_at: None,
             finished_at: None,
             exit_code: Some(0),
-            log_path: "/tmp/task.log".to_string(),
             error: None,
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
