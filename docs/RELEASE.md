@@ -28,6 +28,16 @@ scripts/release.sh 1.0.0 --no-push
 
 > `release` 分支只接受来自 `main` 的合并。`.github/workflows/release-guard.yml` 会拒绝其他来源的 PR。
 
+### 更新日志怎么写
+
+版本说明手写在 `CHANGELOG.md` 顶部的 `## 未发布` 里，固定按 `### 新增` / `### 修改` / `### 修复` 三节，只写用户能感知的变化：
+
+- **新增**：新功能、新工具、新入口。
+- **修改**：已有行为、数据存储、交互方式的调整。
+- **修复**：缺陷修复，写清楚修的是什么问题。
+
+发版时 `scripts/changelog.mjs` 会把这段原样搬进 `docs/releases/v<version>.md`（标题层级从 `###` 升为 `##`）并插入 `CHANGELOG.md`；只有 `## 未发布` 缺失或为空时，才回退到按 commit 前缀自动生成。
+
 ## 2. 分支流程（手动）
 
 - **日常开发在 `main`**：从 `main` 拉分支/提交 PR，CI 通过后合并回 `main`。
