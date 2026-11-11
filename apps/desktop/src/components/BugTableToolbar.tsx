@@ -6,6 +6,7 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  Activity,
   Check,
   Columns3,
   GripVertical,
@@ -16,20 +17,21 @@ import {
 import clsx from "clsx";
 
 import { useDismiss } from "../hooks/useDismiss";
-import { Segmented } from "./Segmented";
+import { Segmented, type SegmentedOption } from "./Segmented";
 import {
   COLUMN_LABELS,
   DEFAULT_COLUMNS,
+  type BugScope,
   type ColumnKey,
   type ColumnPref,
 } from "./bugListPrefs";
 
-type Scope = "mine" | "all";
-
 type Props = {
-  scope: Scope;
+  scope: BugScope;
   me: string | null;
-  onScopeChange: (scope: Scope) => void;
+  onScopeChange: (scope: BugScope) => void;
+  /** Show the 处理中 scope; only set while an agent works on the project. */
+  showProcessing: boolean;
   keyword: string;
   onKeywordChange: (value: string) => void;
   activeFilterCount: number;
@@ -45,6 +47,7 @@ export function BugTableToolbar(props: Props) {
     scope,
     me,
     onScopeChange,
+    showProcessing,
     keyword,
     onKeywordChange,
     activeFilterCount,
@@ -127,16 +130,27 @@ export function BugTableToolbar(props: Props) {
     onColumnsChange(DEFAULT_COLUMNS.map((column) => ({ ...column })));
   };
 
+  // 处理中 is a live view over agent activity, so the segment only exists while
+  // an internal or external agent is working on this project.
+  const scopeOptions: SegmentedOption<BugScope>[] = [
+    { value: "mine", label: "我负责的", icon: <UserRound size={12} /> },
+    { value: "all", label: "全部", icon: <Users size={12} /> },
+  ];
+  if (showProcessing) {
+    scopeOptions.push({
+      value: "processing",
+      label: "处理中",
+      icon: <Activity size={12} />,
+    });
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-5 py-3">
 
       <Segmented
         value={scope}
         onChange={onScopeChange}
-        options={[
-          { value: "mine", label: "我负责的", icon: <UserRound size={12} /> },
-          { value: "all", label: "全部", icon: <Users size={12} /> },
-        ]}
+        options={scopeOptions}
       />
 
       {scope === "mine" && !me ? (

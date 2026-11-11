@@ -4,6 +4,7 @@ import { Loader2, PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react"
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
 import {
+  agentActiveBugIds,
   agentApi,
   agentBugKey,
   externalClaimLabel,
@@ -50,8 +51,7 @@ import {
   useWorkspaceData,
   type WorkspacePaneBridge,
 } from "./hooks/useWorkspaceData";
-
-type Scope = "mine" | "all";
+import type { BugScope } from "./components/bugListPrefs";
 
 /** Minimal bug shape needed to enqueue an Agent task. */
 type AgentTarget = {
@@ -73,7 +73,7 @@ const VIEW_TITLES: Record<Exclude<View, "bugs">, string> = {
 };
 
 export default function App() {
-  const [scope, setScope] = useState<Scope>("mine");
+  const [scope, setScope] = useState<BugScope>("mine");
   const [view, setView] = useState<View>("bugs");
   const [railAnim, setRailAnim] = useState<{ id: string; token: number } | null>(null);
   const railAnimTimer = useRef<number | null>(null);
@@ -128,6 +128,18 @@ export default function App() {
   } = useWorkspaceData({ view, setView, showToast, pane: paneBridgeRef });
 
   useMembersDirectory(info?.loggedIn ?? false, workspaceId);
+
+  // 处理中 exists only while an agent works on this project; when the last one
+  // finishes (or the user switches project) fall back to 我负责的 so the list
+  // can never sit on a scope whose segment is gone.
+  const processingCount = agentActiveBugIds(
+    workspaceId,
+    agentInFlight,
+    externalClaims,
+  ).length;
+  useEffect(() => {
+    if (scope === "processing" && processingCount === 0) setScope("mine");
+  }, [scope, processingCount]);
 
   /** Layout values readable from the stable detail callback. */
   const detailLayoutRef = useRef<DetailLayoutRef>({
@@ -482,6 +494,13 @@ export default function App() {
             scope={scope}
             onScopeChange={setScope}
             onOpenBug={openBug}
+            activeBugId={
+              // `rendered` (not `open`) keeps the highlight through the close
+              // animation, so it fades out with the pane instead of snapping.
+              detailPane.rendered && detailPane.target?.workspaceId === workspace.id
+                ? detailPane.target.bugId
+                : null
+            }
             onOpenWeb={openPath}
             onCopy={copy}
             onAgentFix={enqueueAgent}

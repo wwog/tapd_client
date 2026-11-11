@@ -2500,6 +2500,28 @@ impl AgentCore {
         self.tasks_state()
     }
 
+    /// Deletes one finished history record. Only the local record goes away;
+    /// the export directory, the bug and any committed code are untouched.
+    fn delete_task(&self, task_id: &str) -> Result<(), String> {
+        let removed = {
+            let mut tasks = self.tasks.lock().expect("agent tasks lock");
+            take_terminal_task(&mut tasks, task_id)?
+        };
+        // Drop a queued snapshot first, otherwise the next persist could
+        // resurrect the row before the delete statement runs.
+        self.pending_tasks
+            .lock()
+            .expect("agent pending lock")
+            .remove(&removed.id);
+        self.removed_tasks
+            .lock()
+            .expect("agent removed lock")
+            .insert(removed.id.clone());
+        self.persist_tasks();
+        self.emit_state();
+        Ok(())
+    }
+
     fn retry(&self, task_id: &str) -> Result<AgentTask, String> {
         let original = self
             .task_snapshot(task_id)
@@ -3434,6 +3456,19 @@ fn build_history_page(tasks: &[AgentTask], query: HistoryQuery) -> AgentTasksPag
     }
 }
 
+/// Removes one finished task from the in-memory list. Active tasks are refused:
+/// the worker and the PTY teardown still hold references to them.
+fn take_terminal_task(tasks: &mut Vec<AgentTask>, task_id: &str) -> Result<AgentTask, String> {
+    let index = tasks
+        .iter()
+        .position(|task| task.id == task_id)
+        .ok_or_else(|| "任务不存在".to_string())?;
+    if !tasks[index].status.is_terminal() {
+        return Err("任务仍在队列或运行中，无法删除".to_string());
+    }
+    Ok(tasks.remove(index))
+}
+
 fn truncate_text(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -4010,6 +4045,15 @@ pub async fn command(
             }
             let task = core.retry(request.task_id.trim())?;
             Ok(json!({ "task": task }))
+        }
+        "agent_task_delete" => {
+            let request: TaskIdRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的删除参数：{error}"))?;
+            if request.task_id.trim().is_empty() {
+                return Err("缺少 taskId".to_string());
+            }
+            core.delete_task(request.task_id.trim())?;
+            Ok(json!({ "deleted": true }))
         }
         "agent_review_approve" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
@@ -4865,6 +4909,25 @@ mod tests {
         assert_eq!(failed.tasks[0].id, "new");
     }
 
+    #[test]
+    fn delete_takes_only_terminal_tasks() {
+        let mut tasks = vec![
+            sample_task("done", TaskStatus::Succeeded),
+            sample_task("running", TaskStatus::Running),
+        ];
+
+        let err = take_terminal_task(&mut tasks, "running").expect_err("active task");
+        assert!(err.contains("运行中"), "{err}");
+        assert_eq!(tasks.len(), 2);
+
+        let err = take_terminal_task(&mut tasks, "missing").expect_err("missing task");
+        assert!(err.contains("不存在"), "{err}");
+
+        let removed = take_terminal_task(&mut tasks, "done").expect("terminal task");
+        assert_eq!(removed.id, "done");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "running");
+    }
 
     #[cfg(unix)]
     #[test]

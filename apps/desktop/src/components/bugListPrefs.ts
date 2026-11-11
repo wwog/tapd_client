@@ -20,6 +20,13 @@ export const SEVERITIES = [
   ["advice", "建议"],
 ];
 
+/**
+ * Bug list scope switch: my bugs, the whole project, or the bug set an internal
+ * / external agent is working on. 处理中 only appears while that set is
+ * non-empty.
+ */
+export type BugScope = "mine" | "all" | "processing";
+
 export type ColumnKey =
   | "status"
   | "priority"

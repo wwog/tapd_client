@@ -180,6 +180,9 @@ export const notificationApi = {
     featureCommand<{ ok: boolean; visible: boolean }>("notification_island_visible", {
       visible,
     }),
+  /** Grows the collapsed capsule into the Agent summary card while hovered. */
+  setPeek: (active: boolean) =>
+    featureCommand<{ ok: boolean; active: boolean }>("notification_island_peek", { active }),
   openMain: () => featureCommand<{ ok: boolean }>("notification_open_main"),
   /** Starts an OS window drag; the Rust side persists the final position. */
   startDrag: () => featureCommand<{ ok: boolean }>("notification_start_drag"),

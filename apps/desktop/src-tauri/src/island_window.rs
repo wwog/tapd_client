@@ -28,6 +28,13 @@ const CARD_WIDTH: f64 = 384.0;
 const CARD_BASE_HEIGHT: f64 = 160.0;
 const CARD_ROW_HEIGHT: f64 = 148.0;
 const ISLAND_TOP_MARGIN: f64 = 6.0;
+/// Hover peek: the collapsed capsule widens a little and grows a summary card
+/// underneath, without moving the pill (it stays centred on the anchor).
+const PEEK_WIDTH: f64 = 300.0;
+const PEEK_GAP: f64 = 6.0;
+/// Project row + a two-line title, sized for the largest UI font.
+const PEEK_CARD_HEIGHT: f64 = 88.0;
+const PEEK_HEIGHT: f64 = PILL_HEIGHT + PEEK_GAP + PEEK_CARD_HEIGHT;
 
 /// Bumped on every layout change so a superseded animation stops early.
 static LAYOUT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -46,6 +53,9 @@ static UPDATE_MODE: AtomicBool = AtomicBool::new(false);
 static COLLAPSED_VISIBLE: AtomicBool = AtomicBool::new(true);
 /// Last layout applied, so hiding only ever affects the collapsed pill.
 static EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Hover peek requested by the frontend. Only the collapsed layout honours it;
+/// expanded notification cards always win.
+static PEEK: AtomicBool = AtomicBool::new(false);
 /// The update panel is the collapsed capsule at 3x.
 const UPDATE_WIDTH: f64 = PILL_WIDTH * 3.0;
 const UPDATE_HEIGHT: f64 = PILL_HEIGHT * 3.0;
@@ -76,8 +86,17 @@ pub fn update_mode() -> bool {
     UPDATE_MODE.load(Ordering::SeqCst)
 }
 
+/// Records whether the pointer is hovering the capsule. Call
+/// `refresh_island_layout` afterwards to apply the matching size.
+pub fn set_peek(active: bool) {
+    PEEK.store(active, Ordering::SeqCst);
+}
+
 /// Applies the 3x update panel.
 pub fn apply_update_panel(app: &AppHandle, state: &SharedState) {
+    // The update panel owns the capsule: drop any open hover peek so it does
+    // not come back when the update finishes.
+    PEEK.store(false, Ordering::SeqCst);
     apply_island_sized(app, state, UPDATE_WIDTH, UPDATE_HEIGHT, true, 0, true);
 }
 
@@ -278,7 +297,16 @@ pub(crate) fn apply_island(
     if UPDATE_MODE.load(Ordering::SeqCst) {
         return;
     }
-    let (width, height) = island_size(expanded, count);
+    // Cards replace the capsule entirely, so a peek that was open when they
+    // arrived must not come back when they are dismissed.
+    if expanded {
+        PEEK.store(false, Ordering::SeqCst);
+    }
+    let (width, height) = if !expanded && PEEK.load(Ordering::SeqCst) {
+        (PEEK_WIDTH, PEEK_HEIGHT)
+    } else {
+        island_size(expanded, count)
+    };
     apply_island_sized(app, state, width, height, expanded, count, animated);
 }
 
@@ -360,7 +388,6 @@ fn apply_island_sized(
     );
 }
 
-
 #[cfg(test)]
 mod island_tests {
     use super::*;
@@ -389,5 +416,31 @@ mod island_tests {
         assert_eq!(collapsed.0 + 105, expanded.0 + 192);
         assert_eq!(collapsed.1, expanded.1);
     }
-}
 
+    #[test]
+    fn hover_peek_grows_downwards_around_the_pill() {
+        let collapsed = place_island(
+            Some((1500, 120)),
+            AREA.0,
+            AREA.1,
+            AREA.2,
+            PILL_WIDTH as i32,
+            MARGIN,
+        );
+        let peek = place_island(
+            Some((1500, 120)),
+            AREA.0,
+            AREA.1,
+            AREA.2,
+            PEEK_WIDTH as i32,
+            MARGIN,
+        );
+        // The pill keeps its centre and top edge; only the card below grows.
+        assert_eq!(
+            collapsed.0 + PILL_WIDTH as i32 / 2,
+            peek.0 + PEEK_WIDTH as i32 / 2
+        );
+        assert_eq!(collapsed.1, peek.1);
+        assert_eq!(PEEK_HEIGHT, PILL_HEIGHT + PEEK_GAP + PEEK_CARD_HEIGHT);
+    }
+}

@@ -62,6 +62,8 @@ export function IslandWindow() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
   const [agentSummary, setAgentSummary] = useState<AgentSummary | null>(null);
+  /** Hovering the collapsed capsule asks Rust to grow the Agent summary card. */
+  const [peeking, setPeeking] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   /** Update progress/error panel replaces the capsule while active. */
@@ -221,6 +223,7 @@ export function IslandWindow() {
     ((agentSummary.awaitingApproval ?? 0) > 0 || agentSummary.running)
       ? agentSummary.activeTaskId
       : null;
+  const agentAwaiting = agentSummary?.awaitingApproval ?? 0;
 
   const { label: statusLabel, tone } = useMemo(() => {
     if (updateState?.available) {
@@ -237,6 +240,10 @@ export function IslandWindow() {
     return { label: "待命", tone: "ok" as const };
   }, [agentSummary, snapshot, items.length, updateState?.available]);
 
+  /** The capsule only offers the peek while it is actually reporting Agent
+   *  work; an update notice or pending cards take precedence. */
+  const agentActive = statusLabel === "Agent 运行中" || statusLabel === "Agent 待审核";
+
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
   // own the island, so expanded notifications are never hidden mid-interaction.
@@ -252,68 +259,105 @@ export function IslandWindow() {
     });
   }, [idle, resident, updateActive]);
 
+  // The peek only makes sense on the collapsed capsule while the Agent has
+  // something in flight; notification cards, an update panel and a finished
+  // Agent all close it.
+  useEffect(() => {
+    if (!agentActive || layout.expanded || updateActive) setPeeking(false);
+  }, [agentActive, layout.expanded, updateActive]);
+
+  // Rust owns the window size, so each peek change round-trips once.
+  const peekSynced = useRef(false);
+  useEffect(() => {
+    if (!peekSynced.current) {
+      peekSynced.current = true;
+      return;
+    }
+    void notificationApi.setPeek(peeking).catch(() => undefined);
+  }, [peeking]);
+
   if (updateActive) {
     return <UpdateCapsule state={updateState} />;
   }
 
   if (!layout.expanded) {
     return (
-      <div className="grid h-full w-full place-items-center overflow-hidden">
-        <button
-          type="button"
-          onMouseDown={(event) => {
-            if (event.button === 0) dragStart.current = { x: event.clientX, y: event.clientY };
-          }}
-          onMouseMove={(event) => {
-            const start = dragStart.current;
-            if (!start) return;
-            if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 4) return;
-            dragStart.current = null;
-            // Hand the drag to the window manager; the final position is
-            // persisted by the Rust side once the drag settles.
-            void notificationApi.startDrag().catch(() => undefined);
-          }}
-          onMouseUp={() => {
-            dragStart.current = null;
-          }}
-          onClick={() => {
-            if (clickTimer.current !== null) return;
-            clickTimer.current = window.setTimeout(() => {
-              clickTimer.current = null;
-              if (agentTaskId) {
-                void agentApi.openTask(agentTaskId).catch(() => undefined);
-              } else if (items.length > 0) {
-                void notificationApi.expandIsland(true);
-              } else {
-                void notificationApi.openMain();
+      <div
+        className="flex h-full w-full flex-col items-center overflow-hidden"
+        // The card sits inside the same window: leaving the window closes the
+        // peek, moving from the pill down into the card keeps it open.
+        onMouseLeave={() => setPeeking(false)}
+      >
+        <div className="flex h-[34px] shrink-0 items-center">
+          <button
+            type="button"
+            onMouseEnter={() => {
+              if (agentActive) setPeeking(true);
+            }}
+            onMouseDown={(event) => {
+              if (event.button === 0) dragStart.current = { x: event.clientX, y: event.clientY };
+            }}
+            onMouseMove={(event) => {
+              const start = dragStart.current;
+              if (!start) return;
+              if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 4) return;
+              dragStart.current = null;
+              // Hand the drag to the window manager; the final position is
+              // persisted by the Rust side once the drag settles. The peek (if
+              // open) stays put: resizing mid-drag would fight the drag.
+              void notificationApi.startDrag().catch(() => undefined);
+            }}
+            onMouseUp={() => {
+              dragStart.current = null;
+            }}
+            onClick={() => {
+              if (clickTimer.current !== null) return;
+              clickTimer.current = window.setTimeout(() => {
+                clickTimer.current = null;
+                setPeeking(false);
+                if (agentTaskId) {
+                  void agentApi.openTask(agentTaskId).catch(() => undefined);
+                } else if (items.length > 0) {
+                  void notificationApi.expandIsland(true);
+                } else {
+                  void notificationApi.openMain();
+                }
+              }, 240);
+            }}
+            onDoubleClick={() => {
+              if (clickTimer.current !== null) {
+                window.clearTimeout(clickTimer.current);
+                clickTimer.current = null;
               }
-            }, 240);
-          }}
-          onDoubleClick={() => {
-            if (clickTimer.current !== null) {
-              window.clearTimeout(clickTimer.current);
-              clickTimer.current = null;
+              setPeeking(false);
+              void notificationApi.openMain();
+            }}
+            title={
+              // While the summary card is open the native tooltip would only
+              // repeat it (and cover it).
+              peeking
+                ? undefined
+                : agentTaskId
+                  ? `${agentAwaiting > 0 ? "Agent 待审核" : "Agent 运行中"} · 单击打开任务 · 可拖动`
+                  : items.length > 0
+                    ? "单击展开通知 · 双击打开客户端 · 可拖动"
+                    : "双击打开客户端 · 可拖动"
             }
-            void notificationApi.openMain();
-          }}
-          title={
-            agentTaskId
-              ? `${(agentSummary?.awaitingApproval ?? 0) > 0 ? "Agent 待审核" : "Agent 运行中"} · 单击打开任务 · 可拖动`
-              : items.length > 0
-                ? "单击展开通知 · 双击打开客户端 · 可拖动"
-                : "双击打开客户端 · 可拖动"
-          }
-          className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition hover:bg-island-hover active:cursor-grabbing"
-        >
-          <StatusDot tone={tone} />
-          <span className="font-normal text-island-ink">TAPD</span>
-          {idle ? null : <span className="text-island-muted">{statusLabel}</span>}
-          {items.length > 0 ? (
-            <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-ui-xs font-normal leading-none text-white">
-              {items.length}
-            </span>
-          ) : null}
-        </button>
+            className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition hover:bg-island-hover active:cursor-grabbing"
+          >
+            <StatusDot tone={tone} />
+            <span className="font-normal text-island-ink">TAPD</span>
+            {idle ? null : <span className="text-island-muted">{statusLabel}</span>}
+            {items.length > 0 ? (
+              <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-ui-xs font-normal leading-none text-white">
+                {items.length}
+              </span>
+            ) : null}
+          </button>
+        </div>
+        {peeking && agentActive && agentSummary ? (
+          <AgentPeekCard summary={agentSummary} awaiting={agentAwaiting} />
+        ) : null}
       </div>
     );
   }
@@ -671,6 +715,37 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             return null;
         }
       })}
+    </div>
+  );
+}
+
+/**
+ * Hover summary under the collapsed capsule: which project and which bug the
+ * current Agent task belongs to. Its height/gap must match the Rust
+ * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
+ */
+function AgentPeekCard({ summary, awaiting }: { summary: AgentSummary; awaiting: number }) {
+  const title = summary.title ? bugTitle(summary.title) : "";
+  return (
+    <div className="mt-1.5 flex h-[88px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
+      <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
+        <span
+          className={clsx(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            awaiting > 0 ? "bg-rose-500" : "bg-sky-500",
+          )}
+        />
+        <span className="truncate text-island-ink">{summary.workspaceName || "未知项目"}</span>
+        {summary.bugId ? (
+          <span className="shrink-0 tabular-nums">#{summary.bugId}</span>
+        ) : null}
+        <span className="ml-auto shrink-0">
+          {awaiting > 0 ? (awaiting > 1 ? `待审核 ${awaiting}` : "待审核") : "运行中"}
+        </span>
+      </div>
+      <p className="mt-1 line-clamp-2 text-ui-sm" title={title || undefined}>
+        {title || "正在准备任务…"}
+      </p>
     </div>
   );
 }

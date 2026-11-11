@@ -7,6 +7,7 @@ import {
   RotateCcw,
   Search,
   Terminal,
+  Trash2,
 } from "lucide-react";
 
 import {
@@ -21,11 +22,19 @@ import {
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
+import { useDismiss } from "../hooks/useDismiss";
 import { Badge, Button, selectClass } from "./ui";
+import { Dialog } from "./Dialog";
 
 // History only contains terminal tasks; active ones live in the run tab.
 const STATUS_OPTIONS: AgentTaskStatus[] = ["succeeded", "failed", "canceled"];
 const PAGE_SIZE = 50;
+/** Approximate row menu box, used to keep it inside the window. */
+const MENU_WIDTH = 152;
+const MENU_HEIGHT = 44;
+
+/** Anchor + target for a history row's right-click menu. */
+type HistoryRowMenu = { x: number; y: number; task: AgentTask };
 
 type Props = {
   /** Changes when a task leaves the live queue, so the first page refreshes. */
@@ -59,6 +68,9 @@ export function AgentHistory({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [terminalBusy, setTerminalBusy] = useState<string | null>(null);
   const [retryBusy, setRetryBusy] = useState<string | null>(null);
+  const [rowMenu, setRowMenu] = useState<HistoryRowMenu | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentTask | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const appliedFocusRef = useRef<string | null>(null);
   const requestRef = useRef(0);
@@ -181,6 +193,28 @@ export function AgentHistory({
     }
   };
 
+  /**
+   * Deletes a finished record after the confirmation dialog. The row
+   * disappearing is the feedback, so only failures toast. Export files, the bug
+   * and any committed code stay untouched.
+   */
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleting(true);
+    try {
+      await agentApi.deleteTask(target.id);
+      setDeleteTarget(null);
+      setTasks((current) => current.filter((task) => task.id !== target.id));
+      setTotal((current) => Math.max(0, current - 1));
+      void fetchPage(0);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -250,6 +284,11 @@ export function AgentHistory({
                   key={task.id}
                   type="button"
                   onClick={() => setSelectedId(task.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setSelectedId(task.id);
+                    setRowMenu({ x: event.clientX, y: event.clientY, task });
+                  }}
                   className={clsx(
                     "w-full rounded-lg px-2.5 py-2 text-left transition",
                     task.id === selectedId
@@ -392,6 +431,88 @@ export function AgentHistory({
         </div>
       </div>
 
+      {rowMenu ? (
+        <HistoryRowContextMenu
+          key={`${rowMenu.task.id}-${rowMenu.x}-${rowMenu.y}`}
+          menu={rowMenu}
+          onClose={() => setRowMenu(null)}
+          onDelete={(task) => {
+            setRowMenu(null);
+            setDeleteTarget(task);
+          }}
+        />
+      ) : null}
+
+      {deleteTarget ? (
+        <Dialog
+          title="删除执行记录"
+          icon={<Trash2 size={15} className="text-rose-500" />}
+          onClose={() => {
+            if (!deleting) setDeleteTarget(null);
+          }}
+        >
+          <p className="text-ui-caption leading-5 text-slate-600">
+            将删除「{bugTitle(deleteTarget.title) || "（无标题）"}」的本地执行记录，
+            删除后无法恢复。
+          </p>
+          <p className="mt-2 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-600">
+            只删除本地记录，不影响导出目录、缺陷内容和已提交的代码。
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={deleting}
+              onClick={() => setDeleteTarget(null)}
+            >
+              取消
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              loading={deleting}
+              onClick={() => void confirmDelete()}
+            >
+              删除
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+    </div>
+  );
+}
+
+/** Right-click menu for a history row; dismisses like a native popup menu. */
+function HistoryRowContextMenu(props: {
+  menu: HistoryRowMenu;
+  onClose: () => void;
+  onDelete: (task: AgentTask) => void;
+}) {
+  const { menu, onClose, onDelete } = props;
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(true, menuRef, onClose, { scroll: true, resize: true, blur: true });
+
+  return (
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label="执行记录快捷操作"
+      style={{
+        left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
+        top: Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8)),
+      }}
+      className="fixed z-50 w-[152px] overflow-hidden rounded-lg border border-border bg-surface py-1"
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => onDelete(menu.task)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui-sm text-rose-600 transition hover:bg-rose-50"
+      >
+        <Trash2 size={12} className="text-rose-500" />
+        删除记录
+      </button>
     </div>
   );
 }

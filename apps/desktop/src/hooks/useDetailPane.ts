@@ -63,6 +63,13 @@ export function useDetailPane({
   const [detailOpen, setDetailOpen] = useState(false);
   /** Kept true during the close animation; false unmounts the pane entirely. */
   const [detailRendered, setDetailRendered] = useState(false);
+  /**
+   * Bug the pane was last asked to show, set before the fetch resolves so the
+   * list can highlight its row immediately (the detail itself arrives later).
+   */
+  const [target, setTarget] = useState<{ workspaceId: string; bugId: string } | null>(
+    null,
+  );
   const [detail, setDetail] = useState<BugDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -94,6 +101,7 @@ export function useDetailPane({
   const loadBugDetail = useCallback(
     (targetWorkspaceId: string, bugId: string) => {
       const seq = ++detailSeq.current;
+      setTarget({ workspaceId: targetWorkspaceId, bugId });
       // The owner / developer pickers need this workspace's people directory.
       void ensureMembers(targetWorkspaceId);
       // Codex-style pane: make room first (collapse the project list on narrow
@@ -365,6 +373,8 @@ export function useDetailPane({
   return {
     open: detailOpen,
     rendered: detailRendered,
+    /** Bug the pane is showing (or about to show); used by the list highlight. */
+    target,
     detail,
     loading: detailLoading,
     error: detailError,

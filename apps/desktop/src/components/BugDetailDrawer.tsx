@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
+  Check,
   FileText,
   GitBranch,
   Loader2,
@@ -19,6 +20,8 @@ import {
 } from "../lib/api";
 import { bugTitle, isMyBug } from "../lib/bug";
 import { agentBugKey, type AgentInFlight } from "../lib/agent";
+import { copyText } from "../lib/desktop";
+import { showToast } from "../lib/toast";
 import { SkeletonBlock } from "./Skeleton";
 import {
   Badge,
@@ -111,6 +114,8 @@ function BugDetailDrawerImpl(props: Props) {
   /** The single write action currently in flight (claim/comment/field/status). */
   const [busy, setBusy] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
+  /** Bug id just copied; swaps in a check mark instead of a toast. */
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [transitions, setTransitions] = useState<BugTransitionInfo | null>(null);
   const [transitionsLoading, setTransitionsLoading] = useState(false);
   const [transitionsError, setTransitionsError] = useState<string | null>(null);
@@ -136,6 +141,7 @@ function BugDetailDrawerImpl(props: Props) {
   // A different bug starts with an empty comment box.
   useEffect(() => {
     setCommentText("");
+    setCopiedId(null);
   }, [detail?.id]);
 
   // Only bugs the user owns expose workflow transitions.
@@ -220,6 +226,20 @@ function BugDetailDrawerImpl(props: Props) {
     }
   };
 
+  /** Copies the short id, matching the project-ID feedback (no toast). */
+  const copyBugId = async (target: BugDetail) => {
+    const value = target.shortId || target.id;
+    if (!(await copyText(value))) {
+      showToast("error", "复制失败");
+      return;
+    }
+    setCopiedId(value);
+    window.setTimeout(
+      () => setCopiedId((current) => (current === value ? null : current)),
+      1500,
+    );
+  };
+
   return (
     <aside
       aria-hidden={!open}
@@ -237,7 +257,28 @@ function BugDetailDrawerImpl(props: Props) {
               <span className="rounded bg-rose-50 px-1.5 py-0.5 font-normal text-rose-600">
                 BUG
               </span>
-              <span className="font-mono">#{detail?.shortId || detail?.id?.slice(-7) || "—"}</span>
+              {detail ? (
+                <button
+                  type="button"
+                  title="复制缺陷 ID"
+                  aria-label="复制缺陷 ID"
+                  onClick={() => void copyBugId(detail)}
+                  className="inline-flex items-center gap-1 rounded px-0.5 font-mono transition hover:bg-slate-100 hover:text-slate-600"
+                >
+                  <Check
+                    size={10}
+                    className={clsx(
+                      "text-emerald-600 transition-opacity",
+                      copiedId === (detail.shortId || detail.id)
+                        ? "opacity-100"
+                        : "opacity-0",
+                    )}
+                  />
+                  #{detail.shortId || detail.id.slice(-7)}
+                </button>
+              ) : (
+                <span className="font-mono">—</span>
+              )}
               {detail ? (
                 <>
                   <Badge tone={STATUS_TONES[detail.status] ?? "neutral"}>
@@ -315,7 +356,7 @@ function BugDetailDrawerImpl(props: Props) {
                     当前处理人：{detail.owner || "未分配"}
                   </p>
                   <p className="mt-0.5">
-                    认领后才能评论、修改处理人与开发人员、流转状态。
+                    认领后才能修改处理人与开发人员、流转状态。
                   </p>
                 </div>
               ) : (
@@ -389,7 +430,6 @@ function BugDetailDrawerImpl(props: Props) {
               <BugCustomFields detail={detail} open={open} />
 
               <BugCommentComposer
-                mine={mine}
                 busy={busy}
                 text={commentText}
                 onChange={setCommentText}

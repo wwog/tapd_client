@@ -37,26 +37,30 @@ export function BugListPager(props: {
           第 {pageNo} / {totalPages} 页 · 共 {page.total} 条
         </span>
       </div>
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={pageNo <= 1 || loading}
-          onClick={() => onPageChange((current) => Math.max(1, current - 1))}
-          icon={<ChevronLeft size={13} />}
-        >
-          上一页
-        </Button>
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={pageNo >= totalPages || loading}
-          onClick={() => onPageChange((current) => Math.min(totalPages, current + 1))}
-        >
-          下一页
-          <ChevronRight size={13} />
-        </Button>
-      </div>
+      {/* A single page has nothing to page through: the buttons would only
+          ever render disabled. */}
+      {totalPages > 1 ? (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={pageNo <= 1 || loading}
+            onClick={() => onPageChange((current) => Math.max(1, current - 1))}
+            icon={<ChevronLeft size={13} />}
+          >
+            上一页
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={pageNo >= totalPages || loading}
+            onClick={() => onPageChange((current) => Math.min(totalPages, current + 1))}
+          >
+            下一页
+            <ChevronRight size={13} />
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

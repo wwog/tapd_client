@@ -30,16 +30,14 @@ export function BugComments(props: { comments: Comment[] }) {
   );
 }
 
-/** New top-level comment box; only owners can post. */
+/** New top-level comment box; any project member can post, claimed or not. */
 export function BugCommentComposer(props: {
-  mine: boolean;
   busy: string | null;
   text: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
 }) {
-  const { mine, busy, text, onChange, onSubmit } = props;
-  if (!mine) return null;
+  const { busy, text, onChange, onSubmit } = props;
 
   return (
     <section>

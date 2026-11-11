@@ -271,6 +271,34 @@ const stateRank = (status: AgentTaskStatus): number => {
   }
 };
 
+/**
+ * Bugs in one workspace that an agent is currently working on, in display
+ * order. External claims win over local tasks (a local task on the same bug is
+ * cancelled or refused when the claim registers), so ids are deduplicated with
+ * claims first.
+ */
+export function agentActiveBugIds(
+  workspaceId: string | null | undefined,
+  agentInFlight?: Map<string, AgentInFlight>,
+  externalClaims?: Map<string, ExternalClaim>,
+): string[] {
+  if (!workspaceId) return [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const push = (id: string) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const claim of externalClaims?.values() ?? []) {
+    if (claim.workspaceId === workspaceId) push(claim.bugId);
+  }
+  for (const info of agentInFlight?.values() ?? []) {
+    if (info.task.workspaceId === workspaceId) push(info.task.bugId);
+  }
+  return ids;
+}
+
 /** Compact state label for bug rows and the detail entry point. */
 export function agentInFlightLabel(info: AgentInFlight): string {
   switch (info.task.status) {
@@ -358,6 +386,9 @@ export const agentApi = {
     }),
   retry: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_task_retry", { taskId }),
+  /** Deletes one finished history record; only the local record is removed. */
+  deleteTask: (taskId: string) =>
+    featureCommand<{ deleted: boolean }>("agent_task_delete", { taskId }),
   /** Approve a paused change: the task re-enters the queue to commit. */
   approveReview: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_review_approve", { taskId }),

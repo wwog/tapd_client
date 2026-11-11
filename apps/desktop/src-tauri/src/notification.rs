@@ -1981,6 +1981,17 @@ pub async fn command(
             crate::island_window::apply_island(app, state, expanded, items.len(), true);
             Ok(json!({ "ok": true, "expanded": expanded, "count": items.len() }))
         }
+        "notification_island_peek" => {
+            // Hovering the collapsed capsule reveals which task the Agent is
+            // working on. Expanded cards keep their own layout.
+            let active = payload
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::island_window::set_peek(active);
+            refresh_island_layout(app, state);
+            Ok(json!({ "ok": true, "active": active }))
+        }
         "notification_island_visible" => {
             // The idle capsule is hidden: it is a status indicator only while
             // there is something to indicate (pending cards, agent work,

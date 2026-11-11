@@ -3,6 +3,7 @@ import {
   ArrowDownWideNarrow,
   ArrowUpDown,
   ArrowUpNarrowWide,
+  Bot,
   ChevronDown,
   Loader2,
   Sparkles,
@@ -59,6 +60,8 @@ type Props = {
   page: BugListPage;
   loading: boolean;
   me: string | null;
+  /** Bug currently shown in the detail pane; its row stays highlighted. */
+  activeBugId?: string | null;
   columns: ColumnPref[];
   hideOwner: boolean;
   agentInFlight?: Map<string, AgentInFlight>;
@@ -99,6 +102,7 @@ export function BugTable(props: Props) {
     page,
     loading,
     me,
+    activeBugId,
     columns,
     hideOwner,
     agentInFlight,
@@ -311,12 +315,17 @@ export function BugTable(props: Props) {
             // is cancelled or refused when the claim is registered.
             const agent = claim ? undefined : agentInFlight?.get(key);
             const activityId = claim ? `external:${key}` : agent?.task.id ?? null;
+            const active = activeBugId === bug.id;
             return (
             <tr
               key={bug.id}
               onClick={() => onOpenBug(bug)}
               onContextMenu={(event) => onRowContextMenu(event, bug)}
-              className="group cursor-pointer bg-surface text-ui-base hover:bg-sky-50"
+              aria-current={active ? "true" : undefined}
+              className={clsx(
+                "group cursor-pointer text-ui-base transition-colors",
+                active ? "bg-sky-50 hover:bg-sky-100" : "bg-surface hover:bg-sky-50",
+              )}
             >
               <td
                 className="max-w-0 px-4 py-2.5"
@@ -334,37 +343,53 @@ export function BugTable(props: Props) {
                   </span>
                 </div>
                 <div className="mt-0.5 flex items-center gap-2 overflow-hidden pl-9 text-ui-xs text-slate-400">
-                  <span className="shrink-0 font-mono">#{bug.shortId || bug.id.slice(-7)}</span>
+                  <span
+                    className={clsx(
+                      "shrink-0 font-mono transition-colors",
+                      active && "text-sky-600",
+                    )}
+                  >#{bug.shortId || bug.id.slice(-7)}</span>
                   {bug.versionReport ? (
                     <span className="shrink-0">发现版本 {bug.versionReport}</span>
                   ) : null}
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
                 {claim || agent ? (
-                  <AgentActivityLine
-                    claim={claim}
-                    task={agent}
-                    now={now}
-                    onOpenTask={
-                      agent && onOpenAgentTask
-                        ? () => onOpenAgentTask(agent.task.id)
-                        : undefined
-                    }
-                  />
+                  <AgentActivityLine claim={claim} task={agent} now={now} />
                 ) : null}
               </td>
               {visibleColumns.map((column) => (
                 <BugColumnCell key={column.key} column={column.key} bug={bug} />
               ))}
               <td
-                className="sticky right-0 z-10 bg-surface px-2 py-2.5 group-hover:bg-sky-50"
+                className={clsx(
+                  "sticky right-0 z-10 px-2 py-2.5 transition-colors",
+                  active
+                    ? "bg-sky-50 group-hover:bg-sky-100"
+                    : "bg-surface group-hover:bg-sky-50",
+                )}
                 onClick={(event) => event.stopPropagation()}
               >
                 {claim || agent ? (
-                  // Active rows only keep 取消: the bug is already owned by an
-                  // external AI or the local queue, so it must not be enqueued,
-                  // edited or claimed twice. Row click still opens the detail.
-                  <div className="flex items-center justify-end">
+                  // Active rows only keep jump-to-task and 取消: the bug is
+                  // already owned by an external AI or the local queue, so it
+                  // must not be enqueued, edited or claimed twice. Row click
+                  // still opens the detail.
+                  <div className="flex items-center justify-end gap-1">
+                    {agent && onOpenAgentTask ? (
+                      <button
+                        type="button"
+                        title="查看 Agent 任务"
+                        aria-label="查看 Agent 任务"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenAgentTask(agent.task.id);
+                        }}
+                        className="grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                      >
+                        <Bot size={13} />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={cancelingId === activityId}
@@ -375,30 +400,30 @@ export function BugTable(props: Props) {
                             ? "从 Agent 队列中移除这个任务"
                             : "中断当前 Agent 任务"
                       }
+                      aria-label={claim ? "取消外部占用" : "取消 Agent 任务"}
                       onClick={(event) => {
                         event.stopPropagation();
                         void cancelActivity(claim, agent);
                       }}
                       className={clsx(
-                        "inline-flex items-center justify-center gap-1 rounded-md border border-border bg-slate-50 px-2 py-1 text-ui-sm font-normal text-slate-600 transition",
+                        "grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition",
                         cancelingId === activityId
                           ? "cursor-not-allowed opacity-60"
                           : "hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700",
                       )}
                     >
                       {cancelingId === activityId ? (
-                        <Loader2 size={11} className="animate-spin" />
+                        <Loader2 size={12} className="animate-spin" />
                       ) : (
-                        <X size={11} />
+                        <X size={13} />
                       )}
-                      取消
                     </button>
                   </div>
                 ) : !isMyBug(bug.owner, me) ? (
                   <div className="flex items-center justify-center">
                     <button
                       type="button"
-                      title="认领后可以评论、修改处理人/开发人员与流转状态"
+                      title="认领后可以修改处理人/开发人员与流转状态，评论不受限制"
                       disabled={claimingId !== null}
                       onClick={() => onClaim(bug)}
                       className={clsx(

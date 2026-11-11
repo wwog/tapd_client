@@ -16,7 +16,11 @@ import {
   type BugSummary,
   type Workspace,
 } from "../lib/api";
-import type { AgentInFlight, ExternalClaim } from "../lib/agent";
+import {
+  agentActiveBugIds,
+  type AgentInFlight,
+  type ExternalClaim,
+} from "../lib/agent";
 import { cacheApi, type Cached } from "../lib/cache";
 import { SkeletonRows } from "./Skeleton";
 import { Button, EmptyState } from "./ui";
@@ -32,6 +36,7 @@ import {
   loadColumns,
   loadFilters,
   loadSort,
+  type BugScope,
   type BugSort,
 } from "./bugListPrefs";
 
@@ -45,14 +50,14 @@ import {
  */
 const AUTO_REFRESH_MS = 30_000;
 
-type Scope = "mine" | "all";
-
 type Props = {
   workspace: Workspace | null;
   me: string | null;
-  scope: Scope;
-  onScopeChange: (scope: Scope) => void;
+  scope: BugScope;
+  onScopeChange: (scope: BugScope) => void;
   onOpenBug: (bug: BugSummary) => void;
+  /** Bug shown in the detail pane, highlighted in the table. */
+  activeBugId?: string | null;
   /** Row actions (action column). */
   onOpenWeb?: (url: string) => void;
   /** Copy arbitrary text from the row context menu. */
@@ -80,6 +85,7 @@ function BugListViewImpl(props: Props) {
     scope,
     onScopeChange,
     onOpenBug,
+    activeBugId,
     onOpenWeb,
     onCopy,
     onAgentFix,
@@ -191,7 +197,71 @@ function BugListViewImpl(props: Props) {
     setPageNo(1);
   }, [scope]);
 
-  const load = useCallback(async (silent = false) => {
+  /** Bugs in this project that an internal or external agent is working on. */
+  const processingIds = useMemo(
+    () => agentActiveBugIds(workspace?.id, agentInFlight, externalClaims),
+    [workspace?.id, agentInFlight, externalClaims],
+  );
+  /**
+   * Content key for the 处理中 set. Agent state emits on every progress tick, so
+   * depending on the array identity would re-fetch details far too often; the
+   * key only changes when the bug set does.
+   */
+  const processingKey = processingIds.join("\u0000");
+
+  /**
+   * 处理中 rows: TAPD has no "has an agent" filter, so keyword, status, people
+   * and sort are applied locally to the bug set from live agent state.
+   */
+  const buildProcessingPage = useCallback(
+    (source: BugSummary[]): BugListPage => {
+      const statusMap: Record<string, string> = {};
+      for (const bug of source) statusMap[bug.status] = bug.statusLabel;
+      const needle = debouncedKeyword.toLowerCase();
+      const bugs = source.filter(
+        (bug) =>
+          (statusFilter.length === 0 || statusFilter.includes(bug.status)) &&
+          (!priority || bug.priority === priority) &&
+          (!severity || bug.severity === severity) &&
+          (!ownerFilter || bug.owner === ownerFilter) &&
+          (!creatorFilter || bug.creator === creatorFilter) &&
+          (!needle || bug.title.toLowerCase().includes(needle)),
+      );
+      if (sort) {
+        const direction = sort.order === "asc" ? 1 : -1;
+        bugs.sort(
+          (a, b) =>
+            (sort.name === "created"
+              ? a.created.localeCompare(b.created)
+              : (a.statusLabel || a.status).localeCompare(
+                  b.statusLabel || b.status,
+                  "zh-CN",
+                )) * direction,
+        );
+      }
+      return {
+        page: 1,
+        perpage: 50,
+        total: bugs.length,
+        statusMap,
+        // Fetch order is activity order; the filter menu just needs every
+        // status present in the set, including custom workflow ones.
+        statusOrder: Array.from(new Set(source.map((bug) => bug.status))),
+        bugs,
+      };
+    },
+    [statusFilter, priority, severity, ownerFilter, creatorFilter, debouncedKeyword, sort],
+  );
+  /**
+   * Rows already fetched for 处理中. Filtering/sorting re-renders this set
+   * locally, so typing in the search box never re-fetches bug details.
+   */
+  const processingBugsRef = useRef<BugSummary[]>([]);
+  const buildProcessingPageRef = useRef(buildProcessingPage);
+  buildProcessingPageRef.current = buildProcessingPage;
+
+  /** Server-side page load for 我负责的 / 全部. */
+  const loadList = useCallback(async (silent = false) => {
     if (!workspace) return;
 
     const query: BugQuery = {
@@ -278,12 +348,126 @@ function BugListViewImpl(props: Props) {
     }
   }, [workspace, scope, me, statusFilter, priority, severity, ownerFilter, creatorFilter, debouncedKeyword, sort, pageNo]);
 
+  /**
+   * 处理中 has no server query: the rows are exactly the bugs named by live
+   * agent state, so their summaries come from the detail cache plus one live
+   * detail call per bug.
+   */
+  const loadProcessing = useCallback(async () => {
+    if (!workspace) return;
+    const ids = processingKey ? processingKey.split("\u0000") : [];
+    if (ids.length === 0) {
+      // Activity vanished before App could reset the scope; never show a
+      // "failed" banner for a view that is about to close.
+      requestIdRef.current += 1;
+      loadingRef.current = false;
+      setLoading(false);
+      setPage(null);
+      return;
+    }
+    const requestId = ++requestIdRef.current;
+    const buildPage = buildProcessingPageRef.current;
+    loadingRef.current = true;
+    setError(null);
+    setLoading(true);
+
+    // Cache-first, like the list: bugs already opened paint immediately, then
+    // the live pass replaces them.
+    let cachedBugs: BugSummary[] = [];
+    let cachedAt: number | null = null;
+    try {
+      const entries = await Promise.all(
+        ids.map((id) => cacheApi.bugDetail(workspace.id, id).catch(() => null)),
+      );
+      if (requestId !== requestIdRef.current) return;
+      cachedBugs = entries.flatMap((entry) => (entry?.data ? [entry.data] : []));
+      if (cachedBugs.length > 0) {
+        const times = entries.flatMap((entry) =>
+          entry?.fetchedAt ? [entry.fetchedAt] : [],
+        );
+        cachedAt = times.length > 0 ? Math.min(...times) : null;
+        processingBugsRef.current = cachedBugs;
+        setPage(buildPage(cachedBugs));
+        setSnapshotAt(cachedAt);
+      }
+    } catch {
+      // Cache misses are not page failures; the live request decides.
+    }
+
+    try {
+      const settled = await Promise.allSettled(
+        ids.map((id) => api.bugDetail(workspace.id, id)),
+      );
+      if (requestId !== requestIdRef.current) return;
+      const cachedById = new Map(cachedBugs.map((bug) => [bug.id, bug]));
+      // A bug whose live detail failed keeps its cached row instead of
+      // disappearing from the set.
+      const bugs = ids.flatMap((id, index) => {
+        const result = settled[index];
+        if (result?.status === "fulfilled") return [result.value];
+        const cached = cachedById.get(id);
+        return cached ? [cached] : [];
+      });
+      if (bugs.length === 0) {
+        setError("正在处理的缺陷加载失败，请稍后重试。");
+        setPage(null);
+        setSnapshotAt(null);
+        return;
+      }
+      processingBugsRef.current = bugs;
+      setPage(buildPage(bugs));
+      // Only claim freshness when every row came from the live pass.
+      setSnapshotAt(bugs.length === ids.length ? null : cachedAt);
+      setError(null);
+    } catch (cause) {
+      if (requestId !== requestIdRef.current) return;
+      if (cachedBugs.length === 0) {
+        setError(String(cause));
+        setPage(null);
+        setSnapshotAt(null);
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        loadingRef.current = false;
+        lastLoadedAtRef.current = Date.now();
+        setLoading(false);
+      }
+    }
+  }, [workspace, processingKey]);
+
+  const load = useCallback(
+    async (silent = false) => {
+      if (scope === "processing") {
+        // The silent 30s tick is a no-op here: activity state arrives as
+        // props, and re-fetching every detail would hammer TAPD.
+        if (!silent) await loadProcessing();
+        return;
+      }
+      await loadList(silent);
+    },
+    [scope, loadList, loadProcessing],
+  );
+
   const loadRef = useRef(load);
   loadRef.current = load;
 
+  // Server views reload on query changes. 处理中 only reloads when the agent
+  // bug set or the project changes: its filters are applied over the rows it
+  // already has (below), so typing in the search box is not a network event.
   useEffect(() => {
-    void load();
-  }, [load, reloadTick, refreshToken]);
+    if (scope === "processing") return;
+    void loadList();
+  }, [scope, loadList, reloadTick, refreshToken]);
+
+  useEffect(() => {
+    if (scope !== "processing") return;
+    void loadProcessing();
+  }, [scope, loadProcessing, reloadTick, refreshToken]);
+
+  useEffect(() => {
+    if (scope !== "processing" || processingBugsRef.current.length === 0) return;
+    setPage(buildProcessingPage(processingBugsRef.current));
+  }, [scope, buildProcessingPage]);
 
   // Auto-refresh the visible list. Hidden windows pause; becoming visible
   // again catches up immediately when the snapshot is older than one interval.
@@ -370,6 +554,7 @@ function BugListViewImpl(props: Props) {
         scope={scope}
         me={me}
         onScopeChange={onScopeChange}
+        showProcessing={processingIds.length > 0}
         keyword={keyword}
         onKeywordChange={(value) => {
           setPageNo(1);
@@ -424,11 +609,21 @@ function BugListViewImpl(props: Props) {
         {!error && page && page.bugs.length === 0 ? (
           <EmptyState
             icon={<Bug size={22} />}
-            title={scope === "mine" ? "你名下没有符合条件的缺陷" : "没有符合条件的缺陷"}
+            title={
+              scope === "processing"
+                ? "当前没有正在处理的缺陷"
+                : scope === "mine"
+                  ? "你名下没有符合条件的缺陷"
+                  : "没有符合条件的缺陷"
+            }
             description={
-              activeFilterCount > 0
-                ? "试试清除部分筛选条件，或切换到「全部」。"
-                : "当前项目的缺陷列表为空，或视图权限不足。"
+              scope === "processing"
+                ? activeFilterCount > 0
+                  ? "试试清除部分筛选条件。"
+                  : "内部 Agent 或外部 AI 开始处理后会出现在这里。"
+                : activeFilterCount > 0
+                  ? "试试清除部分筛选条件，或切换到「全部」。"
+                  : "当前项目的缺陷列表为空，或视图权限不足。"
             }
             action={
               activeFilterCount > 0 ? (
@@ -445,6 +640,7 @@ function BugListViewImpl(props: Props) {
             page={page}
             loading={loading}
             me={me}
+            activeBugId={activeBugId}
             columns={columns}
             hideOwner={hideOwner}
             agentInFlight={agentInFlight}
@@ -512,8 +708,10 @@ function BugListViewImpl(props: Props) {
 }
 
 /**
- * Memoized so detail-pane state changes (open/loading/detail) do not reconcile
- * the whole bug table. Props must stay referentially stable: App passes
+ * Memoized so detail-pane state changes (loading/detail) do not reconcile the
+ * whole bug table. The one exception is `activeBugId`, which changes when the
+ * pane opens or closes: one cheap render to move the row highlight.
+ * Props must stay referentially stable: App passes
  * `useCallback` handlers and the workspace object from the loaded context.
  */
 export const BugListView = memo(BugListViewImpl);
