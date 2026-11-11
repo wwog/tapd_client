@@ -18,6 +18,7 @@ import { agentApi } from "../lib/agent";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
 import { useTauriSubscription } from "../lib/tauriEvent";
+import { useCurrentAgent } from "../lib/useCurrentAgent";
 import { Button } from "./ui";
 
 export type AgentComposePayload = {
@@ -47,6 +48,8 @@ export function AgentComposeSheet(props: Props) {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
+  /** Runtime the queue will use; it comes from Settings → Agent 管理. */
+  const currentAgent = useCurrentAgent(open);
 
   // Every opening starts clean; the bug id is part of the panel key upstream,
   // so switching targets also remounts this sheet.
@@ -57,6 +60,7 @@ export function AgentComposeSheet(props: Props) {
     setSaving(false);
     setDragging(false);
   }, [open]);
+
 
   const addPaths = useCallback((paths: string[]) => {
     const next = paths.map((path) => path.trim()).filter(Boolean);
@@ -253,8 +257,12 @@ export function AgentComposeSheet(props: Props) {
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
           <span
             className="min-w-0 truncate text-ui-xs text-slate-400"
-            title="图片、视频只把本地路径交给 Agent"
-          />
+            title="当前 Agent 来自 设置 → Agent 管理；图片、视频只把本地路径交给它"
+          >
+            {currentAgent
+              ? `将使用 ${currentAgent.name} · ${currentAgent.binary}`
+              : "正在读取当前 Agent…"}
+          </span>
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
               取消

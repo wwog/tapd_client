@@ -816,9 +816,6 @@ mod tests {
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
             runtime_id: "opencode".to_string(),
-            transport: "acp".to_string(),
-            session_id: Some("ses_1".to_string()),
-            review: None,
             approval: None,
             commit_only: false,
             extra_prompt: String::new(),
@@ -847,7 +844,7 @@ mod tests {
                 )
                 .expect("persisted row");
             assert!(payload.contains("\"prompt\":\"prompt\""));
-            assert!(payload.contains("\"sessionId\":\"ses_1\""));
+            assert!(!payload.contains("\"sessionId\""));
         }
 
         // Removed ids are deleted and the queue flag is updated.

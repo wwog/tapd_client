@@ -47,6 +47,7 @@
 | [MCP.md](docs/MCP.md) | 16 个工具、目录匹配项目、修复提示词、外部占用、AI 通知格式、Agent 审核、客户端接入、策略与审计 |
 | [NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | 通知范围、轮询、去重与 AI 卡片 |
 | [AGENT.md](docs/AGENT.md) | 修复队列、审核与任务状态 |
+| [MULTI_AGENT.md](docs/MULTI_AGENT.md) | 多 Agent 的 TUI 适配、提示词投递与完成判定 |
 | [RELEASE.md](docs/RELEASE.md) | 打包、签名与发版 |
 | [PLAN.md](docs/PLAN.md) | 阶段计划与验收记录 |
 | [spike.md](docs/spike.md) | TAPD 内部接口验证 |

@@ -59,13 +59,15 @@ export function AgentManagement({ toast }: Props) {
     try {
       const { config: saved } = await agentApi.configSet({
         runtimeId: next.runtimeId,
-        transport: next.transport,
         binaryPath: next.binaryPath,
         promptTemplate: next.promptTemplate,
         readyQuietMs: finiteOr(next.readyQuietMs, 900),
         readyTimeoutMs: finiteOr(next.readyTimeoutMs, 15_000),
+        idleCompleteMs: finiteOr(next.idleCompleteMs, 180_000),
       });
       setConfig(saved);
+      // Keep the "current agent" labels in the bug list / drawer in sync.
+      window.dispatchEvent(new Event("agent:runtime-changed"));
     } catch (error) {
       toast("error", String(error));
     }
@@ -73,8 +75,9 @@ export function AgentManagement({ toast }: Props) {
 
   const selectRuntime = (runtime: AgentRuntimeDescriptor) => {
     if (!config || !runtime.available || runtime.id === config.runtimeId) return;
-    patchConfig({ runtimeId: runtime.id });
-    void commit({ runtimeId: runtime.id });
+    // 可执行路径只有一个，切换运行时同时切回该运行时的默认命令。
+    patchConfig({ runtimeId: runtime.id, binaryPath: runtime.binary });
+    void commit({ runtimeId: runtime.id, binaryPath: runtime.binary });
   };
 
   const summary = config && selectedRuntime
@@ -150,7 +153,7 @@ export function AgentManagement({ toast }: Props) {
                           {runtime.name}
                         </span>
                         <Badge tone={runtime.available ? "green" : "neutral"}>
-                          {runtime.available ? "可用" : "即将支持"}
+                          {runtime.available ? "已支持" : "即将支持"}
                         </Badge>
                       </div>
                       <div className="mt-0.5 text-ui-xs text-slate-400">
@@ -224,7 +227,6 @@ function Capabilities({ runtime }: { runtime: AgentRuntimeDescriptor }) {
       runtime.capabilities.externalDecision,
       "桌面/通知窗口的确认能被运行时接受",
     ],
-    ["会话恢复", runtime.capabilities.sessionResume, "可重新打开历史会话"],
     ["提交前审核", runtime.capabilities.commitReview, "复杂改动可暂停等待审核"],
   ];
 

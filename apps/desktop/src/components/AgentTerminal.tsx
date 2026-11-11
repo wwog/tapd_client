@@ -10,7 +10,7 @@ type Props = {
   taskId: string;
   /** Forward keystrokes and PTY resizes; only while the task is alive. */
   interactive: boolean;
-  /** Translate LF to CRLF for non-PTY output such as ACP logs. */
+  /** Translate LF to CRLF for non-interactive output such as history logs. */
   convertEol?: boolean;
   /** Increment to move keyboard focus into the terminal (e.g. "去终端处理"). */
   focusToken?: number;

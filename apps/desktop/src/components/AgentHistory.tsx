@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Bug,
-  ExternalLink,
   FolderOpen,
   Loader2,
   RotateCcw,
@@ -14,13 +13,14 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
   agentApi,
+  type AgentRuntimeDescriptor,
   type AgentTask,
   type AgentTaskStatus,
   type AgentWorkspaceRef,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
-import { openTaskExportDir, resumeTaskSession } from "../lib/desktop";
+import { openTaskExportDir } from "../lib/desktop";
 import { AgentLogViewer } from "./AgentLogViewer";
 import { Badge, Button, selectClass } from "./ui";
 
@@ -59,8 +59,8 @@ export function AgentHistory({
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [logTask, setLogTask] = useState<AgentTask | null>(null);
-  const [resumeBusy, setResumeBusy] = useState<string | null>(null);
   const [retryBusy, setRetryBusy] = useState<string | null>(null);
+  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const appliedFocusRef = useRef<string | null>(null);
   const requestRef = useRef(0);
 
@@ -69,6 +69,20 @@ export function AgentHistory({
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => clearTimeout(timer);
   }, [query]);
+
+  // Runtime names for the detail pane; the catalog is static for the session.
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .runtimes()
+      .then((result) => {
+        if (!cancelled) setRuntimes(result.runtimes);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchPage = useCallback(
     async (offset: number, focus?: string | null) => {
@@ -135,14 +149,8 @@ export function AgentHistory({
     void fetchPage(0, focusTaskId);
   }, [focusTaskId, tasks, fetchPage]);
 
-  const resume = async (task: AgentTask) => {
-    setResumeBusy(task.id);
-    try {
-      await resumeTaskSession(task, toast, "该任务没有可恢复的会话 ID");
-    } finally {
-      setResumeBusy(null);
-    }
-  };
+  const runtimeName = (id?: string) =>
+    runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "—";
 
   const retry = async (task: AgentTask) => {
     setRetryBusy(task.id);
@@ -323,28 +331,13 @@ export function AgentHistory({
                 >
                   重试
                 </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={
-                    resumeBusy === selected.id ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <ExternalLink size={12} />
-                    )
-                  }
-                  disabled={!selected.sessionId || resumeBusy !== null}
-                  onClick={() => void resume(selected)}
-                >
-                  终端恢复
-                </Button>
               </div>
 
               <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-ui-sm sm:grid-cols-3">
                 <Meta label="工作区" value={selected.workspaceName || selected.workspaceId} />
                 <Meta label="缺陷 ID" value={selected.bugId} mono />
                 <Meta label="来源" value={selected.source || "—"} />
-                <Meta label="会话" value={selected.sessionId || "—"} mono wide />
+                <Meta label="Agent" value={runtimeName(selected.runtimeId)} />
                 <Meta label="创建时间" value={relativeTime(selected.createdAt)} title={selected.createdAt} />
                 <Meta
                   label="开始时间"

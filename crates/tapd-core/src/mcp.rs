@@ -667,7 +667,7 @@ pub const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: r#"agent_task_report"#,
-        description: r#"仅用于客户端 Agent 修复流程（非 ACP 运行时）：向 TAPD 客户端回报任务生命周期。status=completed 表示修复并回写完成；failed 表示无法完成；needs_review 表示需要人工确认（附带 summary/files/risk）；progress 仅追加一条进度说明。ACP 运行时不需要调用本工具。"#,
+        description: r#"仅用于客户端 Agent 修复流程（通用 TUI 运行时）：向 TAPD 客户端回报任务生命周期。status=completed 表示修复并回写完成；failed 表示无法完成；needs_review 表示需要人工确认（附带 summary/files/risk）；progress 仅追加一条进度说明。所有运行时都应在结束本轮时调用本工具；未调用时客户端按进程退出或输出静默兜底。"#,
         schema: r#"{
   "type": "object",
   "properties": {

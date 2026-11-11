@@ -856,11 +856,9 @@ pub async fn mcp_config(state: State<'_, SharedState>) -> Result<McpConfigInfo, 
     let snippet = serde_json::to_string_pretty(&serde_json::json!({
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
-            "servers": {
-                "tapd": {
-                    "type": "local",
-                    "command": [command_path.clone()]
-                }
+            "tapd": {
+                "type": "local",
+                "command": [command_path.clone()]
             }
         }
     }))

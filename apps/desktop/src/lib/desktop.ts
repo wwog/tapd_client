@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { agentApi, exportDirFor, type AgentTask } from "./agent";
+import { exportDirFor, type AgentTask } from "./agent";
 import type { ToastFn } from "./feature";
 
 /**
@@ -43,24 +43,4 @@ export const openTaskExportDir = (task: AgentTask, toast: ToastFn): void => {
   void invoke("open_path", { path: dir }).catch((error) =>
     toast("error", String(error)),
   );
-};
-
-/**
- * Reopens the runtime session recorded for a task. The missing-session text
- * stays a parameter because the callers historically worded it differently.
- */
-export const resumeTaskSession = async (
-  task: AgentTask,
-  toast: ToastFn,
-  missingSessionMessage = "该任务没有可恢复的会话 ID",
-): Promise<void> => {
-  if (!task.sessionId) {
-    toast("error", missingSessionMessage);
-    return;
-  }
-  try {
-    await agentApi.openSession(task.id);
-  } catch (error) {
-    toast("error", String(error));
-  }
 };

@@ -568,10 +568,10 @@ exporter: "tapd-client/1.0"
 1. **异步桥改为结果桶轮询**：远程页面不允许调用应用 IPC 命令（`bridge_result not allowed`），`eval_with_callback` 又不 await Promise。最终用 `window.__TAPDCB_RESULTS__` + 120ms 原生 eval 轮询，稳定且不需要远程权限。
 2. **SQLite 已接入**：`cache.sqlite3` 保存项目、缺陷列表快照与详情；UI 先读缓存再后台刷新，只有首次登录无缓存时显示骨架屏。通知轮询在「我的」范围下已跨项目增量执行，每个项目独立 cursor / baseline；「项目」范围保持单项目轮询，避免过量请求。
 3. **MCP 写回已开放**：在查询/导出之外新增评论与状态更新（含自动先接受再流转）；删除/改处理人/批量操作仍未开放。客户端已提供策略档案（写开关、项目白名单、状态白名单）与调用审计（允许 / 拒绝 / 失败、耗时、客户端、项目/缺陷），审计不保存评论正文。
-4. **opencode v2 配置结构**：使用 `mcp.servers.<name>`，而不是旧文档里的 `mcp.<name>`；已实测 `opencode mcp list` 显示 connected；MCP tab 可一键合并到全局配置并自动备份。
+4. **opencode 配置结构**：v2.2+ 使用 `mcp.<name>`（直接写在 `mcp` 下）；早期版本曾用 `mcp.servers.<name>`，现在导入时会自动迁移旧包装。已实测 `opencode mcp list` 显示 connected；MCP tab 可一键合并到全局配置并自动备份。
 5. **通知采用自绘窗口 + SQLite 状态**：`cache.sqlite3` 的 `notification_*` 表保存设置、seen、ignored、cursor 与 baseline；首轮只建 baseline，避免历史缺陷轰炸。轮询分页拉取，未读完时保留 cursor；seen/ignored 按时间与条数裁剪。
 6. **处理动作会写 TAPD**：点击「处理」自动改派给自己，并把 `new`/`open`/`reopened` 流转到 `in_progress`/`progressing`；成功后通过 `agent://enqueue` 交给 Agent。
-7. **Agent 严格串行 + server 旁路**：单 worker；每个任务启动私有 `opencode serve`，TUI 通过 `--server` 连接，Rust 订阅 `/event` 判断 idle/权限请求；终端内嵌在 Agent tab，不再创建独立窗口。
+7. **Agent 严格串行 + 通用 TUI**：单 worker；所有运行时都在 PTY 中启动各自 CLI，提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定；权限确认在右侧内嵌终端完成，不再有 ACP 与 opencode 私有 server。
 
 ### 已知待办
 

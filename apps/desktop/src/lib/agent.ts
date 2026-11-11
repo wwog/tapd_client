@@ -17,10 +17,8 @@ export type ProjectAgentConfig = {
 };
 
 export type AgentConfig = {
-  /** Selected runtime; only `opencode` is available today. */
+  /** Selected runtime id from the catalog. */
   runtimeId: string;
-  /** Wire protocol: `acp` (bidirectional) or `pty` (interactive TUI). */
-  transport: string;
   binaryPath: string;
   /** Legacy: migrated into `projects` on load. */
   repoMappings: Record<string, string>;
@@ -28,6 +26,8 @@ export type AgentConfig = {
   promptTemplate: string;
   readyQuietMs: number;
   readyTimeoutMs: number;
+  /** TUI 运行时输出静默多久视为本轮结束；0 表示只依赖 MCP 回报。 */
+  idleCompleteMs: number;
 };
 
 /** A stage every runtime declares in the Agent management dialog. */
@@ -49,7 +49,6 @@ export type AgentRuntimeCapabilities = {
   permissionPrompt: boolean;
   /** Desktop can answer a blocking prompt and the runtime accepts it. */
   externalDecision: boolean;
-  sessionResume: boolean;
   commitReview: boolean;
 };
 
@@ -60,34 +59,18 @@ export type AgentRuntimeDescriptor = {
   description: string;
   /** Default executable, used as the form placeholder. */
   binary: string;
-  /** Wire protocols this runtime supports, preferred first. */
-  transports: string[];
-  defaultTransport: string;
+  /** 启动参数（不含提示词）。 */
+  args: string[];
+  /** 提示词交付方式。 */
+  promptInjection: "argv" | "flag" | "stdin";
+  /** flag 模式下承载提示词的参数名。 */
+  promptFlag?: string | null;
   available: boolean;
   capabilities: AgentRuntimeCapabilities;
   lifecycle: AgentLifecycleStage[];
   limitations: string[];
   /** What the UI does when an external decision cannot be applied. */
   fallback: string;
-};
-
-/** One option offered by an ACP permission request. */
-export type AgentPermissionOption = {
-  optionId: string;
-  name: string;
-  kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | string;
-};
-
-/** A pending permission prompt that needs a human decision. */
-export type AgentReviewRequest = {
-  id: string;
-  sessionId: string;
-  action: string;
-  resource: string;
-  title: string;
-  /** ACP options; empty for the legacy opencode 3-way prompt. */
-  options?: AgentPermissionOption[];
-  transport?: string;
 };
 
 /** A complex change paused for the user's commit decision. */
@@ -120,13 +103,8 @@ export type AgentTask = {
   error?: string;
   prompt: string;
   source: string;
-  /** Runtime and transport snapshotted at enqueue time. */
+  /** Runtime snapshotted at enqueue time. */
   runtimeId?: string;
-  transport?: string;
-  /** opencode session id, used to reopen the conversation in a terminal. */
-  sessionId?: string;
-  /** Present while the agent waits for a permission decision. */
-  review?: AgentReviewRequest | null;
   /** Present while the task waits for the commit decision. */
   approval?: AgentApproval | null;
   /** The next run is the post-approval commit phase. */
@@ -226,15 +204,12 @@ export type AgentTasksPage = {
 /** Lightweight agent state for the island capsule. */
 export type AgentSummary = {
   running: boolean;
-  waitingReview: boolean;
   awaitingApproval?: number;
   activeTaskId: string | null;
   title: string | null;
   workspaceName: string | null;
   bugId: string | null;
 };
-
-export type PermissionReply = "once" | "always" | "reject";
 
 /** Statuses that still own the bug inside the agent pipeline. */
 const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
@@ -396,25 +371,9 @@ export const agentApi = {
     featureCommand<{ diff: string }>("agent_review_diff", { taskId }),
   taskLog: (taskId: string) =>
     featureCommand<{ data: string }>("agent_task_log", { taskId }),
-  /** Reopen this task's opencode session in Terminal.app. */
-  openSession: (taskId: string) =>
-    featureCommand<{ opened: boolean }>("agent_open_session", { taskId }),
   /** Focus the main window and select this task in the Agent tab. */
   openTask: (taskId: string) =>
     featureCommand<{ opened: boolean }>("agent_open_task", { taskId }),
-  /** Answer a pending opencode permission prompt. */
-  permissionReply: (taskId: string, response: PermissionReply, remember = true) =>
-    featureCommand<{ task: AgentTask }>("agent_permission_reply", {
-      taskId,
-      response,
-      remember,
-    }),
-  /** Answer an ACP permission request with one of its exact option ids. */
-  permissionOption: (taskId: string, optionId: string) =>
-    featureCommand<{ task: AgentTask }>("agent_permission_option", {
-      taskId,
-      optionId,
-    }),
   input: (taskId: string, data: string) =>
     featureCommand<{ ok: boolean }>("agent_input", { taskId, data }),
   resize: (taskId: string, cols: number, rows: number) =>

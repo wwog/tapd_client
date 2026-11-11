@@ -30,7 +30,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 │         └── cache.sqlite3 ◄── 缓存 / 轮询         │                     │
 │                                       外部 AI 客户端（opencode 等）     │
 │                                                                         │
-│   Agent Queue ── 每个任务一个 opencode serve ── /event 订阅 / 权限回复  │
+│   Agent Queue ── 通用 TUI（PTY）── 终端接管 / MCP 回报                │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -43,7 +43,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 | 通知胶囊 | 随 App | 自绘通知与更新进度，可拖动 |
 | 本地 HTTP | 随 App | 仅监听 `127.0.0.1`，随机端口，每次启动轮换 token |
 | `tapd-mcp` | 由 AI 客户端启动 | stdio MCP，反向调用本地 HTTP |
-| `opencode serve` | 每个 Agent 任务 | 修复会话，Rust 订阅事件流并转成 UI 状态 |
+| Agent TUI | 每个任务 | 在 PTY 中运行，输出进内嵌终端，完成由 MCP 回报 |
 
 登录页不是独立窗口：主窗口直接镜像隐藏 WebView 里的企业微信二维码，扫码完成后隐藏 WebView 保留会话。
 
@@ -80,13 +80,13 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 ### 3.4 修复队列与 Agent
 
 1. 从缺陷生成 Markdown 包（`bug.md` + `assets/` + `bug.json`）。
-2. 队列固定并发 1，每个任务启动私有 `opencode serve`。
-3. Rust 订阅 `/event` 判断轮次完成与权限请求，任务结束自动回收进程并继续队列。
-4. 权限审核时可在 Agent tab 或胶囊里「允许一次 / 总是允许 / 拒绝」。
+2. 队列固定并发 1，所有运行时都在 PTY 中启动自己的 TUI。
+3. 完成由 MCP `agent_task_report`、进程退出或输出静默判定；任务结束自动回收进程并继续队列。
+4. 权限确认在右侧内嵌终端里完成，桌面不代为回执。
 5. 复杂改动：prompt 要求调用 `tapd_request_review`，任务进入 `awaiting_approval` 并中止本轮；工作区保留 diff，队列停住。未调用时，本轮结束若出现新的未提交文件也会自动进入待审核。
 6. 待审核页「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
 7. 客户端在 MCP 层拒绝未提交时的 TAPD 写操作，保证 commit 先于评论/状态更新。
-8. 输出写日志文件；「终端恢复」用 `opencode -s <session>` 打开 Terminal。
+8. 输出写日志文件，并实时渲染到右侧内嵌终端。
 
 ### 3.5 MCP 调用
 
@@ -139,9 +139,9 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 
 ### Agent
 
-- Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；不内嵌 TUI，opencode 的 IO 写入日志文件，可「查看日志」或「终端恢复」（`opencode -s <session>` 打开 Terminal）。
+- Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。
 - Agent 改动审核：待审核卡片展示摘要、文件与风险，通过后重新入队提交，停止则按文件 `git stash` 并暂停队列；主窗口标题栏与顶部胶囊都会提示待审核数量。
-- Agent 运行时：每个任务启动私有 `opencode serve`，TUI 通过 `--server` 连接；Rust 订阅 `/event` 判断轮次完成与权限请求，完成后自动回收进程并继续队列。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 运行时：所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定。任务 JSON 同步写入 `agent_tasks.payload`。
 - 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 区只放 agent 参数，默认提示词模板自带 `{{project_rule}}` 段落；未配置目录时点 Agent 修复会先要求选择目录。
 
 ### MCP 与运维
@@ -172,8 +172,7 @@ apps/desktop/
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
-    agent.rs                 Agent 队列、PTY、opencode server 事件、任务持久化
-    opencode.rs              opencode serve / SSE / 权限回复适配
+    agent.rs                 Agent 队列、运行时目录、PTY、任务持久化
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入
@@ -204,7 +203,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - 仅 macOS（发布物为 Apple Silicon arm64）。
 - 通知的「项目」范围仍只轮询当前项目；「我的」范围已跨项目轮询。
 - `assigned_time` 缺失时“转移”判定偏保守。
-- Agent 就绪检测是启发式的；取消只杀直接子进程，opencode 派生的孙进程可能残留。
+- Agent 就绪检测与完成判定是启发式的；取消按进程组回收，仍可能有极端情况下的孙进程残留。
 - 发布包默认未签名、未公证；首次打开需在「系统设置 → 隐私与安全性」中允许。
 - TAPD 网页内部接口未公开，改版时需要更新适配层。
 

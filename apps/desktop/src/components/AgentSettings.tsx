@@ -88,32 +88,17 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
           />
         </div>
 
-        {runtime.transports.length > 1 ? (
-          <div>
-            <label className="text-ui-sm font-normal text-slate-600">
-              通信方式
-            </label>
-            <select
-              value={config.transport}
-              onChange={(event) => {
-                const transport = event.target.value;
-                onChange({ transport });
-                onCommit({ transport });
-              }}
-              className={`${inputClass} mt-1.5`}
-            >
-              {runtime.transports.map((transport) => (
-                <option key={transport} value={transport}>
-                  {transport === "acp"
-                    ? "ACP 双向协议（无终端）"
-                    : transport === "pty"
-                      ? "PTY 交互终端"
-                      : transport}
-                </option>
-              ))}
-            </select>
+        <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5">
+          <div className="text-ui-xs text-slate-400">启动方式</div>
+          <div className="mt-1 break-all font-mono text-ui-caption text-slate-700">
+            {[config.binaryPath || runtime.binary, ...runtime.args].join(" ")}
+            {runtime.promptInjection === "argv"
+              ? " <提示词>"
+              : runtime.promptInjection === "flag"
+                ? ` ${runtime.promptFlag ?? "-i"} <提示词>`
+                : "（启动后注入提示词）"}
           </div>
-        ) : null}
+        </div>
 
         <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -163,6 +148,13 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
               hint="超时后强制注入"
               value={config.readyTimeoutMs}
               onChange={(value) => onChange({ readyTimeoutMs: value })}
+              onCommit={() => onCommit()}
+            />
+            <NumberField
+              label="静默完成（ms）"
+              hint="通用 TUI 未调用 agent_task_report 时，输出静默多久视为本轮结束；0 表示关闭"
+              value={config.idleCompleteMs}
+              onChange={(value) => onChange({ idleCompleteMs: value })}
               onCommit={() => onCommit()}
             />
           </div>

@@ -14,7 +14,7 @@ TAPD Client 通过一个独立的 stdio sidecar（`tapd-mcp`）向 AI 客户端�
 
 | 客户端 | 写入位置 | 说明 |
 | --- | --- | --- |
-| opencode | `opencode.json[c]` 的 `mcp.servers.tapd` | 通过 `opencode debug paths` 定位，回退 `$XDG_CONFIG_HOME/opencode` / `~/.config/opencode` |
+| opencode | `opencode.json[c]` 的 `mcp.tapd` | 通过 `opencode debug paths` 定位，回退 `$XDG_CONFIG_HOME/opencode` / `~/.config/opencode`；旧版 `mcp.servers` 会在导入时自动迁移 |
 | ZCode | `~/.zcode/cli/config.json` 的 `mcp.servers.tapd` | `command` 是字符串（不是数组）；工作区级写 `<repo>/.zcode/config.json` |
 | Claude Code | `~/.claude.json` 的 `mcpServers.tapd` | 执行 `claude mcp add --scope user --transport stdio tapd -- <路径>`；需要已安装 Claude Code CLI |
 | Cursor | `~/.cursor/mcp.json` 的 `mcpServers.tapd` | 保留文件中其他 server |
@@ -28,27 +28,21 @@ TAPD Client 通过一个独立的 stdio sidecar（`tapd-mcp`）向 AI 客户端�
 
 ## 3. 手动配置（项目级，可选）
 
-在项目的 `opencode.json` 中加入（注意是 `mcp.servers`）：
+在项目的 `opencode.json` 中加入（opencode v2.2+ 直接写在 `mcp` 下）：
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "servers": {
-      "tapd": {
-        "type": "local",
-        "command": ["/Users/user9527/projects/tapd_client/target/debug/tapd-mcp"]
-      }
+    "tapd": {
+      "type": "local",
+      "command": ["/Users/user9527/projects/tapd_client/target/debug/tapd-mcp"]
     }
   }
 }
 ```
 
-也可以直接用命令行注册到当前项目：
-
-```bash
-opencode mcp add tapd -- /Users/user9527/projects/tapd_client/target/debug/tapd-mcp
-```
+> opencode v2.2.6 的 `mcp add` 会把条目写到 `mcp.servers.tapd`，该结构会被启动校验拒绝（`Missing key mcp.servers.enabled`）。请直接编辑上面的 JSON，把 `tapd` 放在 `mcp` 下。
 
 打包安装后的路径通常是：
 
@@ -86,7 +80,7 @@ opencode mcp list
 | `tapd_notify_user` | 在顶部胶囊唤起通知，并等待用户点击后回传结果 | `title`（必填）、`tone`、`body`、`fields`、`progress`、`blocks`、`actions`、`tag`、`waitSeconds` |
 | `tapd_wait_notification` | 继续等待之前通知的用户决定 | `id`（必填）、`waitSeconds` |
 | `tapd_request_review` | 复杂改动暂停，等待用户审核后再提交（仅 Agent 任务） | `taskId`（必填）、`summary`（必填）、`files`、`risk` |
-| `agent_task_report` | 非 ACP 运行时的任务生命周期回报（仅 Agent 任务） | `taskId`、`status`（均必填）、`message`、`files`、`risk` |
+| `agent_task_report` | 通用 TUI 运行时的任务生命周期回报（仅 Agent 任务） | `taskId`、`status`（均必填）、`message`、`files`、`risk` |
 
 约定：
 
@@ -298,4 +292,4 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 默认 `owner=me` 且只查未解决缺陷。可显式传 `"owner": "all"`、`"statuses": []`、`"only_unresolved": false` 验证权限与项目是否正确。
 
 **`opencode mcp list` 显示未配置**
-确认配置写在 `mcp.servers` 下（不是 `mcp.tapd`），并从项目根目录执行命令。
+确认配置直接写在 `mcp.tapd` 下（opencode v2.2+ 不再接受 `mcp.servers` 包装），并从项目根目录执行命令。

@@ -6,6 +6,7 @@ import {
 } from "../lib/agent";
 import type { BugDetail, ExportResult } from "../lib/api";
 import { formatBytes } from "../lib/format";
+import { useCurrentAgent } from "../lib/useCurrentAgent";
 import { Button } from "./ui";
 
 type Props = {
@@ -44,6 +45,8 @@ export function BugDrawerFooter(props: Props) {
     onOpenAgentTask,
     onExport,
   } = props;
+  /** Runtime the 修复 button will launch, from Settings → Agent 管理. */
+  const currentAgent = useCurrentAgent();
 
   return (
     <div className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
@@ -121,10 +124,15 @@ export function BugDrawerFooter(props: Props) {
                 variant="primary"
                 className="rounded-r-none"
                 icon={<Bot size={13} />}
+                title={
+                  currentAgent
+                    ? `当前 Agent：${currentAgent.name}（${currentAgent.binary}）`
+                    : "正在读取当前 Agent"
+                }
                 disabled={exporting || loading}
                 onClick={() => onAgentFix(detail)}
               >
-                用 Agent 修复
+                用 {currentAgent?.name ?? "Agent"} 修复
               </Button>
               <Button
                 size="sm"

@@ -251,7 +251,7 @@ async fn dispatch(
         "tapd_wait_notification" => crate::notification::mcp_wait(arguments).await,
         // Local agent only: pauses the running task for a commit decision.
         "tapd_request_review" => crate::agent::request_review_from_mcp(app, arguments).await,
-        // Local agent only: explicit lifecycle report for non-ACP runtimes.
+        // Local agent only: explicit lifecycle report for generic TUI runtimes.
         "agent_task_report" => crate::agent::task_report_from_mcp(app, arguments).await,
         // Only reachable when a manifest entry was added without a handler;
         // the manifest test below catches that case.

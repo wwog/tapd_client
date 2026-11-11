@@ -1,4 +1,4 @@
-import { Bug, ExternalLink, FolderOpen, Loader2, Square, Terminal } from "lucide-react";
+import { Bug, FolderOpen, Loader2, Square, Terminal } from "lucide-react";
 
 import {
   AGENT_STATUS_LABELS,
@@ -11,12 +11,12 @@ import { Badge, Button } from "./ui";
 
 type Props = {
   task: AgentTask;
+  /** Human-readable name of the runtime that owns this task. */
+  runtimeName?: string;
   canCancel: boolean;
   actionBusy: string | null;
-  resumeBusy: string | null;
   logReady: boolean;
   onCancel: () => void;
-  onResume: () => void;
   onOpenExportDir: () => void;
   onOpenBug: () => void;
 };
@@ -25,12 +25,11 @@ type Props = {
 export function AgentTaskHeader(props: Props) {
   const {
     task,
+    runtimeName,
     canCancel,
     actionBusy,
-    resumeBusy,
     logReady,
     onCancel,
-    onResume,
     onOpenExportDir,
     onOpenBug,
   } = props;
@@ -53,6 +52,7 @@ export function AgentTaskHeader(props: Props) {
             <Badge tone={AGENT_STATUS_TONES[task.status]}>
               {AGENT_STATUS_LABELS[task.status]}
             </Badge>
+            {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
             <span className="shrink-0">
@@ -94,21 +94,6 @@ export function AgentTaskHeader(props: Props) {
             onClick={onCancel}
           >
             中断
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={
-              resumeBusy === task.id ? (
-                <Loader2 size={11} className="animate-spin" />
-              ) : (
-                <ExternalLink size={11} />
-              )
-            }
-            disabled={!task.sessionId || resumeBusy !== null}
-            onClick={onResume}
-          >
-            终端恢复
           </Button>
           <Button
             size="sm"

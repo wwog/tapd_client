@@ -16,6 +16,7 @@ import {
   type BugSummary,
 } from "../lib/api";
 import { bugTitle, isMyBug } from "../lib/bug";
+import { useCurrentAgent } from "../lib/useCurrentAgent";
 import {
   agentBugKey,
   type AgentInFlight,
@@ -128,6 +129,8 @@ export function BugTable(props: Props) {
 
   /** Row whose 取消 request is in flight (local task id or `external:<key>`). */
   const [cancelingId, setCancelingId] = useState<string | null>(null);
+  /** Runtime the row action will launch, from Settings → Agent 管理. */
+  const currentAgent = useCurrentAgent();
 
   // One clock for the whole table: only rows with an active claim/task show
   // elapsed time, so ticking stops when nothing is running.
@@ -415,6 +418,7 @@ export function BugTable(props: Props) {
                   </div>
                 ) : (
                   <AgentRowAction
+                    agentName={currentAgent?.name}
                     onFix={() => onAgentFix?.(bug)}
                     onCompose={
                       onAgentCompose ? () => onAgentCompose(bug) : undefined
@@ -436,16 +440,18 @@ export function BugTable(props: Props) {
  * the compose sheet for extra instructions or resources.
  */
 function AgentRowAction(props: {
+  agentName?: string;
   onFix: () => void;
   onCompose?: () => void;
 }) {
+  const label = props.agentName ? `用 ${props.agentName} 修复` : "用 Agent 修复";
   return (
     <div className="flex items-center justify-end whitespace-nowrap">
       <div className="inline-flex shrink-0 overflow-hidden rounded-lg border border-border bg-surface">
         <button
           type="button"
-          title="用 Agent 修复"
-          aria-label="用 Agent 修复"
+          title={label}
+          aria-label={label}
           onClick={(event) => {
             event.stopPropagation();
             props.onFix();

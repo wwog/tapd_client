@@ -1,4 +1,3 @@
-mod acp;
 mod agent;
 mod bug_write;
 mod cache;
@@ -14,7 +13,6 @@ mod media;
 mod notification;
 mod notification_db;
 mod open_with;
-mod opencode;
 mod reset;
 mod server;
 mod session;

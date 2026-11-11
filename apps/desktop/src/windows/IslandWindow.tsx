@@ -218,9 +218,7 @@ export function IslandWindow() {
   // Only treat the agent as clickable when there is actually something to show.
   const agentTaskId =
     agentSummary &&
-    (agentSummary.waitingReview ||
-      (agentSummary.awaitingApproval ?? 0) > 0 ||
-      agentSummary.running)
+    ((agentSummary.awaitingApproval ?? 0) > 0 || agentSummary.running)
       ? agentSummary.activeTaskId
       : null;
 
@@ -228,7 +226,7 @@ export function IslandWindow() {
     if (updateState?.available) {
       return { label: `可更新 v${updateState.available.version}`, tone: "alert" as const };
     }
-    if (agentSummary?.waitingReview || (agentSummary?.awaitingApproval ?? 0) > 0) {
+    if ((agentSummary?.awaitingApproval ?? 0) > 0) {
       return { label: "Agent 待审核", tone: "review" as const };
     }
     if (agentSummary?.running) return { label: "Agent 运行中", tone: "agent" as const };
@@ -300,7 +298,7 @@ export function IslandWindow() {
           }}
           title={
             agentTaskId
-              ? `${agentSummary?.waitingReview ? "Agent 待审核" : "Agent 运行中"} · 单击打开任务 · 可拖动`
+              ? `${(agentSummary?.awaitingApproval ?? 0) > 0 ? "Agent 待审核" : "Agent 运行中"} · 单击打开任务 · 可拖动`
               : items.length > 0
                 ? "单击展开通知 · 双击打开客户端 · 可拖动"
                 : "双击打开客户端 · 可拖动"

@@ -6,17 +6,15 @@ import {
   type AgentRuntimeDescriptor,
   type AgentTask,
   type AgentTaskStatus,
-  type PermissionReply,
 } from "../lib/agent";
 import {
   acquireAgentTasksStore,
   agentTasksStore,
   useAgentTasksStore,
 } from "../lib/agentStore";
-import { copyText, openTaskExportDir, resumeTaskSession } from "../lib/desktop";
+import { openTaskExportDir } from "../lib/desktop";
 import { AgentApproval } from "./AgentApproval";
 import { AgentHistory } from "./AgentHistory";
-import { AgentPermissionBar } from "./AgentPermissionBar";
 import { AgentQueuePane } from "./AgentQueuePane";
 import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
@@ -24,12 +22,7 @@ import { AgentTaskHeader } from "./AgentTaskHeader";
 import { AgentTerminal } from "./AgentTerminal";
 import { Button } from "./ui";
 
-const ACTIVE_STATUSES: AgentTaskStatus[] = [
-  "queued",
-  "preparing",
-  "running",
-  "waiting_review",
-];
+const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running"];
 const isActiveStatus = (status: AgentTaskStatus) => ACTIVE_STATUSES.includes(status);
 const isApprovalStatus = (status: AgentTaskStatus) => status === "awaiting_approval";
 
@@ -60,15 +53,9 @@ export function AgentPage({
   // Task explicitly selected by `agent://focus` or a click in the run queue;
   // cleared when the active task changes so the terminal follows the worker.
   const [explicitTaskId, setExplicitTaskId] = useState<string | null>(null);
-  const [permissionBusy, setPermissionBusy] = useState<PermissionReply | null>(null);
-  const [permissionOptionBusy, setPermissionOptionBusy] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
-  const [resumeBusy, setResumeBusy] = useState<string | null>(null);
-  /** Current runtime descriptor; decides whether external decisions are allowed. */
-  const [runtime, setRuntime] = useState<AgentRuntimeDescriptor | null>(null);
-  const [terminalFocus, setTerminalFocus] = useState(0);
-  /** Set when the runtime rejects a desktop decision; UI falls back to review. */
-  const [replyFallback, setReplyFallback] = useState<string | null>(null);
+  /** Runtime catalog, used to show which agent owns the selected task. */
+  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
 
   const appliedFocusRef = useRef<string | null>(null);
   const focusRefreshRef = useRef<string | null>(null);
@@ -94,18 +81,13 @@ export function AgentPage({
     setExplicitTaskId(null);
   }, [activeTaskId]);
 
-  // Runtime capability declaration. If the desktop cannot deliver a decision
-  // (or the runtime rejects it), the UI must point at the terminal instead of
-  // offering buttons that would silently fail.
+  // Runtime names are stable; fetch once for the task header.
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([agentApi.configGet(), agentApi.runtimes()])
-      .then(([configResult, runtimeResult]) => {
-        if (cancelled) return;
-        const current = runtimeResult.runtimes.find(
-          (item) => item.id === configResult.config.runtimeId,
-        );
-        setRuntime(current ?? runtimeResult.runtimes[0] ?? null);
+    void agentApi
+      .runtimes()
+      .then((result) => {
+        if (!cancelled) setRuntimes(result.runtimes);
       })
       .catch(() => undefined);
     return () => {
@@ -164,13 +146,9 @@ export function AgentPage({
     return index >= 0 ? index + 1 : null;
   };
 
-  // Prefer the selected task, then a pending permission prompt, then the active
-  // task, then the next queued one. Terminal tasks never leak into the run tab.
-  const reviewTask = runTasks.find(
-    (task) => task.status === "waiting_review" && task.review,
-  );
+  // Prefer the active task, then the next queued one. Terminal tasks never
+  // leak into the run tab.
   const fallbackId =
-    reviewTask?.id ??
     (activeTaskId && runTasks.some((task) => task.id === activeTaskId)
       ? activeTaskId
       : null) ??
@@ -182,15 +160,11 @@ export function AgentPage({
       : null) ?? fallbackId;
   const selectedTask = runTasks.find((task) => task.id === selectedId) ?? null;
   const selectedQueuePosition = selectedTask ? queuePosition(selectedTask) : null;
+  /** Human-readable runtime name for a task; falls back to the stored id. */
+  const runtimeName = (id?: string) =>
+    runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "Agent";
   /** The PTY log file exists once the task is actually running. */
-  const logReady =
-    selectedTask !== null &&
-    (selectedTask.status === "running" || selectedTask.status === "waiting_review");
-
-  // A new permission prompt (or a different task) deserves a fresh attempt.
-  useEffect(() => {
-    setReplyFallback(null);
-  }, [selectedTask?.id, selectedTask?.review?.id]);
+  const logReady = selectedTask !== null && selectedTask.status === "running";
 
   const counts = useMemo(() => {
     const queued =
@@ -232,38 +206,6 @@ export function AgentPage({
     [actionBusy, refresh, toast],
   );
 
-  const handlePermission = async (response: PermissionReply) => {
-    if (!selectedTask?.review || permissionBusy) return;
-    setPermissionBusy(response);
-    setReplyFallback(null);
-    try {
-      await agentApi.permissionReply(selectedTask.id, response, response === "always");
-      await refresh();
-    } catch (error) {
-      // The runtime did not accept the desktop decision. Never retry blindly:
-      // keep the review visible and point the user at the terminal.
-      setReplyFallback(String(error));
-      toast("error", String(error));
-    } finally {
-      setPermissionBusy(null);
-    }
-  };
-
-  const handlePermissionOption = async (optionId: string) => {
-    if (!selectedTask?.review || permissionOptionBusy) return;
-    setPermissionOptionBusy(optionId);
-    setReplyFallback(null);
-    try {
-      await agentApi.permissionOption(selectedTask.id, optionId);
-      await refresh();
-    } catch (error) {
-      setReplyFallback(String(error));
-      toast("error", String(error));
-    } finally {
-      setPermissionOptionBusy(null);
-    }
-  };
-
   const handleApprove = async (task: AgentTask) => {
     if (actionBusy) return;
     setActionBusy(`approve:${task.id}`);
@@ -298,19 +240,9 @@ export function AgentPage({
   const handleResumeQueue = () =>
     runAction("queue:resume", () => agentApi.resumeQueue());
 
-  const resumeSession = async (task: AgentTask) => {
-    setResumeBusy(task.id);
-    try {
-      await resumeTaskSession(task, toast, "该任务还没有 opencode 会话 ID");
-    } finally {
-      setResumeBusy(null);
-    }
-  };
-
   const canCancel = selectedTask !== null && ACTIVE_STATUSES.includes(selectedTask.status);
-  /** Only the PTY transport accepts keystrokes; ACP/process are read-only. */
-  const interactive =
-    selectedTask !== null && (selectedTask.transport ?? "pty") === "pty";
+  /** Every runtime runs in a PTY, so any live task accepts keystrokes. */
+  const interactive = selectedTask !== null && selectedTask.status === "running";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4 pt-2.5">
@@ -325,7 +257,7 @@ export function AgentPage({
 
       {tab === "history" ? (
         <AgentHistory
-          revision={`${counts.active}:${counts.queued}:${counts.waiting}:${counts.awaiting}`}
+          revision={`${counts.active}:${counts.queued}:${counts.awaiting}`}
           focusTaskId={focusTaskId}
           onOpenBug={onOpenBug}
           onQueued={(taskId) => {
@@ -367,7 +299,7 @@ export function AgentPage({
                   </div>
                   <h3
                     className="mt-3 text-ui-base text-slate-800"
-                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」中查看终端或恢复会话。"
+                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」中查看终端与日志。"
                   >
                     当前没有运行中的任务
                   </h3>
@@ -386,6 +318,7 @@ export function AgentPage({
             ) : selectedTask.status === "queued" ? (
               <AgentQueuedDetail
                 task={selectedTask}
+                runtimeName={runtimeName(selectedTask.runtimeId)}
                 position={selectedQueuePosition ?? 1}
                 queuePaused={counts.paused}
                 busy={actionBusy}
@@ -400,42 +333,20 @@ export function AgentPage({
               <>
                 <AgentTaskHeader
                   task={selectedTask}
+                  runtimeName={runtimeName(selectedTask.runtimeId)}
                   canCancel={canCancel}
                   actionBusy={actionBusy}
-                  resumeBusy={resumeBusy}
                   logReady={logReady}
                   onCancel={() =>
                     void runAction(`cancel:${selectedTask.id}`, () =>
                       agentApi.cancel(selectedTask.id),
                     )
                   }
-                  onResume={() => void resumeSession(selectedTask)}
                   onOpenExportDir={() => openTaskExportDir(selectedTask, toast)}
                   onOpenBug={() =>
                     onOpenBug(selectedTask.workspaceId, selectedTask.bugId)
                   }
                 />
-
-                {selectedTask.review ? (
-                  <AgentPermissionBar
-                    task={selectedTask}
-                    runtime={runtime}
-                    replyFallback={replyFallback}
-                    permissionBusy={permissionBusy}
-                    permissionOptionBusy={permissionOptionBusy}
-                    interactive={interactive}
-                    onPermission={(response) => void handlePermission(response)}
-                    onPermissionOption={(optionId) =>
-                      void handlePermissionOption(optionId)
-                    }
-                    onFocusTerminal={() => setTerminalFocus((value) => value + 1)}
-                    onCopySession={() => {
-                      if (selectedTask.sessionId) {
-                        void copyText(selectedTask.sessionId);
-                      }
-                    }}
-                  />
-                ) : null}
 
                 {selectedTask.error ? (
                   <div className="shrink-0 break-all border-b border-rose-100 bg-rose-50 px-3.5 py-1.5 text-ui-sm leading-5 text-rose-700">
@@ -450,7 +361,6 @@ export function AgentPage({
                       taskId={selectedTask.id}
                       interactive={interactive}
                       convertEol={!interactive}
-                      focusToken={terminalFocus}
                       className="h-full w-full"
                     />
                   </div>

@@ -2,6 +2,13 @@
 
 ## 未发布
 
+### Agent
+
+- 运行时改为 orca 式的通用 TUI 适配：Claude Code、Codex、Cursor、ZCode、Gemini、Qwen、Copilot、Cline、Aider、Goose 都通过 PTY 启动，按 argv / flag / stdin 投递提示词。
+- 移除 ACP 传输与 opencode 私有 server；所有运行时统一走 PTY，权限确认在右侧内嵌终端完成。
+- 通用 TUI 通过 MCP `agent_task_report` 回报完成；未回报时按输出静默（默认 180s）或进程退出兜底。
+- 设置页新增「静默完成」配置；切换运行时时自动回填默认命令，提示词要求 Agent 结束时调用 `agent_task_report`。
+
 ### 账户
 
 - 当前用户头像改为每次读取身份信息时从 TAPD 的 `img_src` 重新同步，启动、进入账户页和手动刷新都会更新，不再依赖企业微信扫码面板的缓存。
@@ -13,6 +20,7 @@
 - 所有带项目的工具支持 `root` 参数：按项目设置里的「本地文件夹」自动匹配 TAPD 项目，sidecar 默认把自身 cwd 作为软提示填入；`tapd_whoami` 返回 `localProjects` 与 `matchedWorkspaceId`。
 - 提示词工具默认复用已有导出，`refresh: true` 强制重新导出；导出失败只记入 `warnings`，仍返回提示词。
 - MCP 工具数 13 → 14，并修正 UI 工具列表漏掉的 `agent_task_report`。
+- opencode v2.2+ 的 MCP 配置改为直接写在 `mcp.tapd`；导入时自动把旧的 `mcp.servers` 包装迁移成直接条目，修复启动时的 `Missing key mcp.servers.enabled`。
 
 ### 外部 AI 占用
 

@@ -7,6 +7,8 @@ import { Badge, Button } from "./ui";
 
 type Props = {
   task: AgentTask;
+  /** Human-readable name of the runtime that will pick the task up. */
+  runtimeName?: string;
   position: number;
   queuePaused: boolean;
   busy: string | null;
@@ -16,7 +18,7 @@ type Props = {
 
 /** Right pane while the selected task is still waiting in the FIFO queue. */
 export function AgentQueuedDetail(props: Props) {
-  const { task, position } = props;
+  const { task, runtimeName, position } = props;
   const cancelKey = `cancel:${task.id}`;
   return (
     <>
@@ -34,6 +36,7 @@ export function AgentQueuedDetail(props: Props) {
                 {bugTitle(task.title) || "（无标题）"}
               </h2>
               <Badge tone="neutral">排队中</Badge>
+              {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
               <span className="shrink-0">
