@@ -73,7 +73,7 @@ opencode mcp list     # ✓ tapd connected
 - MCP 审计：`<数据目录>/cache.sqlite3` 的 `mcp_audit` 表（最近 500 条，可导出到 `exports/`）
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
 - 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
-- Agent 配置 / 任务 / 日志：`agent.json`、`cache.sqlite3` 的 `agent_tasks`、`agent-logs/`、`agent-events/`（日志与事件按最近 200 个任务保留）
+- Agent 配置 / 任务：`agent.json`、`cache.sqlite3` 的 `agent_tasks` / `agent_queue_state`（终端输出不落盘；旧版本遗留的 `agent-logs/`、`agent-events/` 在启动时删除）
 - 抓包导出：`<数据目录>/captures/`
 - 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.md` 里）
 - `runtime.json`：本地 API 端口与 token（0600）

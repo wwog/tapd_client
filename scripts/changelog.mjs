@@ -54,11 +54,18 @@ for (const [subject, hash] of entries) {
   buckets.get(group.title).push(`- ${clean} (${hash})`);
 }
 
-const today = new Date().toLocaleDateString("zh-CN", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
+const today = (() => {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+})();
+
+const changelogFile = path.join(root, "CHANGELOG.md");
+const header = "# 更新日志\n\n";
+let existing = "";
+if (fs.existsSync(changelogFile)) {
+  existing = fs.readFileSync(changelogFile, "utf8").replace(/^# 更新日志\s*/, "");
+}
 
 const lines = [
   `# TAPD Client ${tag}`,
@@ -67,14 +74,23 @@ const lines = [
   "",
 ];
 
-for (const group of groups) {
-  const items = buckets.get(group.title);
-  if (!items?.length) continue;
-  lines.push(`## ${group.title}`, "", ...items, "");
-}
+// Curated notes: the "## 未发布" section is written by hand while the version is
+// in development, so it beats notes reconstructed from commit subjects. Use it
+// verbatim (heading levels normalised to match a release section) and drop the
+// placeholder; only fall back to the commit log when it is missing or empty.
+const unreleased = takeUnreleased(existing);
+if (unreleased) {
+  lines.push(...unreleased.body.split("\n"), "");
+} else {
+  for (const group of groups) {
+    const items = buckets.get(group.title);
+    if (!items?.length) continue;
+    lines.push(`## ${group.title}`, "", ...items, "");
+  }
 
-if (entries.length === 0) {
-  lines.push("本版本没有用户可见的代码变更。", "");
+  if (entries.length === 0) {
+    lines.push("本版本没有用户可见的代码变更。", "");
+  }
 }
 
 const body = lines.join("\n").trimEnd() + "\n";
@@ -84,17 +100,37 @@ fs.mkdirSync(releaseDir, { recursive: true });
 const releaseFile = path.join(releaseDir, `${tag}.md`);
 fs.writeFileSync(releaseFile, body);
 
-const changelogFile = path.join(root, "CHANGELOG.md");
-const header = "# 更新日志\n\n";
-let rest = "";
-if (fs.existsSync(changelogFile)) {
-  rest = fs.readFileSync(changelogFile, "utf8").replace(/^# 更新日志\s*/, "");
-}
-fs.writeFileSync(changelogFile, `${header}${body}\n${rest}`.replace(/\n{3,}/g, "\n\n"));
+const rest = unreleased ? unreleased.rest : existing;
+const next = rest.trim() ? `${header}${body}\n${rest}` : `${header}${body}`;
+fs.writeFileSync(changelogFile, `${next.replace(/\n{3,}/g, "\n\n").trimEnd()}\n`);
 
 console.log(`wrote ${path.relative(root, releaseFile)} and CHANGELOG.md`);
+console.log(unreleased ? "notes: curated 未发布 section" : "notes: commits");
 if (previous) {
   console.log(`commits: ${previous}..HEAD (${entries.length})`);
 } else {
   console.log(`commits: ${entries.length} (no previous tag)`);
+}
+
+/**
+ * Splits a "## 未发布" section out of the changelog.
+ *
+ * The section ends at the next level-1/2 heading, so its `###` groups are kept
+ * as content and become `##` in the release body.
+ */
+function takeUnreleased(text) {
+  const all = text.split("\n");
+  const start = all.findIndex((line) => /^#{1,2}[ \t]*未发布[ \t]*$/.test(line));
+  if (start === -1) return null;
+  let end = all.length;
+  for (let index = start + 1; index < all.length; index += 1) {
+    if (/^#{1,2}[ \t]+\S/.test(all[index])) {
+      end = index;
+      break;
+    }
+  }
+  const body = all.slice(start + 1, end).join("\n").trim();
+  if (!body) return null;
+  const rest = [...all.slice(0, start), ...all.slice(end)].join("\n").trim();
+  return { body: body.replace(/^### /gm, "## "), rest };
 }

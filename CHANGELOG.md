@@ -8,6 +8,9 @@
 - 移除 ACP 传输与 opencode 私有 server；所有运行时统一走 PTY，权限确认在右侧内嵌终端完成。
 - 通用 TUI 通过 MCP `agent_task_report` 回报完成；未回报时按输出静默（默认 180s）或进程退出兜底。
 - 设置页新增「静默完成」配置；切换运行时时自动回填默认命令，提示词要求 Agent 结束时调用 `agent_task_report`。
+- 不再保留 Agent 日志：终端输出只走实时通道、不落盘，旧 `agent-logs/` 启动时清理；面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。
+- 历史任务新增「打开系统终端」：在 Terminal.app 里 `cd` 到任务仓库并用运行时声明的 resume 参数（opencode/claude `--continue`、codex `resume`）续接同一会话，替代原来的日志回放。
+- 终端输出改为按显示帧（16ms，单次上限 32KB）合批推送并启用 WebGL 渲染器，修复 TUI 持续重绘时输入延迟数秒的问题。
 
 ### 账户
 
@@ -19,7 +22,8 @@
 - 新增 `tapd_get_bug_prompt`：按缺陷 id 返回可直接使用的修复提示词，复用 Agent 的 `{{变量}}` 渲染、项目规则与已导出的 `bug.md`；默认 MCP 模板去掉外部客户端无法使用的审核队列，`kind: "agent"` 返回设置里的全局模板，`template` 可完全自定义。
 - 所有带项目的工具支持 `root` 参数：按项目设置里的「本地文件夹」自动匹配 TAPD 项目，sidecar 默认把自身 cwd 作为软提示填入；`tapd_whoami` 返回 `localProjects` 与 `matchedWorkspaceId`。
 - 提示词工具默认复用已有导出，`refresh: true` 强制重新导出；导出失败只记入 `warnings`，仍返回提示词。
-- MCP 工具数 13 → 14，并修正 UI 工具列表漏掉的 `agent_task_report`。
+- `tapd_get_bug` 额外返回 `tapdIntegration` 提示（回写与占用流程），只作告知，不强制调用。
+- MCP 工具数 12 → 16（新增提示词、外部占用与任务回报）；「MCP 服务」新增「MCP 接口文档」：点任一工具名打开，左侧接口列表、右侧显示描述、参数类型、必填项、默认值与约束，可直接复制 `inputSchema`。
 - opencode v2.2+ 的 MCP 配置改为直接写在 `mcp.tapd`；导入时自动把旧的 `mcp.servers` 包装迁移成直接条目，修复启动时的 `Missing key mcp.servers.enabled`。
 
 ### 外部 AI 占用
@@ -35,12 +39,18 @@
 
 - Agent 任务保存到 `cache.sqlite3`：完整任务在 `agent_tasks.payload`，状态变化只增量 upsert 变化的行；队列暂停标记存 `agent_queue_state`。
 - MCP 审计保存到 `mcp_audit` 表：每次调用只插入一行并裁剪到最近 500 条；导出与诊断包仍生成 JSON。
-- `agent-logs/` 与 `agent-events/` 保留最近 200 个任务的产物，更早的自动清理。
+- Agent 任务与 MCP 审计之外的临时产物不再保留：任务输出不落盘，`agent-logs/` 只在旧版本中存在，启动时删除。
 - 任务历史改为服务端分页（每页 50 条，按项目/状态/关键词筛选）；实时状态只推送非终态任务，历史增长后不再全量传输。
+
+### 交互
+
+- 窗口默认不可拖选，像原生桌面应用；缺陷描述、评论、变更值、diff、配置片段、发布说明与报错等内容区仍可正常选择与复制。
+- MCP 客户端卡片新增复制路径与「打开文件夹」，项目设置里的项目 ID 可一键复制；反馈就地显示对勾，不弹 toast。
 
 ### 启动
 
 - 主窗口改为就绪后再显示：几何位置先静默恢复，等首帧绘制完成才显示窗口，暗色主题下启动不再先闪一屏白；原生窗口底色跟随主题，极端情况下（前端加载失败）2 秒后兜底显示。
+- `pnpm dev` 下 MCP sidecar 拉起客户端时直接启动同目录的 debug 二进制，不再通过 bundle id 打开已安装版本（避免抢走会话、写到另一份数据目录）。
 
 # TAPD Client v1.0.0
 
