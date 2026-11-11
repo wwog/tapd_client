@@ -221,6 +221,12 @@ export default function App() {
     setView("agent");
   }, []);
 
+  /** The focus request is one-shot: the Agent page clears it after applying. */
+  const clearAgentFocus = useCallback(() => {
+    setAgentFocusTaskId(null);
+    setAgentReviewFocus(0);
+  }, []);
+
   /** Row 取消 for a local task: queued is removed, running is interrupted. */
   const cancelAgentTask = useCallback(
     async (taskId: string) => {
@@ -547,6 +553,7 @@ export default function App() {
             focusReviewToken={agentReviewFocus}
             onOpenBug={openBugById}
             toast={showToast}
+            onFocusConsumed={clearAgentFocus}
           />
         );
       case "mcp":
@@ -714,7 +721,7 @@ export default function App() {
           onCopy={copy}
           onExport={detailPane.exportDetail}
           onAgentFix={handleAgentFix}
-          onAgentCompose={(target) => openAgentCompose(target)}
+          onAgentCompose={openAgentCompose}
           agentInFlight={agentInFlight}
           onOpenAgentTask={openAgentTask}
           onOpenPath={openPath}

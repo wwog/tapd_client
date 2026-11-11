@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   Check,
   ChevronDown,
@@ -23,6 +23,7 @@ import {
   type OpenTargetSet,
 } from "../lib/api";
 import { formatBytes } from "../lib/format";
+import { useDismiss } from "../hooks/useDismiss";
 import { MediaPreview, type PreviewItem } from "./MediaPreview";
 import { BugSectionTitle } from "./BugSectionTitle";
 
@@ -94,28 +95,28 @@ export function BugResources(props: Props) {
     return Array.from(kinds).sort();
   }, [detail]);
 
-  // Load the "open with" options once per resource kind.
+  // Load the "open with" options once per resource kind. The requested kinds
+  // live in a ref, not in `targetSets`: writing state from this effect used to
+  // re-run it and re-issue the calls whose responses it had just discarded.
+  const requestedKindsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
     for (const kind of resourceKinds) {
-      if (targetSets[kind]) continue;
+      if (requestedKindsRef.current.has(kind)) continue;
+      requestedKindsRef.current.add(kind);
       void api
         .openTargets(kind)
         .then((set) => {
-          if (cancelled) return;
           setTargetSets((current) =>
             current[kind] ? current : { ...current, [kind]: set },
           );
         })
         .catch(() => {
-          /* menu falls back to a single "打开" action */
+          // Let a later open retry this kind.
+          requestedKindsRef.current.delete(kind);
         });
     }
-    return () => {
-      cancelled = true;
-    };
-  }, [open, resourceKinds, targetSets]);
+  }, [open, resourceKinds]);
 
   // Reset the preview each time the drawer is opened.
   useEffect(() => {
@@ -265,8 +266,16 @@ function OpenButton(props: {
 }) {
   const { kind, targets, onSelect, onOpen } = props;
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const selected =
     targets?.targets.find((target) => target.id === targets.selected) ?? null;
+
+  // Escape and outside clicks close the menu, and the layer counter keeps the
+  // drawer's own Escape handler from closing the panel at the same time.
+  useDismiss(menuOpen, menuRef, () => setMenuOpen(false), {
+    scroll: true,
+    resize: true,
+  });
 
   return (
     <div className="relative shrink-0">
@@ -299,7 +308,10 @@ function OpenButton(props: {
             onClick={() => setMenuOpen(false)}
             className="fixed inset-0 z-20 cursor-default"
           />
-          <div className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-lg border border-border bg-surface py-1 ">
+          <div
+            ref={menuRef}
+            className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-lg border border-border bg-surface py-1 "
+          >
             <p className="px-3 py-1 text-ui-xs text-slate-400">默认打开方式</p>
             {(targets?.targets ?? []).map((target) => {
               const active = target.id === targets?.selected;

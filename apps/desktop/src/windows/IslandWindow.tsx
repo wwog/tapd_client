@@ -49,6 +49,21 @@ import { useTauriEvent, useTauriSubscription } from "../lib/tauriEvent";
 
 const PILL_LAYOUT: IslandLayout = { expanded: false, width: 210, height: 34, count: 0 };
 
+/**
+ * Only the fields the capsule actually renders. Poll snapshots are fresh
+ * objects every tick, and a new object is a new render for the whole island.
+ */
+function sameStatus(
+  a: NotificationStateSnapshot,
+  b: NotificationStateSnapshot,
+): boolean {
+  return (
+    a.running === b.running &&
+    a.lastError === b.lastError &&
+    JSON.stringify(a.settings) === JSON.stringify(b.settings)
+  );
+}
+
 type Busy = { id: string; action: string } | null;
 
 /**
@@ -101,7 +116,12 @@ export function IslandWindow() {
   const refreshStatus = useCallback(async () => {
     try {
       const next = await notificationApi.state();
-      setSnapshot(next);
+      // Every poll deserializes a fresh object; keeping the previous one when
+      // nothing the capsule renders changed avoids a pointless re-render.
+      // The card list arrives through `notification://show`, not this snapshot.
+      setSnapshot((current) =>
+        current && sameStatus(current, next) ? current : next,
+      );
       setItems((current) =>
         current.length > 0 ? current : pendingItems(next.items).slice(0, Math.max(1, next.settings.maxVisible)),
       );
@@ -129,22 +149,14 @@ export function IslandWindow() {
 
   useEffect(() => {
     void refreshStatus();
-    let cancelled = false;
 
     // Keep the capsule honest even between polls; also self-heals if the
     // initial `island://layout` was emitted before the webview loaded.
-    const timer = window.setInterval(() => {
-      void refreshStatus();
-      void agentApi
-        .summary()
-        .then((summary) => {
-          if (!cancelled) setAgentSummary(summary);
-        })
-        .catch(() => undefined);
-    }, 6000);
+    // Agent state arrives through `agent://summary`, so one command per tick
+    // is enough and the tick matches the default notification poll.
+    const timer = window.setInterval(() => void refreshStatus(), 30_000);
 
     return () => {
-      cancelled = true;
       window.clearInterval(timer);
       if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
     };
@@ -165,14 +177,6 @@ export function IslandWindow() {
       cancelled = true;
     };
   }, []);
-
-  // Sync the window size with the pending list on first load.
-  useEffect(() => {
-    if (!snapshot) return;
-    if (items.length > 0 && !layout.expanded) {
-      void notificationApi.expandIsland(true).catch(() => undefined);
-    }
-  }, [snapshot, items.length, layout.expanded]);
 
   const run = async (item: NotificationItem, action: "handle" | "view" | "ignore") => {
     if (busy) return;

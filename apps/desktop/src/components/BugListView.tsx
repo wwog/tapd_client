@@ -153,13 +153,13 @@ function BugListViewImpl(props: Props) {
           severity,
           owner: ownerFilter,
           creator: creatorFilter,
-          keyword,
+          keyword: debouncedKeyword,
         }),
       );
     } catch {
       // Storage disabled: filters still apply for this run.
     }
-  }, [statusFilter, priority, severity, ownerFilter, creatorFilter, keyword]);
+  }, [statusFilter, priority, severity, ownerFilter, creatorFilter, debouncedKeyword]);
 
   useEffect(() => {
     try {
@@ -188,8 +188,14 @@ function BugListViewImpl(props: Props) {
     };
   }, [workspace]);
 
+  // Apply the keyword and reset the page in the same commit: resetting the
+  // page on every keystroke would fire one request with the *previous*
+  // keyword from page 2+.
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedKeyword(keyword.trim()), 300);
+    const timer = window.setTimeout(() => {
+      setDebouncedKeyword(keyword.trim());
+      setPageNo(1);
+    }, 300);
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
@@ -259,6 +265,10 @@ function BugListViewImpl(props: Props) {
   const processingBugsRef = useRef<BugSummary[]>([]);
   const buildProcessingPageRef = useRef(buildProcessingPage);
   buildProcessingPageRef.current = buildProcessingPage;
+  /** A detail batch is in flight; another one would only queue up behind it. */
+  const processingInFlightRef = useRef(false);
+  /** A refresh asked for while that batch was in flight; run once after it. */
+  const processingDirtyRef = useRef(false);
 
   /** Server-side page load for 我负责的 / 全部. */
   const loadList = useCallback(async (silent = false) => {
@@ -356,6 +366,8 @@ function BugListViewImpl(props: Props) {
    * agent state, so their summaries come from the detail cache plus one live
    * detail call per bug.
    */
+  /** Re-enters `loadProcessing` with the latest ids after a coalesced batch. */
+  const processingRetryRef = useRef<() => void>(() => {});
   const loadProcessing = useCallback(async () => {
     if (!workspace) return;
     const ids = processingKey ? processingKey.split("\u0000") : [];
@@ -368,8 +380,15 @@ function BugListViewImpl(props: Props) {
       setPage(null);
       return;
     }
+    // A write or `data://refresh` arriving mid-batch must not start a second
+    // round of detail calls: remember it and run once more when this one ends.
+    if (processingInFlightRef.current) {
+      processingDirtyRef.current = true;
+      return;
+    }
     const requestId = ++requestIdRef.current;
     const buildPage = buildProcessingPageRef.current;
+    processingInFlightRef.current = true;
     loadingRef.current = true;
     setError(null);
     setLoading(true);
@@ -430,6 +449,15 @@ function BugListViewImpl(props: Props) {
         setSnapshotAt(null);
       }
     } finally {
+      processingInFlightRef.current = false;
+      if (processingDirtyRef.current) {
+        processingDirtyRef.current = false;
+        // Only when this batch is still the newest; a newer request already
+        // owns the page.
+        if (requestId === requestIdRef.current) {
+          processingRetryRef.current();
+        }
+      }
       if (requestId === requestIdRef.current) {
         loadingRef.current = false;
         lastLoadedAtRef.current = Date.now();
@@ -437,6 +465,8 @@ function BugListViewImpl(props: Props) {
       }
     }
   }, [workspace, processingKey]);
+
+  processingRetryRef.current = () => void loadProcessing();
 
   const load = useCallback(
     async (silent = false) => {
@@ -527,6 +557,9 @@ function BugListViewImpl(props: Props) {
     setOwnerFilter("");
     setCreatorFilter("");
     setKeyword("");
+    // Clear the applied keyword in the same commit, otherwise the reset page
+    // is fetched once with the old keyword still in the query.
+    setDebouncedKeyword("");
   };
 
   const claim = async (bug: BugSummary) => {
@@ -560,7 +593,6 @@ function BugListViewImpl(props: Props) {
         showProcessing={processingIds.length > 0}
         keyword={keyword}
         onKeywordChange={(value) => {
-          setPageNo(1);
           setKeyword(value);
         }}
         activeFilterCount={activeFilterCount}

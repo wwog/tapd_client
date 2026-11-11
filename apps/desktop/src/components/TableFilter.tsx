@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowDownWideNarrow,
@@ -9,6 +9,8 @@ import {
   Search,
 } from "lucide-react";
 import clsx from "clsx";
+
+import { useDismiss } from "../hooks/useDismiss";
 
 export type TableFilterOption = { value: string; label: string };
 
@@ -64,16 +66,9 @@ export function TableFilter(props: Props) {
     setQuery("");
   };
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  // Registered as a dismiss layer so the bug drawer's page-level Escape
+  // handler stands down instead of closing the panel too.
+  useDismiss(open, menuRef, close);
 
   const openMenu = () => {
     const rect = anchorRef.current?.getBoundingClientRect();

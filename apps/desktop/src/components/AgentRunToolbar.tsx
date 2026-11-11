@@ -9,7 +9,6 @@ export type AgentTab = "run" | "approval" | "history";
 export type AgentCounts = {
   queued: number;
   active: number;
-  waiting: number;
   awaiting: number;
   paused: boolean;
 };
@@ -35,16 +34,7 @@ export function AgentRunToolbar(props: Props) {
         options={[
           {
             value: "run",
-            label: (
-              <span className="inline-flex items-center gap-1.5">
-                运行
-                {counts.waiting > 0 ? (
-                  <span className="inline-flex min-w-[2ch] justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-ui-2xs font-normal leading-none tabular-nums text-white">
-                    {counts.waiting}
-                  </span>
-                ) : null}
-              </span>
-            ),
+            label: "运行",
           },
           {
             value: "approval",
@@ -64,8 +54,7 @@ export function AgentRunToolbar(props: Props) {
       />
 
       <span className="text-ui-sm text-slate-400">
-        {counts.active} 运行 · {counts.queued} 排队 · {counts.waiting} 权限 ·{" "}
-        {counts.awaiting} 待审核
+        {counts.active} 运行 · {counts.queued} 排队 · {counts.awaiting} 待审核
         {counts.paused ? " · 队列已暂停" : ""}
       </span>
 

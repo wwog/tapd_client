@@ -22,6 +22,7 @@ import { bugTitle, isMyBug } from "../lib/bug";
 import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
 import { showToast } from "../lib/toast";
+import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { SkeletonBlock } from "./Skeleton";
 import {
   Badge,
@@ -131,8 +132,14 @@ function BugDetailDrawerImpl(props: Props) {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
       // The preview handles its own Escape; don't also close the drawer.
-      if (event.key === "Escape" && !previewOpenRef.current) onClose();
+      if (previewOpenRef.current) return;
+      // A header filter or a resource menu in front owns this Escape. The
+      // drawer's listener was registered first, so it must ask instead of
+      // relying on propagation order.
+      if (hasOpenDismissLayer()) return;
+      onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

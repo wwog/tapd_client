@@ -34,6 +34,8 @@ type Props = {
   /** Jump to the bug a task belongs to (selects workspace + opens drawer). */
   onOpenBug: (workspaceId: string, bugId: string) => void;
   toast: (kind: "ok" | "error", text: string) => void;
+  /** Clears the focus request once applied; it is a command, not state. */
+  onFocusConsumed?: () => void;
 };
 
 /**
@@ -46,6 +48,7 @@ export function AgentPage({
   focusReviewToken = 0,
   onOpenBug,
   toast,
+  onFocusConsumed,
 }: Props) {
   // Shared with App: one `agent://state` subscription and one task snapshot.
   const tasksState = useAgentTasksStore();
@@ -116,6 +119,7 @@ export function AgentPage({
       } else {
         setTab("history");
       }
+      onFocusConsumed?.();
       return;
     }
 
@@ -130,12 +134,16 @@ export function AgentPage({
     // them by id.
     appliedFocusRef.current = focusTaskId;
     setTab("history");
-  }, [focusTaskId, tasksState, refresh]);
+    onFocusConsumed?.();
+  }, [focusTaskId, tasksState, refresh, onFocusConsumed]);
 
-  // The title-bar review badge opens the approval queue directly.
+  // The title-bar review badge opens the approval queue directly. The token is
+  // a one-shot command: leaving it set would drag every later visit back here.
   useEffect(() => {
-    if (focusReviewToken > 0) setTab("approval");
-  }, [focusReviewToken]);
+    if (focusReviewToken <= 0) return;
+    setTab("approval");
+    onFocusConsumed?.();
+  }, [focusReviewToken, onFocusConsumed]);
 
   // The queue is strictly FIFO: active work first, then the insertion order in
   // which the Rust worker will pick the rest.
@@ -173,16 +181,12 @@ export function AgentPage({
     const active = tasks.filter(
       (task) => task.status === "preparing" || task.status === "running",
     ).length;
-    const waiting =
-      tasksState?.waitingReviewCount ??
-      tasks.filter((task) => task.status === "waiting_review").length;
     const awaiting =
       tasksState?.awaitingApprovalCount ??
       tasks.filter((task) => task.status === "awaiting_approval").length;
     return {
       queued,
       active,
-      waiting,
       awaiting,
       paused: Boolean(tasksState?.queuePaused),
     };
@@ -252,6 +256,16 @@ export function AgentPage({
         onResumeQueue={handleResumeQueue}
         onRefresh={() => void refresh()}
       />
+
+      {tasksState?.storageError ? (
+        <div
+          role="alert"
+          title="任务变更会保留在内存中并在下次写入时重试，但重启前可能丢失。"
+          className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-ui-sm text-rose-700"
+        >
+          {tasksState.storageError}
+        </div>
+      ) : null}
 
       {tab === "history" ? (
         <AgentHistory

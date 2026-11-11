@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import {
   agentInFlightLabel,
   externalClaimLabel,
@@ -10,8 +12,6 @@ import { ActivityGlyph } from "./ActivityGlyph";
 type Props = {
   task?: AgentInFlight;
   claim?: ExternalClaim;
-  /** Shared 1s clock from the table; null when nothing is active. */
-  now: number;
 };
 
 /**
@@ -24,7 +24,10 @@ type Props = {
  * carries that jump instead.
  */
 export function AgentActivityLine(props: Props) {
-  const { task, claim, now } = props;
+  const { task, claim } = props;
+  // The clock lives here rather than in the table: a tick must re-render the
+  // two or three rows that show elapsed time, not all 50.
+  const now = useClock(Boolean(claim || task));
   if (!claim && !task) return null;
 
   const created = claim ? claim.claimedAt : task!.task.createdAt;
@@ -51,4 +54,16 @@ export function AgentActivityLine(props: Props) {
       </span>
     </div>
   );
+}
+
+/** 1s ticker; idle rows do not re-render. */
+function useClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }

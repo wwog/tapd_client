@@ -4,7 +4,6 @@ export type AgentTaskStatus =
   | "queued"
   | "preparing"
   | "running"
-  | "waiting_review"
   | "awaiting_approval"
   | "succeeded"
   | "failed"
@@ -118,10 +117,11 @@ export type AgentTasksState = {
   tasks: AgentTask[];
   activeTaskId: string | null;
   queuedCount?: number;
-  waitingReviewCount?: number;
   awaitingApprovalCount?: number;
   /** Set after the user stopped a review; resume from the Agent tab. */
   queuePaused?: boolean;
+  /** SQLite is unavailable; task state may not survive a restart. */
+  storageError?: string | null;
   /** Fresh external AI claims (backend already drops expired ones). */
   externalClaims?: ExternalClaim[];
 };
@@ -215,7 +215,6 @@ const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
   "queued",
   "preparing",
   "running",
-  "waiting_review",
   "awaiting_approval",
 ];
 
@@ -260,8 +259,6 @@ const stateRank = (status: AgentTaskStatus): number => {
       return 0;
     case "preparing":
       return 1;
-    case "waiting_review":
-      return 2;
     case "awaiting_approval":
       return 3;
     case "queued":
@@ -308,8 +305,6 @@ export function agentInFlightLabel(info: AgentInFlight): string {
       return "准备中";
     case "running":
       return "修复中";
-    case "waiting_review":
-      return "等待权限";
     case "awaiting_approval":
       return "待审核";
     default:
@@ -339,7 +334,6 @@ export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
   queued: "排队中",
   preparing: "准备中",
   running: "运行中",
-  waiting_review: "等待权限",
   awaiting_approval: "待审核",
   succeeded: "已完成",
   failed: "失败",
@@ -353,7 +347,6 @@ export const AGENT_STATUS_TONES: Record<
   queued: "neutral",
   preparing: "blue",
   running: "amber",
-  waiting_review: "red",
   awaiting_approval: "amber",
   succeeded: "green",
   failed: "red",

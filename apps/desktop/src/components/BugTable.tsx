@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
@@ -135,14 +135,6 @@ export function BugTable(props: Props) {
   const [cancelingId, setCancelingId] = useState<string | null>(null);
   /** Runtime the row action will launch, from Settings → Agent 管理. */
   const currentAgent = useCurrentAgent();
-
-  // One clock for the whole table: only rows with an active claim/task show
-  // elapsed time, so ticking stops when nothing is running.
-  const hasActivity = page.bugs.some((bug) => {
-    const bugKey = agentBugKey(bug.workspaceId, bug.id);
-    return Boolean(externalClaims?.get(bugKey) || agentInFlight?.get(bugKey));
-  });
-  const now = useClock(hasActivity);
 
   const cancelActivity = async (claim?: ExternalClaim, agent?: AgentInFlight) => {
     const id = claim
@@ -355,7 +347,7 @@ export function BugTable(props: Props) {
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
                 {claim || agent ? (
-                  <AgentActivityLine claim={claim} task={agent} now={now} />
+                  <AgentActivityLine claim={claim} task={agent} />
                 ) : null}
               </td>
               {visibleColumns.map((column) => (
@@ -623,16 +615,4 @@ function SortHeader(props: {
 function formatTs(value: string): string {
   if (!value) return "—";
   return value.length >= 16 ? value.slice(0, 16) : value;
-}
-
-/** 1s ticker shared by the activity lines; idle tables do not re-render. */
-function useClock(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
 }

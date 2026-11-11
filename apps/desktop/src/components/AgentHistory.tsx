@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import {
   Bug,
@@ -163,6 +163,18 @@ export function AgentHistory({
   const runtimeName = (id?: string) =>
     runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "—";
 
+  // Stable row callbacks: the list grows by 50 per "加载更多", so an inline
+  // handler would recreate every row on each keystroke and each selection.
+  const selectTask = useCallback((id: string) => setSelectedId(id), []);
+  const openRowMenu = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>, task: AgentTask) => {
+      event.preventDefault();
+      setSelectedId(task.id);
+      setRowMenu({ x: event.clientX, y: event.clientY, task });
+    },
+    [],
+  );
+
   const retry = async (task: AgentTask) => {
     setRetryBusy(task.id);
     try {
@@ -280,37 +292,13 @@ export function AgentHistory({
           ) : (
             <div className="space-y-1">
               {tasks.map((task) => (
-                <button
+                <HistoryRow
                   key={task.id}
-                  type="button"
-                  onClick={() => setSelectedId(task.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setSelectedId(task.id);
-                    setRowMenu({ x: event.clientX, y: event.clientY, task });
-                  }}
-                  className={clsx(
-                    "w-full rounded-lg px-2.5 py-2 text-left transition",
-                    task.id === selectedId
-                      ? "bg-sky-50 border border-sky-200"
-                      : "hover:bg-slate-50",
-                  )}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <Badge tone={AGENT_STATUS_TONES[task.status]} dot>
-                      {AGENT_STATUS_LABELS[task.status]}
-                    </Badge>
-                    <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
-                      {relativeTime(task.createdAt)}
-                    </span>
-                  </div>
-                  <div className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700">
-                    {bugTitle(task.title) || "（无标题）"}
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-                    {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
-                  </div>
-                </button>
+                  task={task}
+                  selected={task.id === selectedId}
+                  onSelect={selectTask}
+                  onMenu={openRowMenu}
+                />
               ))}
               {hasMore ? (
                 <button
@@ -481,6 +469,43 @@ export function AgentHistory({
     </div>
   );
 }
+
+/** One history row. Memoized: only the two rows whose `selected` flips (and
+ *  the row whose task object changed) re-render. */
+const HistoryRow = memo(function HistoryRow(props: {
+  task: AgentTask;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  onMenu: (event: ReactMouseEvent<HTMLButtonElement>, task: AgentTask) => void;
+}) {
+  const { task, selected, onSelect, onMenu } = props;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(task.id)}
+      onContextMenu={(event) => onMenu(event, task)}
+      className={clsx(
+        "w-full rounded-lg px-2.5 py-2 text-left transition",
+        selected ? "bg-sky-50 border border-sky-200" : "hover:bg-slate-50",
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        <Badge tone={AGENT_STATUS_TONES[task.status]} dot>
+          {AGENT_STATUS_LABELS[task.status]}
+        </Badge>
+        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+          {relativeTime(task.createdAt)}
+        </span>
+      </div>
+      <div className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700">
+        {bugTitle(task.title) || "（无标题）"}
+      </div>
+      <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
+        {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+      </div>
+    </button>
+  );
+});
 
 /** Right-click menu for a history row; dismisses like a native popup menu. */
 function HistoryRowContextMenu(props: {
