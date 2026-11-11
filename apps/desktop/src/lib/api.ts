@@ -243,12 +243,19 @@ export type McpClientStatus = {
   imported: boolean;
 };
 
+export type McpToolInfo = {
+  name: string;
+  description: string;
+  /** `inputSchema` JSON text, parsed by the API docs dialog. */
+  schema: string;
+};
+
 export type McpConfigInfo = {
   commandPath: string;
   snippet: string;
   transport: string;
   readOnly: boolean;
-  tools: string[];
+  tools: McpToolInfo[];
   port: number | null;
   clients: McpClientStatus[];
 };

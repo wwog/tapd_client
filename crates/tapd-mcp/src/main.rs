@@ -264,7 +264,36 @@ async fn healthy(client: &reqwest::Client, runtime: &RuntimeInfo) -> bool {
         .unwrap_or(false)
 }
 
+/// Debug builds (`pnpm dev`) relaunch the sibling dev binary instead of asking
+/// LaunchServices for the bundle id: that would open an installed release app,
+/// which runs against a different data directory and takes over the session.
+#[cfg(debug_assertions)]
+fn launch_dev_sibling() -> bool {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    else {
+        return false;
+    };
+    #[cfg(target_os = "windows")]
+    let binary = dir.join("tapd-client.exe");
+    #[cfg(not(target_os = "windows"))]
+    let binary = dir.join("tapd-client");
+    if !binary.is_file() {
+        return false;
+    }
+    std::process::Command::new(&binary)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
 fn launch_app() {
+    #[cfg(debug_assertions)]
+    if launch_dev_sibling() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("/usr/bin/open")

@@ -749,6 +749,16 @@ pub struct McpClientInfo {
     imported: bool,
 }
 
+/// One tool as shown in the in-app API docs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolInfo {
+    name: &'static str,
+    description: &'static str,
+    /// `inputSchema` JSON text; the UI parses it into a parameter list.
+    schema: &'static str,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpConfigInfo {
@@ -756,7 +766,7 @@ pub struct McpConfigInfo {
     snippet: String,
     transport: String,
     read_only: bool,
-    tools: Vec<&'static str>,
+    tools: Vec<McpToolInfo>,
     port: Option<u16>,
     /// One-click import status for every supported client.
     clients: Vec<McpClientInfo>,
@@ -869,8 +879,16 @@ pub async fn mcp_config(state: State<'_, SharedState>) -> Result<McpConfigInfo, 
         snippet,
         transport: "stdio".to_string(),
         read_only: !state.config_snapshot().mcp_policy.writes_enabled,
-        // The sidecar's manifest is the single source of truth for names.
-        tools: tapd_core::mcp::names().collect(),
+        // The sidecar's manifest is the single source of truth for names,
+        // descriptions and input schemas.
+        tools: tapd_core::mcp::TOOLS
+            .iter()
+            .map(|tool| McpToolInfo {
+                name: tool.name,
+                description: tool.description,
+                schema: tool.schema,
+            })
+            .collect(),
         port: state.runtime_info().map(|runtime| runtime.port),
         clients,
     })

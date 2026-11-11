@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ChevronDown, ChevronUp, Eye, EyeOff, FolderGit2, FolderOpen } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Eye, EyeOff, FolderGit2, FolderOpen } from "lucide-react";
 import clsx from "clsx";
 
 import { agentApi, type ProjectAgentConfig } from "../lib/agent";
 import { api, type Workspace, type WorkspaceContext } from "../lib/api";
+import { copyText } from "../lib/desktop";
 import type { SettingsSectionProps } from "../lib/feature";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { Button, cardClass, inputClass } from "./ui";
@@ -30,6 +31,7 @@ export function ProjectSettings(props: {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const projectsRef = useRef<Record<string, ProjectAgentConfig>>({});
   useEffect(() => {
@@ -69,6 +71,19 @@ export function ProjectSettings(props: {
       };
     });
   }, []);
+
+  /** Copies a project ID; the row swaps in a check mark instead of a toast. */
+  const copyWorkspaceId = async (id: string) => {
+    if (!(await copyText(id))) {
+      toast("error", "复制失败");
+      return;
+    }
+    setCopiedId(id);
+    window.setTimeout(
+      () => setCopiedId((current) => (current === id ? null : current)),
+      1500,
+    );
+  };
 
   const save = useCallback(() => {
     void persist(projectsRef.current);
@@ -175,9 +190,22 @@ export function ProjectSettings(props: {
                 <span className="min-w-0 flex-1 truncate text-ui-caption font-normal text-slate-800">
                   {workspace.name}
                 </span>
-                <span className="shrink-0 font-mono text-ui-xs text-slate-400">
+                <button
+                  type="button"
+                  title="复制项目 ID"
+                  aria-label="复制项目 ID"
+                  onClick={() => void copyWorkspaceId(workspace.id)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-ui-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                >
+                  <Check
+                    size={10}
+                    className={clsx(
+                      "text-emerald-600 transition-opacity",
+                      copiedId === workspace.id ? "opacity-100" : "opacity-0",
+                    )}
+                  />
                   {workspace.id}
-                </span>
+                </button>
                 <button
                   type="button"
                   title={

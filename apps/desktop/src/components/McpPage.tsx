@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import clsx from "clsx";
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -9,6 +10,7 @@ import {
   Download,
   FileJson,
   FileText,
+  FolderOpen,
   Plug,
   RefreshCw,
   ShieldCheck,
@@ -27,9 +29,11 @@ import {
   type McpPolicy,
   type Workspace,
 } from "../lib/api";
-import { mcpApi, type McpImportResult } from "../lib/mcp";
+import { copyText } from "../lib/desktop";
 import { formatAuditTime } from "../lib/format";
+import { mcpApi, type McpImportResult } from "../lib/mcp";
 import { Badge, Button, Spinner, Switch, cardClass, inputClass } from "./ui";
+import { McpToolDocs } from "./McpToolDocs";
 
 type Props = {
   workspaces: Workspace[];
@@ -56,9 +60,10 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
   const [policy, setPolicy] = useState<McpPolicy | null>(null);
   const [audit, setAudit] = useState<McpAuditEntry[]>([]);
   const [auditFilter, setAuditFilter] = useState<"all" | "denied" | "error">("all");
-  const [savingPolicy, setSavingPolicy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [statusInput, setStatusInput] = useState("");
+  const [copiedClient, setCopiedClient] = useState<McpClientId | null>(null);
+  const [docsTool, setDocsTool] = useState<string | null>(null);
 
   const loadConfig = useCallback(async () => {
     setRefreshing(true);
@@ -85,6 +90,25 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
     }
   }, [toast]);
 
+  const copyClientPath = async (id: McpClientId, path: string) => {
+    if (!(await copyText(path))) {
+      toast("error", "复制失败");
+      return;
+    }
+    setCopiedClient(id);
+    window.setTimeout(
+      () => setCopiedClient((current) => (current === id ? null : current)),
+      1500,
+    );
+  };
+
+  /** Opens the folder that holds a client config; the file may not exist yet. */
+  const openClientFolder = (path: string) => {
+    const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    const folder = cut > 0 ? path.slice(0, cut) : path;
+    void api.openPath(folder).catch((error) => toast("error", String(error)));
+  };
+
   const loadPolicy = useCallback(async () => {
     try {
       const next = await api.mcpPolicyGet();
@@ -104,7 +128,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
     if (!policy) return;
     const next = { ...policy, ...patch };
     setPolicy(next);
-    setSavingPolicy(true);
     try {
       const saved = await api.mcpPolicySet(next);
       setPolicy(saved);
@@ -112,8 +135,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
     } catch (error) {
       toast("error", String(error));
       await loadPolicy();
-    } finally {
-      setSavingPolicy(false);
     }
   };
 
@@ -291,6 +312,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         <div className="space-y-2">
           {guides.map((guide) => {
             const status = clientStatus(guide.id);
+            const clientPath = status?.path ?? null;
             const expanded = Boolean(expandedClients[guide.id]);
             const result = importResults[guide.id];
             return (
@@ -301,19 +323,47 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex min-w-0 flex-1 items-center gap-2.5">
                     {guide.icon}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <h3 className="text-ui-caption font-normal text-slate-900">{guide.title}</h3>
                         <Badge tone={status?.imported ? "green" : "amber"}>
                           {status?.imported ? "已导入" : "未导入"}
                         </Badge>
                       </div>
-                      <p
-                        className="mt-0.5 truncate text-ui-xs text-slate-400"
-                        title={status?.path ?? guide.hint}
-                      >
-                        {status?.path ?? guide.hint}
-                      </p>
+                      <div className="mt-0.5 flex items-center gap-1">
+                        <p
+                          className="select-text min-w-0 flex-1 truncate text-ui-xs text-slate-400"
+                          title={clientPath ?? guide.hint}
+                        >
+                          {clientPath ?? guide.hint}
+                        </p>
+                        {clientPath ? (
+                          <div className="flex shrink-0 items-center">
+                            <button
+                              type="button"
+                              title="复制路径"
+                              aria-label="复制路径"
+                              onClick={() => void copyClientPath(guide.id, clientPath)}
+                              className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                            >
+                              {copiedClient === guide.id ? (
+                                <Check size={11} className="text-emerald-600" />
+                              ) : (
+                                <Copy size={11} />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              title="打开文件夹"
+                              aria-label="打开文件夹"
+                              onClick={() => openClientFolder(clientPath)}
+                              className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                            >
+                              <FolderOpen size={11} />
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -368,7 +418,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                         复制
                       </button>
                     </div>
-                    <pre className="theme-static-dark mt-2 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-ui-xs leading-5 text-slate-200">
+                    <pre className="select-text theme-static-dark mt-2 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-ui-xs leading-5 text-slate-200">
                       {guide.code}
                     </pre>
                   </div>
@@ -421,12 +471,15 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
 
         <div className="mt-3 flex flex-wrap gap-1.5">
           {mcp.tools.map((tool) => (
-            <span
-              key={tool}
-              className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-ui-xs text-slate-600"
+            <button
+              key={tool.name}
+              type="button"
+              onClick={() => setDocsTool(tool.name)}
+              title="查看接口文档"
+              className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-ui-xs text-slate-600 transition hover:bg-sky-50 hover:text-sky-700"
             >
-              {tool}
-            </span>
+              {tool.name}
+            </button>
           ))}
         </div>
 
@@ -446,9 +499,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               MCP 策略
             </h2>
           </div>
-          <span className="shrink-0 text-ui-xs text-slate-400">
-            {savingPolicy ? "保存中…" : "改动即保存"}
-          </span>
         </div>
 
         {!policy ? (
@@ -487,9 +537,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               <div className="flex items-center justify-between gap-2">
                 <div className="text-ui-sm font-normal text-slate-600">
                   允许访问的项目
-                </div>
-                <div className="text-ui-xs text-slate-400">
-                  不选任何项目 = 全部项目
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -656,6 +703,14 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
       </section>
 
 
+      {docsTool ? (
+        <McpToolDocs
+          tools={mcp.tools}
+          initialTool={docsTool}
+          onCopy={onCopy}
+          onClose={() => setDocsTool(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -115,6 +115,7 @@ export function AgentManagement({ toast }: Props) {
           icon={<Bot size={15} className="text-slate-400" />}
           onClose={() => setOpen(false)}
           size="wide"
+          bodyScroll={false}
           action={
             selectedRuntime ? (
               <Badge tone="blue">当前：{selectedRuntime.name}</Badge>
@@ -127,8 +128,8 @@ export function AgentManagement({ toast }: Props) {
               读取 Agent 运行时…
             </div>
           ) : (
-            <div className="flex gap-4">
-              <aside className="sticky top-0 w-[232px] shrink-0 self-start">
+            <div className="flex h-full min-h-0 gap-4">
+              <aside className="w-[232px] shrink-0 overflow-y-auto overscroll-contain">
                 <div className="text-ui-xs font-normal text-slate-400">
                   运行时
                 </div>
@@ -164,7 +165,7 @@ export function AgentManagement({ toast }: Props) {
                 </div>
               </aside>
 
-              <div className="min-w-0 flex-1 space-y-5 border-l border-slate-100 pl-4">
+              <div className="min-w-0 flex-1 space-y-5 overflow-y-auto overscroll-contain border-l border-slate-100 pl-4">
                 <AgentSettings
                   key={selectedRuntime.id}
                   config={config}

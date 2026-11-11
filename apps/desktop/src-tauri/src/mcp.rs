@@ -325,6 +325,16 @@ async fn list_my_bugs(
     Ok(page_json(page, &workspace_id, &agent::external_claims(app)))
 }
 
+/// Non-binding reminder shipped with bug detail so external clients discover
+/// the write-back and ownership flow even if they never call
+/// `tapd_get_bug_prompt`. Nothing is enforced: the caller may skip it.
+fn tapd_integration() -> Value {
+    json!({
+        "writeBack": "修复并 commit 后，用 tapd_add_bug_comment 写原因/方案/影响，再用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。",
+        "claim": "开始处理前可调用 tapd_claim_bug 登记占用（每 15 分钟续约），完成后调用 tapd_release_bug。",
+    })
+}
+
 async fn get_bug(app: &AppHandle, state: &SharedState, arguments: &Value) -> Result<Value, String> {
     let bug_id = string_arg(arguments, "bug_id").ok_or_else(|| "bug_id is required".to_string())?;
     let (_, workspaces) = load_context(app).await?;
@@ -335,6 +345,7 @@ async fn get_bug(app: &AppHandle, state: &SharedState, arguments: &Value) -> Res
     if let Some(claim) = agent::external_claim_for_bug(app, &workspace_id, &bug_id) {
         value["externalClaim"] = serde_json::to_value(claim).unwrap_or(Value::Null);
     }
+    value["tapdIntegration"] = tapd_integration();
     Ok(value)
 }
 
@@ -977,7 +988,7 @@ fn string_array(arguments: &Value, key: &str) -> Vec<String> {
 mod policy_tests {
     use super::{
         match_workspace_by_root, policy_violation, root_hint, root_is_cwd_hint,
-        summarize_arguments, MCP_PROMPT_TEMPLATE,
+        summarize_arguments, tapd_integration, MCP_PROMPT_TEMPLATE,
     };
     use crate::agent::{render_prompt, ProjectAgentConfig, PromptVars};
     use serde_json::json;
@@ -995,6 +1006,16 @@ mod policy_tests {
         assert!(policy_violation(&policy, "tapd_add_bug_comment", &args).is_some());
         // Read tools stay available.
         assert!(policy_violation(&policy, "tapd_get_bug", &args).is_none());
+    }
+
+    #[test]
+    fn integration_hint_is_advisory() {
+        let hint = tapd_integration();
+        for key in ["writeBack", "claim"] {
+            let text = hint[key].as_str().unwrap_or_default();
+            assert!(!text.is_empty(), "{key} should not be empty");
+            assert!(text.contains("tapd_"), "{key} should name the tools");
+        }
     }
 
     #[test]

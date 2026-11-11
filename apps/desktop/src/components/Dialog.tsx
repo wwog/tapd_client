@@ -9,6 +9,11 @@ export function Dialog(props: {
   onClose: () => void;
   action?: ReactNode;
   size?: "default" | "wide";
+  /**
+   * `false` stops the body from scrolling as one block; the content then owns
+   * its scroll areas (e.g. a fixed list beside a scrolling detail pane).
+   */
+  bodyScroll?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -44,7 +49,14 @@ export function Dialog(props: {
             <X size={16} />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">{props.children}</div>
+        <div
+          className={clsx(
+            "min-h-0 flex-1 p-4",
+            props.bodyScroll === false ? "overflow-hidden" : "overflow-y-auto",
+          )}
+        >
+          {props.children}
+        </div>
       </div>
     </div>
   );
