@@ -65,6 +65,12 @@
 - 阴影：0。焦点用 `outline-2 outline-sky-200`，不要用 `ring` / `shadow`。
 - 卡片嵌套不要超过两层边框：外层容器负责边框，内层用背景色或间距分组。
 
+文本选择：
+
+- 窗口默认不可拖选（`styles.css` 中 `body { user-select: none }`），像原生桌面应用；只有可复制的内容区（缺陷描述、评论、变更值、日志与 diff、配置片段、发布说明、报错）加 `select-text`。
+- 输入类控件（`input` / `textarea` / `select` / `contenteditable`）已在全局恢复原生选择，不要再单独加。
+- 元数据（ID、标题、版本、路径）不靠拖选复制，用复制按钮或右键菜单。
+
 ## 5. 层级
 
 固定层叠顺序，新增浮层不要随手写 `z-[999]`：
@@ -139,6 +145,11 @@
 <Button variant="primary">保存</Button>
 // ui.tsx 内部使用 bg-primary text-primary-foreground
 ```
+
+弹窗滚动：
+
+- 单栏内容流交给 `Dialog` 自己滚（默认）。
+- 列表 + 详情两栏时传 `bodyScroll={false}`，两栏各自 `overflow-y-auto overscroll-contain`：滚动列表不会带走右侧内容，标题栏也始终固定。
 
 ## 8. 禁止清单
 

@@ -161,7 +161,7 @@ export function UpdatePanel({ toast }: Props) {
       {phase === "error" && state?.error ? (
         <div className="mt-3 flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">{state.error}</span>
+          <span className="select-text min-w-0 break-words">{state.error}</span>
         </div>
       ) : null}
 
@@ -172,7 +172,7 @@ export function UpdatePanel({ toast }: Props) {
               <h3 className="text-ui-sm font-normal text-slate-600">更新日志</h3>
               <span className="text-ui-xs text-slate-400">来自 GitHub Release</span>
             </div>
-            <div className="max-h-64 overflow-y-auto whitespace-pre-line rounded-xl bg-slate-50 px-3 py-2.5 font-mono text-ui-sm leading-5 text-slate-600 border border-slate-100">
+            <div className="select-text max-h-64 overflow-y-auto whitespace-pre-line rounded-xl bg-slate-50 px-3 py-2.5 font-mono text-ui-sm leading-5 text-slate-600 border border-slate-100">
               {available.notes}
             </div>
           </div>

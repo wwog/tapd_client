@@ -73,6 +73,26 @@ body {
   background: rgb(14 165 233 / 0.25);
 }
 
+/* Desktop-app selection policy: chrome, labels and metadata are not text the
+   user is meant to copy, so they behave like native controls and cannot be
+   drag-selected. Content that is meant to be copied (bug body, comments,
+   diffs, logs, config snippets, release notes) opts back in with Tailwind's
+   `select-text`. Form controls always keep native selection.
+   xterm disables DOM selection itself and runs its own buffer selection. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+[contenteditable="plaintext-only"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Style contract: borders carry structure, never shadows. This also keeps
    third-party widgets (Markdown editor, native-looking controls) flat. */
 *,

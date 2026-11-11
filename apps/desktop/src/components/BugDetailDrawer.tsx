@@ -254,7 +254,7 @@ function BugDetailDrawerImpl(props: Props) {
             </div>
             {detail ? (
               <div className="mt-2 flex items-start gap-1.5">
-                <h2 className="min-w-0 flex-1 text-base font-normal leading-6 text-slate-900">
+                <h2 className="select-text min-w-0 flex-1 text-base font-normal leading-6 text-slate-900">
                   {bugTitle(detail.title)}
                 </h2>
                 <button
@@ -288,7 +288,7 @@ function BugDetailDrawerImpl(props: Props) {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {error ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
+            <div className="select-text rounded-xl border border-rose-200 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
               {error}
             </div>
           ) : null}
@@ -358,7 +358,7 @@ function BugDetailDrawerImpl(props: Props) {
               <section>
                 <BugSectionTitle icon={<FileText size={14} />} title="缺陷描述" />
                 {detail.descriptionText ? (
-                  <div className="mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-ui-base leading-6 text-slate-700">
+                  <div className="select-text mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-ui-base leading-6 text-slate-700">
                     {detail.descriptionText}
                   </div>
                 ) : (

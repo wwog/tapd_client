@@ -264,7 +264,7 @@ function ReviewCard({
         </div>
       </div>
 
-      <div className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-3 py-2.5 text-ui-caption leading-5 text-slate-600">
+      <div className="select-text mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-3 py-2.5 text-ui-caption leading-5 text-slate-600">
         {approval?.summary || "Agent 已暂停，等待确认后提交。"}
       </div>
 
@@ -293,7 +293,7 @@ function ReviewCard({
       ) : null}
 
       {approval?.risk ? (
-        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-ui-sm leading-5 text-amber-800">
+        <div className="select-text mt-2 rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-ui-sm leading-5 text-amber-800">
           风险：{approval.risk}
         </div>
       ) : null}
@@ -310,9 +310,9 @@ function ReviewCard({
               正在读取差异…
             </div>
           ) : diffError ? (
-            <div className="break-all py-2 text-ui-sm text-rose-300">{diffError}</div>
+            <div className="select-text break-all py-2 text-ui-sm text-rose-300">{diffError}</div>
           ) : (
-            <pre className="max-h-72 overflow-auto whitespace-pre font-mono text-ui-xs leading-4 text-zinc-200">
+            <pre className="select-text max-h-72 overflow-auto whitespace-pre font-mono text-ui-xs leading-4 text-zinc-200">
               {diff ?? ""}
             </pre>
           )}

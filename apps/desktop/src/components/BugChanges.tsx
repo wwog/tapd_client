@@ -34,7 +34,7 @@ export function BugChanges(props: { detail: BugDetail; open: boolean }) {
       {expanded ? (
         <div className="mt-2 space-y-2">
           {changes.error ? (
-            <div className="break-all rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-700">
+            <div className="select-text break-all rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-700">
               变更记录获取失败：{changes.error}
             </div>
           ) : changes.changes.length === 0 ? (
@@ -78,7 +78,7 @@ function ChangeItem({ entry }: { entry: ChangeEntry }) {
       {entry.fields.length === 0 ? (
         <p className="mt-2 text-ui-sm text-slate-400">（无字段明细）</p>
       ) : (
-        <dl className="mt-2 space-y-1">
+        <dl className="select-text mt-2 space-y-1">
           {entry.fields.map((field, index) => (
             <ChangeFieldLine key={`${field.field}-${index}`} field={field} />
           ))}

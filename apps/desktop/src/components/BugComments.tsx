@@ -100,7 +100,7 @@ function CommentItem(props: { comment: Comment; depth: number }) {
         </span>
         {comment.isDeleted ? <Badge tone="red">已删除</Badge> : null}
       </div>
-      <p className="mt-2 whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-700">
+      <p className="select-text mt-2 whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-700">
         {comment.plainText || "（空评论）"}
       </p>
       {comment.replies.length > 0 ? (

@@ -368,7 +368,7 @@ function BodyPanel(props: {
           </button>
         ) : null}
       </div>
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all bg-slate-50/60 p-3 font-mono text-ui-sm leading-5 text-slate-700">
+      <pre className="select-text max-h-72 overflow-auto whitespace-pre-wrap break-all bg-slate-50/60 p-3 font-mono text-ui-sm leading-5 text-slate-700">
         {value || <span className="text-slate-400">无内容</span>}
       </pre>
     </div>
