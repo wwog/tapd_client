@@ -69,6 +69,10 @@ const MAX_DETAIL_LOOKUPS: usize = 5;
 /// Seen-bug retention: drop rows untouched for this long, and cap the table.
 const SEEN_RETENTION_DAYS: i64 = 90;
 const MAX_SEEN_ENTRIES: usize = 20_000;
+/// How long a claim made here can explain an observed transfer. Covers the
+/// latest TAPD write becoming visible in the next poll or two; a later genuine
+/// transfer must notify again.
+const SELF_CLAIM_TTL_SECS: i64 = 600;
 
 /// Default and bounds for the notification poll interval.
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
@@ -838,6 +842,9 @@ struct NotificationService {
     /// Workspaces whose first round in this session has completed. The first
     /// round only records state; anything after it may notify.
     primed: Mutex<BTreeSet<String>>,
+    /// Bugs this client claimed itself, with the claim time (unix seconds).
+    /// The assignment is our own write, so it must not come back as news.
+    self_claims: Mutex<BTreeMap<String, i64>>,
     last_poll_at: Mutex<Option<String>>,
     last_error: Mutex<Option<String>>,
     wake: tokio::sync::Notify,
@@ -864,6 +871,50 @@ impl NotificationService {
             .get(workspace_id)
             .cloned()
             .unwrap_or_else(|| workspace_id.to_string())
+    }
+
+    /// Consumes a pending self-claim for `key`, pruning expired entries so a
+    /// later genuine transfer still notifies.
+    fn take_self_claim(&self, key: &str) -> bool {
+        let mut claims = self
+            .self_claims
+            .lock()
+            .expect("notification self claim lock");
+        take_claim_entry(&mut claims, key, Local::now().timestamp())
+    }
+
+    /// Records a rendered bug-list page as already seen. Never creates cards
+    /// and never moves the poll cursor.
+    fn observe_bugs(&self, bugs: &[tapd_core::tapd::BugSummary]) {
+        let now = format_tapd_time(Local::now().naive_local());
+        let updates = {
+            let mut store = self.store.lock().expect("notification store lock");
+            let mut updates: Vec<(String, SeenBug)> = Vec::with_capacity(bugs.len());
+            for bug in bugs {
+                if bug.workspace_id.trim().is_empty() || bug.id.trim().is_empty() {
+                    continue;
+                }
+                let key = bug_key(&bug.workspace_id, &bug.id);
+                // Keep the lifetime "new" de-dupe: observing is not a send.
+                let kinds = store
+                    .seen
+                    .get(&key)
+                    .map(|seen| seen.kinds.clone())
+                    .unwrap_or_default();
+                let seen = SeenBug {
+                    status: bug.status.clone(),
+                    owner: bug.owner.clone(),
+                    created: bug.created.clone(),
+                    assigned_time: bug.assigned_time.clone(),
+                    kinds,
+                    last_seen: now.clone(),
+                };
+                store.seen.insert(key.clone(), seen.clone());
+                updates.push((key, seen));
+            }
+            updates
+        };
+        notification_db::write_seen(&self.state.cache, &updates);
     }
 
     fn find_item(&self, id: &str) -> Result<NotificationItem, String> {
@@ -1457,6 +1508,19 @@ impl NotificationService {
                 } else {
                     None
                 };
+                // A first sighting / transfer caused by our own "认领" write is
+                // not news. Reopen is left alone: it can only come from
+                // someone else. The seen row below still advances, so the
+                // suppressed state never fires later.
+                let kind = if matches!(
+                    kind,
+                    Some(NotificationKind::New | NotificationKind::Transferred)
+                ) && self.take_self_claim(&key)
+                {
+                    None
+                } else {
+                    kind
+                };
 
                 if matches!(kind, Some(NotificationKind::Reopened)) {
                     // Reopening lifts an ignore.
@@ -1677,6 +1741,42 @@ pub fn raise_system_note(
     Ok(())
 }
 
+/// Removes `key` from the pending self-claims, dropping expired entries first.
+/// Returns whether the claim was still fresh (i.e. should be suppressed).
+fn take_claim_entry(claims: &mut BTreeMap<String, i64>, key: &str, now: i64) -> bool {
+    claims.retain(|_, at| now - *at <= SELF_CLAIM_TTL_SECS && *at <= now + 60);
+    claims.remove(key).is_some()
+}
+
+/// Records a bug-list page as already seen.
+///
+/// A list refresh — the manual button or the periodic one, page switches and
+/// filter changes included — is an observation like a poll round: whatever the
+/// user can already see on screen must not arrive later as a card. Only the
+/// seen state is updated; no notification is created and the poll cursor stays
+/// put. A real later change (reopen, new assignment) still notifies.
+/// No-op when the notification service is not running.
+pub fn observe_bug_page(bugs: &[tapd_core::tapd::BugSummary]) {
+    let Ok(service) = service() else {
+        return;
+    };
+    service.observe_bugs(bugs);
+}
+
+/// Records that this client just claimed a bug. The resulting assignment is
+/// our own write, so the next transfer observed for this bug stays silent.
+/// No-op when notifications are not running.
+pub fn suppress_transfer(workspace_id: &str, bug_id: &str) {
+    let Ok(service) = service() else {
+        return;
+    };
+    service
+        .self_claims
+        .lock()
+        .expect("notification self claim lock")
+        .insert(bug_key(workspace_id, bug_id), Local::now().timestamp());
+}
+
 /// Redacted settings snapshot for the diagnostics bundle. Falls back to the
 /// database row when the notification service is not initialized (tests).
 pub fn settings_for_diagnostics(state: &SharedState) -> Value {
@@ -1759,6 +1859,7 @@ pub fn init(app: &AppHandle, state: SharedState) {
         ai_items: Mutex::new(VecDeque::new()),
         workspace_names: Mutex::new(BTreeMap::new()),
         primed: Mutex::new(BTreeSet::new()),
+        self_claims: Mutex::new(BTreeMap::new()),
         last_poll_at: Mutex::new(None),
         last_error: Mutex::new(None),
         wake: tokio::sync::Notify::new(),
@@ -2283,6 +2384,9 @@ async fn handle_notification(
         )
         .await
         .map_err(|error| format!("改派处理人失败：{error}"))?;
+        // The card's own "处理" just assigned the bug to us: the next poll
+        // must not surface that as a transfer notification.
+        suppress_transfer(&item.workspace_id, &item.bug_id);
     }
 
     // Starting statuses move into the workflow's processing status. The target
@@ -2474,6 +2578,33 @@ mod tests {
             true,
         );
         assert_eq!(kind, Some(NotificationKind::Transferred));
+    }
+
+    #[test]
+    fn list_observation_silences_the_next_poll() {
+        // A list refresh writes the same seen row a poll would. Once the user
+        // has the bug on screen, neither a fresh creation nor a first-sighting
+        // assignment may arrive later as a card.
+        let previous = seen("in_progress", "何帅", &[]);
+        for (status, created) in [
+            ("in_progress", "2026-11-01 09:00:00"),
+            ("new", "2026-11-10 11:58:00"),
+        ] {
+            let kind = classify_bug(
+                status,
+                "何帅",
+                created,
+                "",
+                Some(&previous),
+                "何帅",
+                at(12, 0),
+                true,
+            );
+            assert_eq!(
+                kind, None,
+                "{status} seen in the list must not notify on the next poll"
+            );
+        }
     }
 
     #[test]
@@ -2807,6 +2938,24 @@ mod tests {
             workspace_from_session_url("https://www.tapd.cn/tapd_fe/my/work"),
             None
         );
+    }
+
+    #[test]
+    fn self_claim_is_consumed_once_and_expires() {
+        let key = bug_key("1", "2");
+        let mut claims = BTreeMap::new();
+        claims.insert(key.clone(), 1_000);
+        assert!(take_claim_entry(&mut claims, &key, 1_120));
+        // One claim explains one observation only.
+        assert!(!take_claim_entry(&mut claims, &key, 1_120));
+
+        claims.insert(key.clone(), 1_000);
+        assert!(!take_claim_entry(
+            &mut claims,
+            &key,
+            1_000 + SELF_CLAIM_TTL_SECS + 1
+        ));
+        assert!(claims.is_empty(), "expired entries are pruned");
     }
 
     #[test]

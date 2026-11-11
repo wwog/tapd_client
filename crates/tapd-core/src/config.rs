@@ -38,6 +38,20 @@ pub struct AppConfig {
     pub mcp_policy: McpPolicy,
     /// RFC 3339 time of the last successful update check (GitHub Releases).
     pub last_update_check_at: Option<String>,
+    /// Mandatory update the client has been told about (the release notes
+    /// carried the force marker). Persisted so the upgrade modal survives a
+    /// restart and stays visible while offline.
+    pub forced_update: Option<ForcedUpdate>,
+}
+
+/// A release the client must install before it can keep being used.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ForcedUpdate {
+    /// Target version, e.g. `1.1.2`.
+    pub version: String,
+    /// RFC 3339 time when this client first recorded the requirement.
+    pub recorded_at: String,
 }
 
 /// Main-window size (logical points) and position (physical pixels).
@@ -133,6 +147,7 @@ impl Default for AppConfig {
             hidden_workspace_ids: Vec::new(),
             mcp_policy: McpPolicy::default(),
             last_update_check_at: None,
+            forced_update: None,
         }
     }
 }

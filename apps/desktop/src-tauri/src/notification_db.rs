@@ -226,6 +226,24 @@ pub struct PollWrite<'a> {
     pub max_items: usize,
 }
 
+/// Upserts observations without creating notifications or moving a poll cursor.
+///
+/// Used by the bug list: a refresh — manual or the periodic one — counts as an
+/// observation round, so rows already on screen must not fire a card later.
+pub fn write_seen(cache: &Cache, seen: &[(String, SeenBug)]) {
+    if seen.is_empty() {
+        return;
+    }
+    let result = cache.with_conn(|conn| -> rusqlite::Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        for (key, row) in seen {
+            upsert_seen(&tx, key, row)?;
+        }
+        tx.commit()
+    });
+    warn_on_error(result, "failed to persist notification seen rows");
+}
+
 pub fn write_poll(cache: &Cache, workspace_id: &str, write: PollWrite<'_>) {
     let result = cache.with_conn(|conn| -> rusqlite::Result<()> {
         let tx = conn.unchecked_transaction()?;
@@ -447,6 +465,33 @@ fn warn_on_error(result: Option<rusqlite::Result<()>>, context: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_seen_observes_without_cards_or_cursor() {
+        let dir = std::env::temp_dir().join(format!(
+            "tapd-notification-seen-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = Cache::open(dir.join("cache.sqlite3"));
+        save_settings(&cache, &NotificationStore::default().settings);
+
+        let seen = SeenBug {
+            status: "open".to_string(),
+            owner: "何帅".to_string(),
+            created: "2026-11-01 09:00:00".to_string(),
+            assigned_time: String::new(),
+            kinds: Vec::new(),
+            last_seen: "2026-11-10 12:00:00".to_string(),
+        };
+        write_seen(&cache, &[("1:2".to_string(), seen)]);
+
+        let loaded = load(&cache).expect("store round-trip");
+        assert_eq!(loaded.seen["1:2"].owner, "何帅");
+        // Observing a rendered list is not a poll: no cards, no cursor move.
+        assert!(loaded.items.is_empty());
+        assert!(loaded.cursors.is_empty());
+    }
 
     #[test]
     fn round_trips_and_writes_incrementally() {

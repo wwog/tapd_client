@@ -3,15 +3,18 @@
 //! Tauri's updater plugin reads its endpoint and public key from
 //! `tauri.conf.json`. This module owns everything around it:
 //!
-//! - checks once shortly after launch and then every two hours, persisting the
-//!   request time in `config.json`;
+//! - checks on launch and then every two hours, persisting the request time in
+//!   `config.json`;
 //! - keeps a single state machine (`UpdateService`) that the main window and
 //!   the island capsule both subscribe to (`update://state`);
 //! - while downloading/installing/erroring, hides the main window and blocks
 //!   every path that could reopen it, morphing the island into a 3x progress
 //!   panel instead;
 //! - on failure the capsule offers manual download and cancel; cancel restores
-//!   the main window and the update can be retried from Settings.
+//!   the main window and the update can be retried from Settings;
+//! - a release whose notes carry `FORCE_UPDATE_MARKER` is mandatory: the
+//!   requirement is persisted in `config.json` and the UI shows an
+//!   un-dismissable upgrade modal (also on the login screen).
 //!
 //! The plugin installs the new bundle on macOS but does not relaunch, so a
 //! successful install calls `AppHandle::restart`.
@@ -25,6 +28,7 @@ use std::{
 };
 
 use chrono::Local;
+use semver::Version;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
@@ -33,9 +37,12 @@ use crate::{notification, state::SharedState};
 
 const RELEASES_URL: &str = "https://github.com/wwog/tapd_client/releases";
 const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
-/// Let the window manager settle before the first background check.
-const FIRST_CHECK_DELAY: Duration = Duration::from_secs(5);
 const STATE_EVENT: &str = "update://state";
+
+/// First line of the release notes when the maintainer requires this update.
+/// An HTML comment, so GitHub's rendered release page hides it; the client
+/// strips it from the notes it displays and turns it into a mandatory upgrade.
+pub const FORCE_UPDATE_MARKER: &str = "<!-- force-update -->";
 
 static SERVICE: OnceLock<Arc<UpdateService>> = OnceLock::new();
 
@@ -72,6 +79,9 @@ pub struct AvailableUpdate {
     pub version: String,
     pub notes: String,
     pub date: Option<String>,
+    /// The release notes carried `FORCE_UPDATE_MARKER`: the upgrade cannot be
+    /// dismissed or skipped.
+    pub forced: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -218,6 +228,35 @@ impl UpdateService {
             tracing::warn!(%error, "failed to persist update check time");
         }
     }
+
+    /// Persists a mandatory update so it survives restarts and reconnects.
+    /// Repeated checks for the same version do not rewrite the config.
+    fn record_forced_update(&self, version: &str) {
+        let already = self
+            .state
+            .config_snapshot()
+            .forced_update
+            .as_ref()
+            .is_some_and(|record| record.version == version);
+        if already {
+            return;
+        }
+
+        tracing::warn!(
+            %version,
+            current = %self.current_version,
+            "release requires a forced update"
+        );
+        let recorded_at = Local::now().to_rfc3339();
+        if let Err(error) = self.state.update_config(|config| {
+            config.forced_update = Some(tapd_core::config::ForcedUpdate {
+                version: version.to_string(),
+                recorded_at,
+            });
+        }) {
+            tracing::warn!(%error, "failed to persist the forced update record");
+        }
+    }
 }
 
 /// True while an update owns the screen; the main window must stay hidden.
@@ -227,6 +266,62 @@ pub fn is_updating() -> bool {
     };
     let phase = service.inner.lock().expect("update state lock").phase;
     phase.owns_screen()
+}
+
+/// Splits release notes into their display text and the forced-update flag.
+fn parse_notes(raw: &str) -> (String, bool) {
+    let mut forced = false;
+    let mut kept: Vec<&str> = Vec::new();
+    for line in raw.lines() {
+        if is_force_marker(line) {
+            forced = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    let notes = kept.join("\n").trim().to_string();
+    let notes = if notes.is_empty() {
+        "该版本没有提供更新说明。".to_string()
+    } else {
+        notes
+    };
+    (notes, forced)
+}
+
+/// Whitespace-insensitive marker match so `<!--force-update-->` also counts.
+fn is_force_marker(line: &str) -> bool {
+    let normalize = |text: &str| -> String {
+        text.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    normalize(line) == normalize(FORCE_UPDATE_MARKER)
+}
+
+/// Whether `candidate` is a strictly newer semantic version than `current`.
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    match (
+        Version::parse(candidate.trim()),
+        Version::parse(current.trim()),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate > current,
+        _ => false,
+    }
+}
+
+/// The recorded mandatory update, while the running version is still older.
+fn recorded_force(state: &SharedState, current_version: &str) -> Option<AvailableUpdate> {
+    let record = state.config_snapshot().forced_update?;
+    if !version_is_newer(&record.version, current_version) {
+        return None;
+    }
+    Some(AvailableUpdate {
+        version: record.version,
+        notes: String::new(),
+        date: None,
+        forced: true,
+    })
 }
 
 pub fn init(app: &AppHandle, state: SharedState) {
@@ -250,10 +345,22 @@ pub fn init(app: &AppHandle, state: SharedState) {
         service.inner.lock().expect("update state lock").checked_at = Some(checked_at);
     }
 
+    // A mandatory update recorded in an earlier session is shown immediately,
+    // even on the login screen and before the network check returns (or when
+    // the machine is offline).
+    if let Some(forced) = recorded_force(&state, &service.current_version) {
+        let mut inner = service.inner.lock().expect("update state lock");
+        if inner.available.is_none() {
+            inner.available = Some(forced);
+            inner.phase = UpdatePhase::Available;
+        }
+    }
+
     let app_for_loop = app.clone();
     let state_for_loop = state.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK_DELAY).await;
+        // Check as soon as the app opens: the login page must be able to show
+        // a forced-update modal without waiting for the first interval.
         loop {
             let phase = service.inner.lock().expect("update state lock").phase;
             if !phase.owns_screen() && phase != UpdatePhase::Checking {
@@ -280,8 +387,30 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
 
     let result = check_inner(app).await;
 
+    // Installing may have started while the request was in flight (the forced
+    // modal makes this likely). Never pull the main window back by writing an
+    // "available" phase over a download that owns the screen.
+    if service
+        .inner
+        .lock()
+        .expect("update state lock")
+        .phase
+        .owns_screen()
+    {
+        return Ok(service.snapshot());
+    }
+
     match result {
-        Ok(Some(update)) => {
+        Ok(Some(mut update)) => {
+            if update.forced {
+                service.record_forced_update(&update.version);
+            }
+            // An earlier mandatory requirement stays binding when the live
+            // release is a later (non-marked) version: installing it fulfils
+            // the requirement, so the modal must not disappear.
+            if recorded_force(state, &service.current_version).is_some() {
+                update.forced = true;
+            }
             {
                 let mut inner = service.inner.lock().expect("update state lock");
                 inner.available = Some(update);
@@ -291,13 +420,21 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
             service.transition(UpdatePhase::Available);
         }
         Ok(None) => {
+            // A withdrawn release must not clear a recorded mandatory update:
+            // the requirement sticks until the running app is new enough.
+            let forced = recorded_force(state, &service.current_version);
+            let still_forced = forced.is_some();
             {
                 let mut inner = service.inner.lock().expect("update state lock");
-                inner.available = None;
+                inner.available = forced;
                 inner.error = None;
             }
             service.record_check_time();
-            service.transition(UpdatePhase::Idle);
+            service.transition(if still_forced {
+                UpdatePhase::Available
+            } else {
+                UpdatePhase::Idle
+            });
         }
         Err(error) => {
             tracing::warn!(%error, manual, "update check failed");
@@ -306,10 +443,15 @@ async fn check(app: &AppHandle, state: &SharedState, manual: bool) -> Result<Upd
                 let mut inner = service.inner.lock().expect("update state lock");
                 inner.error = Some(error.clone());
             }
-            // A failed background check is not worth a modal; stay idle and
-            // let Settings show the message. Manual checks deserve the same
-            // quiet treatment because the toast is rendered from this state.
-            service.transition(UpdatePhase::Idle);
+            // A failed background check is not worth a modal; the recorded
+            // mandatory update (if any) keeps its modal, everything else
+            // stays idle and Settings shows the message.
+            let still_forced = recorded_force(state, &service.current_version).is_some();
+            service.transition(if still_forced {
+                UpdatePhase::Available
+            } else {
+                UpdatePhase::Idle
+            });
             if manual {
                 return Err(error);
             }
@@ -324,16 +466,12 @@ async fn check_inner(app: &AppHandle) -> Result<Option<AvailableUpdate>, String>
     let updater = app.updater().map_err(|error| error.to_string())?;
     let update = updater.check().await.map_err(|error| error.to_string())?;
     Ok(update.map(|update| {
-        let notes = update
-            .body
-            .as_ref()
-            .map(|body| body.trim().to_string())
-            .filter(|body| !body.is_empty())
-            .unwrap_or_else(|| "该版本没有提供更新说明。".to_string());
+        let (notes, forced) = parse_notes(update.body.as_deref().unwrap_or("").trim());
         AvailableUpdate {
             version: update.version,
             notes,
             date: update.date.map(|date| date.to_string()),
+            forced,
         }
     }))
 }
@@ -485,4 +623,45 @@ pub fn update_open_manual() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_marker_is_stripped_and_flagged() {
+        let notes = format!("# TAPD Client v1.1.2\n\n{FORCE_UPDATE_MARKER}\n\n## 修复\n- 必须升级");
+        let (display, forced) = parse_notes(&notes);
+        assert!(forced);
+        assert!(!display.contains("force-update"));
+        assert!(display.starts_with("# TAPD Client v1.1.2"));
+        assert!(display.ends_with("- 必须升级"));
+    }
+
+    #[test]
+    fn force_marker_tolerates_spacing_and_case() {
+        assert!(is_force_marker("  <!--force-update-->  "));
+        assert!(is_force_marker("<!--  FORCE-UPDATE  -->"));
+        assert!(!is_force_marker("<!-- 普通注释 -->"));
+    }
+
+    #[test]
+    fn ordinary_notes_are_untouched() {
+        let (display, forced) = parse_notes("# TAPD Client v1.1.2\n\n- 内容");
+        assert!(!forced);
+        assert_eq!(display, "# TAPD Client v1.1.2\n\n- 内容");
+
+        let (empty, forced) = parse_notes("   ");
+        assert!(!forced);
+        assert_eq!(empty, "该版本没有提供更新说明。");
+    }
+
+    #[test]
+    fn version_comparison_is_semver() {
+        assert!(version_is_newer("1.1.2", "1.1.1"));
+        assert!(!version_is_newer("1.1.1", "1.1.1"));
+        assert!(!version_is_newer("1.1.0", "1.1.1"));
+        assert!(!version_is_newer("not-a-version", "1.1.1"));
+    }
 }

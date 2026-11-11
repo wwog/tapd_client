@@ -38,6 +38,20 @@ scripts/release.sh 1.0.0 --no-push
 
 发版时 `scripts/changelog.mjs` 会把这段原样搬进 `docs/releases/v<version>.md`（标题层级从 `###` 升为 `##`）并插入 `CHANGELOG.md`；只有 `## 未发布` 缺失或为空时，才回退到按 commit 前缀自动生成。
 
+### 强制更新
+
+需要用户必须升级时，在 `CHANGELOG.md` 的 `## 未发布` 第一行（或 `docs/releases/v<version>.md` 顶部）加一行：
+
+```markdown
+<!-- force-update -->
+```
+
+- 该行是 HTML 注释，GitHub Release 页面不显示；客户端会从展示的更新日志里去掉它。
+- `latest.json` 的 `notes` 携带该标记，客户端识别后要求升级：登录页与主界面都会弹出不可关闭的模态框，只能「立即升级」或退出应用；升级失败可重试或手动下载。
+- 需求同时写入 `config.json` 的 `forcedUpdate`（版本 + 记录时间），重启或离线也会继续提示，直到当前版本不低于该版本。
+- 升级检查在启动时立即执行（登录页也能收到），之后每两小时一次。
+- 不要给不打算强制升级的版本加这个标记；标记发布后无法通过撤回版本绕过。
+
 ## 2. 分支流程（手动）
 
 - **日常开发在 `main`**：从 `main` 拉分支/提交 PR，CI 通过后合并回 `main`。

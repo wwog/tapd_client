@@ -24,6 +24,7 @@ import {
 import { BugListView } from "./components/BugListView";
 import { DetailPaneHost } from "./components/DetailPaneHost";
 import { FolderPicker } from "./components/FolderPicker";
+import { ForceUpdateModal } from "./components/ForceUpdateModal";
 import { LoginGate } from "./components/LoginGate";
 import { McpPage } from "./components/McpPage";
 import { NavRail, type View } from "./components/NavRail";
@@ -439,10 +440,13 @@ export default function App() {
 
   if (!info) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 bg-slate-50 text-ui-caption text-slate-400">
-        <Loader2 size={16} className="animate-spin" />
-        正在启动客户端…
-      </div>
+      <>
+        <div className="flex h-full items-center justify-center gap-2 bg-slate-50 text-ui-caption text-slate-400">
+          <Loader2 size={16} className="animate-spin" />
+          正在启动客户端…
+        </div>
+        <ForceUpdateModal />
+      </>
     );
   }
 
@@ -454,6 +458,7 @@ export default function App() {
           onRefresh={() => void refreshBase()}
           onToast={showToast}
         />
+        <ForceUpdateModal />
         <ToastHost />
       </>
     );
@@ -751,6 +756,9 @@ export default function App() {
       {!info.onboarded ? (
         <Onboarding info={info} onDone={() => void refreshBase()} />
       ) : null}
+
+      {/* Last layer: a forced update covers onboarding, dialogs and settings. */}
+      <ForceUpdateModal />
 
       <ToastHost />
     </div>

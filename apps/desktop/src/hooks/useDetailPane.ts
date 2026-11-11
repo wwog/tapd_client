@@ -212,6 +212,7 @@ export function useDetailPane({
           bugId,
           "current_owner",
           currentUser,
+          true,
         );
         showToast("ok", "已认领");
         bumpList();

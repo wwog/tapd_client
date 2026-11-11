@@ -460,11 +460,17 @@ pub async fn workspace_context(
     Ok(context)
 }
 
+/// Fetches one bug-list page.
+///
+/// `observe` means the caller has the bug list on screen. The backend still
+/// requires the main window to be focused right now, so a background
+/// auto-refresh while the user is in another app never silences notifications.
 #[tauri::command]
 pub async fn bug_list(
     app: AppHandle,
     state: State<'_, SharedState>,
     query: BugQuery,
+    observe: Option<bool>,
 ) -> Result<BugListPage, String> {
     let body = query.body();
     let root = session_request_json(
@@ -479,8 +485,21 @@ pub async fn bug_list(
     let page = parse_bug_list(&root)?;
     state.cache.put_bug_list(&query, &page);
     state.cache.put_bug_records(&query.workspace_id, &page.bugs);
+    // A focused list refresh (manual or the periodic one) is an observation
+    // round: the user already sees these rows, so a later poll must not turn
+    // them into notifications.
+    if observe.unwrap_or(false) && main_window_focused(&app) {
+        crate::notification::observe_bug_page(&page.bugs);
+    }
 
     Ok(page)
+}
+
+/// Whether the main window has keyboard focus right now.
+fn main_window_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -562,13 +581,20 @@ pub async fn bug_add_comment(
 }
 
 /// Changes the owner (`current_owner`) or developer (`de`) of a bug.
+///
+/// Setting ourselves as owner ("认领" or picking our own name) is our own
+/// write: the next poll must not report it back as a transfer notification.
+/// `claim` marks the explicit claim button even when the local nickname is
+/// unavailable.
 #[tauri::command]
 pub async fn bug_update_field(
     app: AppHandle,
+    state: State<'_, SharedState>,
     workspace_id: String,
     bug_id: String,
     field: String,
     value: String,
+    claim: Option<bool>,
 ) -> Result<(), String> {
     let field = field.trim();
     if !EDITABLE_USER_FIELDS.contains(&field) {
@@ -579,7 +605,19 @@ pub async fn bug_update_field(
         return Err("请选择人员".to_string());
     }
 
-    bug_write::update_field(&app, workspace_id.trim(), bug_id.trim(), field, &value).await
+    bug_write::update_field(&app, workspace_id.trim(), bug_id.trim(), field, &value).await?;
+
+    if field == "current_owner" {
+        let mine = state
+            .config_snapshot()
+            .me
+            .map(|me| normalize_user_value(&me) == value)
+            .unwrap_or(false);
+        if claim.unwrap_or(false) || mine {
+            crate::notification::suppress_transfer(workspace_id.trim(), bug_id.trim());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]

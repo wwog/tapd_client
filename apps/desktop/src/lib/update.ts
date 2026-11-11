@@ -17,6 +17,8 @@ export type AvailableUpdate = {
   version: string;
   notes: string;
   date: string | null;
+  /** The release notes carried the force marker: this upgrade is mandatory. */
+  forced: boolean;
 };
 
 export type UpdateProgress = {
@@ -80,6 +82,10 @@ export const startUpdateStore = (): void => {
 export const getUpdateSnapshot = store.get;
 
 export const subscribeUpdate = store.subscribe;
+
+/** The mandatory update, if the backend flagged this release as forced. */
+export const forcedUpdateOf = (state: UpdateState | null): AvailableUpdate | null =>
+  state?.available?.forced ? state.available : null;
 
 export const updateApi = {
   /** Manual check; resolves to the new state (throws with the error message). */

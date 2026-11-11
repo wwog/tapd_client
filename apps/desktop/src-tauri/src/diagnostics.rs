@@ -126,6 +126,8 @@ fn sanitized_config(state: &SharedState) -> Value {
         "islandAnchor": config.island_anchor,
         "hiddenWorkspaceIds": config.hidden_workspace_ids,
         "mcpPolicy": config.mcp_policy,
+        "lastUpdateCheckAt": config.last_update_check_at,
+        "forcedUpdate": config.forced_update,
     })
 }
 

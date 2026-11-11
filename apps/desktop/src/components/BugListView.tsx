@@ -312,7 +312,10 @@ function BugListViewImpl(props: Props) {
     // Background refreshes stay invisible: no table dimming and no spinner
     // outside the table footer.
     try {
-      const result = await api.bugList(query);
+      // `observe: true` = this page is on screen. The backend additionally
+      // requires the window to be focused right now, so an auto-refresh
+      // running while the user is in another app never silences a notification.
+      const result = await api.bugList(query, true);
       if (requestId !== requestIdRef.current) return;
       const lastPageNo = Math.max(
         1,

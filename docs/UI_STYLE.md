@@ -36,6 +36,7 @@
 - 重要度优先用颜色。状态用 Badge 色，不用加粗。
 - 不要新增硬编码颜色（`bg-[#...]`、`text-[#...]`），除非是品牌插画或主题缩略图。
 - 深色模式不要写 `dark:`：在 `[data-theme="dark"]` 里覆盖 token 即可。
+- 需要固定浅色的子树（登录页、新手引导）在根节点加 `data-theme="light"`：`styles.css` 的该选择器会完整重置 `surface` / `canvas` / `border` / `primary` / `island` 等语义 token，不要只挑几个颜色局部覆盖。
 
 ## 3. 字体与字号
 

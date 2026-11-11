@@ -353,7 +353,8 @@ export const api = {
   setOpenTarget: (kind: string, id: string) =>
     invoke<void>("set_open_target", { kind, id }),
   workspaceContext: () => invoke<WorkspaceContext>("workspace_context"),
-  bugList: (query: BugQuery) => invoke<BugListPage>("bug_list", { query }),
+  bugList: (query: BugQuery, observe = false) =>
+    invoke<BugListPage>("bug_list", { query, observe }),
   bugDetail: (workspaceId: string, bugId: string) =>
     invoke<BugDetail>("bug_detail", { workspaceId, bugId }),
   workspaceMembers: (workspaceId: string) =>
@@ -365,7 +366,9 @@ export const api = {
     bugId: string,
     field: string,
     value: string,
-  ) => invoke<void>("bug_update_field", { workspaceId, bugId, field, value }),
+    /** `true` for "认领": the assignment is our own write, no notification. */
+    claim = false,
+  ) => invoke<void>("bug_update_field", { workspaceId, bugId, field, value, claim }),
   bugTransitions: (workspaceId: string, bugId: string) =>
     invoke<BugTransitionInfo>("bug_transitions", { workspaceId, bugId }),
   bugTransition: (workspaceId: string, bugId: string, status: string) =>

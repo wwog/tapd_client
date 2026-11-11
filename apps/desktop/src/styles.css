@@ -425,6 +425,28 @@ select,
   --ui-font-size: 14px;
   --scrollbar-thumb: #cbd5e1;
 
+  /* Semantic surfaces must be part of the light selector too. A nested
+     `data-theme="light"` (login, onboarding) only resets what is declared
+     here; without these, a dark window would leak its surface/border into
+     the light subtree. */
+  --color-surface: #ffffff;
+  --color-canvas: #f4f4f2;
+  --color-border: #0f172a14;
+  --color-overlay: #0f172a12;
+  --color-overlay-soft: #0f172a0a;
+  --color-selected: #ffffff;
+  --color-primary: #0f172a;
+  --color-primary-hover: #1e293b;
+  --color-primary-foreground: #ffffff;
+
+  --color-island: rgb(226 226 230 / 0.8);
+  --color-island-hover: rgb(236 236 240 / 0.88);
+  --color-island-line: rgb(255 255 255 / 0.55);
+  --color-island-ink: #404046;
+  --color-island-muted: #6f6f77;
+  --color-island-soft: rgb(64 64 70 / 0.07);
+  --color-island-soft-hover: rgb(64 64 70 / 0.12);
+
   --color-slate-50: #f8fafc;
   --color-slate-100: #f1f5f9;
   --color-slate-200: #e2e8f0;

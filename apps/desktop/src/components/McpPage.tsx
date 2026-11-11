@@ -9,7 +9,8 @@ import {
   Copy,
   Download,
   FileJson,
-  FileText,
+  // Codex 一键导入暂时下线（后端与手动配置保留），恢复时一并打开对应 guide。
+  // FileText,
   FolderOpen,
   Plug,
   RefreshCw,
@@ -282,15 +283,17 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
       manual:
         "只想对某个项目生效时，把同样的 mcpServers.tapd 写入项目的 .cursor/mcp.json。",
     },
-    {
-      id: "codex",
-      title: "Codex",
-      hint: "用户级：~/.codex/config.toml",
-      icon: <FileText size={15} className="text-slate-400" />,
-      code: `[mcp_servers.tapd]\ncommand = "${commandPath}"`,
-      manual:
-        "只想对某个项目生效时，把上面的配置写入该项目的 Codex 配置，或在启动时用 -c 覆盖。",
-    },
+    // Codex 一键导入暂时下线：不展示入口，也不提示；后端 client spec 与
+    // Agent 启动时的幂等注入保持原样，恢复时取消注释即可。
+    // {
+    //   id: "codex",
+    //   title: "Codex",
+    //   hint: "用户级：~/.codex/config.toml",
+    //   icon: <FileText size={15} className="text-slate-400" />,
+    //   code: `[mcp_servers.tapd]\ncommand = "${commandPath}"`,
+    //   manual:
+    //     "只想对某个项目生效时，把上面的配置写入该项目的 Codex 配置，或在启动时用 -c 覆盖。",
+    // },
   ];
 
   const clientStatus = (id: McpClientId) =>
