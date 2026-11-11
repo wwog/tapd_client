@@ -6,7 +6,6 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { listen } from "@tauri-apps/api/event";
 import clsx from "clsx";
 import {
   AlertTriangle,
@@ -20,6 +19,8 @@ import {
 } from "lucide-react";
 
 import { agentApi, type AgentSummary } from "../lib/agent";
+import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
+import { formatBytes } from "../lib/format";
 import { bugTitle } from "../lib/bug";
 import {
   formatNotificationTime,
@@ -37,7 +38,6 @@ import {
   type NotificationStateSnapshot,
 } from "../lib/notification";
 import {
-  formatBytes,
   getUpdateSnapshot,
   startUpdateStore,
   subscribeUpdate,
@@ -45,6 +45,7 @@ import {
   updateOwnsScreen,
   type UpdateState,
 } from "../lib/update";
+import { useTauriEvent, useTauriSubscription } from "../lib/tauriEvent";
 
 const PILL_LAYOUT: IslandLayout = { expanded: false, width: 210, height: 34, count: 0 };
 
@@ -70,6 +71,9 @@ export function IslandWindow() {
     getUpdateSnapshot,
   );
   const updateActive = updateOwnsScreen(updateState?.phase);
+  /** `always` keeps the capsule on screen; `activity` shows it only when it
+   *  has something to report. */
+  const resident = useAppearance().islandDisplay === "always";
 
   useEffect(() => {
     startUpdateStore();
@@ -104,28 +108,26 @@ export function IslandWindow() {
     }
   }, []);
 
+  useTauriSubscription(
+    () =>
+      onNotificationShow(({ items: next }) => {
+        setItems(next);
+        void refreshStatus();
+      }),
+    [refreshStatus],
+  );
+
+  useTauriSubscription(() => onIslandLayout(setLayout), []);
+
+  // The main window broadcasts appearance changes; the island applies them so
+  // the capsule follows light/dark without a reload.
+  useTauriEvent<Appearance>("appearance://changed", applyExternalAppearance);
+
+  useTauriEvent<AgentSummary>("agent://summary", setAgentSummary);
+
   useEffect(() => {
     void refreshStatus();
-
-    let unlistenShow: (() => void) | undefined;
-    let unlistenLayout: (() => void) | undefined;
     let cancelled = false;
-
-    void onNotificationShow(({ items: next }) => {
-      if (cancelled) return;
-      setItems(next);
-      void refreshStatus();
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlistenShow = fn;
-    });
-
-    void onIslandLayout((next) => {
-      if (!cancelled) setLayout(next);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlistenLayout = fn;
-    });
 
     // Keep the capsule honest even between polls; also self-heals if the
     // initial `island://layout` was emitted before the webview loaded.
@@ -141,8 +143,6 @@ export function IslandWindow() {
 
     return () => {
       cancelled = true;
-      unlistenShow?.();
-      unlistenLayout?.();
       window.clearInterval(timer);
       if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
     };
@@ -151,7 +151,6 @@ export function IslandWindow() {
   // Agent capsule state: initial snapshot plus live `agent://summary` pushes.
   useEffect(() => {
     let cancelled = false;
-    let unlisten: (() => void) | undefined;
 
     void agentApi
       .summary()
@@ -160,16 +159,8 @@ export function IslandWindow() {
       })
       .catch(() => undefined);
 
-    void listen<AgentSummary>("agent://summary", (event) => {
-      if (!cancelled) setAgentSummary(event.payload);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-
     return () => {
       cancelled = true;
-      unlisten?.();
     };
   }, []);
 
@@ -248,6 +239,21 @@ export function IslandWindow() {
     return { label: "待命", tone: "ok" as const };
   }, [agentSummary, snapshot, items.length, updateState?.available]);
 
+  // Resident mode keeps the capsule on screen; "仅通知" hides it while
+  // everything is idle. The Rust side ignores this while cards or an update
+  // own the island, so expanded notifications are never hidden mid-interaction.
+  const idle = statusLabel === "待命";
+  const lastVisible = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (updateActive) return;
+    const visible = resident || !idle;
+    if (lastVisible.current === visible) return;
+    lastVisible.current = visible;
+    void notificationApi.setIslandVisible(visible).catch(() => {
+      lastVisible.current = null;
+    });
+  }, [idle, resident, updateActive]);
+
   if (updateActive) {
     return <UpdateCapsule state={updateState} />;
   }
@@ -299,11 +305,11 @@ export function IslandWindow() {
                 ? "单击展开通知 · 双击打开客户端 · 可拖动"
                 : "双击打开客户端 · 可拖动"
           }
-          className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-slate-900/90 px-3 py-1.5 text-ui-sm text-slate-200 border border-white/10 backdrop-blur-xl transition hover:bg-slate-900/95 active:cursor-grabbing"
+          className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition hover:bg-island-hover active:cursor-grabbing"
         >
           <StatusDot tone={tone} />
-          <span className="font-normal text-slate-100">TAPD</span>
-          <span className="text-slate-400">{statusLabel}</span>
+          <span className="font-normal text-island-ink">TAPD</span>
+          {idle ? null : <span className="text-island-muted">{statusLabel}</span>}
           {items.length > 0 ? (
             <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-ui-xs font-normal leading-none text-white">
               {items.length}
@@ -317,7 +323,7 @@ export function IslandWindow() {
   return (
     <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
       {items.length === 0 ? (
-        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-slate-900/90 text-ui-sm text-slate-400 border border-white/10 backdrop-blur-xl">
+        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line backdrop-blur-xl">
           暂无待处理通知
         </div>
       ) : (
@@ -343,7 +349,7 @@ export function IslandWindow() {
           return (
             <article
               key={item.id}
-              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-slate-900/92 p-3 border border-white/10 backdrop-blur-xl"
+              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl"
             >
               <button
                 type="button"
@@ -351,7 +357,7 @@ export function IslandWindow() {
                 title="关闭（忽略）"
                 disabled={Boolean(busy)}
                 onClick={() => void run(item, "ignore")}
-                className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-slate-400 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
               >
                 {itemBusy === "ignore" ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -360,8 +366,8 @@ export function IslandWindow() {
                 )}
               </button>
 
-              <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-slate-400">
-                <span className="truncate font-normal text-slate-300">
+              <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
+                <span className="truncate font-normal text-island-ink">
                   {item.workspaceName}
                 </span>
                 <KindBadge kind={item.kind} />
@@ -371,20 +377,20 @@ export function IslandWindow() {
               </div>
 
               <h2
-                className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-slate-100"
+                className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
                 title={bugTitle(item.title)}
               >
                 {bugTitle(item.title)}
               </h2>
 
-              <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-slate-400">
+              <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-island-muted">
                 {item.severity ? (
-                  <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-200">
+                  <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
                     {item.severity}
                   </span>
                 ) : null}
                 {item.priority ? (
-                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
                     {item.priority}优先级
                   </span>
                 ) : null}
@@ -411,7 +417,7 @@ export function IslandWindow() {
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => void run(item, "view")}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/5 px-2.5 py-1.5 text-ui-sm font-normal text-slate-200 border border-white/10 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2.5 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {itemBusy === "view" ? (
                     <Loader2 size={12} className="animate-spin" />
@@ -423,7 +429,7 @@ export function IslandWindow() {
               </div>
 
               {error ? (
-                <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-300" title={error}>
+                <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
                   {error}
                 </p>
               ) : null}
@@ -449,42 +455,43 @@ const AI_TONE_META: Record<
     label: "提示",
     icon: Info,
     iconBg: "bg-sky-500/15",
-    iconColor: "text-sky-300",
-    badge: "bg-sky-400/15 text-sky-300",
+    iconColor: "text-sky-700",
+    badge: "bg-sky-400/15 text-sky-700",
   },
   success: {
     label: "成功",
     icon: CheckCircle2,
     iconBg: "bg-emerald-500/15",
-    iconColor: "text-emerald-400",
-    badge: "bg-emerald-400/15 text-emerald-300",
+    iconColor: "text-emerald-700",
+    badge: "bg-emerald-400/15 text-emerald-700",
   },
   warning: {
     label: "警告",
     icon: AlertTriangle,
     iconBg: "bg-amber-500/15",
-    iconColor: "text-amber-300",
-    badge: "bg-amber-400/15 text-amber-300",
+    iconColor: "text-amber-700",
+    badge: "bg-amber-400/15 text-amber-700",
   },
   error: {
     label: "失败",
     icon: AlertTriangle,
     iconBg: "bg-rose-500/15",
-    iconColor: "text-rose-300",
-    badge: "bg-rose-400/15 text-rose-300",
+    iconColor: "text-rose-700",
+    badge: "bg-rose-400/15 text-rose-700",
   },
   progress: {
     label: "进行中",
     icon: Loader2,
     iconBg: "bg-sky-500/15",
-    iconColor: "text-sky-300",
-    badge: "bg-sky-400/15 text-sky-300",
+    iconColor: "text-sky-700",
+    badge: "bg-sky-400/15 text-sky-700",
   },
 };
 
 const AI_ACTION_CLASS: Record<string, string> = {
   primary: "bg-sky-500 text-white hover:bg-sky-400",
-  secondary: "bg-white/5 text-slate-200 border border-white/10 hover:bg-white/10",
+  secondary:
+    "bg-island-soft text-island-ink border border-island-line hover:bg-island-soft-hover",
   danger: "bg-rose-500/90 text-white hover:bg-rose-400",
 };
 
@@ -503,26 +510,26 @@ function AiCard(props: {
   const dismissBusy = busyAction === "ignore";
 
   return (
-    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-slate-900/92 p-3 border border-white/10 backdrop-blur-xl">
+    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
       <button
         type="button"
         aria-label="关闭"
         title="关闭"
         disabled={Boolean(busyAction)}
         onClick={onDismiss}
-        className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-slate-400 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+        className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
       >
         {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <X size={13} />}
       </button>
 
-      <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-slate-400">
+      <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
         <span className={clsx("grid h-4 w-4 shrink-0 place-items-center rounded-full", meta.iconBg)}>
           <Icon
             size={11}
             className={clsx(meta.iconColor, payload.tone === "progress" && "animate-spin")}
           />
         </span>
-        <span className="truncate font-normal text-slate-300" title={payload.client || item.workspaceName}>
+        <span className="truncate font-normal text-island-ink" title={payload.client || item.workspaceName}>
           {payload.client || item.workspaceName || "AI"}
         </span>
         <span className={clsx("shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal", meta.badge)}>
@@ -534,7 +541,7 @@ function AiCard(props: {
       </div>
 
       <h2
-        className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-slate-100"
+        className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
         title={item.title}
       >
         {item.title}
@@ -548,7 +555,7 @@ function AiCard(props: {
             type="button"
             disabled={Boolean(busyAction)}
             onClick={onDismiss}
-            className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/5 px-2.5 py-1.5 text-ui-sm font-normal text-slate-200 border border-white/10 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2.5 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             知道了
@@ -567,7 +574,7 @@ function AiCard(props: {
       </div>
 
       {error ? (
-        <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-300" title={error}>
+        <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
           {error}
         </p>
       ) : null}
@@ -609,7 +616,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             return (
               <p
                 key={index}
-                className="line-clamp-2 whitespace-pre-wrap break-words text-ui-sm leading-4 text-slate-300"
+                className="line-clamp-2 whitespace-pre-wrap break-words text-ui-sm leading-4 text-island-muted"
               >
                 {block.text}
               </p>
@@ -618,7 +625,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             return (
               <pre
                 key={index}
-                className="line-clamp-2 overflow-hidden rounded bg-black/30 px-1.5 py-1 font-mono text-ui-xs leading-4 text-slate-200"
+                className="line-clamp-2 overflow-hidden rounded bg-island-soft px-1.5 py-1 font-mono text-ui-xs leading-4 text-island-ink"
               >
                 {block.text}
               </pre>
@@ -631,8 +638,8 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
                     key={fieldIndex}
                     className="flex items-center justify-between gap-2 text-ui-xs leading-4"
                   >
-                    <span className="shrink-0 text-slate-400">{field.label}</span>
-                    <span className="min-w-0 truncate text-right text-slate-200" title={field.value}>
+                    <span className="shrink-0 text-island-muted">{field.label}</span>
+                    <span className="min-w-0 truncate text-right text-island-ink" title={field.value}>
                       {field.value || "—"}
                     </span>
                   </div>
@@ -643,7 +650,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             const percent = block.percent ?? 30;
             return (
               <div key={index} className="space-y-1">
-                <div className="flex items-center justify-between text-ui-xs text-slate-400">
+                <div className="flex items-center justify-between text-ui-xs text-island-muted">
                   <span className="truncate">{block.label ?? "进度"}</span>
                   {block.percent != null ? (
                     <span className="ml-2 shrink-0 tabular-nums">
@@ -651,7 +658,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
                     </span>
                   ) : null}
                 </div>
-                <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                <div className="h-1 overflow-hidden rounded-full bg-island-soft">
                   <div
                     className="h-full rounded-full bg-sky-400 transition-[width] duration-300"
                     style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
@@ -661,7 +668,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             );
           }
           case "divider":
-            return <div key={index} className="h-px bg-white/10" />;
+            return <div key={index} className="h-px bg-island-line" />;
           default:
             return null;
         }
@@ -680,22 +687,22 @@ function StatusDot({
       <span
         className={clsx(
           "absolute h-full w-full rounded-full",
-          tone === "ok" && "animate-ping bg-emerald-400/60",
-          tone === "alert" && "animate-ping bg-sky-400/60",
-          tone === "review" && "animate-ping bg-rose-400/60",
-          tone === "agent" && "animate-ping bg-sky-400/60",
+          // The resident idle dot stays calm; a permanent ping would nag.
+          tone === "alert" && "island-breathe bg-sky-400",
+          tone === "review" && "island-breathe bg-rose-400",
+          tone === "agent" && "island-breathe bg-sky-400",
         )}
       />
       <span
         className={clsx(
           "h-2 w-2 rounded-full",
-          tone === "ok" && "bg-emerald-400",
-          tone === "alert" && "bg-sky-400",
+          tone === "ok" && "bg-emerald-500",
+          tone === "alert" && "bg-sky-500",
           tone === "paused" && "bg-slate-400",
-          tone === "error" && "bg-rose-400",
-          tone === "idle" && "bg-amber-400",
-          tone === "review" && "bg-rose-400",
-          tone === "agent" && "bg-sky-400",
+          tone === "error" && "bg-rose-500",
+          tone === "idle" && "bg-amber-500",
+          tone === "review" && "bg-rose-500",
+          tone === "agent" && "bg-sky-500",
         )}
       />
     </span>
@@ -703,8 +710,8 @@ function StatusDot({
 }
 
 /**
- * The 4x capsule shown while an update owns the screen. The Rust side sizes
- * the window to 840x136; the panel is intentionally compact enough to fit.
+ * The 3x capsule shown while an update owns the screen. The Rust side sizes
+ * the window to 630x102; the panel is intentionally compact enough to fit.
  */
 function UpdateCapsule({ state }: { state: UpdateState | null }) {
   const phase = state?.phase ?? "idle";
@@ -732,14 +739,14 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
   if (failed) {
     return (
-      <div className="island-expand flex h-full w-full items-center gap-4 rounded-[30px] bg-slate-900/95 px-7 text-slate-100  border border-white/10 backdrop-blur-xl">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-500/15 text-rose-400">
-          <AlertTriangle size={20} />
+      <div className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line backdrop-blur-xl">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-rose-500/15 text-rose-700">
+          <AlertTriangle size={16} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-ui-base font-normal">更新失败</p>
+          <p className="text-ui-sm font-normal">更新失败</p>
           <p
-            className="mt-0.5 truncate text-ui-sm text-slate-400"
+            className="mt-0.5 truncate text-ui-xs text-island-muted"
             title={state?.error ?? undefined}
           >
             {state?.error ?? "下载或安装过程中出现错误。"}
@@ -748,18 +755,18 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
         <button
           type="button"
           onClick={manual}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white/10 px-4 py-2 text-ui-caption font-normal text-slate-100 border border-white/10 transition hover:bg-white/15"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-island-soft px-3 py-1.5 text-ui-xs font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover"
         >
-          <Download size={13} />
+          <Download size={12} />
           手动下载
         </button>
         <button
           type="button"
           disabled={cancelling}
           onClick={() => void cancel()}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white/5 px-4 py-2 text-ui-caption font-normal text-slate-300 border border-white/10 transition hover:bg-white/10 disabled:opacity-50"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-island-soft px-3 py-1.5 text-ui-xs font-normal text-island-muted border border-island-line transition hover:bg-island-soft-hover disabled:opacity-50"
         >
-          {cancelling ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+          {cancelling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
           取消
         </button>
       </div>
@@ -772,39 +779,40 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
       : phase === "ready"
         ? "更新完成"
         : "正在下载更新";
+  const right =
+    phase === "downloading" && percent != null
+      ? `${percent.toFixed(0)}%`
+      : phase === "installing"
+        ? "安装中"
+        : "完成";
   const detail =
     phase === "downloading"
-      ? `${percent != null ? `${percent.toFixed(0)}%` : "下载中"} · ${
-          progress?.total
-            ? `${formatBytes(progress.received)} / ${formatBytes(progress.total)}`
-            : formatBytes(progress?.received)
-        }`
+      ? progress?.total
+        ? `${formatBytes(progress.received)} / ${formatBytes(progress.total)}`
+        : formatBytes(progress?.received)
       : phase === "ready"
         ? "应用即将重启…"
         : "校验更新包并写入应用目录…";
 
   return (
-    <div className="island-expand flex h-full w-full flex-col justify-center gap-2.5 rounded-[30px] bg-slate-900/95 px-7 py-4 text-slate-100  border border-white/10 backdrop-blur-xl">
-      <div className="flex items-center gap-2.5">
+    <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line backdrop-blur-xl">
+      <div className="flex items-center gap-2">
         {phase === "ready" ? (
-          <CheckCircle2 size={17} className="text-emerald-400" />
+          <CheckCircle2 size={15} className="text-emerald-700" />
         ) : (
-          <Loader2 size={17} className="animate-spin text-sky-400" />
+          <Loader2 size={15} className="animate-spin text-sky-700" />
         )}
-        <span className="text-ui-base font-normal tracking-wide">{title}</span>
-        <span className="rounded-full bg-white/5 px-2 py-0.5 text-ui-xs text-slate-300">
-          TAPD Client
-        </span>
-        <span className="font-mono text-ui-xs text-slate-400">
+        <span className="text-ui-sm font-normal tracking-wide">{title}</span>
+        <span className="font-mono text-ui-2xs text-island-muted">
           v{state?.currentVersion ?? "—"}
           {target ? ` → v${target}` : ""}
         </span>
-        <span className="ml-auto text-ui-sm tabular-nums text-slate-400">
-          {phase === "downloading" && percent != null ? `${percent.toFixed(0)}%` : detail}
+        <span className="ml-auto text-ui-caption tabular-nums text-island-ink">
+          {right}
         </span>
       </div>
 
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+      <div className="h-1 w-full overflow-hidden rounded-full bg-island-soft">
         <div
           className={clsx(
             "h-full rounded-full transition-[width] duration-200",
@@ -820,8 +828,8 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
         />
       </div>
 
-      <div className="flex items-center justify-between text-ui-xs text-slate-400">
-        <span>{detail}</span>
+      <div className="flex items-center justify-between text-ui-2xs text-island-muted">
+        <span className="tabular-nums">{detail}</span>
         <span>更新期间主窗口不可打开</span>
       </div>
     </div>
@@ -833,10 +841,10 @@ function KindBadge({ kind }: { kind: NotificationItem["kind"] }) {
     <span
       className={clsx(
         "shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal",
-        kind === "new" && "bg-sky-400/15 text-sky-300",
-        kind === "transferred" && "bg-violet-400/15 text-violet-300",
-        kind === "reopened" && "bg-amber-400/15 text-amber-300",
-        kind === "ai" && "bg-white/10 text-slate-300",
+        kind === "new" && "bg-sky-400/15 text-sky-700",
+        kind === "transferred" && "bg-violet-400/15 text-violet-700",
+        kind === "reopened" && "bg-amber-400/15 text-amber-700",
+        kind === "ai" && "bg-island-soft text-island-muted",
       )}
     >
       {NOTIFICATION_KIND_LABELS[kind]}

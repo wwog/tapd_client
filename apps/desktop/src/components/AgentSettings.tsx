@@ -3,10 +3,7 @@ import { Terminal } from "lucide-react";
 
 import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
 import type { SettingsSectionProps } from "../lib/feature";
-import { Badge, Button } from "./ui";
-
-const INPUT_CLASS =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+import { Badge, Button, inputClass } from "./ui";
 
 const PROMPT_VARIABLES = [
   "{{title}}",
@@ -87,7 +84,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
               if (event.key === "Enter") event.currentTarget.blur();
             }}
             placeholder={runtime.binary}
-            className={`${INPUT_CLASS} mt-1.5 font-mono`}
+            className={`${inputClass} mt-1.5 font-mono`}
           />
         </div>
 
@@ -103,7 +100,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
                 onChange({ transport });
                 onCommit({ transport });
               }}
-              className={`${INPUT_CLASS} mt-1.5`}
+              className={`${inputClass} mt-1.5`}
             >
               {runtime.transports.map((transport) => (
                 <option key={transport} value={transport}>
@@ -135,7 +132,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
             onChange={(event) => onChange({ promptTemplate: event.target.value })}
             onBlur={() => onCommit()}
             rows={10}
-            className={`${INPUT_CLASS} mt-1.5 resize-y leading-5`}
+            className={`${inputClass} mt-1.5 resize-y leading-5`}
           />
           <div className="mt-1.5 flex flex-wrap gap-1">
             {PROMPT_VARIABLES.map((variable) => (
@@ -199,7 +196,7 @@ function NumberField(props: {
         onKeyDown={(event) => {
           if (event.key === "Enter") event.currentTarget.blur();
         }}
-        className={`${INPUT_CLASS} mt-1.5 font-mono`}
+        className={`${inputClass} mt-1.5 font-mono`}
       />
       <div className="mt-1 text-ui-xs leading-4 text-slate-400">{props.hint}</div>
     </div>

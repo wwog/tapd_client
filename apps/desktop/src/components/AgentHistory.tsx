@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
 import {
   Bug,
@@ -15,22 +14,19 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
   agentApi,
-  exportDirFor,
   type AgentTask,
   type AgentTaskStatus,
   type AgentWorkspaceRef,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
+import { openTaskExportDir, resumeTaskSession } from "../lib/desktop";
 import { AgentLogViewer } from "./AgentLogViewer";
-import { Badge, Button } from "./ui";
+import { Badge, Button, selectClass } from "./ui";
 
 // History only contains terminal tasks; active ones live in the run tab.
 const STATUS_OPTIONS: AgentTaskStatus[] = ["succeeded", "failed", "canceled"];
 const PAGE_SIZE = 50;
-
-const SELECT_CLASS =
-  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
 
 type Props = {
   /** Changes when a task leaves the live queue, so the first page refreshes. */
@@ -139,27 +135,10 @@ export function AgentHistory({
     void fetchPage(0, focusTaskId);
   }, [focusTaskId, tasks, fetchPage]);
 
-  const openExportDir = (task: AgentTask) => {
-    const dir = exportDirFor(task.mdPath);
-    if (!dir) {
-      toast("error", "该任务还没有导出目录");
-      return;
-    }
-    void invoke("open_path", { path: dir }).catch((error) =>
-      toast("error", String(error)),
-    );
-  };
-
   const resume = async (task: AgentTask) => {
-    if (!task.sessionId) {
-      toast("error", "该任务没有可恢复的会话 ID");
-      return;
-    }
     setResumeBusy(task.id);
     try {
-      await agentApi.openSession(task.id);
-    } catch (error) {
-      toast("error", String(error));
+      await resumeTaskSession(task, toast, "该任务没有可恢复的会话 ID");
     } finally {
       setResumeBusy(null);
     }
@@ -185,7 +164,7 @@ export function AgentHistory({
         <select
           value={workspaceFilter}
           onChange={(event) => setWorkspaceFilter(event.target.value)}
-          className={SELECT_CLASS}
+          className={selectClass}
           aria-label="按工作区筛选"
         >
           <option value="all">全部工作区</option>
@@ -201,7 +180,7 @@ export function AgentHistory({
           onChange={(event) =>
             setStatusFilter(event.target.value as "all" | AgentTaskStatus)
           }
-          className={SELECT_CLASS}
+          className={selectClass}
           aria-label="按状态筛选"
         >
           <option value="all">全部状态</option>
@@ -316,7 +295,7 @@ export function AgentHistory({
                   variant="secondary"
                   icon={<FolderOpen size={12} />}
                   disabled={!selected.mdPath}
-                  onClick={() => openExportDir(selected)}
+                  onClick={() => openTaskExportDir(selected, toast)}
                 >
                   打开导出目录
                 </Button>

@@ -8,7 +8,7 @@ use std::{
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::state::SharedState;
+use crate::{notification, state::SharedState};
 
 pub const SESSION_LABEL: &str = "tapd-session";
 
@@ -275,16 +275,20 @@ pub fn spawn_session_watcher(app: AppHandle, state: SharedState) {
                 if let Err(error) = state.cache.clear() {
                     tracing::warn!(%error, "failed to clear offline cache after session expiry");
                 }
+                notification::reset_session();
             }
 
             if login_changed {
+                if !expired {
+                    // A real login starts a fresh notification baseline: only
+                    // changes after the first round may notify.
+                    notification::reset_session();
+                }
                 // The background window never pops up on its own: the login
                 // screen mirrors the QR code and the successful login hides it.
                 let _ = window.hide();
                 let _ = app.emit("session://changed", ());
             }
-
-            let _ = app.emit("session://url", &url_string);
         }
     });
 }

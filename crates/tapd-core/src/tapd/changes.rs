@@ -209,15 +209,10 @@ fn total_count(html: &str) -> Option<u32> {
 }
 
 fn clean(value: &str) -> String {
-    let decoded = value
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
-
-    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::tapd::api::decode_entities(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

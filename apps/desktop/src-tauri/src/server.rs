@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tapd_core::runtime::RuntimeInfo;
 
-use crate::{session, state::SharedState};
+use crate::{media, session, state::SharedState};
 
+#[cfg(debug_assertions)]
 #[derive(Deserialize)]
 struct FeatureRequest {
     name: String,
@@ -21,6 +22,7 @@ struct FeatureRequest {
     payload: Value,
 }
 
+#[cfg(debug_assertions)]
 #[derive(Deserialize)]
 struct ExportRequest {
     workspace_id: String,
@@ -29,6 +31,7 @@ struct ExportRequest {
     workspace_name: Option<String>,
 }
 
+#[cfg(debug_assertions)]
 #[derive(Deserialize)]
 struct EvalRequest {
     expression: String,
@@ -36,6 +39,7 @@ struct EvalRequest {
     timeout_secs: u64,
 }
 
+#[cfg(debug_assertions)]
 fn default_eval_timeout() -> u64 {
     15
 }
@@ -86,16 +90,20 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
 
     let router = Router::new()
         .route("/healthz", get(healthz))
-        .route("/session/ping", get(session_ping))
-        .route("/capture/snapshot", get(capture_snapshot))
+        .route("/mcp/call", post(mcp_call))
+        .route("/media", get(media_proxy));
+
+    // Debug-only escape hatches for mapping TAPD's internal API. They never
+    // ship in a release binary.
+    #[cfg(debug_assertions)]
+    let router = router
         .route("/dev/eval", post(dev_eval))
         .route("/dev/call", post(dev_call))
         .route("/dev/cookies", get(dev_cookies))
         .route("/dev/export", post(dev_export))
-        .route("/dev/feature", post(dev_feature))
-        .route("/mcp/call", post(mcp_call))
-        .route("/media", get(media_proxy))
-        .with_state(api_state);
+        .route("/dev/feature", post(dev_feature));
+
+    let router = router.with_state(api_state);
 
     axum::serve(listener, router)
         .await
@@ -114,60 +122,6 @@ async fn healthz(State(state): State<ApiState>) -> impl IntoResponse {
         "port": port,
         "loggedIn": logged_in,
     }))
-}
-
-async fn session_ping(
-    State(ctx): State<ApiState>,
-    headers: HeaderMap,
-) -> (StatusCode, Json<Value>) {
-    if !authorized(&ctx.state, &headers) {
-        return unauthorized();
-    }
-    let Some(window) = ctx.app.get_webview_window(session::SESSION_LABEL) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "ok": false, "error": "session_window_missing" })),
-        );
-    };
-
-    match session::eval_sync_json(&window, "window.__TAPDCB__.ping()", Duration::from_secs(8))
-        .await
-    {
-        Ok(value) => (StatusCode::OK, Json(json!({ "ok": true, "ping": value }))),
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "ok": false, "error": error })),
-        ),
-    }
-}
-
-async fn capture_snapshot(
-    State(ctx): State<ApiState>,
-    headers: HeaderMap,
-) -> (StatusCode, Json<Value>) {
-    if !authorized(&ctx.state, &headers) {
-        return unauthorized();
-    }
-    let Some(window) = ctx.app.get_webview_window(session::SESSION_LABEL) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "ok": false, "error": "session_window_missing" })),
-        );
-    };
-
-    match session::eval_sync_json(
-        &window,
-        "window.__TAPDCB__.snapshot()",
-        Duration::from_secs(20),
-    )
-    .await
-    {
-        Ok(value) => (StatusCode::OK, Json(json!({ "ok": true, "captures": value }))),
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "ok": false, "error": error })),
-        ),
-    }
 }
 
 async fn mcp_call(
@@ -202,6 +156,7 @@ async fn mcp_call(
 }
 
 /// Token-protected entry point for testing feature commands without the UI.
+#[cfg(debug_assertions)]
 async fn dev_feature(
     State(ctx): State<ApiState>,
     headers: HeaderMap,
@@ -228,6 +183,7 @@ async fn dev_feature(
 }
 
 /// Runs the same export pipeline used by the desktop UI.
+#[cfg(debug_assertions)]
 async fn dev_export(
     State(ctx): State<ApiState>,
     headers: HeaderMap,
@@ -260,6 +216,7 @@ async fn dev_export(
 
 /// Returns the webview's cookie jar (including HttpOnly) for diagnostics.
 /// Values are only exposed over the token-protected loopback endpoint.
+#[cfg(debug_assertions)]
 async fn dev_cookies(
     State(ctx): State<ApiState>,
     headers: HeaderMap,
@@ -299,6 +256,7 @@ async fn dev_cookies(
 }
 
 /// Token-protected escape hatch used while mapping TAPD's internal API.
+#[cfg(debug_assertions)]
 async fn dev_eval(    State(ctx): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<EvalRequest>,
@@ -324,6 +282,7 @@ async fn dev_eval(    State(ctx): State<ApiState>,
 }
 
 /// Same as `/dev/eval`, but resolves through the injected IPC callback.
+#[cfg(debug_assertions)]
 async fn dev_call(
     State(ctx): State<ApiState>,
     headers: HeaderMap,
@@ -355,10 +314,6 @@ struct MediaQuery {
     url: String,
 }
 
-const MEDIA_LIMIT: u64 = 200 * 1024 * 1024;
-const MEDIA_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
-
 /// Proxies TAPD-hosted images/videos with the session cookies so the main
 /// window can render thumbnails and previews (`<img>`/`<video>` cannot send
 /// the bearer token, hence the separate `media_token` query capability).
@@ -388,7 +343,7 @@ async fn media_proxy(
     };
 
     let client = match reqwest::Client::builder()
-        .user_agent(MEDIA_USER_AGENT)
+        .user_agent(media::USER_AGENT)
         .timeout(Duration::from_secs(180))
         .build()
     {
@@ -399,7 +354,7 @@ async fn media_proxy(
     let mut request = client
         .get(&query.url)
         .header(header::COOKIE, cookie)
-        .header(header::REFERER, "https://www.tapd.cn/")
+        .header(header::REFERER, media::REFERER)
         .header(header::ACCEPT, "*/*");
     if let Some(range) = headers.get(header::RANGE).and_then(|value| value.to_str().ok()) {
         request = request.header(header::RANGE, range);
@@ -427,7 +382,7 @@ async fn media_proxy(
         Ok(bytes) => bytes,
         Err(error) => return media_error(StatusCode::BAD_GATEWAY, &error.to_string()),
     };
-    if bytes.len() as u64 > MEDIA_LIMIT {
+    if bytes.len() as u64 > media::MAX_PROXY_BYTES {
         return media_error(StatusCode::PAYLOAD_TOO_LARGE, "media file is too large");
     }
     if !status.is_success() {

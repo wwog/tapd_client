@@ -5,6 +5,7 @@ import { Archive, Bug, Check, Eye, FolderOpen, Loader2, ShieldAlert } from "luci
 import { agentApi, type AgentTask } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
+import { formatDateTime } from "../lib/format";
 import { Badge, Button } from "./ui";
 
 type Props = {
@@ -220,7 +221,15 @@ function ReviewCard({
               {task.repoPath || "未配置仓库"}
             </span>
             {approval?.requestedAt ? (
-              <span className="shrink-0">{formatReviewTime(approval.requestedAt)}</span>
+              <span className="shrink-0">
+                {formatDateTime(approval.requestedAt, {
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false,
+                })}
+              </span>
             ) : null}
           </div>
         </div>
@@ -337,16 +346,4 @@ function ReviewCard({
       </div>
     </article>
   );
-}
-
-function formatReviewTime(raw: string): string {
-  const timestamp = Date.parse(raw);
-  if (Number.isNaN(timestamp)) return raw;
-  return new Date(timestamp).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
 }

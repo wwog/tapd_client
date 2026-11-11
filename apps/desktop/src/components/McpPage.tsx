@@ -28,7 +28,8 @@ import {
   type Workspace,
 } from "../lib/api";
 import { mcpApi, type McpImportResult } from "../lib/mcp";
-import { Badge, Button, Spinner } from "./ui";
+import { formatAuditTime } from "../lib/format";
+import { Badge, Button, Spinner, Switch, cardClass, inputClass } from "./ui";
 
 type Props = {
   workspaces: Workspace[];
@@ -38,9 +39,6 @@ type Props = {
 
 const COPY_BUTTON =
   "inline-flex shrink-0 items-center gap-1 rounded border border-border bg-surface px-2 py-1 text-ui-xs text-slate-600 transition hover:border-slate-300";
-
-const INPUT_CLASS =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
 
 /**
  * MCP tab: server status, policy/audit, and per-client one-click import
@@ -381,7 +379,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2
@@ -437,7 +435,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2
@@ -465,18 +463,22 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 title="允许写操作"
                 hint="评论与状态回写。关闭后仅保留查询、详情与导出工具。"
               >
-                <Toggle
+                <Switch
                   checked={policy.writesEnabled}
                   onChange={(value) => void savePolicy({ writesEnabled: value })}
+                  className="mt-0.5"
+                  uncheckedClassName="bg-slate-200"
                 />
               </PolicyRow>
               <PolicyRow
                 title="记录调用审计"
                 hint="记录工具、客户端、决策、耗时与项目/缺陷；不保存评论正文和 Cookie。"
               >
-                <Toggle
+                <Switch
                   checked={policy.auditEnabled}
                   onChange={(value) => void savePolicy({ auditEnabled: value })}
+                  className="mt-0.5"
+                  uncheckedClassName="bg-slate-200"
                 />
               </PolicyRow>
             </div>
@@ -533,14 +535,14 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 }}
                 title="可填状态 key（resolved）或中文名（已解决），多个用逗号分隔。"
                 placeholder="例如 resolved, closed；留空 = 遵循 TAPD 工作流"
-                className={`${INPUT_CLASS} mt-1.5 font-mono`}
+                className={`${inputClass} mt-1.5 font-mono`}
               />
             </div>
           </div>
         )}
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -679,47 +681,6 @@ function PolicyRow(props: { title: string; hint: string; children: ReactNode }) 
   );
 }
 
-function Toggle(props: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={props.checked}
-      disabled={props.disabled}
-      onClick={() => props.onChange(!props.checked)}
-      className={clsx(
-        "relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition",
-        props.checked ? "bg-sky-500" : "bg-slate-200",
-        props.disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      <span
-        className={clsx(
-          "absolute top-0.5 h-4 w-4 rounded-full bg-surface transition-all",
-          props.checked ? "left-[18px]" : "left-0.5",
-        )}
-      />
-    </button>
-  );
-}
-
-function formatAuditTime(raw: string): string {
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  return date.toLocaleString("zh-CN", {
-    hour12: false,
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 function StatusTile({
   label,
   value,
@@ -750,11 +711,7 @@ function PathRow(props: {
   label: string;
   value: string;
   onCopy: (text: string) => void;
-  copyable?: boolean;
-  badge?: ReactNode;
 }) {
-  const copyable = props.copyable ?? true;
-
   return (
     <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
       <span className="w-24 shrink-0 text-ui-sm text-slate-400">{props.label}</span>
@@ -764,17 +721,14 @@ function PathRow(props: {
       >
         {props.value}
       </span>
-      {props.badge}
-      {copyable ? (
-        <button
-          type="button"
-          onClick={() => props.onCopy(props.value)}
-          className={COPY_BUTTON}
-        >
-          <Copy size={10} />
-          复制
-        </button>
-      ) : null}
+      <button
+        type="button"
+        onClick={() => props.onCopy(props.value)}
+        className={COPY_BUTTON}
+      >
+        <Copy size={10} />
+        复制
+      </button>
     </div>
   );
 }

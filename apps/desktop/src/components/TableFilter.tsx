@@ -1,9 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Search } from "lucide-react";
+import {
+  ArrowDownWideNarrow,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  Check,
+  ChevronDown,
+  Search,
+} from "lucide-react";
 import clsx from "clsx";
 
 export type TableFilterOption = { value: string; label: string };
+
+export type TableSortProps = {
+  /** `null` when this column is not the active sort key. */
+  direction: "asc" | "desc" | null;
+  /** First click picks the column's natural direction, later clicks toggle. */
+  onToggle: () => void;
+};
 
 type Props = {
   label: string;
@@ -12,6 +26,8 @@ type Props = {
   /** Multi-select keeps the menu open; single-select applies and closes. */
   multiple?: boolean;
   onChange: (values: string[]) => void;
+  /** Optional sort control, rendered before the filter toggle. */
+  sort?: TableSortProps;
   className?: string;
 };
 
@@ -19,6 +35,9 @@ type Props = {
  * Header filter with an option list, an inline match box, multi or single
  * selection. The menu is portalled and fixed so the table's scroll container
  * cannot clip it.
+ *
+ * Sort/filter controls stay hidden until the header is hovered, or while one
+ * of them is applied, so the normal table header stays quiet.
  */
 export function TableFilter(props: Props) {
   const {
@@ -27,10 +46,13 @@ export function TableFilter(props: Props) {
     selected,
     multiple = true,
     onChange,
+    sort,
     className,
   } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /** Multi-select edits are staged; 完成 applies them, closing discards them. */
+  const [draft, setDraft] = useState<string[]>(selected);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(
     null,
   );
@@ -61,6 +83,7 @@ export function TableFilter(props: Props) {
       top: rect.bottom + 4,
     });
     setQuery("");
+    setDraft(selected);
     setOpen(true);
   };
 
@@ -76,10 +99,10 @@ export function TableFilter(props: Props) {
 
   const toggle = (value: string) => {
     if (multiple) {
-      onChange(
-        selected.includes(value)
-          ? selected.filter((item) => item !== value)
-          : [...selected, value],
+      setDraft((current) =>
+        current.includes(value)
+          ? current.filter((item) => item !== value)
+          : [...current, value],
       );
       return;
     }
@@ -88,40 +111,86 @@ export function TableFilter(props: Props) {
   };
 
   const active = selected.length > 0;
+  const sorted = Boolean(sort?.direction);
 
   return (
     <>
-      <button
-        ref={anchorRef}
-        type="button"
-        title={`筛选${label}`}
-        aria-label={`筛选${label}`}
-        aria-expanded={open}
-        onClick={() => (open ? close() : openMenu())}
-        className={clsx(
-          "flex w-full items-center gap-1 text-left transition",
-          className,
-          active ? "text-sky-700" : "text-slate-500 hover:text-slate-800",
-        )}
-      >
-        <span className="truncate">{label}</span>
-        {active ? (
-          multiple ? (
-            <span className="grid h-3.5 min-w-3.5 shrink-0 place-items-center rounded-full bg-sky-500 px-1 text-[9px] leading-none text-white tabular-nums">
-              {selected.length}
-            </span>
-          ) : (
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500" />
-          )
-        ) : null}
-        <ChevronDown
-          size={12}
+      <div className={clsx("group/head flex w-full items-center", className)}>
+        <button
+          ref={anchorRef}
+          type="button"
+          title={`筛选${label}`}
+          aria-label={`筛选${label}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => (open ? close() : openMenu())}
           className={clsx(
-            "ml-auto shrink-0 text-slate-400 transition",
-            open && "rotate-180",
+            "flex min-w-0 flex-1 items-center gap-1 text-left transition",
+            active || sorted
+              ? "text-sky-700"
+              : "text-slate-500 hover:text-slate-800",
           )}
-        />
-      </button>
+        >
+          <span className="truncate">{label}</span>
+          {active ? (
+            multiple ? (
+              <span className="grid h-3.5 min-w-3.5 shrink-0 place-items-center rounded-full bg-sky-500 px-1 text-[9px] leading-none text-white tabular-nums">
+                {selected.length}
+              </span>
+            ) : (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500" />
+            )
+          ) : null}
+        </button>
+
+        {sort ? (
+          <button
+            type="button"
+            title={
+              sort.direction === "asc"
+                ? `改为${label}降序`
+                : sort.direction === "desc"
+                  ? `取消${label}排序`
+                  : `按${label}升序`
+            }
+            aria-label={`按${label}排序`}
+            onClick={sort.onToggle}
+            className={clsx(
+              "grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",
+              sort.direction
+                ? "text-sky-600"
+                : "text-slate-400 opacity-0 group-hover/head:opacity-100",
+            )}
+          >
+            {sort.direction === "asc" ? (
+              <ArrowUpNarrowWide size={12} />
+            ) : sort.direction === "desc" ? (
+              <ArrowDownWideNarrow size={12} />
+            ) : (
+              <ArrowUpDown size={12} />
+            )}
+          </button>
+        ) : null}
+
+        <button
+          type="button"
+          title={open ? `收起${label}筛选` : `筛选${label}`}
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => (open ? close() : openMenu())}
+          className={clsx(
+            "ml-0.5 grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",
+            open || active
+              ? "text-sky-600"
+              : "text-slate-400 opacity-0 group-hover/head:opacity-100",
+          )}
+        >
+          <ChevronDown
+            size={12}
+            className={clsx("transition", open && "rotate-180")}
+          />
+        </button>
+      </div>
 
       {open && position
         ? createPortal(
@@ -156,7 +225,9 @@ export function TableFilter(props: Props) {
 
                 <div className="max-h-64 overflow-y-auto p-1">
                   {shown.map((option) => {
-                    const checked = selected.includes(option.value);
+                    const checked = multiple
+                      ? draft.includes(option.value)
+                      : selected.includes(option.value);
                     return (
                       <button
                         key={option.value}
@@ -199,27 +270,23 @@ export function TableFilter(props: Props) {
                   ) : null}
                 </div>
 
-                <div className="flex items-center justify-between border-t border-slate-100 px-2 py-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onChange([]);
-                      if (!multiple) close();
-                    }}
-                    className="text-ui-xs text-slate-400 transition hover:text-slate-700"
-                  >
-                    清除
-                  </button>
-                  {multiple ? (
+                {multiple ? (
+                  <div className="flex items-center justify-end border-t border-slate-100 px-2 py-1.5">
                     <button
                       type="button"
-                      onClick={close}
+                      onClick={() => {
+                        const changed =
+                          draft.length !== selected.length ||
+                          draft.some((value) => !selected.includes(value));
+                        if (changed) onChange(draft);
+                        close();
+                      }}
                       className="text-ui-xs text-sky-600 transition hover:text-sky-700"
                     >
                       完成
                     </button>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
             </>,
             document.body,

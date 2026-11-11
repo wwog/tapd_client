@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 
-import { formatBytes, mediaSrc } from "../lib/api";
+import { mediaSrc } from "../lib/api";
+import { formatBytes } from "../lib/format";
 
 export type PreviewItem = {
   url: string;

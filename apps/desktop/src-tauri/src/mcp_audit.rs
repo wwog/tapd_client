@@ -12,7 +12,6 @@ use std::{
     fs, io,
     path::Path,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{params, Connection};
@@ -104,17 +103,12 @@ impl McpAudit {
             .cache
             .with_conn(|conn| conn.execute("DELETE FROM mcp_audit", []));
         match result {
-            Some(Ok(_)) => {
-                self.entries.lock().expect("mcp audit lock").clear();
-                Ok(())
-            }
-            // SQLite disabled: clearing the in-memory copy is all we can do.
-            None => {
-                self.entries.lock().expect("mcp audit lock").clear();
-                Ok(())
-            }
-            // Keep the memory copy in sync with the rows that still exist.
             Some(Err(error)) => Err(io::Error::other(error.to_string())),
+            // SQLite disabled: clearing the in-memory copy is all we can do.
+            Some(Ok(_)) | None => {
+                self.entries.lock().expect("mcp audit lock").clear();
+                Ok(())
+            }
         }
     }
 
@@ -131,26 +125,10 @@ impl McpAudit {
 }
 
 fn insert_row(conn: &Connection, entry: &McpAuditEntry) -> rusqlite::Result<()> {
-    let summary = serde_json::to_string(&entry.summary).unwrap_or_else(|_| "null".to_string());
+    let payload = serde_json::to_string(entry).unwrap_or_else(|_| "null".to_string());
     conn.execute(
-        "INSERT OR REPLACE INTO mcp_audit (
-            id, ts, tool, client, decision, ok, duration_ms,
-            workspace_id, bug_id, error, summary, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            entry.id,
-            entry.ts,
-            entry.tool,
-            entry.client,
-            entry.decision,
-            if entry.ok { 1i64 } else { 0i64 },
-            entry.duration_ms as i64,
-            entry.workspace_id,
-            entry.bug_id,
-            entry.error,
-            summary,
-            unix_now(),
-        ],
+        "INSERT OR REPLACE INTO mcp_audit (id, payload, created_at) VALUES (?1, ?2, ?3)",
+        params![entry.id, payload, crate::cache::unix_now()],
     )?;
     Ok(())
 }
@@ -170,40 +148,16 @@ fn load_entries(cache: &Cache) -> Option<Vec<McpAuditEntry>> {
     cache
         .with_conn(|conn| {
             let mut statement = conn
-                .prepare(
-                    "SELECT id, ts, tool, client, decision, ok, duration_ms,
-                            workspace_id, bug_id, error, summary
-                       FROM mcp_audit ORDER BY rowid ASC",
-                )
+                .prepare("SELECT payload FROM mcp_audit ORDER BY rowid ASC")
                 .ok()?;
-            let rows = statement
-                .query_map([], |row| {
-                    let summary: String = row.get(10)?;
-                    Ok(McpAuditEntry {
-                        id: row.get(0)?,
-                        ts: row.get(1)?,
-                        tool: row.get(2)?,
-                        client: row.get(3)?,
-                        decision: row.get(4)?,
-                        ok: row.get::<_, i64>(5)? != 0,
-                        duration_ms: row.get::<_, i64>(6)? as u64,
-                        workspace_id: row.get(7)?,
-                        bug_id: row.get(8)?,
-                        error: row.get(9)?,
-                        summary: serde_json::from_str(&summary).unwrap_or(Value::Null),
-                    })
-                })
-                .ok()?;
-            Some(rows.flatten().collect())
+            let rows = statement.query_map([], |row| row.get::<_, String>(0)).ok()?;
+            Some(
+                rows.flatten()
+                    .filter_map(|payload| serde_json::from_str(&payload).ok())
+                    .collect(),
+            )
         })
         .flatten()
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

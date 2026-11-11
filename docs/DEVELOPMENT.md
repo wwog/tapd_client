@@ -57,10 +57,10 @@ opencode mcp list     # ✓ tapd connected
 - 通知状态：`<数据目录>/cache.sqlite3` 的 `notification_*` 表
 - MCP 审计：`<数据目录>/cache.sqlite3` 的 `mcp_audit` 表（最近 500 条，可导出到 `exports/`）
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
-- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录只清 TAPD 数据，通知设置与去重状态保留）
+- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
 - Agent 配置 / 任务 / 日志：`agent.json`、`cache.sqlite3` 的 `agent_tasks`、`agent-logs/`、`agent-events/`（日志与事件按最近 200 个任务保留）
 - 抓包导出：`<数据目录>/captures/`
-- 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<缺陷>-<slug>/`
+- 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.md` 里）
 - `runtime.json`：本地 API 端口与 token（0600）
 
 清理缓存：设置 → 本地数据 →「清理缓存」，删除上述数据目录下的全部内容并重启应用。`exports/` 与 WebView Cookie 不在数据目录内，会被保留。

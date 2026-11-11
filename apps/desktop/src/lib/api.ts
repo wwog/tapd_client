@@ -26,13 +26,6 @@ export type AppInfo = {
   onboarded: boolean;
 };
 
-export type SessionStatus = {
-  exists: boolean;
-  visible: boolean;
-  url: string | null;
-  loggedIn: boolean;
-};
-
 export type CapturedRequest = {
   id: number;
   ts: string;
@@ -46,17 +39,6 @@ export type CapturedRequest = {
   durationMs: number | null;
   error: string | null;
   truncated: boolean;
-};
-
-export type BridgePing = {
-  url: string;
-  title: string;
-  readyState: string;
-  hasInvoke: boolean;
-  hasCapture: boolean;
-  captureCount: number;
-  cookieLength: number;
-  userAgent: string;
 };
 
 /** Login-page state mirrored from the hidden TAPD webview. */
@@ -94,6 +76,8 @@ export type WorkspaceContext = {
 export type BugQuery = {
   workspaceId: string;
   owner: string | null;
+  /** Creator (TAPD `reporter`) nickname. */
+  creator: string | null;
   statuses: string[];
   priorities: string[];
   severities: string[];
@@ -137,6 +121,8 @@ export type BugListPage = {
   perpage: number;
   total: number;
   statusMap: Record<string, string>;
+  /** Status keys in the workspace's configured workflow order. */
+  statusOrder: string[];
   bugs: BugSummary[];
 };
 
@@ -321,7 +307,6 @@ export type OpenTarget = {
 };
 
 export type OpenTargetSet = {
-  kind: string;
   selected: string;
   targets: OpenTarget[];
 };
@@ -336,18 +321,12 @@ export type ExportResult = {
 
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
-  sessionStatus: () => invoke<SessionStatus>("session_status"),
   sessionShow: () => invoke<void>("session_show"),
-  sessionHide: () => invoke<void>("session_hide"),
   loginState: () => invoke<LoginQrState>("session_login_state"),
-  refreshLoginQr: () => invoke<void>("session_refresh_qr"),
   reloadLogin: () => invoke<void>("session_reload_login"),
   cacheAvatar: (avatarUrl: string) =>
     invoke<void>("session_cache_avatar", { avatarUrl }),
-  markLoggedIn: (nick?: string) =>
-    invoke<void>("session_mark_logged_in", { nick: nick ?? null }),
   logout: () => invoke<void>("session_logout"),
-  ping: () => invoke<BridgePing>("session_ping"),
   captures: () => invoke<CapturedRequest[]>("capture_snapshot"),
   clearCaptures: () => invoke<void>("capture_clear"),
   exportCaptures: () => invoke<string>("capture_export"),
@@ -412,11 +391,6 @@ export const api = {
 
 export const onSessionChanged = (callback: () => void): Promise<UnlistenFn> =>
   listen("session://changed", () => callback());
-
-export const onSessionUrl = (
-  callback: (url: string) => void,
-): Promise<UnlistenFn> =>
-  listen<string>("session://url", (event) => callback(event.payload));
 
 let mediaBase: string | null = null;
 

@@ -28,7 +28,6 @@ export type AgentConfig = {
   promptTemplate: string;
   readyQuietMs: number;
   readyTimeoutMs: number;
-  autoOpenConsole: boolean;
 };
 
 /** A stage every runtime declares in the Agent management dialog. */
@@ -141,15 +140,66 @@ export type AgentTask = {
 export type AgentTasksState = {
   tasks: AgentTask[];
   activeTaskId: string | null;
-  /** Kept for compatibility: number of `queued` tasks. */
-  queueLength: number;
   queuedCount?: number;
-  activeCount?: number;
   waitingReviewCount?: number;
   awaitingApprovalCount?: number;
   /** Set after the user stopped a review; resume from the Agent tab. */
   queuePaused?: boolean;
+  /** Fresh external AI claims (backend already drops expired ones). */
+  externalClaims?: ExternalClaim[];
 };
+
+/** A bug an external MCP client is working on. */
+export type ExternalClaimStatus = "queued" | "running";
+
+export type ExternalClaim = {
+  workspaceId: string;
+  bugId: string;
+  title: string;
+  /** MCP client name from the handshake, e.g. "Zcode". */
+  client: string;
+  /** Model the client reported; empty when unknown. */
+  model: string;
+  status: ExternalClaimStatus;
+  note?: string;
+  claimedAt: string;
+  lastSeenAt: string;
+};
+
+/** Claims expire server-side after 15 minutes without a heartbeat. */
+export const EXTERNAL_CLAIM_TTL_MS = 15 * 60 * 1000;
+
+export function isExternalClaimFresh(
+  claim: ExternalClaim,
+  now: number = Date.now(),
+): boolean {
+  const seen = Date.parse(claim.lastSeenAt);
+  return Number.isFinite(seen) && now - seen <= EXTERNAL_CLAIM_TTL_MS;
+}
+
+/** Fresh claims keyed by `agentBugKey`, newest state per bug. */
+export function externalClaimMap(
+  claims: ExternalClaim[] = [],
+  now: number = Date.now(),
+): Map<string, ExternalClaim> {
+  const map = new Map<string, ExternalClaim>();
+  for (const claim of claims) {
+    if (!isExternalClaimFresh(claim, now)) continue;
+    const key = agentBugKey(claim.workspaceId, claim.bugId);
+    if (!map.has(key)) map.set(key, claim);
+  }
+  return map;
+}
+
+/** `“Zcode”正在使用“Deepseek”进行处理` */
+export function externalClaimLabel(claim: ExternalClaim): string {
+  const client = claim.client.trim() || "外部 AI";
+  const model = claim.model.trim();
+  if (claim.status === "queued") return `“${client}”排队等待处理`;
+  return model
+    ? `“${client}”正在使用“${model}”进行处理`
+    : `“${client}”正在处理`;
+}
 
 /** Paginated terminal-task history; filtering and paging run in Rust. */
 export type AgentHistoryQuery = {
@@ -326,6 +376,12 @@ export const agentApi = {
   summary: () => featureCommand<AgentSummary>("agent_summary"),
   cancel: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_task_cancel", { taskId }),
+  /** Close an external AI claim from the list (user's 取消 action). */
+  externalRelease: (workspaceId: string, bugId: string) =>
+    featureCommand<{ released: boolean }>("agent_external_release", {
+      workspaceId,
+      bugId,
+    }),
   retry: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_task_retry", { taskId }),
   /** Approve a paused change: the task re-enters the queue to commit. */

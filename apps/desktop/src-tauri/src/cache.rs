@@ -57,205 +57,180 @@ impl Cache {
         Ok(conn)
     }
 
+    /// Schema version. Bumped only when the stored shape changes; fresh and
+    /// pre-release databases are rebuilt from scratch, while the shipped v5
+    /// shape is upgraded in place.
+    const SCHEMA_VERSION: i64 = 6;
+
     fn migrate(conn: &Connection) -> Result<(), String> {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
-
-        if version < 1 {
-            conn.execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS snapshots (
-                    kind TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    fetched_at INTEGER NOT NULL,
-                    PRIMARY KEY (kind, key)
-                );
-
-                CREATE TABLE IF NOT EXISTS bugs (
-                    workspace_id TEXT NOT NULL,
-                    bug_id TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    modified TEXT NOT NULL DEFAULT '',
-                    raw TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    PRIMARY KEY (workspace_id, bug_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_bugs_workspace_modified
-                    ON bugs (workspace_id, modified DESC);
-                "#,
-            )
-            .map_err(|error| error.to_string())?;
+        if version >= Self::SCHEMA_VERSION {
+            return Ok(());
         }
 
-        if version < 2 {
-            // Agent task store: bug <-> task <-> session/log relationships.
-            conn.execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS agent_tasks (
-                    id TEXT PRIMARY KEY,
-                    workspace_id TEXT NOT NULL,
-                    workspace_name TEXT NOT NULL DEFAULT '',
-                    bug_id TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
-                    session_id TEXT,
-                    repo_path TEXT NOT NULL DEFAULT '',
-                    log_path TEXT NOT NULL DEFAULT '',
-                    md_path TEXT NOT NULL DEFAULT '',
-                    source TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT '',
-                    started_at TEXT,
-                    finished_at TEXT,
-                    exit_code INTEGER,
-                    error TEXT,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_agent_tasks_bug
-                    ON agent_tasks (workspace_id, bug_id);
-                CREATE INDEX IF NOT EXISTS idx_agent_tasks_session
-                    ON agent_tasks (session_id);
-                "#,
-            )
-            .map_err(|error| error.to_string())?;
-            conn.pragma_update(None, "user_version", 2)
-                .map_err(|error| error.to_string())?;
-        }
-
-        if version < 3 {
-            // Notification settings and poll state. Settings live in a single
-            // row; everything else is written incrementally so a 30s poll never
-            // rewrites the whole state.
-            conn.execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS notification_settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    enabled INTEGER NOT NULL,
-                    scope TEXT NOT NULL,
-                    include_new INTEGER NOT NULL,
-                    include_transferred INTEGER NOT NULL,
-                    include_reopened INTEGER NOT NULL,
-                    poll_interval_secs INTEGER NOT NULL,
-                    quiet_enabled INTEGER NOT NULL,
-                    quiet_start TEXT NOT NULL,
-                    quiet_end TEXT NOT NULL,
-                    max_visible INTEGER NOT NULL,
-                    settings_version INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS notification_items (
-                    id TEXT PRIMARY KEY,
-                    workspace_id TEXT NOT NULL,
-                    workspace_name TEXT NOT NULL DEFAULT '',
-                    bug_id TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    kind TEXT NOT NULL,
-                    owner TEXT NOT NULL DEFAULT '',
-                    creator TEXT NOT NULL DEFAULT '',
-                    severity TEXT NOT NULL DEFAULT '',
-                    priority TEXT NOT NULL DEFAULT '',
-                    created TEXT NOT NULL DEFAULT '',
-                    detected_at TEXT NOT NULL DEFAULT '',
-                    state TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_notification_items_detected
-                    ON notification_items (detected_at);
-
-                CREATE TABLE IF NOT EXISTS notification_seen (
-                    bug_key TEXT PRIMARY KEY,
-                    status TEXT NOT NULL DEFAULT '',
-                    owner TEXT NOT NULL DEFAULT '',
-                    created TEXT NOT NULL DEFAULT '',
-                    assigned_time TEXT NOT NULL DEFAULT '',
-                    kinds TEXT NOT NULL DEFAULT '',
-                    last_seen TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_notification_seen_last_seen
-                    ON notification_seen (last_seen);
-
-                CREATE TABLE IF NOT EXISTS notification_ignored (
-                    bug_key TEXT PRIMARY KEY
-                );
-
-                CREATE TABLE IF NOT EXISTS notification_cursors (
-                    workspace_id TEXT PRIMARY KEY,
-                    cursor TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS notification_baseline (
-                    workspace_id TEXT PRIMARY KEY,
-                    done_at TEXT NOT NULL
-                );
-                "#,
-            )
-            .map_err(|error| error.to_string())?;
-            conn.pragma_update(None, "user_version", 3)
-                .map_err(|error| error.to_string())?;
-        }
-
-        if version < 4 {
-            // MCP / AI capsule notifications can be switched off independently
-            // from TAPD bug polling.
-            conn.execute(
-                "ALTER TABLE notification_settings
-                    ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1",
-                [],
-            )
-            .map_err(|error| error.to_string())?;
-            conn.pragma_update(None, "user_version", 4)
-                .map_err(|error| error.to_string())?;
-        }
-
-        if version < 5 {
-            // Agent tasks and the MCP audit log are now first-class SQLite
-            // state. The full task JSON lives in `payload` so AgentTask can
-            // evolve without another schema change; scalar columns stay
-            // indexed for history queries.
+        if version >= 5 {
+            Self::upgrade_v5(conn)?;
+        } else {
+            // Fresh install or a pre-1.0 development database: this data is
+            // disposable (snapshots / task history), so rebuild instead of
+            // carrying five incremental migrations for shapes nobody ships.
             conn.execute_batch(
                 r#"
                 BEGIN;
-                ALTER TABLE agent_tasks ADD COLUMN payload TEXT NOT NULL DEFAULT '';
-                ALTER TABLE agent_tasks ADD COLUMN severity TEXT NOT NULL DEFAULT '';
-                ALTER TABLE agent_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT '';
-                ALTER TABLE agent_tasks ADD COLUMN runtime_id TEXT NOT NULL DEFAULT '';
-                ALTER TABLE agent_tasks ADD COLUMN transport TEXT NOT NULL DEFAULT '';
-
-                CREATE TABLE IF NOT EXISTS agent_queue_state (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    paused INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_audit (
-                    id TEXT PRIMARY KEY,
-                    ts TEXT NOT NULL,
-                    tool TEXT NOT NULL,
-                    client TEXT NOT NULL,
-                    decision TEXT NOT NULL,
-                    ok INTEGER NOT NULL,
-                    duration_ms INTEGER NOT NULL,
-                    workspace_id TEXT,
-                    bug_id TEXT,
-                    error TEXT,
-                    summary TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_mcp_audit_created
-                    ON mcp_audit (created_at);
-                PRAGMA user_version = 5;
+                DROP TABLE IF EXISTS snapshots;
+                DROP TABLE IF EXISTS bugs;
+                DROP TABLE IF EXISTS agent_tasks;
+                DROP TABLE IF EXISTS agent_queue_state;
+                DROP TABLE IF EXISTS mcp_audit;
+                DROP TABLE IF EXISTS notification_settings;
+                DROP TABLE IF EXISTS notification_items;
+                DROP TABLE IF EXISTS notification_seen;
+                DROP TABLE IF EXISTS notification_ignored;
+                DROP TABLE IF EXISTS notification_cursors;
+                DROP TABLE IF EXISTS notification_baseline;
                 COMMIT;
                 "#,
             )
             .map_err(|error| error.to_string())?;
         }
 
+        Self::create_schema(conn)?;
+        conn.pragma_update(None, "user_version", Self::SCHEMA_VERSION)
+            .map_err(|error| error.to_string())?;
+
+        if version >= 5 {
+            Self::restore_v5_agent_tasks(conn)?;
+        }
         Ok(())
+    }
+
+    fn create_schema(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS snapshots (
+                kind TEXT NOT NULL,
+                key TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL,
+                PRIMARY KEY (kind, key)
+            );
+
+            CREATE TABLE IF NOT EXISTS bugs (
+                workspace_id TEXT NOT NULL,
+                bug_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                modified TEXT NOT NULL DEFAULT '',
+                raw TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, bug_id)
+            );
+
+            -- AgentTask is serialized into `payload`; `AgentTask` is the single
+            -- schema and history paging happens in memory.
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_queue_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- The audit entry is serialized into `payload`; only the retention
+            -- timestamp is a column because the table is trimmed by age.
+            CREATE TABLE IF NOT EXISTS mcp_audit (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                include_new INTEGER NOT NULL,
+                include_transferred INTEGER NOT NULL,
+                include_reopened INTEGER NOT NULL,
+                poll_interval_secs INTEGER NOT NULL,
+                quiet_enabled INTEGER NOT NULL,
+                quiet_start TEXT NOT NULL,
+                quiet_end TEXT NOT NULL,
+                max_visible INTEGER NOT NULL,
+                ai_enabled INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_items (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                workspace_name TEXT NOT NULL DEFAULT '',
+                bug_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL,
+                owner TEXT NOT NULL DEFAULT '',
+                creator TEXT NOT NULL DEFAULT '',
+                severity TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT '',
+                created TEXT NOT NULL DEFAULT '',
+                detected_at TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_seen (
+                bug_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT '',
+                owner TEXT NOT NULL DEFAULT '',
+                created TEXT NOT NULL DEFAULT '',
+                assigned_time TEXT NOT NULL DEFAULT '',
+                kinds TEXT NOT NULL DEFAULT '',
+                last_seen TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_ignored (
+                bug_key TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_cursors (
+                workspace_id TEXT PRIMARY KEY,
+                cursor TEXT NOT NULL
+            );
+            "#,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// v5 (the shipped 1.0 schema) → v6: keep user-visible rows, collapse the
+    /// task table to its JSON payload, and drop tables/columns no code reads.
+    fn upgrade_v5(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            CREATE TEMP TABLE legacy_agent_tasks AS
+                SELECT id, payload, updated_at FROM agent_tasks WHERE payload <> '';
+            DROP TABLE IF EXISTS agent_tasks;
+            DROP TABLE IF EXISTS agent_queue_state;
+            DROP TABLE IF EXISTS mcp_audit;
+            DROP TABLE IF EXISTS notification_baseline;
+            ALTER TABLE notification_settings DROP COLUMN settings_version;
+            COMMIT;
+            "#,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn restore_v5_agent_tasks(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            INSERT OR REPLACE INTO agent_tasks (id, payload, updated_at)
+                SELECT id, payload, updated_at FROM legacy_agent_tasks;
+            DROP TABLE legacy_agent_tasks;
+            "#,
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// Runs `f` against the shared connection. `None` means SQLite is disabled
@@ -444,66 +419,13 @@ impl Cache {
                         continue;
                     }
                 };
-                let status = match serde_json::to_value(task.status) {
-                    Ok(Value::String(value)) => value,
-                    _ => continue,
-                };
                 tx.execute(
-                    "INSERT INTO agent_tasks (
-                        id, workspace_id, workspace_name, bug_id, title, severity,
-                        priority, status, session_id, repo_path, log_path, md_path,
-                        source, created_at, started_at, finished_at, exit_code, error,
-                        runtime_id, transport, payload, updated_at
-                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
-                     )
+                    "INSERT INTO agent_tasks (id, payload, updated_at)
+                     VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET
-                        workspace_id = excluded.workspace_id,
-                        workspace_name = excluded.workspace_name,
-                        bug_id = excluded.bug_id,
-                        title = excluded.title,
-                        severity = excluded.severity,
-                        priority = excluded.priority,
-                        status = excluded.status,
-                        session_id = excluded.session_id,
-                        repo_path = excluded.repo_path,
-                        log_path = excluded.log_path,
-                        md_path = excluded.md_path,
-                        source = excluded.source,
-                        created_at = excluded.created_at,
-                        started_at = excluded.started_at,
-                        finished_at = excluded.finished_at,
-                        exit_code = excluded.exit_code,
-                        error = excluded.error,
-                        runtime_id = excluded.runtime_id,
-                        transport = excluded.transport,
                         payload = excluded.payload,
                         updated_at = excluded.updated_at",
-                    params![
-                        task.id,
-                        task.workspace_id,
-                        task.workspace_name,
-                        task.bug_id,
-                        task.title,
-                        task.severity,
-                        task.priority,
-                        status,
-                        task.session_id,
-                        task.repo_path,
-                        task.log_path,
-                        task.md_path,
-                        task.source,
-                        task.created_at,
-                        task.started_at,
-                        task.finished_at,
-                        task.exit_code,
-                        task.error,
-                        task.runtime_id,
-                        task.transport,
-                        payload,
-                        updated_at
-                    ],
+                    params![task.id, payload, updated_at],
                 )?;
             }
             for id in removed {
@@ -590,6 +512,7 @@ impl Cache {
                 perpage,
                 total,
                 status_map: Default::default(),
+                status_order: Default::default(),
                 bugs,
             },
             newest,
@@ -605,6 +528,16 @@ fn matches_query(query: &BugQuery, bug: &BugSummary) -> bool {
         .filter(|v| !v.is_empty())
     {
         if bug.owner != owner {
+            return false;
+        }
+    }
+    if let Some(creator) = query
+        .creator
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        if bug.creator != creator {
             return false;
         }
     }
@@ -641,13 +574,44 @@ fn matches_query(query: &BugQuery, bug: &BugSummary) -> bool {
     true
 }
 
+/// TAPD's default status order, used only for the offline fallback: customized
+/// workflows are not stored alongside the bug rows.
+const OFFLINE_STATUS_ORDER: &[&str] = &[
+    "new",
+    "in_progress",
+    "resolved",
+    "verified",
+    "reopened",
+    "rejected",
+    "closed",
+    "open",
+    "progressing",
+    "done",
+];
+
+fn status_rank(status: &str) -> usize {
+    OFFLINE_STATUS_ORDER
+        .iter()
+        .position(|key| *key == status)
+        .unwrap_or(OFFLINE_STATUS_ORDER.len())
+}
+
 fn sort_bugs(query: &BugQuery, bugs: &mut [BugSummary]) {
     let descending = !query.order.eq_ignore_ascii_case("asc");
+    // Each arm sorts ascending; `descending` is applied once at the end so the
+    // direction cannot drift between columns.
     match query.sort_name.as_str() {
-        "modified" => bugs.sort_by(|a, b| b.modified.cmp(&a.modified)),
-        _ => bugs.sort_by(|a, b| b.created.cmp(&a.created)),
+        "modified" => bugs.sort_by(|a, b| a.modified.cmp(&b.modified)),
+        // Same grouping as TAPD's server-side status sort; unknown statuses
+        // stay together at the end instead of interleaving.
+        "status" => bugs.sort_by(|a, b| {
+            status_rank(&a.status)
+                .cmp(&status_rank(&b.status))
+                .then_with(|| a.created.cmp(&b.created))
+        }),
+        _ => bugs.sort_by(|a, b| a.created.cmp(&b.created)),
     }
-    if !descending {
+    if descending {
         bugs.reverse();
     }
 }
@@ -660,7 +624,7 @@ pub fn bug_detail_key(workspace_id: &str, bug_id: &str) -> String {
     format!("{workspace_id}:{bug_id}")
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -736,10 +700,6 @@ pub async fn command(state: &SharedState, name: &str, payload: Value) -> Result<
             }
             let value = cache.get_workspace_members::<Value>(&workspace_id);
             Ok(serde_json::to_value(cached(value)).unwrap_or_else(|_| Value::Null))
-        }
-        "cache_clear" => {
-            cache.clear()?;
-            Ok(serde_json::json!({ "ok": true }))
         }
         other => Err(format!("unknown cache command: {other}")),
     }
@@ -879,16 +839,15 @@ mod tests {
         {
             let guard = cache.conn.lock().expect("cache lock");
             let conn = guard.as_ref().expect("cache connection");
-            let (status, session, payload): (String, String, String) = conn
+            let payload: String = conn
                 .query_row(
-                    "SELECT status, session_id, payload FROM agent_tasks WHERE id = 'task-1'",
+                    "SELECT payload FROM agent_tasks WHERE id = 'task-1'",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| row.get(0),
                 )
                 .expect("persisted row");
-            assert_eq!(status, "succeeded");
-            assert_eq!(session, "ses_1");
             assert!(payload.contains("\"prompt\":\"prompt\""));
+            assert!(payload.contains("\"sessionId\":\"ses_1\""));
         }
 
         // Removed ids are deleted and the queue flag is updated.
@@ -899,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_v1_cache_and_keeps_snapshots() {
+    fn pre_release_cache_is_rebuilt() {
         let path = std::env::temp_dir().join(format!(
             "tapd-cache-v1-{}.sqlite3",
             uuid::Uuid::new_v4().simple()
@@ -908,7 +867,10 @@ mod tests {
             let conn = Connection::open(&path).expect("v1 db");
             conn.execute_batch(
                 "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
+                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1);
                  CREATE TABLE bugs (workspace_id TEXT NOT NULL, bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', modified TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, bug_id));
+                 CREATE TABLE agent_tasks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, bug_id TEXT NOT NULL, status TEXT NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO agent_tasks VALUES ('old-task', 'ws', 'bug', 'succeeded', 1);
                  PRAGMA user_version = 1;",
             )
             .expect("v1 schema");
@@ -920,96 +882,107 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        let table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_tasks'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent_tasks table");
-        let notification_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'table' AND name = 'notification_settings'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("notification_settings table");
-        let audit_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'mcp_audit'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("mcp_audit table");
-        let queue_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'table' AND name = 'agent_queue_state'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent_queue_state table");
-        assert_eq!(version, 5);
-        assert_eq!(table, 1);
-        assert_eq!(notification_table, 1);
-        assert_eq!(audit_table, 1);
-        assert_eq!(queue_table, 1);
+        assert_eq!(version, 6);
+        for table in [
+            "agent_tasks",
+            "notification_settings",
+            "notification_items",
+            "notification_seen",
+            "notification_cursors",
+            "mcp_audit",
+            "agent_queue_state",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("table lookup");
+            assert_eq!(exists, 1, "{table} must be recreated");
+        }
+        let snapshots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
+            .expect("snapshots");
+        assert_eq!(snapshots, 0, "pre-1.0 snapshots are disposable");
+        let tasks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_tasks", [], |row| row.get(0))
+            .expect("tasks");
+        assert_eq!(tasks, 0, "pre-1.0 task rows have no payload and are dropped");
     }
 
     #[test]
-    fn v4_task_rows_are_ignored_after_upgrade() {
+    fn v5_upgrade_keeps_user_data() {
         let path = std::env::temp_dir().join(format!(
-            "tapd-cache-v4-{}.sqlite3",
+            "tapd-cache-v5-{}.sqlite3",
             uuid::Uuid::new_v4().simple()
         ));
+        let payload = "{\"id\":\"task-1\",\"workspaceId\":\"ws\",\"bugId\":\"b\"}";
         {
-            let conn = Connection::open(&path).expect("v4 db");
-            conn.execute_batch(
-                "CREATE TABLE agent_tasks (
-                    id TEXT PRIMARY KEY,
-                    workspace_id TEXT NOT NULL,
-                    workspace_name TEXT NOT NULL DEFAULT '',
-                    bug_id TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
-                    session_id TEXT,
-                    repo_path TEXT NOT NULL DEFAULT '',
-                    log_path TEXT NOT NULL DEFAULT '',
-                    md_path TEXT NOT NULL DEFAULT '',
-                    source TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT '',
-                    started_at TEXT,
-                    finished_at TEXT,
-                    exit_code INTEGER,
-                    error TEXT,
-                    updated_at INTEGER NOT NULL
-                );
-                INSERT INTO agent_tasks (id, workspace_id, bug_id, status, updated_at)
-                    VALUES ('old-task', 'ws', 'bug', 'succeeded', 1);
-                PRAGMA user_version = 4;",
-            )
-            .expect("v4 schema");
+            let conn = Connection::open(&path).expect("v5 db");
+            conn.execute_batch(&format!(
+                "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
+                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{{}}', 1);
+                 CREATE TABLE agent_tasks (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, workspace_name TEXT NOT NULL DEFAULT '',
+                    bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+                    session_id TEXT, repo_path TEXT NOT NULL DEFAULT '', log_path TEXT NOT NULL DEFAULT '',
+                    md_path TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '', started_at TEXT, finished_at TEXT,
+                    exit_code INTEGER, error TEXT, updated_at INTEGER NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT '', runtime_id TEXT NOT NULL DEFAULT '',
+                    transport TEXT NOT NULL DEFAULT ''
+                 );
+                 INSERT INTO agent_tasks (id, workspace_id, bug_id, status, updated_at, payload)
+                    VALUES ('task-1', 'ws', 'b', 'succeeded', 7, '{payload}');
+                 CREATE TABLE agent_queue_state (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE notification_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, scope TEXT NOT NULL,
+                    include_new INTEGER NOT NULL, include_transferred INTEGER NOT NULL,
+                    include_reopened INTEGER NOT NULL, poll_interval_secs INTEGER NOT NULL,
+                    quiet_enabled INTEGER NOT NULL, quiet_start TEXT NOT NULL, quiet_end TEXT NOT NULL,
+                    max_visible INTEGER NOT NULL, settings_version INTEGER NOT NULL,
+                    ai_enabled INTEGER NOT NULL
+                 );
+                 CREATE TABLE notification_items (id TEXT PRIMARY KEY);
+                 CREATE TABLE notification_seen (bug_key TEXT PRIMARY KEY);
+                 CREATE TABLE notification_ignored (bug_key TEXT PRIMARY KEY);
+                 CREATE TABLE notification_cursors (workspace_id TEXT PRIMARY KEY, cursor TEXT NOT NULL);
+                 CREATE TABLE notification_baseline (workspace_id TEXT PRIMARY KEY, done_at TEXT NOT NULL);
+                 CREATE TABLE mcp_audit (id TEXT PRIMARY KEY);
+                 PRAGMA user_version = 5;"
+            ))
+            .expect("v5 schema");
         }
 
         let cache = Cache::open(path);
-        let (tasks, paused) = cache.load_agent_tasks().expect("sqlite");
-        assert!(tasks.is_empty(), "old mirror rows must not be imported");
-        assert!(!paused);
-
         let guard = cache.conn.lock().expect("cache lock");
         let conn = guard.as_ref().expect("cache connection");
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
+        assert_eq!(version, 6);
         let payload: String = conn
             .query_row(
-                "SELECT payload FROM agent_tasks WHERE id = 'old-task'",
+                "SELECT payload FROM agent_tasks WHERE id = 'task-1'",
                 [],
                 |row| row.get(0),
             )
-            .expect("old row");
-        assert_eq!(version, 5);
-        assert!(payload.is_empty());
+            .expect("task payload survives");
+        assert!(payload.contains("task-1"));
+        let snapshots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
+            .expect("snapshots");
+        assert_eq!(snapshots, 1, "v5 snapshots survive the upgrade");
+        let baseline_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'table' AND name = 'notification_baseline'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("baseline table");
+        assert_eq!(baseline_table, 0, "baseline table is no longer needed");
     }
 }

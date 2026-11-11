@@ -6,8 +6,9 @@ use std::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use tapd_core::{
-    bridge::{BridgeHttpResult, BridgePing, CapturedRequest},
+    bridge::{BridgeHttpResult, CapturedRequest},
     config::McpPolicy,
+    export::MediaKind,
     tapd::{
         api::{
             bug_detail_body, bug_detail_url, bug_list_url, parse_bug_detail, parse_bug_list,
@@ -23,7 +24,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::{
     bug_write::{self, normalize_user_value, EDITABLE_USER_FIELDS},
     mcp_audit::McpAuditEntry,
-    open_with, session,
+    media, notification, open_with, session,
     state::SharedState,
 };
 
@@ -58,15 +59,6 @@ pub struct AppInfo {
     session_url: Option<String>,
     hidden_workspace_ids: Vec<String>,
     onboarded: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionStatus {
-    exists: bool,
-    visible: bool,
-    url: Option<String>,
-    logged_in: bool,
 }
 
 /// What the hidden TAPD webview is currently showing on its login page.
@@ -144,38 +136,10 @@ pub fn app_info(state: State<'_, SharedState>) -> AppInfo {
 }
 
 #[tauri::command]
-pub fn session_status(app: AppHandle, state: State<'_, SharedState>) -> SessionStatus {
-    let window = app.get_webview_window(session::SESSION_LABEL);
-    let (exists, visible, url) = match window {
-        Some(window) => (
-            true,
-            window.is_visible().unwrap_or(false),
-            window.url().ok().map(|url| url.to_string()),
-        ),
-        None => (false, false, None),
-    };
-
-    SessionStatus {
-        exists,
-        visible,
-        url,
-        logged_in: state.config.lock().expect("config lock").logged_in,
-    }
-}
-
-#[tauri::command]
 pub fn session_show(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
     let window = session::ensure_session_window(&app, state.inner(), true)?;
     let _ = window.show();
     let _ = window.set_focus();
-    Ok(())
-}
-
-#[tauri::command]
-pub fn session_hide(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(session::SESSION_LABEL) {
-        let _ = window.hide();
-    }
     Ok(())
 }
 
@@ -214,22 +178,6 @@ pub async fn session_login_state(
         Err(_) => LoginQrState::loading("正在等待登录页响应"),
     };
     Ok(state)
-}
-
-/// Asks the hidden login page for a fresh QR code.
-#[tauri::command]
-pub async fn session_refresh_qr(app: AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建".to_string())?;
-
-    session::eval_sync_json_once(
-        &window,
-        "(window.__TAPDCB__ && typeof window.__TAPDCB__.refreshLogin === 'function') ? window.__TAPDCB__.refreshLogin() : false",
-        Duration::from_secs(2),
-    )
-    .await
-    .map(|_| ())
 }
 
 /// Clears any half-finished/expired TAPD session and opens a clean login page.
@@ -277,31 +225,6 @@ pub fn session_cache_avatar(
 }
 
 #[tauri::command]
-pub fn session_mark_logged_in(
-    app: AppHandle,
-    state: State<'_, SharedState>,
-    nick: Option<String>,
-) -> Result<(), String> {
-    state
-        .update_config(|config| {
-            config.logged_in = true;
-            if let Some(nick) = nick {
-                let trimmed = nick.trim();
-                if !trimmed.is_empty() {
-                    config.me = Some(trimmed.to_string());
-                }
-            }
-        })
-        .map_err(|error| error.to_string())?;
-
-    if let Some(window) = app.get_webview_window(session::SESSION_LABEL) {
-        let _ = window.hide();
-    }
-    let _ = app.emit("session://changed", ());
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn session_logout(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
     logout_session(&app, state.inner(), "logout").await;
     Ok(())
@@ -326,6 +249,8 @@ pub(crate) async fn logout_session(app: &AppHandle, state: &SharedState, reason:
     if let Err(error) = state.cache.clear() {
         tracing::warn!(%error, "failed to clear offline cache on logout");
     }
+    // Cards and de-duplication state belong to the account being ended.
+    notification::reset_session();
 
     // Keep the URL watcher from resurrecting the old session while TAPD boots.
     // The login page takes a few seconds to settle, so cover the whole window.
@@ -482,49 +407,6 @@ fn tapd_cookie_count(window: &tauri::WebviewWindow) -> usize {
 fn is_tapd_cookie_domain(domain: &str) -> bool {
     let domain = domain.trim_start_matches('.').to_ascii_lowercase();
     domain == "tapd.cn" || domain.ends_with(".tapd.cn")
-}
-
-#[tauri::command]
-pub async fn session_ping(
-    app: AppHandle,
-    _state: State<'_, SharedState>,
-) -> Result<BridgePing, String> {
-    let window = app
-        .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建，请稍后重试".to_string())?;
-
-    let value =
-        session::eval_sync_json(&window, "window.__TAPDCB__.ping()", Duration::from_secs(8))
-            .await?;
-
-    serde_json::from_value(value).map_err(|error| format!("unexpected ping payload: {error}"))
-}
-
-#[tauri::command]
-pub async fn session_http(
-    app: AppHandle,
-    _state: State<'_, SharedState>,
-    method: String,
-    url: String,
-    body: Option<String>,
-    headers: Option<serde_json::Value>,
-) -> Result<BridgeHttpResult, String> {
-    let window = app
-        .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建，请稍后重试".to_string())?;
-
-    let payload = serde_json::json!({
-        "method": method,
-        "url": url,
-        "body": body,
-        "headers": headers.unwrap_or_else(|| serde_json::json!({})),
-    });
-    let expression = format!("window.__TAPDCB__.request({payload})");
-
-    let value = session::eval_async_json(&window, &expression, Duration::from_secs(30)).await?;
-
-    serde_json::from_value(value)
-        .map_err(|error| format!("unexpected HTTP bridge payload: {error}"))
 }
 
 #[tauri::command]
@@ -989,22 +871,8 @@ pub async fn mcp_config(state: State<'_, SharedState>) -> Result<McpConfigInfo, 
         snippet,
         transport: "stdio".to_string(),
         read_only: !state.config_snapshot().mcp_policy.writes_enabled,
-        tools: vec![
-            "tapd_whoami",
-            "tapd_list_projects",
-            "tapd_list_bugs",
-            "tapd_list_my_bugs",
-            "tapd_get_bug",
-            "tapd_export_bug_md",
-            "tapd_get_bug_prompt",
-            "tapd_get_bug_transitions",
-            "tapd_add_bug_comment",
-            "tapd_update_bug_status",
-            "tapd_notify_user",
-            "tapd_wait_notification",
-            "tapd_request_review",
-            "agent_task_report",
-        ],
+        // The sidecar's manifest is the single source of truth for names.
+        tools: tapd_core::mcp::names().collect(),
         port: state.runtime_info().map(|runtime| runtime.port),
         clients,
     })
@@ -1030,6 +898,10 @@ pub fn ensure_window_width(app: AppHandle, min_width: f64) -> Result<f64, String
         target_width = target_width.min(monitor.size().width as f64 / monitor.scale_factor());
         min_x = monitor.position().x as f64 / monitor.scale_factor();
     }
+
+    // Growing for the detail panel is not a user resize: keep the saved
+    // window geometry unchanged.
+    crate::window_state::suppress_for(1_500);
 
     // Grow leftwards so the window's right edge (and the new detail panel)
     // stays where the user put it.
@@ -1260,7 +1132,7 @@ pub async fn open_directory(
     path: String,
     target: Option<String>,
 ) -> Result<(), String> {
-    let dir = expand_home(path.trim());
+    let dir = tapd_core::paths::expand_home(path.trim());
     if dir.as_os_str().is_empty() {
         return Err("还没有绑定项目目录".to_string());
     }
@@ -1278,20 +1150,6 @@ pub async fn open_directory(
 
     open_local(&dir, &selected)
 }
-
-/// Expands a leading `~` so a hand-typed repo path works like the picker's.
-fn expand_home(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return std::path::PathBuf::from(home).join(rest);
-        }
-    }
-    std::path::PathBuf::from(path)
-}
-
-const MEDIA_DOWNLOAD_LIMIT: u64 = 300 * 1024 * 1024;
-const MEDIA_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
 
 /// Opens a TAPD resource locally.
 ///
@@ -1506,7 +1364,11 @@ async fn download_media(
     let dir = paths.data_dir.join("media-cache");
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
 
-    let name = format!("{:016x}-{}", fnv1a(url), media_filename(url));
+    let name = format!(
+        "{:016x}-{}",
+        media::fnv1a(url.as_bytes()),
+        media_filename(url)
+    );
     let path = dir.join(&name);
     if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0) {
         return Ok(path);
@@ -1518,13 +1380,13 @@ async fn download_media(
     let cookie = session::cookie_header(&window)?;
 
     let response = reqwest::Client::builder()
-        .user_agent(MEDIA_USER_AGENT)
+        .user_agent(media::USER_AGENT)
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?
         .get(url)
         .header(reqwest::header::COOKIE, cookie)
-        .header(reqwest::header::REFERER, "https://www.tapd.cn/")
+        .header(reqwest::header::REFERER, media::REFERER)
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -1533,7 +1395,7 @@ async fn download_media(
     if !status.is_success() {
         return Err(format!("下载失败（HTTP {status}）"));
     }
-    if response.content_length().unwrap_or(0) > MEDIA_DOWNLOAD_LIMIT {
+    if response.content_length().unwrap_or(0) > media::MAX_FILE_BYTES {
         return Err("文件超过 300MB，已跳过".to_string());
     }
 
@@ -1544,25 +1406,19 @@ async fn download_media(
         .unwrap_or("")
         .to_string();
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MEDIA_DOWNLOAD_LIMIT {
+    if bytes.len() as u64 > media::MAX_FILE_BYTES {
         return Err("文件超过 300MB，已跳过".to_string());
     }
-    if content_type.starts_with("text/html") && !bytes.starts_with(b"\x89PNG") {
+    if media::content_type_is_html(&content_type) && !bytes.starts_with(b"\x89PNG") {
         return Err(format!("下载被拒绝（{content_type}）"));
     }
 
-    let path = with_content_extension(path, &content_type);
+    // `MediaKind::File` keeps the old cache-name behavior: an unknown content
+    // type does not invent an extension.
+    let name = media::with_extension(&name, &content_type, MediaKind::File);
+    let path = dir.join(name);
     std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
     Ok(path)
-}
-
-fn fnv1a(value: &str) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 fn media_filename(url: &str) -> String {
@@ -1578,39 +1434,6 @@ fn media_filename(url: &str) -> String {
         "media".to_string()
     } else {
         cleaned
-    }
-}
-
-fn with_content_extension(path: std::path::PathBuf, content_type: &str) -> std::path::PathBuf {
-    let has_extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| !extension.is_empty());
-    if has_extension {
-        return path;
-    }
-
-    let extension = match content_type.split(';').next().unwrap_or("") {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "video/mp4" => "mp4",
-        "video/quicktime" => "mov",
-        "application/pdf" => "pdf",
-        "application/zip" => "zip",
-        _ => "",
-    };
-    if extension.is_empty() {
-        path
-    } else {
-        let name = format!(
-            "{}.{extension}",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("media")
-        );
-        path.with_file_name(name)
     }
 }
 
@@ -1702,8 +1525,8 @@ mod tests {
 
     #[test]
     fn builds_stable_cache_names() {
-        assert_eq!(fnv1a("abc"), fnv1a("abc"));
-        assert_ne!(fnv1a("abc"), fnv1a("abd"));
+        assert_eq!(media::fnv1a(b"abc"), media::fnv1a(b"abc"));
+        assert_ne!(media::fnv1a(b"abc"), media::fnv1a(b"abd"));
         assert_eq!(
             media_filename("https://file.tapd.cn/1/attachments/download/2/log.ips?x=1"),
             "log.ips"

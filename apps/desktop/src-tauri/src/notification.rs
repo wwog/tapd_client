@@ -15,7 +15,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::Duration,
@@ -34,20 +34,15 @@ use tapd_core::{
         Workspace,
     },
 };
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
+    bug_write,
     commands::session_request_json,
     notification_db::{self, PollWrite},
-    session,
     state::SharedState,
 };
 
-/// Tauri label of the self-drawn notification window (see `main.tsx`).
-pub const WINDOW_LABEL: &str = "island";
 const MAX_ITEMS: usize = 200;
 const MAX_HISTORY: usize = 100;
 /// AI notifications are transient prompts, so they stay in memory only.
@@ -80,12 +75,11 @@ const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
 const MIN_POLL_INTERVAL_SECS: u64 = 20;
 const MAX_POLL_INTERVAL_SECS: u64 = 600;
 
-const INLINE_UPDATE_URL: &str = "https://www.tapd.cn/api/entity/bugs/inline_update";
-const KANBAN_TRANSITION_URL: &str =
-    "https://www.tapd.cn/api/aggregation/kanban_aggregation/transition";
-const WORKFLOW_TRANSITION_URL: &str = "https://www.tapd.cn/api/entity/workflow/transition";
-
 static SERVICE: OnceLock<Arc<NotificationService>> = OnceLock::new();
+/// Bumped whenever a notification session starts (app launch is implicit, login
+/// and logout call `reset_session`). A poll that started under an older session
+/// drops its results instead of leaking them into the new account.
+static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Domain types (serialized camelCase for the React window)
@@ -355,37 +349,27 @@ pub struct SeenBug {
 #[serde(rename_all = "camelCase", default)]
 pub struct NotificationStore {
     pub settings: NotificationSettings,
-    /// Schema version of `settings`; 0 = written before the 30s poll default.
-    pub settings_version: u32,
     pub items: Vec<NotificationItem>,
     pub seen: BTreeMap<String, SeenBug>,
     /// `workspaceId:bugId` keys the user ignored.
     pub ignored: Vec<String>,
+    /// Workspace id -> cursor timestamp (`YYYY-MM-DD HH:MM:SS`). Presence also
+    /// means the workspace has been polled before: a missing cursor is the
+    /// first-round baseline.
     pub cursors: BTreeMap<String, String>,
-    /// Workspace id -> baseline timestamp (`YYYY-MM-DD HH:MM:SS`).
-    pub baseline_done: BTreeMap<String, String>,
 }
 
 impl Default for NotificationStore {
     fn default() -> Self {
         Self {
             settings: NotificationSettings::default(),
-            // `#[serde(default)]` fills a missing field from `Default`, so old
-            // files must deserialize as v0 for `init` to migrate them.
-            settings_version: 0,
             items: Vec::new(),
             seen: BTreeMap::new(),
             ignored: Vec::new(),
             cursors: BTreeMap::new(),
-            baseline_done: BTreeMap::new(),
         }
     }
 }
-
-/// Bumped when persisted defaults change and existing stores need a migration.
-const CURRENT_SETTINGS_VERSION: u32 = 1;
-/// The interval every pre-1.0 store was created with.
-const LEGACY_POLL_INTERVAL_SECS: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -393,11 +377,6 @@ const LEGACY_POLL_INTERVAL_SECS: u64 = 60;
 
 pub fn bug_key(workspace_id: &str, bug_id: &str) -> String {
     format!("{}:{}", workspace_id.trim(), bug_id.trim())
-}
-
-/// De-duplication key for a single notification.
-pub fn dedupe_key(workspace_id: &str, bug_id: &str, kind: NotificationKind) -> String {
-    format!("{}:{}", bug_key(workspace_id, bug_id), kind.as_str())
 }
 
 pub fn scope_allows(scope: NotificationScope, owner: &str, me: &str) -> bool {
@@ -685,21 +664,6 @@ fn assigned_recently(created: &str, assigned_time: &str, now: NaiveDateTime) -> 
     delta.num_minutes() <= 10 && delta.num_minutes() >= -1
 }
 
-/// Status keys that mean "not started yet". Different TAPD projects use
-/// different workflows: UU starts at `new`, 客服系统 starts at `open`.
-pub const STARTING_STATUSES: &[&str] = &["new", "open", "reopened"];
-
-/// Candidate "processing" targets, tried in order. `open` projects use
-/// `progressing`; most projects use `in_progress`.
-pub const TRANSITION_TARGETS: &[&str] = &["in_progress", "progressing"];
-
-pub fn is_starting_status(status: &str) -> bool {
-    let status = status.trim();
-    STARTING_STATUSES
-        .iter()
-        .any(|candidate| *candidate == status)
-}
-
 /// Classifies a bug into a notification kind.
 ///
 /// `open` is handled exactly like `new` (both are non-reopened starting
@@ -799,178 +763,6 @@ pub fn quiet_hours_active(quiet: &QuietHours, now: NaiveTime) -> bool {
     }
 }
 
-pub fn inline_owner_body(
-    workspace_id: &str,
-    bug_id: &str,
-    me: &str,
-    dsc_token: Option<&str>,
-) -> Value {
-    let mut body = json!({
-        "data": {
-            "field": "current_owner",
-            "value": me,
-            "id": bug_id,
-            "field_name_is_alias": false
-        },
-        "workspace_id": workspace_id
-    });
-    attach_dsc(&mut body, dsc_token);
-    body
-}
-
-pub fn kanban_transition_body(
-    workspace_id: &str,
-    bug_id: &str,
-    current_status: &str,
-    next_status: &str,
-    dsc_token: Option<&str>,
-) -> Value {
-    let mut body = json!({
-        "workspace_id": workspace_id,
-        "entity_id": bug_id,
-        "entity_type": "bug",
-        "current_status": current_status,
-        "next_status": next_status,
-        // TAPD 要求 from 非空，空字符串会被拒绝（from:不允许为空）。
-        "from": current_status,
-        "fields": [],
-        "is_manual": 1,
-        "auto_complete": 0,
-        "close_task": 0,
-        "current_alias_status": "",
-        "next_alias_status": "",
-        "Timesheet": null,
-        "check_required_fields": 1,
-        "edit_rule_fields": []
-    });
-    attach_dsc(&mut body, dsc_token);
-    body
-}
-
-pub fn workflow_transition_body(
-    workspace_id: &str,
-    bug_id: &str,
-    current_status: &str,
-    next_status: &str,
-    dsc_token: Option<&str>,
-) -> Value {
-    let mut body = json!({
-        "workspace_id": workspace_id,
-        "entity_id": bug_id,
-        "entity_type": "bug",
-        "current_status": current_status,
-        "next_status": next_status,
-        "from": current_status,
-        "fields": [],
-        "is_manual": 1,
-        "auto_complete": 0,
-        "close_task": 0,
-        "current_alias_status": "",
-        "next_alias_status": "",
-        "Timesheet": null
-    });
-    attach_dsc(&mut body, dsc_token);
-    body
-}
-
-fn attach_dsc(body: &mut Value, dsc_token: Option<&str>) {
-    if let Some(token) = dsc_token.map(str::trim).filter(|token| !token.is_empty()) {
-        body["dsc_token"] = json!(token);
-    }
-}
-
-/// Which TAPD endpoint a transition attempt goes through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransitionApi {
-    Kanban,
-    Workflow,
-}
-
-impl TransitionApi {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Kanban => "kanban_aggregation/transition",
-            Self::Workflow => "entity/workflow/transition",
-        }
-    }
-
-    pub fn url(self) -> &'static str {
-        match self {
-            Self::Kanban => KANBAN_TRANSITION_URL,
-            Self::Workflow => WORKFLOW_TRANSITION_URL,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TransitionAttempt {
-    pub api: TransitionApi,
-    pub target: &'static str,
-    pub body: Value,
-}
-
-/// Ordered attempts for moving a starting bug into processing:
-/// kanban(in_progress, progressing) then workflow(in_progress, progressing).
-///
-/// Non-starting statuses (already processing / resolved / …) produce no
-/// attempts: the accept action only reassigns those.
-pub fn transition_attempts(
-    workspace_id: &str,
-    bug_id: &str,
-    current_status: &str,
-    dsc_token: Option<&str>,
-) -> Vec<TransitionAttempt> {
-    if !is_starting_status(current_status) {
-        return Vec::new();
-    }
-
-    let mut attempts = Vec::with_capacity(TRANSITION_TARGETS.len() * 2);
-    for target in TRANSITION_TARGETS {
-        attempts.push(TransitionAttempt {
-            api: TransitionApi::Kanban,
-            target,
-            body: kanban_transition_body(workspace_id, bug_id, current_status, target, dsc_token),
-        });
-    }
-    for target in TRANSITION_TARGETS {
-        attempts.push(TransitionAttempt {
-            api: TransitionApi::Workflow,
-            target,
-            body: workflow_transition_body(workspace_id, bug_id, current_status, target, dsc_token),
-        });
-    }
-
-    attempts
-}
-
-/// Returns the target of the first attempt whose outcome was `true`.
-///
-/// The accept flow records one outcome per attempted call (stopping at the
-/// first success), which makes the endpoint/target fallback order explicit and
-/// unit-testable without network access.
-pub fn resolve_attempt_target(
-    attempts: &[TransitionAttempt],
-    outcomes: &[bool],
-) -> Option<&'static str> {
-    attempts
-        .iter()
-        .zip(outcomes.iter())
-        .find(|(_, accepted)| **accepted)
-        .map(|(attempt, _)| attempt.target)
-}
-
-/// TAPD answers write APIs with HTTP 200 even when `meta.code != 0`.
-pub fn response_ok(root: &Value) -> bool {
-    match root.pointer("/meta/code") {
-        Some(Value::Number(code)) => code.as_i64() == Some(0),
-        Some(Value::String(code)) => code.trim().is_empty() || code.trim() == "0",
-        Some(Value::Null) | None => !root
-            .get("error")
-            .is_some_and(|error| !error.is_null() && error != &Value::Bool(false)),
-        Some(_) => false,
-    }
-}
-
 /// Extracts the workspace id from `https://www.tapd.cn/tapd_fe/<id>/...`.
 pub fn workspace_from_session_url(raw: &str) -> Option<String> {
     let (_, rest) = raw.split_once("tapd_fe/")?;
@@ -982,21 +774,6 @@ pub fn workspace_from_session_url(raw: &str) -> Option<String> {
     }
 }
 
-fn api_message(root: &Value) -> String {
-    root.pointer("/meta/message")
-        .and_then(Value::as_str)
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or("TAPD 返回失败")
-        .to_string()
-}
-
-fn ensure_api_ok(root: &Value, action: &str) -> Result<(), String> {
-    if response_ok(root) {
-        return Ok(());
-    }
-    Err(format!("{action}失败：{}", api_message(root)))
-}
-
 /// Result of one poll round. A round can partially succeed (some projects
 /// polled, others failed), so "did poll" and the error are tracked separately.
 #[derive(Debug, Default)]
@@ -1005,6 +782,14 @@ struct PollReport {
     /// At least one notification item was created this round.
     notified: bool,
     error: Option<String>,
+}
+
+/// The first completed round after a session starts is silent: it only records
+/// state, so entering the app never replays a backlog. `baseline` (no cursor)
+/// is always silent; a truncated incremental round stays unprimed and is silent
+/// again until it consumes the whole window.
+fn round_is_silent(baseline: bool, primed: bool) -> bool {
+    baseline || !primed
 }
 
 /// Drops seen entries untouched for `SEEN_RETENTION_DAYS`, then keeps at most
@@ -1050,12 +835,11 @@ struct NotificationService {
     /// persisted, cleared on restart.
     ai_items: Mutex<VecDeque<NotificationItem>>,
     workspace_names: Mutex<BTreeMap<String, String>>,
-    /// First workspace returned by TAPD, used before the UI persists a choice.
-    default_workspace: Mutex<Option<String>>,
+    /// Workspaces whose first round in this session has completed. The first
+    /// round only records state; anything after it may notify.
+    primed: Mutex<BTreeSet<String>>,
     last_poll_at: Mutex<Option<String>>,
     last_error: Mutex<Option<String>>,
-    running: AtomicBool,
-    polling: AtomicBool,
     wake: tokio::sync::Notify,
 }
 
@@ -1069,11 +853,8 @@ impl NotificationService {
     }
 
     fn persist_settings(&self) {
-        let (settings, version) = {
-            let store = self.store.lock().expect("notification store lock");
-            (store.settings.clone(), store.settings_version)
-        };
-        notification_db::save_settings(&self.state.cache, &settings, version);
+        let settings = self.settings();
+        notification_db::save_settings(&self.state.cache, &settings);
     }
 
     fn workspace_name(&self, workspace_id: &str) -> String {
@@ -1340,8 +1121,9 @@ impl NotificationService {
 
     /// Emits the current pending list and lays the island out accordingly.
     ///
-    /// The capsule is always visible (it doubles as the status indicator), so
-    /// an empty list collapses the island instead of hiding it.
+    /// An empty list collapses the island; whether the collapsed capsule is
+    /// visible at all is decided by `notification_island_visible` (the idle
+    /// capsule stays hidden instead of showing a standing "standby" hint).
     fn refresh_window(&self) {
         let (items, quiet) = self.pending_payload();
         let _ = self.app.emit(
@@ -1349,7 +1131,7 @@ impl NotificationService {
             json!({ "items": items, "quiet": quiet }),
         );
 
-        apply_island(
+        crate::island_window::apply_island(
             &self.app,
             &self.state,
             !items.is_empty() && !quiet,
@@ -1383,12 +1165,6 @@ impl NotificationService {
         // empty project list: swallowing it made an API/auth error look like a
         // successful poll (`lastPollAt` advanced, no `lastError`).
         let workspaces = parse_workspaces(&root)?;
-        if let Some(first) = workspaces.first() {
-            *self
-                .default_workspace
-                .lock()
-                .expect("default workspace lock") = Some(first.id.clone());
-        }
         {
             let mut names = self.workspace_names.lock().expect("workspace names lock");
             for workspace in &workspaces {
@@ -1417,12 +1193,7 @@ impl NotificationService {
     }
 
     async fn poll_once(self: &Arc<Self>) {
-        if self.polling.swap(true, Ordering::SeqCst) {
-            return;
-        }
-
         let result = self.poll_inner().await;
-        self.polling.store(false, Ordering::SeqCst);
         let mut notify_list = false;
 
         match result {
@@ -1493,10 +1264,11 @@ impl NotificationService {
         }
 
         let now = Local::now().naive_local();
+        let session = SESSION_SEQ.load(Ordering::SeqCst);
         let mut report = PollReport::default();
         for workspace_id in workspace_ids {
             match self
-                .poll_workspace(&workspace_id, &me, &settings, now)
+                .poll_workspace(&workspace_id, &me, &settings, now, session)
                 .await
             {
                 Ok(notified) => {
@@ -1530,14 +1302,25 @@ impl NotificationService {
         me: &str,
         settings: &NotificationSettings,
         now: NaiveDateTime,
+        session: u64,
     ) -> Result<bool, String> {
-        let (baseline, cursor) = {
+        let (baseline, cursor, primed) = {
             let store = self.store.lock().expect("notification store lock");
             (
-                !store.baseline_done.contains_key(workspace_id),
+                // No cursor = this workspace has never been polled for this
+                // account/session. The round records state but stays silent.
+                !store.cursors.contains_key(workspace_id),
                 store.cursors.get(workspace_id).cloned(),
+                self.primed
+                    .lock()
+                    .expect("notification primed lock")
+                    .contains(workspace_id),
             )
         };
+        // The first completed round after launch/login only primes the state;
+        // notifications start from the next round. A truncated round does not
+        // prime, so the unread tail is absorbed silently on the retry.
+        let silent = round_is_silent(baseline, primed);
 
         let modified_after = if baseline {
             None
@@ -1575,7 +1358,7 @@ impl NotificationService {
         // For project scope a first-seen bug owned by me may just be an old bug
         // touched by a comment. Ask the detail once for `assigned_time`.
         let mut assigned_overrides: BTreeMap<String, String> = BTreeMap::new();
-        if !baseline && settings.scope == NotificationScope::Project {
+        if !silent && settings.scope == NotificationScope::Project {
             let seen = self
                 .store
                 .lock()
@@ -1608,6 +1391,12 @@ impl NotificationService {
             }
         }
 
+        // A login/logout during the fetch invalidates this round: writing it
+        // would leak the previous account's state into the new session.
+        if SESSION_SEQ.load(Ordering::SeqCst) != session {
+            return Ok(false);
+        }
+
         let names = self
             .workspace_names
             .lock()
@@ -1617,7 +1406,7 @@ impl NotificationService {
 
         // Collect mutations under the store lock, then mirror only those rows to
         // SQLite in one transaction. Nothing here rewrites the whole store.
-        let (seen_updates, new_items, ignore_lifted, cursor, baseline_at, trim_items) = {
+        let (seen_updates, new_items, ignore_lifted, cursor, trim_items) = {
             let mut store = self.store.lock().expect("notification store lock");
             let mut seen_updates: Vec<(String, SeenBug)> = Vec::new();
             let mut new_items: Vec<NotificationItem> = Vec::new();
@@ -1678,22 +1467,27 @@ impl NotificationService {
                     }
                 }
 
-                let notify = match kind {
-                    Some(kind) if settings.allows(kind) => {
-                        let is_ignored_and_blocked = ignored && kind != NotificationKind::Reopened;
-                        // Reopen and transfer are transition-based (their
-                        // previous state comparison already prevents repeats).
-                        // "New" keys off `created`, which survives a seen-row
-                        // prune, so it keeps a lifetime guard.
-                        let already_sent = kind == NotificationKind::New
-                            && already_notified(&kinds, &bug.workspace_id, &bug.id, kind);
-                        if !is_ignored_and_blocked && !already_sent {
-                            Some(kind)
-                        } else {
-                            None
+                let notify = if silent {
+                    None
+                } else {
+                    match kind {
+                        Some(kind) if settings.allows(kind) => {
+                            let is_ignored_and_blocked =
+                                ignored && kind != NotificationKind::Reopened;
+                            // Reopen and transfer are transition-based (their
+                            // previous state comparison already prevents
+                            // repeats). "New" keys off `created`, which survives
+                            // a seen-row prune, so it keeps a lifetime guard.
+                            let already_sent =
+                                kind == NotificationKind::New && already_notified(&kinds, kind);
+                            if !is_ignored_and_blocked && !already_sent {
+                                Some(kind)
+                            } else {
+                                None
+                            }
                         }
+                        _ => None,
                     }
-                    _ => None,
                 };
 
                 if let Some(kind) = notify {
@@ -1734,11 +1528,6 @@ impl NotificationService {
                 seen_updates.push((key, seen));
             }
 
-            if baseline {
-                store
-                    .baseline_done
-                    .insert(workspace_id.to_string(), seen_at.clone());
-            }
             // A complete round advances the cursor. An incomplete incremental
             // round keeps it so the unread tail is retried next poll; a
             // baseline always advances to avoid re-baselining every 30s.
@@ -1757,16 +1546,7 @@ impl NotificationService {
             } else {
                 false
             };
-            let baseline_at = baseline.then(|| seen_at.clone());
-
-            (
-                seen_updates,
-                new_items,
-                ignore_lifted,
-                cursor,
-                baseline_at,
-                trim_items,
-            )
+            (seen_updates, new_items, ignore_lifted, cursor, trim_items)
         };
 
         notification_db::write_poll(
@@ -1777,11 +1557,17 @@ impl NotificationService {
                 items: &new_items,
                 ignore_lifted: &ignore_lifted,
                 cursor: cursor.as_deref(),
-                baseline: baseline_at.as_deref(),
                 trim_items,
                 max_items: MAX_ITEMS,
             },
         );
+
+        if baseline || complete {
+            self.primed
+                .lock()
+                .expect("notification primed lock")
+                .insert(workspace_id.to_string());
+        }
 
         Ok(!new_items.is_empty())
     }
@@ -1851,17 +1637,11 @@ fn current_workspace_id(config: &AppConfig, workspaces: &[Workspace]) -> Option<
 }
 
 /// Whether this `(workspace, bug, kind)` de-dup key was already emitted.
-fn already_notified(
-    kinds: &[String],
-    workspace_id: &str,
-    bug_id: &str,
-    kind: NotificationKind,
-) -> bool {
-    let target = dedupe_key(workspace_id, bug_id, kind);
+fn already_notified(kinds: &[String], kind: NotificationKind) -> bool {
     kinds
         .iter()
         .filter_map(|sent| NotificationKind::parse(sent))
-        .any(|sent| dedupe_key(workspace_id, bug_id, sent) == target)
+        .any(|sent| sent == kind)
 }
 
 fn service() -> Result<Arc<NotificationService>, String> {
@@ -1869,6 +1649,32 @@ fn service() -> Result<Arc<NotificationService>, String> {
         .get()
         .cloned()
         .ok_or_else(|| "通知服务尚未初始化".to_string())
+}
+
+/// System notice for local queue events (external AI takeover, rejected claim).
+/// This is not an AI request, so it bypasses the "allow AI notifications"
+/// toggle: losing a queued task must always be visible. A `tag` replaces an
+/// outstanding card in place, so a client that keeps retrying cannot spam the
+/// island.
+pub fn raise_system_note(
+    title: &str,
+    tone: AiTone,
+    body: &str,
+    tag: Option<&str>,
+) -> Result<(), String> {
+    let service = service()?;
+    let payload = AiPayload {
+        tone,
+        client: "TAPD Client".to_string(),
+        blocks: vec![AiBlock::Text {
+            text: body.trim().to_string(),
+        }],
+        actions: Vec::new(),
+        tag: tag.map(str::to_string),
+        resolution: None,
+    };
+    service.raise_ai(title.trim().to_string(), payload, true)?;
+    Ok(())
 }
 
 /// Redacted settings snapshot for the diagnostics bundle. Falls back to the
@@ -1886,40 +1692,13 @@ pub fn settings_for_diagnostics(state: &SharedState) -> Value {
 // Window management
 // ---------------------------------------------------------------------------
 
-const PILL_WIDTH: f64 = 210.0;
-const PILL_HEIGHT: f64 = 34.0;
-const CARD_WIDTH: f64 = 384.0;
-/// Room for a two-line title, the metadata row and the two action buttons.
-const CARD_BASE_HEIGHT: f64 = 160.0;
-const CARD_ROW_HEIGHT: f64 = 148.0;
-const ISLAND_TOP_MARGIN: f64 = 6.0;
+pub use crate::island_window::set_update_mode;
 
-/// Bumped on every layout change so a superseded animation stops early.
-static LAYOUT_SEQ: AtomicU64 = AtomicU64::new(0);
-/// Last position we set ourselves, so user drags can be told apart.
-static LAST_SET_POSITION: Mutex<(i32, i32)> = Mutex::new((0, 0));
-/// Wall-clock (ms) until which window moves belong to our own animation.
-static ANIMATING_UNTIL: AtomicU64 = AtomicU64::new(0);
-/// Debounce token for persisting a user drag.
-static MOVE_SEQ: AtomicU64 = AtomicU64::new(0);
-/// While an update owns the capsule, ordinary notification layouts must not
-/// resize it back to pill/card size.
-static UPDATE_MODE: AtomicBool = AtomicBool::new(false);
-/// The update panel is the collapsed capsule at 4x.
-const UPDATE_WIDTH: f64 = PILL_WIDTH * 4.0;
-const UPDATE_HEIGHT: f64 = PILL_HEIGHT * 4.0;
-
-/// Enters/leaves the update-owned capsule. Call `refresh_island_layout`
-/// afterwards to apply the matching size.
-pub fn set_update_mode(active: bool) {
-    UPDATE_MODE.store(active, Ordering::SeqCst);
-}
-
-/// Re-applies the correct island layout: 4x update panel while an update owns
+/// Re-applies the correct island layout: 3x update panel while an update owns
 /// the screen, otherwise the notification pill/cards.
 pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
-    if UPDATE_MODE.load(Ordering::SeqCst) {
-        apply_island_sized(app, state, UPDATE_WIDTH, UPDATE_HEIGHT, true, 0, true);
+    if crate::island_window::update_mode() {
+        crate::island_window::apply_update_panel(app, state);
         return;
     }
 
@@ -1929,276 +1708,7 @@ pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
             (!items.is_empty(), items.len())
         })
         .unwrap_or((false, 0));
-    apply_island(app, state, expanded, count, true);
-}
-
-fn ensure_window(app: &AppHandle, state: &SharedState) -> Result<WebviewWindow, String> {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        return Ok(window);
-    }
-
-    let window = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("index.html".into()))
-        .title("TAPD Client")
-        .inner_size(PILL_WIDTH, PILL_HEIGHT)
-        .resizable(false)
-        // Transparent, chrome-less window: the capsule/card is drawn by CSS.
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .visible(false)
-        .build()
-        .map_err(|error| error.to_string())?;
-
-    let window_for_events = window.clone();
-    let app_for_events = app.clone();
-    let state_for_events = state.clone();
-    window.on_window_event(move |event| {
-        match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window_for_events.hide();
-            }
-            tauri::WindowEvent::Moved(position) => {
-                // Ignore the moves produced by our own layout animation.
-                let now = now_millis();
-                if now < ANIMATING_UNTIL.load(Ordering::SeqCst) {
-                    return;
-                }
-                let expected = *LAST_SET_POSITION.lock().expect("island position lock");
-                if (position.x - expected.0).abs() <= 2 && (position.y - expected.1).abs() <= 2 {
-                    return;
-                }
-
-                // The user is dragging: persist the final anchor once it settles.
-                let sequence = MOVE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-                let app = app_for_events.clone();
-                let state = state_for_events.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(350)).await;
-                    if MOVE_SEQ.load(Ordering::SeqCst) != sequence {
-                        return;
-                    }
-                    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
-                        return;
-                    };
-                    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size())
-                    else {
-                        return;
-                    };
-                    let anchor = (position.x + size.width as i32 / 2, position.y);
-                    if let Err(error) =
-                        state.update_config(|config| config.island_anchor = Some(anchor))
-                    {
-                        tracing::warn!(%error, "failed to persist island position");
-                    }
-                });
-            }
-            _ => {}
-        }
-    });
-
-    Ok(window)
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-fn mark_animating() {
-    ANIMATING_UNTIL.store(now_millis() + 320, Ordering::SeqCst);
-}
-
-/// Remembers a position we are about to set, so the resulting `Moved` event is
-/// not mistaken for a user drag.
-fn remember_position(x: i32, y: i32) {
-    if let Ok(mut expected) = LAST_SET_POSITION.lock() {
-        *expected = (x, y);
-    }
-}
-
-fn monitor_for(app: &AppHandle) -> Option<tauri::Monitor> {
-    app.get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten())
-}
-
-fn island_size(expanded: bool, count: usize) -> (f64, f64) {
-    if !expanded {
-        return (PILL_WIDTH, PILL_HEIGHT);
-    }
-    let rows = count.clamp(1, 5) as f64;
-    (
-        CARD_WIDTH,
-        CARD_BASE_HEIGHT + (rows - 1.0) * CARD_ROW_HEIGHT,
-    )
-}
-
-/// Rectangle (physical pixels) for a logical island size.
-///
-/// Uses the anchor the user dragged the capsule to, otherwise top-centre.
-fn island_rect(
-    app: &AppHandle,
-    state: &SharedState,
-    width: f64,
-    height: f64,
-) -> Option<(i32, i32, u32, u32)> {
-    let monitor = monitor_for(app)?;
-    let scale = monitor.scale_factor();
-    let area = monitor.work_area();
-    let w = (width * scale).round().max(1.0) as u32;
-    let h = (height * scale).round().max(1.0) as u32;
-
-    let anchor = state
-        .config_snapshot()
-        .island_anchor
-        .filter(|anchor| anchor_is_on_screen(app, *anchor));
-
-    let left = area.position.x;
-    let top = area.position.y;
-    let (x, y) = place_island(
-        anchor,
-        left,
-        top,
-        area.size.width as i32,
-        w as i32,
-        (ISLAND_TOP_MARGIN * scale).round() as i32,
-    );
-
-    Some((x, y, w, h))
-}
-
-/// Position for an island of `width` pixels: centred on the saved anchor, or
-/// top-centre of the work area when the user never dragged it.
-fn place_island(
-    anchor: Option<(i32, i32)>,
-    area_left: i32,
-    area_top: i32,
-    area_width: i32,
-    width: i32,
-    margin: i32,
-) -> (i32, i32) {
-    match anchor {
-        Some((center_x, top)) => (center_x - width / 2, top),
-        None => (
-            area_left + (area_width - width).max(0) / 2,
-            area_top + margin,
-        ),
-    }
-}
-
-/// Guards against a saved position from a monitor that is no longer attached.
-fn anchor_is_on_screen(app: &AppHandle, anchor: (i32, i32)) -> bool {
-    let Ok(monitors) = app.available_monitors() else {
-        return true;
-    };
-    if monitors.is_empty() {
-        return true;
-    }
-
-    monitors.iter().any(|monitor| {
-        let area = monitor.work_area();
-        let left = area.position.x;
-        let top = area.position.y;
-        let right = left + area.size.width as i32;
-        let bottom = top + area.size.height as i32;
-        anchor.0 >= left && anchor.0 <= right && anchor.1 >= top - 40 && anchor.1 <= bottom
-    })
-}
-
-fn lerp(from: f64, to: f64, t: f64) -> f64 {
-    from + (to - from) * t
-}
-
-/// Places the island at the top centre of the screen. `animated` interpolates
-/// the resize so the card grows out of the capsule (Dynamic Island style).
-fn apply_island(
-    app: &AppHandle,
-    state: &SharedState,
-    expanded: bool,
-    count: usize,
-    animated: bool,
-) {
-    // An update owns the capsule: polling, notification expansion and user
-    // clicks must not shrink it back.
-    if UPDATE_MODE.load(Ordering::SeqCst) {
-        return;
-    }
-    let (width, height) = island_size(expanded, count);
-    apply_island_sized(app, state, width, height, expanded, count, animated);
-}
-
-fn apply_island_sized(
-    app: &AppHandle,
-    state: &SharedState,
-    width: f64,
-    height: f64,
-    expanded: bool,
-    count: usize,
-    animated: bool,
-) {
-    let Some((x, y, w, h)) = island_rect(app, state, width, height) else {
-        return;
-    };
-    let Ok(window) = ensure_window(app, state) else {
-        return;
-    };
-
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-
-    if !animated {
-        remember_position(x, y);
-        let _ = window.set_size(PhysicalSize::new(w, h));
-        let _ = window.set_position(PhysicalPosition::new(x, y));
-    } else {
-        mark_animating();
-        let sequence = LAYOUT_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-        let window_for_animation = window.clone();
-        tauri::async_runtime::spawn(async move {
-            let Ok(start_size) = window_for_animation.outer_size() else {
-                return;
-            };
-            let Ok(start_pos) = window_for_animation.outer_position() else {
-                return;
-            };
-
-            const STEPS: u32 = 11;
-            for step in 1..=STEPS {
-                if LAYOUT_SEQ.load(Ordering::SeqCst) != sequence {
-                    // A newer layout superseded this animation.
-                    return;
-                }
-                let t = step as f64 / STEPS as f64;
-                let eased = 1.0 - (1.0 - t).powi(3);
-                let next_w = lerp(start_size.width as f64, w as f64, eased).round() as u32;
-                let next_h = lerp(start_size.height as f64, h as f64, eased).round() as u32;
-                let next_x = lerp(start_pos.x as f64, x as f64, eased).round() as i32;
-                let next_y = lerp(start_pos.y as f64, y as f64, eased).round() as i32;
-                remember_position(next_x, next_y);
-                mark_animating();
-                let _ = window_for_animation.set_size(PhysicalSize::new(next_w, next_h));
-                let _ = window_for_animation.set_position(PhysicalPosition::new(next_x, next_y));
-                tokio::time::sleep(Duration::from_millis(14)).await;
-            }
-        });
-    }
-
-    let _ = app.emit(
-        "island://layout",
-        json!({
-            "expanded": expanded,
-            "width": width,
-            "height": height,
-            "count": count,
-            "mode": if UPDATE_MODE.load(Ordering::SeqCst) { "update" } else { "notifications" },
-        }),
-    );
+    crate::island_window::apply_island(app, state, expanded, count, true);
 }
 
 /// Brings the main window to the front (capsule click without pending items).
@@ -2219,21 +1729,6 @@ fn focus_main_window(app: &AppHandle) {
 // Init / polling loop
 // ---------------------------------------------------------------------------
 
-/// One-time settings migrations; returns whether the store changed.
-fn migrate_settings(store: &mut NotificationStore) -> bool {
-    if store.settings_version >= CURRENT_SETTINGS_VERSION {
-        return false;
-    }
-    // Pre-1.0 stores were written with the 60s default. Move the untouched
-    // default to 30s; a deliberately chosen 60s cannot be told apart, so it is
-    // migrated too and can be raised again in settings.
-    if store.settings.poll_interval_secs == LEGACY_POLL_INTERVAL_SECS {
-        store.settings.poll_interval_secs = DEFAULT_POLL_INTERVAL_SECS;
-    }
-    store.settings_version = CURRENT_SETTINGS_VERSION;
-    true
-}
-
 pub fn init(app: &AppHandle, state: SharedState) {
     let loaded = notification_db::load(&state.cache);
     let loaded_from_db = loaded.is_some();
@@ -2242,17 +1737,16 @@ pub fn init(app: &AppHandle, state: SharedState) {
     let writable = loaded_from_db || notification_db::is_fresh(&state.cache);
     let mut store = loaded.unwrap_or_default();
 
-    let migrated = migrate_settings(&mut store);
     store.settings = store.settings.clone().normalized();
-    if writable && (!loaded_from_db || migrated) {
-        notification_db::save_store(&state.cache, &store);
+    if writable && !loaded_from_db {
+        notification_db::save_settings(&state.cache, &store.settings);
     }
 
-    // Simulated cards are test data and must not survive a restart.
-    store
-        .items
-        .retain(|item| item.workspace_id != "simulated" && !item.bug_id.starts_with("simulated-"));
-    notification_db::delete_simulated_items(&state.cache);
+    // A new app session never inherits the previous session's cards: the user
+    // sees only what changes after this launch. Poll cursors and `seen` stay,
+    // but the first round per workspace (see `primed`) is silent.
+    store.items.clear();
+    notification_db::clear_items(&state.cache);
 
     let now = Local::now().naive_local();
     let removed = prune_seen(&mut store, now);
@@ -2264,11 +1758,9 @@ pub fn init(app: &AppHandle, state: SharedState) {
         store: Mutex::new(store),
         ai_items: Mutex::new(VecDeque::new()),
         workspace_names: Mutex::new(BTreeMap::new()),
-        default_workspace: Mutex::new(None),
+        primed: Mutex::new(BTreeSet::new()),
         last_poll_at: Mutex::new(None),
         last_error: Mutex::new(None),
-        running: AtomicBool::new(true),
-        polling: AtomicBool::new(false),
         wake: tokio::sync::Notify::new(),
     });
 
@@ -2276,7 +1768,6 @@ pub fn init(app: &AppHandle, state: SharedState) {
         return;
     }
 
-    // Let the notification webview pick up a previous pending list on launch.
     service.refresh_window();
 
     tauri::async_runtime::spawn(async move {
@@ -2302,10 +1793,43 @@ pub fn init(app: &AppHandle, state: SharedState) {
     });
 }
 
+/// Starts a fresh notification session after a login or logout.
+///
+/// Pending cards and the per-account poll state (`seen` / `ignored` / cursors)
+/// are dropped, so nothing from the previous account can leak into the new
+/// session. The next round per workspace is a silent baseline; only changes
+/// observed after it can raise a notification.
+pub fn reset_session() {
+    let Some(service) = SERVICE.get() else {
+        return;
+    };
+    SESSION_SEQ.fetch_add(1, Ordering::SeqCst);
+
+    {
+        let mut store = service.store.lock().expect("notification store lock");
+        store.items.clear();
+        store.seen.clear();
+        store.ignored.clear();
+        store.cursors.clear();
+    }
+    service
+        .primed
+        .lock()
+        .expect("notification primed lock")
+        .clear();
+    *service.last_poll_at.lock().expect("last poll lock") = None;
+    *service.last_error.lock().expect("last error lock") = None;
+
+    notification_db::clear_items(&service.state.cache);
+    notification_db::clear_poll_state(&service.state.cache);
+
+    service.refresh_window();
+    service.wake.notify_one();
+}
+
 // ---------------------------------------------------------------------------
 // AI notification entry points (MCP + settings debug)
 // ---------------------------------------------------------------------------
-
 enum AiWait {
     Resolved(AiResolution),
     /// The user did not act before the wait deadline; the card stays visible.
@@ -2431,10 +1955,6 @@ pub async fn command(
             let service = service()?;
             state_snapshot(&service)
         }
-        "notification_history" => {
-            let service = service()?;
-            Ok(json!({ "items": service.recent_items(MAX_HISTORY) }))
-        }
         "notification_handle" => {
             let service = service()?;
             let id = payload_str(&payload, "notificationId")?;
@@ -2450,11 +1970,6 @@ pub async fn command(
             let id = payload_str(&payload, "notificationId")?;
             ignore_notification(&service, &id)
         }
-        "notification_accept_preview" => {
-            let service = service()?;
-            let id = payload_str(&payload, "notificationId")?;
-            preview_accept(app, state, &service, &id).await
-        }
         "notification_island_expand" => {
             let service = service()?;
             let expanded = payload
@@ -2463,8 +1978,30 @@ pub async fn command(
                 .unwrap_or(true);
             let (items, _quiet) = service.pending_payload();
             let expanded = expanded && !items.is_empty();
-            apply_island(app, state, expanded, items.len(), true);
+            crate::island_window::apply_island(app, state, expanded, items.len(), true);
             Ok(json!({ "ok": true, "expanded": expanded, "count": items.len() }))
+        }
+        "notification_island_visible" => {
+            // The idle capsule is hidden: it is a status indicator only while
+            // there is something to indicate (pending cards, agent work,
+            // update, connection problem).
+            let visible = payload
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            crate::island_window::set_collapsed_visible(visible);
+            if visible {
+                let (expanded, count) = service()
+                    .map(|service| {
+                        let (items, quiet) = service.pending_payload();
+                        (!items.is_empty() && !quiet, items.len())
+                    })
+                    .unwrap_or((false, 0));
+                crate::island_window::apply_island(app, state, expanded, count, false);
+            } else {
+                crate::island_window::hide_collapsed(app);
+            }
+            Ok(json!({ "ok": true, "visible": visible }))
         }
         "notification_open_main" => {
             focus_main_window(app);
@@ -2473,7 +2010,7 @@ pub async fn command(
         "notification_start_drag" => {
             // Native drag: no window-plugin ACL involved, so the transparent
             // island window can be dragged like a real panel.
-            let window = ensure_window(app, state)?;
+            let window = crate::island_window::ensure_window(app, state)?;
             window.start_dragging().map_err(|error| error.to_string())?;
             Ok(json!({ "ok": true }))
         }
@@ -2507,12 +2044,11 @@ pub async fn command(
 fn state_snapshot(service: &NotificationService) -> Result<Value, String> {
     let items = service.recent_items(MAX_HISTORY);
     let settings = service.settings();
-    let running = service.running.load(Ordering::SeqCst) && settings.enabled;
 
     Ok(json!({
         "items": items,
         "settings": settings,
-        "running": running,
+        "running": settings.enabled,
         "lastPollAt": service.last_poll_at.lock().expect("last poll lock").clone(),
         "lastError": service.last_error.lock().expect("last error lock").clone(),
     }))
@@ -2631,15 +2167,8 @@ fn simulate_notification(
 
 struct AcceptPlan {
     me: String,
-    owner: String,
     status: String,
     assigned: bool,
-    /// Current status is a starting status (`new` / `open` / `reopened`), so we
-    /// should try to move it into processing after (or alongside) reassigning.
-    starting: bool,
-    dsc_present: bool,
-    inline_body: Value,
-    transition_attempts: Vec<TransitionAttempt>,
 }
 
 async fn build_accept_plan(
@@ -2652,39 +2181,14 @@ async fn build_accept_plan(
         return Err("无法确定当前 TAPD 用户，请先在设置页刷新账户信息".to_string());
     }
 
-    let root = session_request_json(
-        app,
-        "POST",
-        &bug_detail_url(),
-        Some(bug_detail_body(&item.workspace_id, &item.bug_id)),
-        Duration::from_secs(45),
-    )
-    .await?;
-    let detail = parse_bug_detail(&root)?;
+    let detail = fetch_bug(app, &item.workspace_id, &item.bug_id).await?;
     let owner = detail.summary.owner.trim().to_string();
     let status = detail.summary.status.trim().to_string();
 
-    let dsc_token = app
-        .get_webview_window(session::SESSION_LABEL)
-        .and_then(|window| session::cookie_value(&window, "dsc-token"));
-    let dsc_present = dsc_token
-        .as_deref()
-        .map(|token| !token.trim().is_empty())
-        .unwrap_or(false);
-    let dsc = dsc_token.as_deref();
-
-    let assigned = owner != me.trim();
-    let starting = is_starting_status(&status);
-
     Ok(AcceptPlan {
-        inline_body: inline_owner_body(&item.workspace_id, &item.bug_id, &me, dsc),
-        transition_attempts: transition_attempts(&item.workspace_id, &item.bug_id, &status, dsc),
+        assigned: owner != me.trim(),
         me,
-        owner,
         status,
-        assigned,
-        starting,
-        dsc_present,
     })
 }
 
@@ -2759,84 +2263,23 @@ async fn handle_notification(
     let plan = build_accept_plan(app, state, &item).await?;
 
     if plan.assigned {
-        let response = session_request_json(
+        bug_write::update_field(
             app,
-            "POST",
-            INLINE_UPDATE_URL,
-            Some(plan.inline_body.clone()),
-            Duration::from_secs(45),
+            &item.workspace_id,
+            &item.bug_id,
+            "current_owner",
+            &bug_write::normalize_user_value(&plan.me),
         )
         .await
         .map_err(|error| format!("改派处理人失败：{error}"))?;
-        ensure_api_ok(&response, "改派处理人")?;
     }
 
-    // Starting statuses (`new` / `open` / `reopened`) move into processing.
-    // Different projects name the processing status differently, so try the
-    // kanban endpoint with each candidate, then the workflow endpoint with the
-    // same candidates. Stop at the first accepted write.
-    let mut transition_target: Option<String> = None;
-    if plan.starting {
-        let mut outcomes: Vec<bool> = Vec::with_capacity(plan.transition_attempts.len());
-        let mut last_error: Option<String> = None;
-
-        for attempt in &plan.transition_attempts {
-            let result = session_request_json(
-                app,
-                "POST",
-                attempt.api.url(),
-                Some(attempt.body.clone()),
-                Duration::from_secs(45),
-            )
-            .await;
-
-            let accepted = match result {
-                Ok(response) => {
-                    let ok = response_ok(&response);
-                    if ok {
-                        tracing::info!(
-                            bug_id = %item.bug_id,
-                            api = attempt.api.label(),
-                            target = attempt.target,
-                            "bug transitioned out of starting status"
-                        );
-                    } else {
-                        last_error = Some(format!(
-                            "{} 流转到 {} 被拒绝：{}",
-                            attempt.api.label(),
-                            attempt.target,
-                            api_message(&response)
-                        ));
-                    }
-                    ok
-                }
-                Err(error) => {
-                    last_error = Some(format!(
-                        "{} 流转到 {} 失败：{}",
-                        attempt.api.label(),
-                        attempt.target,
-                        error
-                    ));
-                    false
-                }
-            };
-
-            outcomes.push(accepted);
-            if accepted {
-                break;
-            }
-        }
-
-        match resolve_attempt_target(&plan.transition_attempts, &outcomes) {
-            Some(target) => transition_target = Some(target.to_string()),
-            None => {
-                return Err(
-                    last_error.unwrap_or_else(|| "状态流转失败：所有候选目标均未成功".to_string())
-                );
-            }
-        }
-    }
-    let transitioned = transition_target.is_some();
+    // Starting statuses move into the workflow's processing status. The target
+    // key is read from the workflow itself, so no project-specific guessing.
+    let step = bug_write::accept_into_processing(app, &item.workspace_id, &item.bug_id)
+        .await
+        .map_err(|error| format!("状态流转失败：{error}"))?;
+    let transitioned = step.is_some();
 
     service.set_state(id, NotificationState::Handled)?;
 
@@ -2853,8 +2296,9 @@ async fn handle_notification(
     let _ = app.emit("data://refresh", ());
     service.refresh_window();
 
-    let status = transition_target
-        .clone()
+    let status = step
+        .as_ref()
+        .map(|step| step.to.clone())
         .unwrap_or_else(|| plan.status.clone());
 
     Ok(json!({
@@ -2863,70 +2307,6 @@ async fn handle_notification(
         "status": status,
         "assigned": plan.assigned,
         "transitioned": transitioned
-    }))
-}
-
-async fn preview_accept(
-    app: &AppHandle,
-    state: &SharedState,
-    service: &NotificationService,
-    id: &str,
-) -> Result<Value, String> {
-    let item = service.find_item(id)?;
-    if item.workspace_id == "simulated" || item.bug_id.starts_with("simulated-") {
-        return Err("模拟通知没有可预览的请求体".to_string());
-    }
-
-    let plan = build_accept_plan(app, state, &item).await?;
-    let first_target = TRANSITION_TARGETS.first().copied().unwrap_or("in_progress");
-    let next_status = if plan.starting {
-        first_target
-    } else {
-        plan.status.as_str()
-    };
-    // Rebuild the attempts without the token so the renderer never sees it.
-    let preview_attempts =
-        transition_attempts(&item.workspace_id, &item.bug_id, &plan.status, None);
-    let preview_attempts: Vec<Value> = preview_attempts
-        .iter()
-        .map(|attempt| {
-            json!({
-                "api": attempt.api.label(),
-                "target": attempt.target,
-                "body": attempt.body
-            })
-        })
-        .collect();
-
-    Ok(json!({
-        "item": item,
-        "me": plan.me,
-        "currentOwner": plan.owner,
-        "currentStatus": plan.status,
-        "assigned": plan.assigned,
-        "transitioned": plan.starting,
-        "startingStatus": plan.starting,
-        "nextStatus": next_status,
-        "transitionTargets": TRANSITION_TARGETS,
-        "transitionAttempts": preview_attempts,
-        "dscTokenPresent": plan.dsc_present,
-        "bodies": {
-            "inlineUpdate": inline_owner_body(&item.workspace_id, &item.bug_id, &plan.me, None),
-            "kanbanTransition": kanban_transition_body(
-                &item.workspace_id,
-                &item.bug_id,
-                &plan.status,
-                first_target,
-                None
-            ),
-            "workflowTransition": workflow_transition_body(
-                &item.workspace_id,
-                &item.bug_id,
-                &plan.status,
-                first_target,
-                None
-            )
-        }
     }))
 }
 
@@ -3179,26 +2559,6 @@ mod tests {
     }
 
     #[test]
-    fn starting_statuses_cover_open_and_new() {
-        for status in ["new", "open", "reopened"] {
-            assert!(is_starting_status(status), "{status} should be starting");
-        }
-        for status in [
-            "in_progress",
-            "progressing",
-            "resolved",
-            "verified",
-            "closed",
-            "rejected",
-        ] {
-            assert!(
-                !is_starting_status(status),
-                "{status} should not be starting"
-            );
-        }
-    }
-
-    #[test]
     fn open_is_classified_like_new() {
         // A fresh `open` bug is a new notification.
         let fresh = classify_bug(
@@ -3241,79 +2601,6 @@ mod tests {
     }
 
     #[test]
-    fn open_transition_prefers_progressing_after_in_progress() {
-        let attempts = transition_attempts("45336192", "1010606", "open", None);
-        assert_eq!(attempts.len(), 4);
-
-        assert_eq!(attempts[0].api, TransitionApi::Kanban);
-        assert_eq!(attempts[0].target, "in_progress");
-        assert_eq!(attempts[0].body["current_status"], "open");
-        assert_eq!(attempts[0].body["next_status"], "in_progress");
-
-        assert_eq!(attempts[1].api, TransitionApi::Kanban);
-        assert_eq!(attempts[1].target, "progressing");
-        assert_eq!(attempts[1].body["next_status"], "progressing");
-
-        assert_eq!(attempts[2].api, TransitionApi::Workflow);
-        assert_eq!(attempts[2].target, "in_progress");
-        assert_eq!(attempts[3].api, TransitionApi::Workflow);
-        assert_eq!(attempts[3].target, "progressing");
-
-        // 客服系统 rejects `in_progress` and accepts `progressing`.
-        assert_eq!(
-            resolve_attempt_target(&attempts, &[false, true]),
-            Some("progressing")
-        );
-    }
-
-    #[test]
-    fn new_transition_starts_with_in_progress() {
-        let attempts = transition_attempts("45336192", "1010606", "new", None);
-        assert_eq!(attempts[0].api, TransitionApi::Kanban);
-        assert_eq!(attempts[0].target, "in_progress");
-        assert_eq!(attempts[0].body["current_status"], "new");
-        assert_eq!(
-            resolve_attempt_target(&attempts, &[true]),
-            Some("in_progress")
-        );
-    }
-
-    #[test]
-    fn transition_falls_back_to_workflow_for_both_targets() {
-        let attempts = transition_attempts("45336192", "1010606", "open", None);
-        assert_eq!(
-            resolve_attempt_target(&attempts, &[false, false, true]),
-            Some("in_progress")
-        );
-        assert_eq!(
-            resolve_attempt_target(&attempts, &[false, false, false, true]),
-            Some("progressing")
-        );
-        assert_eq!(
-            resolve_attempt_target(&attempts, &[false, false, false, false]),
-            None
-        );
-        assert_eq!(resolve_attempt_target(&attempts, &[]), None);
-    }
-
-    #[test]
-    fn non_starting_status_skips_transition() {
-        for status in [
-            "in_progress",
-            "progressing",
-            "resolved",
-            "verified",
-            "closed",
-            "rejected",
-        ] {
-            assert!(
-                transition_attempts("45336192", "1010606", status, None).is_empty(),
-                "{status} should only be reassigned"
-            );
-        }
-    }
-
-    #[test]
     fn missing_me_disables_classification() {
         let kind = classify_bug(
             "new",
@@ -3336,15 +2623,10 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_key_includes_kind() {
-        assert_eq!(
-            dedupe_key("45336192", "1010606", NotificationKind::New),
-            "45336192:1010606:new"
-        );
-        assert_ne!(
-            dedupe_key("45336192", "1010606", NotificationKind::New),
-            dedupe_key("45336192", "1010606", NotificationKind::Reopened)
-        );
+    fn kinds_dedupe_by_kind() {
+        let sent = vec!["new".to_string()];
+        assert!(already_notified(&sent, NotificationKind::New));
+        assert!(!already_notified(&sent, NotificationKind::Reopened));
         assert_eq!(bug_key(" 45336192 ", " 1 "), "45336192:1");
     }
 
@@ -3400,52 +2682,6 @@ mod tests {
     }
 
     #[test]
-    fn inline_update_body_shape() {
-        let body = inline_owner_body("45336192", "1010606", "何帅", Some("token"));
-        assert_eq!(body["data"]["field"], "current_owner");
-        assert_eq!(body["data"]["value"], "何帅");
-        assert_eq!(body["data"]["id"], "1010606");
-        assert_eq!(body["data"]["field_name_is_alias"], false);
-        assert_eq!(body["workspace_id"], "45336192");
-        assert_eq!(body["dsc_token"], "token");
-
-        let without = inline_owner_body("45336192", "1010606", "何帅", Some("  "));
-        assert!(without.get("dsc_token").is_none());
-    }
-
-    #[test]
-    fn kanban_transition_body_shape() {
-        let body = kanban_transition_body("45336192", "1010606", "new", "in_progress", None);
-        assert_eq!(body["entity_type"], "bug");
-        assert_eq!(body["current_status"], "new");
-        assert_eq!(body["next_status"], "in_progress");
-        assert_eq!(body["check_required_fields"], 1);
-        assert_eq!(body["edit_rule_fields"], json!([]));
-        assert_eq!(body["Timesheet"], Value::Null);
-        assert!(body.get("dsc_token").is_none());
-    }
-
-    #[test]
-    fn workflow_transition_omits_required_field_flags() {
-        let body =
-            workflow_transition_body("45336192", "1010606", "reopened", "in_progress", Some("t"));
-        assert!(body.get("check_required_fields").is_none());
-        assert!(body.get("edit_rule_fields").is_none());
-        assert_eq!(body["dsc_token"], "t");
-    }
-
-    #[test]
-    fn response_ok_understands_meta_codes() {
-        assert!(response_ok(&json!({ "meta": { "code": 0 } })));
-        assert!(response_ok(&json!({ "meta": { "code": "0" } })));
-        assert!(response_ok(&json!({ "data": {} })));
-        assert!(!response_ok(
-            &json!({ "meta": { "code": 1, "message": "no" } })
-        ));
-        assert!(!response_ok(&json!({ "meta": { "code": "1" } })));
-    }
-
-    #[test]
     fn settings_are_clamped() {
         let settings = NotificationSettings {
             poll_interval_secs: 5,
@@ -3476,22 +2712,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_migration_moves_the_old_default_to_30s() {
-        let mut store = NotificationStore {
-            settings_version: 0,
-            settings: NotificationSettings {
-                poll_interval_secs: LEGACY_POLL_INTERVAL_SECS,
-                ..NotificationSettings::default()
-            },
-            ..NotificationStore::default()
-        };
-        assert!(migrate_settings(&mut store));
-        assert_eq!(store.settings.poll_interval_secs, 30);
-        assert_eq!(store.settings_version, CURRENT_SETTINGS_VERSION);
-        // Once migrated, a value the user set later is left alone.
-        store.settings.poll_interval_secs = 120;
-        assert!(!migrate_settings(&mut store));
-        assert_eq!(store.settings.poll_interval_secs, 120);
+    fn the_first_round_of_a_session_is_silent() {
+        assert!(round_is_silent(true, false));
+        assert!(round_is_silent(false, false));
+        assert!(round_is_silent(true, true));
+        assert!(!round_is_silent(false, true));
     }
 
     #[test]
@@ -3579,36 +2804,6 @@ mod tests {
         assert_eq!(format_tapd_time(time), "2026-11-10 12:34:00");
         assert_eq!(parse_tapd_time("2026-11-10 12:34:00"), Some(time));
         assert_eq!(parse_tapd_time(""), None);
-    }
-}
-
-#[cfg(test)]
-mod island_tests {
-    use super::*;
-
-    const AREA: (i32, i32, i32) = (0, 30, 1920);
-    const MARGIN: i32 = 6;
-
-    #[test]
-    fn island_position_defaults_to_top_centre() {
-        let (x, y) = place_island(None, AREA.0, AREA.1, AREA.2, 210, MARGIN);
-        assert_eq!(x, (1920 - 210) / 2);
-        assert_eq!(y, 36);
-    }
-
-    #[test]
-    fn island_position_prefers_saved_anchor() {
-        // Dragged to the right edge at y=120 while collapsed.
-        let (x, y) = place_island(Some((1500, 120)), AREA.0, AREA.1, AREA.2, 210, MARGIN);
-        assert_eq!((x, y), (1395, 120));
-    }
-
-    #[test]
-    fn expanding_keeps_the_anchor_centre() {
-        let collapsed = place_island(Some((1500, 120)), AREA.0, AREA.1, AREA.2, 210, MARGIN);
-        let expanded = place_island(Some((1500, 120)), AREA.0, AREA.1, AREA.2, 384, MARGIN);
-        assert_eq!(collapsed.0 + 105, expanded.0 + 192);
-        assert_eq!(collapsed.1, expanded.1);
     }
 }
 

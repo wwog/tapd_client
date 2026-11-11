@@ -3,6 +3,7 @@
 pub mod bridge;
 pub mod config;
 pub mod export;
+pub mod mcp;
 pub mod paths;
 pub mod runtime;
 pub mod store;

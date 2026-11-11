@@ -21,7 +21,7 @@ use tapd_core::{
 use tauri::AppHandle;
 
 use crate::{
-    agent::{self, ProjectAgentConfig, PromptVars},
+    agent::{self, ExternalClaim, ProjectAgentConfig, PromptVars},
     bug_write::{self, add_comment, load_transition_info, resolve_status_key},
     commands::session_request_json,
     mcp_audit::McpAuditEntry,
@@ -34,7 +34,7 @@ const DEFAULT_RESULTS: u32 = 20;
 /// Prompt used by `tapd_get_bug_prompt` for external MCP clients. It mirrors
 /// `agent::DEFAULT_PROMPT_TEMPLATE` but drops the review-queue flow, which only
 /// exists for tasks owned by the desktop app.
-const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 改动复杂（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）时，先向用户说明方案与风险、等待确认，不要直接扩大改动范围。\n4. 提交成功后（git commit，不要 push），再用 tapd_add_bug_comment 追加评论、tapd_update_bug_status 更新状态；评论说明原因、解决方案与影响范围。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n协作约定：开始前先调用 tapd_claim_bug 登记占用（model 传你使用的模型名），处理期间每 15 分钟续约一次，完成后调用 tapd_release_bug；如果返回 conflict，说明桌面 Agent 正在处理，请停止并告知用户。\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 改动复杂（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）时，先向用户说明方案与风险、等待确认，不要直接扩大改动范围。\n4. 提交成功后（git commit，不要 push），再用 tapd_add_bug_comment 追加评论、tapd_update_bug_status 更新状态；评论说明原因、解决方案与影响范围。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
 
 pub async fn handle(
     app: &AppHandle,
@@ -144,6 +144,7 @@ fn summarize_arguments(arguments: &Value) -> Value {
         "next_status",
         "owner",
         "root",
+        "model",
         "limit",
         "page",
         "only_unresolved",
@@ -224,6 +225,13 @@ async fn dispatch(
     arguments: &Value,
     client: &str,
 ) -> Result<Value, String> {
+    // The set of valid names comes from the shared manifest. Every manifest
+    // entry must have a handler below; `dispatch_covers_every_manifest_tool`
+    // fails the build if the two tables drift apart.
+    if tapd_core::mcp::tool(tool).is_none() {
+        return Err(format!("tool `{tool}` is not available"));
+    }
+
     match tool {
         "tapd_whoami" => whoami(app, state, arguments).await,
         "tapd_list_projects" => list_projects(app, state).await,
@@ -235,6 +243,9 @@ async fn dispatch(
         "tapd_get_bug_transitions" => get_bug_transitions(app, state, arguments).await,
         "tapd_add_bug_comment" => add_bug_comment(app, state, arguments).await,
         "tapd_update_bug_status" => update_bug_status(app, state, arguments).await,
+        // External AI ownership: mutual exclusion with the local queue.
+        "tapd_claim_bug" => claim_bug(app, state, arguments, client).await,
+        "tapd_release_bug" => release_bug(app, state, arguments, client).await,
         // Local-only: no TAPD session or workspace scope involved.
         "tapd_notify_user" => crate::notification::mcp_notify(arguments, client).await,
         "tapd_wait_notification" => crate::notification::mcp_wait(arguments).await,
@@ -242,6 +253,8 @@ async fn dispatch(
         "tapd_request_review" => crate::agent::request_review_from_mcp(app, arguments).await,
         // Local agent only: explicit lifecycle report for non-ACP runtimes.
         "agent_task_report" => crate::agent::task_report_from_mcp(app, arguments).await,
+        // Only reachable when a manifest entry was added without a handler;
+        // the manifest test below catches that case.
         other => Err(format!("tool `{other}` is not available")),
     }
 }
@@ -297,7 +310,7 @@ async fn list_bugs(
     let workspace_id = resolve_workspace(app, state, &workspaces, arguments)?;
     let page = query_bugs(app, state, &workspace_id, arguments, false).await?;
 
-    Ok(page_json(page, &workspace_id))
+    Ok(page_json(page, &workspace_id, &agent::external_claims(app)))
 }
 
 async fn list_my_bugs(
@@ -309,7 +322,7 @@ async fn list_my_bugs(
     let workspace_id = resolve_workspace(app, state, &workspaces, arguments)?;
     let page = query_bugs(app, state, &workspace_id, arguments, true).await?;
 
-    Ok(page_json(page, &workspace_id))
+    Ok(page_json(page, &workspace_id, &agent::external_claims(app)))
 }
 
 async fn get_bug(app: &AppHandle, state: &SharedState, arguments: &Value) -> Result<Value, String> {
@@ -318,7 +331,11 @@ async fn get_bug(app: &AppHandle, state: &SharedState, arguments: &Value) -> Res
     let workspace_id = resolve_workspace(app, state, &workspaces, arguments)?;
 
     let detail = crate::commands::fetch_bug_detail(app, &workspace_id, &bug_id).await?;
-    serde_json::to_value(detail).map_err(|error| error.to_string())
+    let mut value = serde_json::to_value(detail).map_err(|error| error.to_string())?;
+    if let Some(claim) = agent::external_claim_for_bug(app, &workspace_id, &bug_id) {
+        value["externalClaim"] = serde_json::to_value(claim).unwrap_or(Value::Null);
+    }
+    Ok(value)
 }
 
 async fn export_bug_md(
@@ -377,7 +394,12 @@ async fn get_bug_prompt(
     let existing = if refresh {
         None
     } else {
-        crate::export::find_existing_export(&state.paths, &workspace_id, &detail.summary.id)
+        crate::export::find_existing_export(
+            &state.paths,
+            &workspace_id,
+            &crate::export::bug_reference(&detail.summary),
+            &detail.summary.id,
+        )
     };
 
     if let Some(existing) = existing {
@@ -546,7 +568,11 @@ async fn query_bugs(
     Ok(page)
 }
 
-fn page_json(page: BugListPage, workspace_id: &str) -> Value {
+fn page_json(page: BugListPage, workspace_id: &str, external: &[ExternalClaim]) -> Value {
+    let claims: Vec<&ExternalClaim> = external
+        .iter()
+        .filter(|claim| claim.workspace_id == workspace_id)
+        .collect();
     json!({
         "workspaceId": workspace_id,
         "total": page.total,
@@ -555,6 +581,7 @@ fn page_json(page: BugListPage, workspace_id: &str) -> Value {
         "returned": page.bugs.len(),
         "statusMap": page.status_map,
         "bugs": page.bugs,
+        "externalClaims": claims,
     })
 }
 
@@ -736,12 +763,7 @@ fn normalize_path(value: &str) -> Option<PathBuf> {
     if value.is_empty() {
         return None;
     }
-    let expanded = match value.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|| PathBuf::from(value)),
-        None => PathBuf::from(value),
-    };
+    let expanded = tapd_core::paths::expand_home(value);
 
     if let Ok(canonical) = expanded.canonicalize() {
         return Some(canonical);
@@ -857,6 +879,54 @@ async fn update_bug_status(
         "steps": outcome.steps,
         "commented": comment.is_some(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// External AI ownership (claim / release)
+// ---------------------------------------------------------------------------
+
+/// Registers an external AI claim so the desktop queue yields the bug and the
+/// list shows who is working on it.
+async fn claim_bug(
+    app: &AppHandle,
+    state: &SharedState,
+    arguments: &Value,
+    client: &str,
+) -> Result<Value, String> {
+    let bug_id = string_arg(arguments, "bug_id").ok_or_else(|| "bug_id is required".to_string())?;
+    let (_, workspaces) = load_context(app).await?;
+    let workspace_id = resolve_workspace(app, state, &workspaces, arguments)?;
+
+    let request = agent::ExternalClaimRequest {
+        workspace_id,
+        bug_id,
+        title: string_arg(arguments, "title").unwrap_or_default(),
+        client: client.to_string(),
+        model: string_arg(arguments, "model").unwrap_or_default(),
+        status: string_arg(arguments, "status").unwrap_or_default(),
+        note: string_arg(arguments, "note").unwrap_or_default(),
+    };
+    agent::claim_external_from_mcp(app, request).await
+}
+
+async fn release_bug(
+    app: &AppHandle,
+    state: &SharedState,
+    arguments: &Value,
+    client: &str,
+) -> Result<Value, String> {
+    let bug_id = string_arg(arguments, "bug_id").ok_or_else(|| "bug_id is required".to_string())?;
+    let (_, workspaces) = load_context(app).await?;
+    let workspace_id = resolve_workspace(app, state, &workspaces, arguments)?;
+
+    agent::release_external_from_mcp(
+        app,
+        agent::ExternalReleaseRequest {
+            workspace_id,
+            bug_id,
+            client: Some(client.to_string()),
+        },
+    )
 }
 
 fn default_workspace_id(
@@ -1051,5 +1121,50 @@ mod policy_tests {
         assert!(!prompt.contains("{{"));
         // External clients cannot pause the desktop review queue.
         assert!(!prompt.contains("tapd_request_review"));
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use tapd_core::mcp;
+
+    /// Mirrors the arms in [`super::dispatch`]. The test below fails when this
+    /// list and `tapd_core::mcp::TOOLS` drift apart in either direction.
+    const DISPATCHED_TOOLS: [&str; 16] = [
+        "tapd_whoami",
+        "tapd_list_projects",
+        "tapd_list_bugs",
+        "tapd_list_my_bugs",
+        "tapd_get_bug",
+        "tapd_export_bug_md",
+        "tapd_get_bug_prompt",
+        "tapd_get_bug_transitions",
+        "tapd_add_bug_comment",
+        "tapd_update_bug_status",
+        "tapd_claim_bug",
+        "tapd_release_bug",
+        "tapd_notify_user",
+        "tapd_wait_notification",
+        "tapd_request_review",
+        "agent_task_report",
+    ];
+
+    #[test]
+    fn dispatch_covers_every_manifest_tool() {
+        let manifest: Vec<&str> = mcp::names().collect();
+        assert_eq!(manifest.len(), DISPATCHED_TOOLS.len());
+
+        for name in &manifest {
+            assert!(
+                DISPATCHED_TOOLS.contains(name),
+                "manifest tool `{name}` has no dispatch arm"
+            );
+        }
+        for name in DISPATCHED_TOOLS {
+            assert!(
+                mcp::tool(name).is_some(),
+                "dispatch arm `{name}` is missing from tapd_core::mcp::TOOLS"
+            );
+        }
     }
 }

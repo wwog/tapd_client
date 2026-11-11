@@ -20,7 +20,6 @@ type Props<T extends string> = {
   options: ReadonlyArray<SegmentedOption<T>>;
   onChange: (value: T) => void;
   className?: string;
-  size?: "sm" | "compact";
 };
 
 /**
@@ -33,7 +32,6 @@ export function Segmented<T extends string>({
   options,
   onChange,
   className,
-  size = "sm",
 }: Props<T>) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(
@@ -88,10 +86,7 @@ export function Segmented<T extends string>({
             data-segment={option.value}
             onClick={() => onChange(option.value)}
             className={clsx(
-              "relative z-10 inline-flex items-center gap-1 rounded-md transition-colors",
-              size === "compact"
-                ? "px-2 py-0.5 text-ui-sm"
-                : "px-2.5 py-1 text-ui-caption",
+              "relative z-10 inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-ui-caption transition-colors",
               active ? "text-slate-900" : "text-slate-500 hover:text-slate-700",
             )}
           >

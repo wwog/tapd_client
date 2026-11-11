@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import { createExternalStore } from "./store";
+import { formatDateTime } from "./format";
+
 export type UpdatePhase =
   | "idle"
   | "checking"
@@ -12,7 +15,6 @@ export type UpdatePhase =
 
 export type AvailableUpdate = {
   version: string;
-  currentVersion: string;
   notes: string;
   date: string | null;
 };
@@ -53,14 +55,10 @@ export const UPDATE_PHASE_LABELS: Record<UpdatePhase, string> = {
   error: "更新失败",
 };
 
-let current: UpdateState | null = null;
-const listeners = new Set<() => void>();
+const store = createExternalStore<UpdateState | null>(null);
 let started = false;
 
-const publish = (next: UpdateState): void => {
-  current = next;
-  for (const listener of listeners) listener();
-};
+const publish = (next: UpdateState): void => store.set(next);
 
 /** Idempotently loads the current state and subscribes to pushed changes. */
 export const startUpdateStore = (): void => {
@@ -79,14 +77,9 @@ export const startUpdateStore = (): void => {
   });
 };
 
-export const getUpdateSnapshot = (): UpdateState | null => current;
+export const getUpdateSnapshot = store.get;
 
-export const subscribeUpdate = (listener: () => void): (() => void) => {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-};
+export const subscribeUpdate = store.subscribe;
 
 export const updateApi = {
   /** Manual check; resolves to the new state (throws with the error message). */
@@ -110,23 +103,5 @@ export const updateApi = {
 };
 
 /** "2026-11-10T16:00:00+08:00" -> "2026-11-10 16:00". */
-export const formatCheckTime = (iso: string | null): string => {
-  if (!iso) return "尚未检查";
-  const timestamp = Date.parse(iso);
-  if (Number.isNaN(timestamp)) return iso;
-  return new Date(timestamp).toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-};
-
-export const formatBytes = (bytes: number | null | undefined): string => {
-  if (!bytes || bytes <= 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-};
+export const formatCheckTime = (iso: string | null): string =>
+  iso ? formatDateTime(iso) : "尚未检查";

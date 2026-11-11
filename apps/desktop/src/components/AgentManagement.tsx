@@ -18,7 +18,7 @@ import {
 import type { SettingsSectionProps } from "../lib/feature";
 import { AgentSettings } from "./AgentSettings";
 import { Dialog } from "./Dialog";
-import { Badge, Button, Spinner } from "./ui";
+import { Badge, Button, Spinner, cardClass } from "./ui";
 
 type Props = {
   toast: SettingsSectionProps["toast"];
@@ -83,7 +83,7 @@ export function AgentManagement({ toast }: Props) {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">

@@ -53,7 +53,7 @@
 
 ## 4. 任务、历史与恢复
 
-- SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks.payload` 保存完整任务 JSON，标量列（workspace / bug / session / log / 状态 / 时间）用于查询；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
+- SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
 - 日志：`agent-logs/`（TUI / 服务 / ACP 日志）、`agent-events/`（server 事件 JSONL，用于版本适配排障）；保留最近 200 个任务的产物，更早的自动清理。
 - 状态：`queued | preparing | running | waiting_review | awaiting_approval | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
@@ -79,6 +79,15 @@ MCP 提供：
 - `tapd_get_bug_prompt`：按缺陷 id 返回同一套模板渲染的修复提示词；外部客户端默认用不含审核队列的 MCP 模板，`kind: "agent"` 返回这里配置的全局模板原文。
 
 上面配置的「本地文件夹」也会被 MCP 复用：外部 AI 传 `root`（或 sidecar 自动填入自己的 cwd）时，客户端按仓库目录反查 TAPD 项目。
+
+### 5.1 外部 AI 占用
+
+外部客户端用 `tapd_claim_bug` 登记占用后，缺陷进入「外部处理中」状态：
+
+- 列表行显示处理方、创建时间与滚动用时，操作列只保留「取消」（释放占用）。
+- 本地 Agent 正在运行 / 等权限 / 待审核时不接受外部占用，并通知用户接管被拒绝；本地只是排队时取消该排队任务，通知「“Zcode”接管了「标题」，队列中的 Agent 任务已取消」。
+- 本地入队会直接拒绝被外部占用的缺陷；占用 15 分钟无心跳自动失效，外部 AI 处理期间需要重新调用 `tapd_claim_bug` 续约。
+- 用户点「取消」释放占用后，外部 AI 下次心跳会收到冲突；它已经产生的代码改动不受影响。
 
 写操作受 TAPD 工作流约束；非法流转会返回允许的下一步，agent 可据此调整。所有写操作都记录在客户端日志与 MCP 审计。
 

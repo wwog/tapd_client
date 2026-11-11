@@ -8,7 +8,7 @@
 //! - keeps a single state machine (`UpdateService`) that the main window and
 //!   the island capsule both subscribe to (`update://state`);
 //! - while downloading/installing/erroring, hides the main window and blocks
-//!   every path that could reopen it, morphing the island into a 4x progress
+//!   every path that could reopen it, morphing the island into a 3x progress
 //!   panel instead;
 //! - on failure the capsule offers manual download and cancel; cancel restores
 //!   the main window and the update can be retried from Settings.
@@ -70,7 +70,6 @@ impl UpdatePhase {
 #[serde(rename_all = "camelCase")]
 pub struct AvailableUpdate {
     pub version: String,
-    pub current_version: String,
     pub notes: String,
     pub date: Option<String>,
 }
@@ -333,7 +332,6 @@ async fn check_inner(app: &AppHandle) -> Result<Option<AvailableUpdate>, String>
             .unwrap_or_else(|| "该版本没有提供更新说明。".to_string());
         AvailableUpdate {
             version: update.version,
-            current_version: update.current_version,
             notes,
             date: update.date.map(|date| date.to_string()),
         }

@@ -160,7 +160,6 @@ fn agent_summary(data_dir: &Path) -> Value {
         "binaryPath": value.get("binaryPath"),
         "readyQuietMs": value.get("readyQuietMs"),
         "readyTimeoutMs": value.get("readyTimeoutMs"),
-        "autoOpenConsole": value.get("autoOpenConsole"),
         "projects": projects,
         "queueConcurrency": 1,
     })

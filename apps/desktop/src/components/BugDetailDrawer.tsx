@@ -1,27 +1,9 @@
-import { memo, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
-  ArrowRight,
   ArrowUpRight,
-  Bot,
-  CalendarClock,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Download,
-  FileArchive,
   FileText,
-  Eye,
   GitBranch,
-  Image as ImageIcon,
   Loader2,
-  MessageSquare,
-  MessageSquarePlus,
-  Paperclip,
-  Send,
-  UserPlus,
-  UserRound,
-  Video,
   X,
 } from "lucide-react";
 import clsx from "clsx";
@@ -29,28 +11,14 @@ import clsx from "clsx";
 import {
   api,
   ensureMediaEndpoint,
-  formatBytes,
-  mediaSrc,
-  type Attachment,
   type BugDetail,
   type BugTransitionInfo,
-  type ChangeEntry,
-  type ChangeField,
-  type Comment,
   type ExportResult,
-  type MediaRef,
   type OpenMediaMode,
-  type OpenTarget,
-  type OpenTargetSet,
   type WorkspaceMember,
 } from "../lib/api";
-import { bugTitle, isMyBug, ownerNames } from "../lib/bug";
-import {
-  agentBugKey,
-  agentInFlightLabel,
-  type AgentInFlight,
-} from "../lib/agent";
-import { MediaPreview, type PreviewItem } from "./MediaPreview";
+import { bugTitle, isMyBug } from "../lib/bug";
+import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { SkeletonBlock } from "./Skeleton";
 import {
   Badge,
@@ -59,6 +27,12 @@ import {
   SEVERITY_TONES,
   STATUS_TONES,
 } from "./ui";
+import { BugSectionTitle } from "./BugSectionTitle";
+import { BugResources } from "./BugResources";
+import { BugCommentComposer, BugComments } from "./BugComments";
+import { BugChanges } from "./BugChanges";
+import { BugCustomFields, BugMetaGrid } from "./BugMetaGrid";
+import { BugDrawerFooter } from "./BugDrawerFooter";
 
 type Props = {
   open: boolean;
@@ -124,11 +98,10 @@ function BugDetailDrawerImpl(props: Props) {
     onChangeField,
     onTransition,
   } = props;
-  const [showCustomFields, setShowCustomFields] = useState(false);
-  const [showChanges, setShowChanges] = useState(true);
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const [targetSets, setTargetSets] = useState<Record<string, OpenTargetSet>>({});
+
   const [, bumpMedia] = useState(0);
+  /** Lets the resource preview own its index without the drawer closing too. */
+  const previewOpenRef = useRef(false);
 
   /** Live agent task for this bug: re-clicking must focus it, not enqueue. */
   const agentInfo = detail
@@ -150,24 +123,15 @@ function BugDetailDrawerImpl(props: Props) {
     void ensureMediaEndpoint().then(() => bumpMedia((value) => value + 1));
   }, [open]);
 
-  // Reset collapsible sections each time the drawer is opened. Kept separate
-  // from the key handler so opening the preview doesn't reset them again.
-  useEffect(() => {
-    if (!open) return;
-    setShowCustomFields(false);
-    setShowChanges(true);
-    setPreviewIndex(null);
-  }, [open]);
-
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       // The preview handles its own Escape; don't also close the drawer.
-      if (event.key === "Escape" && previewIndex === null) onClose();
+      if (event.key === "Escape" && !previewOpenRef.current) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose, previewIndex]);
+  }, [open, onClose]);
 
   // A different bug starts with an empty comment box.
   useEffect(() => {
@@ -256,100 +220,9 @@ function BugDetailDrawerImpl(props: Props) {
     }
   };
 
-  const customFields = useMemo(
-    () =>
-      detail
-        ? Object.entries(detail.customFields).filter(([, value]) => value.trim().length > 0)
-        : [],
-    [detail],
-  );
-  const embeddedMedia = detail?.embeddedMedia ?? [];
-  const changes = detail?.changes ?? { total: 0, changes: [], error: null };
-  const resourceCount = (detail?.attachments.length ?? 0) + embeddedMedia.length;
-  const changeCount = changes.total || changes.changes.length;
-
-  const previewItems = useMemo<PreviewItem[]>(() => {
-    const items: PreviewItem[] = [];
-    for (const attachment of detail?.attachments ?? []) {
-      const kind = mediaKindOf(
-        attachment.filename,
-        attachment.contentType,
-        attachment.filetype,
-      );
-      if (kind === "image" || kind === "video") {
-        items.push({
-          url: attachment.downloadUrl,
-          kind,
-          label: attachment.filename,
-          size: attachment.size,
-        });
-      }
-    }
-    for (const media of detail?.embeddedMedia ?? []) {
-      if (media.kind === "image" || media.kind === "video") {
-        items.push({
-          url: media.url,
-          kind: media.kind,
-          label: media.filenameHint,
-        });
-      }
-    }
-    return items;
-  }, [detail]);
-
-  const resourceKinds = useMemo(() => {
-    const kinds = new Set<string>();
-    for (const attachment of detail?.attachments ?? []) {
-      kinds.add(
-        mediaKindOf(attachment.filename, attachment.contentType, attachment.filetype),
-      );
-    }
-    for (const media of detail?.embeddedMedia ?? []) {
-      kinds.add(media.kind === "image" || media.kind === "video" ? media.kind : "file");
-    }
-    return Array.from(kinds).sort();
-  }, [detail]);
-
-  // Load the "open with" options once per resource kind.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    for (const kind of resourceKinds) {
-      if (targetSets[kind]) continue;
-      void api
-        .openTargets(kind)
-        .then((set) => {
-          if (cancelled) return;
-          setTargetSets((current) =>
-            current[kind] ? current : { ...current, [kind]: set },
-          );
-        })
-        .catch(() => {
-          /* menu falls back to a single "打开" action */
-        });
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [open, resourceKinds, targetSets]);
-
-  const selectTarget = (kind: string, id: string) => {
-    setTargetSets((current) =>
-      current[kind] ? { ...current, [kind]: { ...current[kind], selected: id } } : current,
-    );
-    void api.setOpenTarget(kind, id).catch(() => {
-      /* keep the local choice; it is re-validated on the next load */
-    });
-  };
-
-  useEffect(() => {
-    if (!open) setPreviewIndex(null);
-  }, [open]);
-
   return (
-    <>
-      <aside
-        aria-hidden={!open}
+    <aside
+      aria-hidden={!open}
         className={clsx(
           "flex h-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface  border border-border",
           !open && "pointer-events-none",
@@ -424,7 +297,7 @@ function BugDetailDrawerImpl(props: Props) {
 
           {detail ? (
             <div className="space-y-5">
-              <MetaGrid
+              <BugMetaGrid
                 detail={detail}
                 mine={mine}
                 members={members}
@@ -447,7 +320,7 @@ function BugDetailDrawerImpl(props: Props) {
                 </div>
               ) : (
                 <section>
-                  <SectionTitle icon={<GitBranch size={14} />} title="状态流转" />
+                  <BugSectionTitle icon={<GitBranch size={14} />} title="状态流转" />
                   <div className="mt-2">
                     {transitionsLoading ? (
                       <p className="inline-flex items-center gap-1.5 text-ui-sm text-slate-400">
@@ -483,7 +356,7 @@ function BugDetailDrawerImpl(props: Props) {
               )}
 
               <section>
-                <SectionTitle icon={<FileText size={14} />} title="缺陷描述" />
+                <BugSectionTitle icon={<FileText size={14} />} title="缺陷描述" />
                 {detail.descriptionText ? (
                   <div className="mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-ui-base leading-6 text-slate-700">
                     {detail.descriptionText}
@@ -502,301 +375,49 @@ function BugDetailDrawerImpl(props: Props) {
                 ) : null}
               </section>
 
-              <section>
-                <SectionTitle
-                  icon={<Paperclip size={14} />}
-                  title={`资源（${resourceCount}）`}
-                />
-                <div className="mt-2 space-y-2">
-                  {resourceCount === 0 ? (
-                    <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-                      没有附件或内嵌图片/视频
-                    </div>
-                  ) : (
-                    <>
-                      {detail.attachments.map((attachment) => (
-                        <AttachmentRow
-                          key={attachment.id}
-                          attachment={attachment}
-                          previewItems={previewItems}
-                          onPreview={setPreviewIndex}
-                          onOpen={onOpenMedia}
-                          targetSets={targetSets}
-                          onSelectTarget={selectTarget}
-                        />
-                      ))}
-                      {embeddedMedia.length > 0 ? (
-                        <div className="space-y-1.5 rounded-xl border border-slate-100 bg-slate-50/60 p-2">
-                          <p className="px-1 text-ui-xs text-slate-400">
-                            描述 / 评论内嵌（{embeddedMedia.length}）
-                          </p>
-                          {embeddedMedia.map((media, index) => (
-                            <EmbeddedMediaRow
-                              key={`${media.url}-${index}`}
-                              media={media}
-                              previewItems={previewItems}
-                              onPreview={setPreviewIndex}
-                              onOpen={onOpenMedia}
-                              targetSets={targetSets}
-                              onSelectTarget={selectTarget}
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-              </section>
+              <BugResources
+                open={open}
+                detail={detail}
+                previewOpenRef={previewOpenRef}
+                onOpenMedia={onOpenMedia}
+              />
 
-              <section>
-                <SectionTitle
-                  icon={<MessageSquare size={14} />}
-                  title={`评论（${countComments(detail.comments)}）`}
-                />
-                <div className="mt-2 space-y-3">
-                  {detail.comments.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-                      还没有评论
-                    </div>
-                  ) : (
-                    detail.comments.map((comment) => (
-                      <CommentItem key={comment.id} comment={comment} depth={0} />
-                    ))
-                  )}
-                </div>
-              </section>
+              <BugComments comments={detail.comments} />
 
-              <section>
-                <button
-                  type="button"
-                  onClick={() => setShowChanges((current) => !current)}
-                  className="flex w-full items-center gap-2 text-left"
-                >
-                  <SectionTitle
-                    icon={
-                      showChanges ? <ChevronDown size={14} /> : <ChevronRight size={14} />
-                    }
-                    title={`变更记录（${changeCount}）`}
-                  />
-                </button>
-                {showChanges ? (
-                  <div className="mt-2 space-y-2">
-                    {changes.error ? (
-                      <div className="break-all rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-700">
-                        变更记录获取失败：{changes.error}
-                      </div>
-                    ) : changes.changes.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-                        暂无变更记录
-                      </div>
-                    ) : (
-                      <>
-                        {changes.changes.map((entry) => (
-                          <ChangeItem key={entry.seq} entry={entry} />
-                        ))}
-                        {changeCount > changes.changes.length ? (
-                          <p className="px-1 text-ui-xs text-slate-400">
-                            仅显示最近 {changes.changes.length} 条，共 {changeCount} 条。
-                          </p>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </section>
+              <BugChanges detail={detail} open={open} />
 
-              {customFields.length > 0 ? (
-                <section>
-                  <button
-                    type="button"
-                    onClick={() => setShowCustomFields((current) => !current)}
-                    className="flex w-full items-center gap-2 text-left"
-                  >
-                    <SectionTitle
-                      icon={
-                        showCustomFields ? (
-                          <ChevronDown size={14} />
-                        ) : (
-                          <ChevronRight size={14} />
-                        )
-                      }
-                      title={`自定义字段（${customFields.length}）`}
-                    />
-                  </button>
-                  {showCustomFields ? (
-                    <dl className="mt-2 grid gap-2 rounded-xl border border-slate-100 bg-slate-50/60 p-3 text-ui-caption sm:grid-cols-2">
-                      {customFields.map(([key, value]) => (
-                        <div key={key} className="min-w-0">
-                          <dt className="truncate font-mono text-ui-xs text-slate-400">{key}</dt>
-                          <dd className="mt-0.5 break-words text-slate-700">{value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  ) : null}
-                </section>
-              ) : null}
+              <BugCustomFields detail={detail} open={open} />
 
-              {mine ? (
-                <section>
-                  <SectionTitle
-                    icon={<MessageSquarePlus size={14} />}
-                    title="添加评论"
-                  />
-                  <textarea
-                    value={commentText}
-                    onChange={(event) => setCommentText(event.target.value)}
-                    onKeyDown={(event) => {
-                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                        event.preventDefault();
-                        void submitComment();
-                      }
-                    }}
-                    rows={4}
-                    placeholder="写评论（纯文本，⌘/Ctrl + Enter 发送）"
-                    className="mt-2 w-full resize-y rounded-xl border border-border bg-surface p-3 text-ui-caption leading-6 text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200"
-                  />
-                  <div className="mt-2 flex items-center justify-end gap-2">
-                    <span className="mr-auto text-ui-xs text-slate-400">
-                      {commentText.length > 0 ? `${commentText.length} 字` : ""}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      icon={<Send size={13} />}
-                      loading={busy === "comment"}
-                      disabled={busy !== null || commentText.trim().length === 0}
-                      onClick={() => void submitComment()}
-                    >
-                      发表评论
-                    </Button>
-                  </div>
-                </section>
-              ) : null}
+              <BugCommentComposer
+                mine={mine}
+                busy={busy}
+                text={commentText}
+                onChange={setCommentText}
+                onSubmit={() => void submitComment()}
+              />
             </div>
           ) : null}
         </div>
 
         {detail ? (
-          <div className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
-            {lastExport ? (
-              <div className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-ui-xs leading-4 text-emerald-900">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-normal">
-                    已导出 {lastExport.assetCount} 个资源 ·{" "}
-                    {formatBytes(lastExport.downloadedBytes)}
-                  </span>
-                  <div className="ml-auto flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => onOpenPath(lastExport.dir)}
-                      className="rounded border border-emerald-300 bg-surface px-1.5 py-0.5"
-                    >
-                      打开目录
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onCopy(lastExport.markdownPath)}
-                      className="rounded border border-emerald-300 bg-surface px-1.5 py-0.5"
-                    >
-                      复制路径
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-0.5 truncate font-mono text-emerald-700" title={lastExport.markdownPath}>
-                  {lastExport.markdownPath}
-                </div>
-                {lastExport.warnings.length > 0 ? (
-                  <div className="mt-1 truncate text-amber-700" title={lastExport.warnings.join("；")}>
-                    {lastExport.warnings[0]}
-                    {lastExport.warnings.length > 1 ? ` 等 ${lastExport.warnings.length} 条` : ""}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap gap-2">
-              {!mine ? (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  icon={<UserPlus size={13} />}
-                  loading={busy === "claim"}
-                  disabled={busy !== null && busy !== "claim"}
-                  onClick={() => void runClaim()}
-                >
-                  认领
-                </Button>
-              ) : null}
-              {mine ? (
-                agentInfo ? (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    icon={
-                      agentInfo.task.status === "preparing" ||
-                      agentInfo.task.status === "running" ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Bot size={13} />
-                      )
-                    }
-                    title="该缺陷已在 Agent 队列中，点击查看任务"
-                    onClick={() => onOpenAgentTask?.(agentInfo.task.id)}
-                  >
-                    {agentInFlightLabel(agentInfo)} · 查看任务
-                  </Button>
-                ) : (
-                  <div className="inline-flex">
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      className="rounded-r-none"
-                      icon={<Bot size={13} />}
-                      disabled={exporting || loading}
-                      onClick={() => onAgentFix(detail)}
-                    >
-                      用 Agent 修复
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      className="rounded-l-none border-l border-primary-foreground/20 px-2"
-                      title="添加补充说明或资源后启动"
-                      aria-label="添加补充说明或资源后启动"
-                      disabled={exporting || loading}
-                      onClick={() => onAgentCompose(detail)}
-                    >
-                      <ChevronDown size={13} />
-                    </Button>
-                  </div>
-                )
-              ) : null}
-              <Button
-                size="sm"
-                variant="secondary"
-                icon={<Download size={13} />}
-                loading={exporting}
-                onClick={() => onExport(detail)}
-              >
-                {exporting ? "导出中…" : "导出 MD"}
-              </Button>
-            </div>
-          </div>
+          <BugDrawerFooter
+            detail={detail}
+            mine={mine}
+            busy={busy}
+            exporting={exporting}
+            loading={loading}
+            lastExport={lastExport}
+            agentInfo={agentInfo}
+            onOpenPath={onOpenPath}
+            onCopy={onCopy}
+            onClaim={() => void runClaim()}
+            onAgentFix={onAgentFix}
+            onAgentCompose={onAgentCompose}
+            onOpenAgentTask={onOpenAgentTask}
+            onExport={onExport}
+          />
         ) : null}
-      </aside>
-
-      {previewIndex !== null && previewItems[previewIndex] ? (
-        <MediaPreview
-          items={previewItems}
-          index={previewIndex}
-          onIndexChange={setPreviewIndex}
-          onClose={() => setPreviewIndex(null)}
-          onOpenExternal={(url, mode) =>
-            onOpenMedia(url, mode, previewItems[previewIndex]?.kind)
-          }
-        />
-      ) : null}
-    </>
+    </aside>
   );
 }
 
@@ -858,533 +479,6 @@ function DetailSkeleton() {
   );
 }
 
-function MetaGrid(props: {
-  detail: BugDetail;
-  mine: boolean;
-  members: WorkspaceMember[];
-  membersLoading: boolean;
-  savingField: string | null;
-  onChangeField: (field: string, value: string) => void;
-  onRefreshMembers: () => void;
-}) {
-  const {
-    detail,
-    mine,
-    members,
-    membersLoading,
-    savingField,
-    onChangeField,
-    onRefreshMembers,
-  } = props;
-
-  const items: Array<[string, string]> = [
-    ["创建人", detail.creator || "—"],
-    ["创建时间", detail.created || "—"],
-    ["最后修改", detail.modified || "—"],
-    ["发现版本", detail.versionReport || "—"],
-    ["迭代", detail.iterationName || "—"],
-    ["模块", detail.module || "—"],
-    ["修复人", detail.fixer || "—"],
-  ];
-
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-4">
-      <UserField
-        label="处理人"
-        field="current_owner"
-        value={detail.owner}
-        mine={mine}
-        members={members}
-        membersLoading={membersLoading}
-        saving={savingField === "current_owner"}
-        onChange={onChangeField}
-        onRefreshMembers={onRefreshMembers}
-      />
-      <UserField
-        label="开发人员"
-        field="de"
-        value={detail.de}
-        mine={mine}
-        members={members}
-        membersLoading={membersLoading}
-        saving={savingField === "de"}
-        onChange={onChangeField}
-        onRefreshMembers={onRefreshMembers}
-      />
-      {items.map(([label, value]) => (
-        <div key={label} className="min-w-0">
-          <dt className="text-ui-xs text-slate-400">{label}</dt>
-          <dd className="mt-0.5 truncate text-slate-700" title={value}>
-            {value}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-/** Owner / developer cell: a picker for the owner, plain text otherwise. */
-function UserField(props: {
-  label: string;
-  field: "current_owner" | "de";
-  value: string;
-  mine: boolean;
-  members: WorkspaceMember[];
-  membersLoading: boolean;
-  saving: boolean;
-  onChange: (field: string, value: string) => void;
-  onRefreshMembers: () => void;
-}) {
-  const {
-    label,
-    field,
-    value,
-    mine,
-    members,
-    membersLoading,
-    saving,
-    onChange,
-    onRefreshMembers,
-  } = props;
-  const current = value.trim();
-
-  if (!mine) {
-    return (
-      <div className="min-w-0">
-        <dt className="text-ui-xs text-slate-400">{label}</dt>
-        <dd className="mt-0.5 truncate text-slate-700" title={current || "—"}>
-          {current || "—"}
-        </dd>
-      </div>
-    );
-  }
-
-  const optionNicks = Array.from(
-    new Set([
-      ...members.map((member) => member.nick).filter(Boolean),
-      ...ownerNames(current),
-      ...(current ? [current] : []),
-    ]),
-  );
-
-  return (
-    <div className="min-w-0">
-      <dt className="flex items-center gap-1 text-ui-xs text-slate-400">
-        {label}
-        {saving ? <Loader2 size={9} className="animate-spin" /> : null}
-      </dt>
-      <dd className="mt-0.5">
-        <select
-          value={current}
-          disabled={saving}
-          onChange={(event) => onChange(field, event.target.value)}
-          onFocus={() => {
-            if (members.length === 0 && !membersLoading) onRefreshMembers();
-          }}
-          title="从项目成员中选择"
-          className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
-        >
-          {!current ? (
-            <option value="">
-              {membersLoading ? "加载中…" : "未指定"}
-            </option>
-          ) : null}
-          {optionNicks.map((nick) => (
-            <option key={nick} value={nick}>
-              {nick}
-            </option>
-          ))}
-        </select>
-      </dd>
-    </div>
-  );
-}
-
 function currentFieldValue(detail: BugDetail, field: string): string {
   return (field === "de" ? detail.de : detail.owner).trim();
-}
-
-/** TAPD resources are loaded through the loopback media proxy. */
-function Thumbnail(props: {
-  url: string;
-  icon: typeof ImageIcon;
-  iconSize?: number;
-  onClick?: () => void;
-  title?: string;
-}) {
-  const { url, icon: Icon, iconSize = 16, onClick, title } = props;
-  const [broken, setBroken] = useState(false);
-  const source = mediaSrc(url);
-  const clickable = Boolean(onClick);
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      disabled={!clickable}
-      className={clsx(
-        "grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-lg bg-slate-50 text-slate-400",
-        clickable && "transition hover:outline-2 hover:outline-sky-200",
-      )}
-    >
-      {source && !broken ? (
-        <img
-          src={source}
-          alt=""
-          className="h-full w-full object-cover"
-          onError={() => setBroken(true)}
-        />
-      ) : (
-        <Icon size={iconSize} />
-      )}
-    </button>
-  );
-}
-
-/** Explicit, always-visible entry point for the in-app preview. */
-function PreviewButton(props: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      title="预览"
-      aria-label="预览"
-      className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-surface text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
-    >
-      <Eye size={13} />
-    </button>
-  );
-}
-
-/**
- * Split button: the icon shows the current default app, the caret picks
- * another one. Only "open" targets live in this menu.
- */
-function OpenButton(props: {
-  kind: string;
-  targets: OpenTargetSet | undefined;
-  onSelect: (id: string) => void;
-  onOpen: () => void;
-}) {
-  const { kind, targets, onSelect, onOpen } = props;
-  const [menuOpen, setMenuOpen] = useState(false);
-  const selected =
-    targets?.targets.find((target) => target.id === targets.selected) ?? null;
-
-  return (
-    <div className="relative shrink-0">
-      <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-surface text-ui-sm text-slate-600">
-        <button
-          type="button"
-          onClick={onOpen}
-          title={selected ? `用${selected.label}打开` : "打开"}
-          className="inline-flex items-center gap-1.5 px-2 py-1 transition hover:bg-slate-50"
-        >
-          <TargetIcon target={selected} fallback="打开" />
-          打开
-        </button>
-        <button
-          type="button"
-          aria-label="选择默认打开方式"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((current) => !current)}
-          className="border-l border-border px-1 transition hover:bg-slate-50"
-        >
-          <ChevronDown size={11} />
-        </button>
-      </div>
-
-      {menuOpen ? (
-        <>
-          <button
-            type="button"
-            aria-label="关闭菜单"
-            onClick={() => setMenuOpen(false)}
-            className="fixed inset-0 z-20 cursor-default"
-          />
-          <div className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-lg border border-border bg-surface py-1 ">
-            <p className="px-3 py-1 text-ui-xs text-slate-400">默认打开方式</p>
-            {(targets?.targets ?? []).map((target) => {
-              const active = target.id === targets?.selected;
-              return (
-                <button
-                  key={`${kind}-${target.id}`}
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onSelect(target.id);
-                  }}
-                  className={clsx(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui-sm transition hover:bg-slate-50",
-                    active ? "text-slate-800" : "text-slate-600",
-                  )}
-                >
-                  <TargetIcon target={target} fallback="应用" />
-                  <span className="truncate">{target.label}</span>
-                  {active ? <Check size={12} className="ml-auto text-sky-500" /> : null}
-                </button>
-              );
-            })}
-            {targets && targets.targets.length === 0 ? (
-              <p className="px-3 py-2 text-ui-sm text-slate-400">没有可用的应用</p>
-            ) : null}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function TargetIcon(props: {
-  target: Pick<OpenTarget, "icon" | "label"> | null;
-  fallback: string;
-}) {
-  const { target, fallback } = props;
-  if (target?.icon) {
-    return (
-      <img
-        src={target.icon}
-        alt={target.label}
-        title={fallback}
-        className="h-4 w-4 shrink-0 rounded-[4px] object-contain"
-      />
-    );
-  }
-  return (
-    <span
-      title={fallback}
-      className="grid h-4 w-4 shrink-0 place-items-center rounded-[4px] bg-slate-100 text-slate-500"
-    >
-      <Paperclip size={9} />
-    </span>
-  );
-}
-
-function AttachmentRow(props: {
-  attachment: Attachment;
-  previewItems: PreviewItem[];
-  onPreview: (index: number) => void;
-  onOpen: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
-  targetSets: Record<string, OpenTargetSet>;
-  onSelectTarget: (kind: string, id: string) => void;
-}) {
-  const { attachment, previewItems, onPreview, onOpen, targetSets, onSelectTarget } = props;
-  const Icon = iconForAttachment(attachment);
-  const kind = mediaKindOf(attachment.filename, attachment.contentType, attachment.filetype);
-  const previewable = kind === "image" || kind === "video";
-  const previewIndex = previewable
-    ? previewItems.findIndex((item) => item.url === attachment.downloadUrl)
-    : -1;
-
-  return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
-      <Thumbnail
-        url={attachment.downloadUrl}
-        icon={Icon}
-        iconSize={17}
-        title={previewable ? "预览" : undefined}
-        onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption font-normal text-slate-700" title={attachment.filename}>
-          {attachment.filename}
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
-          <span>{formatBytes(attachment.size)}</span>
-          <span className="truncate">{attachment.contentType || attachment.filetype}</span>
-          {attachment.owner ? <span>{attachment.owner}</span> : null}
-        </div>
-      </div>
-      {previewable && previewIndex >= 0 ? (
-        <PreviewButton onClick={() => onPreview(previewIndex)} />
-      ) : null}
-      <OpenButton
-        kind={kind}
-        targets={targetSets[kind]}
-        onSelect={(id) => onSelectTarget(kind, id)}
-        onOpen={() => onOpen(attachment.downloadUrl, "file", kind)}
-      />
-    </div>
-  );
-}
-
-function EmbeddedMediaRow(props: {
-  media: MediaRef;
-  previewItems: PreviewItem[];
-  onPreview: (index: number) => void;
-  onOpen: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
-  targetSets: Record<string, OpenTargetSet>;
-  onSelectTarget: (kind: string, id: string) => void;
-}) {
-  const { media, previewItems, onPreview, onOpen, targetSets, onSelectTarget } = props;
-  const Icon = media.kind === "image" ? ImageIcon : media.kind === "video" ? Video : Paperclip;
-  const kindLabel = media.kind === "image" ? "图片" : media.kind === "video" ? "视频" : "文件";
-  const previewable = media.kind === "image" || media.kind === "video";
-  const previewIndex = previewable
-    ? previewItems.findIndex((item) => item.url === media.url)
-    : -1;
-
-  return (
-    <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
-      <Thumbnail
-        url={media.url}
-        icon={Icon}
-        iconSize={15}
-        title={previewable ? "预览" : undefined}
-        onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption text-slate-700" title={media.url}>
-          {media.filenameHint || "内嵌资源"}
-        </div>
-        <div className="mt-0.5 text-ui-xs text-slate-400">{kindLabel} · 描述/评论内嵌</div>
-      </div>
-      {previewable && previewIndex >= 0 ? (
-        <PreviewButton onClick={() => onPreview(previewIndex)} />
-      ) : null}
-      <OpenButton
-        kind={media.kind === "image" || media.kind === "video" ? media.kind : "file"}
-        targets={targetSets[media.kind === "image" || media.kind === "video" ? media.kind : "file"]}
-        onSelect={(id) =>
-          onSelectTarget(
-            media.kind === "image" || media.kind === "video" ? media.kind : "file",
-            id,
-          )
-        }
-        onOpen={() =>
-          onOpen(
-            media.url,
-            "file",
-            media.kind === "image" || media.kind === "video" ? media.kind : "file",
-          )
-        }
-      />
-    </div>
-  );
-}
-
-function mediaKindOf(
-  filename: string,
-  contentType: string,
-  filetype: string,
-): "image" | "video" | "file" {
-  const type = `${contentType} ${filetype}`.toLowerCase();
-  if (type.includes("image")) return "image";
-  if (type.includes("video")) return "video";
-
-  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
-  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(extension)) return "image";
-  if (["mp4", "mov", "webm", "m4v", "avi"].includes(extension)) return "video";
-  return "file";
-}
-
-function ChangeItem({ entry }: { entry: ChangeEntry }) {
-  return (
-    <div className="rounded-xl border border-slate-100 bg-surface p-3">
-      <div className="flex flex-wrap items-center gap-2 text-ui-sm text-slate-400">
-        <span className="font-mono text-slate-500">#{entry.seq}</span>
-        <span className="font-normal text-slate-600">{entry.author || "未知"}</span>
-        <span className="inline-flex items-center gap-1">
-          <CalendarClock size={10} />
-          {entry.time}
-        </span>
-        {entry.kind ? (
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-ui-xs text-slate-500">
-            {entry.kind}
-          </span>
-        ) : null}
-      </div>
-      {entry.fields.length === 0 ? (
-        <p className="mt-2 text-ui-sm text-slate-400">（无字段明细）</p>
-      ) : (
-        <dl className="mt-2 space-y-1">
-          {entry.fields.map((field, index) => (
-            <ChangeFieldLine key={`${field.field}-${index}`} field={field} />
-          ))}
-        </dl>
-      )}
-    </div>
-  );
-}
-
-function ChangeFieldLine({ field }: { field: ChangeField }) {
-  return (
-    <div className="grid grid-cols-[minmax(56px,auto)_1fr_auto_1fr] items-baseline gap-2 text-ui-sm leading-5">
-      <dt className="truncate text-slate-400" title={field.field}>
-        {field.field}
-      </dt>
-      <dd
-        className="break-words text-slate-400 line-through decoration-slate-300"
-        title={field.before}
-      >
-        {field.before || "—"}
-      </dd>
-      <ArrowRight size={10} className="shrink-0 text-slate-300" />
-      <dd className="break-words text-slate-700" title={field.after}>
-        {field.after || "—"}
-      </dd>
-    </div>
-  );
-}
-
-function CommentItem(props: { comment: Comment; depth: number }) {
-  const { comment, depth } = props;
-
-  return (
-    <div
-      className={clsx(
-        "rounded-xl border border-slate-100 bg-surface p-3",
-        depth > 0 && "ml-5 border-l-2 border-l-slate-200",
-      )}
-    >
-      <div className="flex items-center gap-2 text-ui-sm text-slate-400">
-        <span className="grid h-5 w-5 place-items-center rounded-full bg-slate-100 text-ui-2xs text-slate-500">
-          {comment.author ? comment.author.slice(-2) : "?"}
-        </span>
-        <span className="font-normal text-slate-600">{comment.author || "未知"}</span>
-        <span className="inline-flex items-center gap-1">
-          <CalendarClock size={10} />
-          {comment.created}
-        </span>
-        {comment.isDeleted ? <Badge tone="red">已删除</Badge> : null}
-      </div>
-      <p className="mt-2 whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-700">
-        {comment.plainText || "（空评论）"}
-      </p>
-      {comment.replies.length > 0 ? (
-        <div className="mt-2 space-y-2">
-          {comment.replies.map((reply) => (
-            <CommentItem key={reply.id} comment={reply} depth={depth + 1} />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SectionTitle(props: { icon: ReactNode; title: string }) {
-  return (
-    <div className="flex items-center gap-1.5 text-ui-caption font-normal text-slate-700">
-      <span className="text-slate-400">{props.icon}</span>
-      {props.title}
-    </div>
-  );
-}
-
-function countComments(comments: Comment[]): number {
-  return comments.reduce(
-    (total, comment) => total + 1 + countComments(comment.replies),
-    0,
-  );
-}
-
-function iconForAttachment(attachment: Attachment) {
-  const type = `${attachment.filetype} ${attachment.contentType}`.toLowerCase();
-  if (type.includes("image")) return ImageIcon;
-  if (type.includes("video")) return Video;
-  if (type.includes("compress") || type.includes("zip")) return FileArchive;
-  if (type.includes("text") || type.includes("log") || type.includes("ips")) return FileText;
-  if (type.includes("user")) return UserRound;
-  return Paperclip;
 }

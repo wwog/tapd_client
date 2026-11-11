@@ -107,22 +107,6 @@ export type NotificationHandleResult = {
   transitioned: boolean;
 };
 
-export type NotificationAcceptPreview = {
-  item: NotificationItem;
-  me: string;
-  currentOwner: string;
-  currentStatus: string;
-  assigned: boolean;
-  transitioned: boolean;
-  nextStatus: string;
-  dscTokenPresent: boolean;
-  bodies: {
-    inlineUpdate: Record<string, unknown>;
-    kanbanTransition: Record<string, unknown>;
-    workflowTransition: Record<string, unknown>;
-  };
-};
-
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
   scope: "mine",
@@ -184,15 +168,18 @@ export const notificationApi = {
     actions?: AiAction[];
     tag?: string;
   }) => featureCommand<{ ok: boolean; item: NotificationItem }>("notification_ai_debug", payload),
-  preview: (notificationId: string) =>
-    featureCommand<NotificationAcceptPreview>("notification_accept_preview", { notificationId }),
-  history: () => featureCommand<{ items: NotificationItem[] }>("notification_history"),
   /** Expands the island into cards (or collapses it back to the capsule). */
   expandIsland: (expanded: boolean) =>
     featureCommand<{ ok: boolean; expanded: boolean; count: number }>(
       "notification_island_expand",
       { expanded },
     ),
+  /** Shows/hides the collapsed capsule. The idle capsule is not a permanent
+   *  indicator, so the frontend hides it once nothing needs attention. */
+  setIslandVisible: (visible: boolean) =>
+    featureCommand<{ ok: boolean; visible: boolean }>("notification_island_visible", {
+      visible,
+    }),
   openMain: () => featureCommand<{ ok: boolean }>("notification_open_main"),
   /** Starts an OS window drag; the Rust side persists the final position. */
   startDrag: () => featureCommand<{ ok: boolean }>("notification_start_drag"),

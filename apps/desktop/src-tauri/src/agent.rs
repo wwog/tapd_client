@@ -126,7 +126,6 @@ pub struct AgentConfig {
     pub ready_quiet_ms: u64,
     /// Upper bound for readiness detection; on expiry we inject anyway.
     pub ready_timeout_ms: u64,
-    pub auto_open_console: bool,
 }
 
 impl Default for AgentConfig {
@@ -140,7 +139,6 @@ impl Default for AgentConfig {
             prompt_template: DEFAULT_PROMPT_TEMPLATE.to_string(),
             ready_quiet_ms: 900,
             ready_timeout_ms: 15_000,
-            auto_open_console: true,
         }
     }
 }
@@ -381,7 +379,6 @@ struct AgentConfigPatch {
     prompt_template: Option<String>,
     ready_quiet_ms: Option<u64>,
     ready_timeout_ms: Option<u64>,
-    auto_open_console: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +496,75 @@ pub struct TaskApproval {
     pub stash: Option<String>,
 }
 
+/// A bug another MCP client (external AI) is working on. The desktop queue
+/// never takes over a fresh claim, and the list renders it as a live row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExternalClaim {
+    pub workspace_id: String,
+    pub bug_id: String,
+    #[serde(default)]
+    pub title: String,
+    /// MCP client name from the handshake (for example "Zcode").
+    pub client: String,
+    /// Model the client reports; empty when it did not say.
+    #[serde(default)]
+    pub model: String,
+    /// `queued` (client is waiting for its turn) or `running`.
+    pub status: String,
+    #[serde(default)]
+    pub note: String,
+    pub claimed_at: String,
+    pub last_seen_at: String,
+}
+
+/// How long a claim survives without a heartbeat. A crashed client must not
+/// block a bug forever.
+const EXTERNAL_CLAIM_TTL_SECS: i64 = 15 * 60;
+/// Upper bound so a misbehaving client cannot grow the claim list forever.
+const MAX_EXTERNAL_CLAIMS: usize = 200;
+const EXTERNAL_CLAIMS_CACHE_KIND: &str = "external_claims";
+
+/// Arguments for `tapd_claim_bug` / `agent_external_release`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExternalClaimRequest {
+    pub workspace_id: String,
+    pub bug_id: String,
+    pub title: String,
+    pub client: String,
+    pub model: String,
+    pub status: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExternalReleaseRequest {
+    pub workspace_id: String,
+    pub bug_id: String,
+    pub client: Option<String>,
+}
+
+/// Why a claim was refused. `kind` is `desktop_agent` or `external`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalClaimConflict {
+    pub kind: String,
+    pub client: String,
+    pub model: String,
+    pub status: String,
+    pub claimed_at: String,
+    pub message: String,
+}
+
+pub struct ExternalClaimOutcome {
+    pub claimed: bool,
+    pub claim: Option<ExternalClaim>,
+    pub conflict: Option<ExternalClaimConflict>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EnqueueRequest {
@@ -529,16 +595,14 @@ pub struct AgentTasksState {
     /// fetched page by page through `agent_tasks_history`.
     tasks: Vec<AgentTask>,
     active_task_id: Option<String>,
-    /// Kept for compatibility: number of `queued` tasks.
-    queue_length: usize,
     queued_count: usize,
-    /// `preparing | running | waiting_review`.
-    active_count: usize,
     waiting_review_count: usize,
     awaiting_approval_count: usize,
     /// True after the user stopped a review; the worker stays idle until
     /// `agent_queue_resume`.
     queue_paused: bool,
+    /// Fresh external AI claims. Stale ones are dropped when read.
+    external_claims: Vec<ExternalClaim>,
 }
 
 /// Paginated terminal-task history. Filters and paging run in Rust so the
@@ -1409,6 +1473,8 @@ pub struct AgentCore {
     state: SharedState,
     config: Mutex<AgentConfig>,
     tasks: Mutex<Vec<AgentTask>>,
+    /// External AI claims, keyed by workspace + bug (see `ExternalClaim`).
+    external: Mutex<Vec<ExternalClaim>>,
     runtimes: Mutex<HashMap<String, Arc<Mutex<AgentRuntime>>>>,
     servers: Mutex<HashMap<String, ActiveServer>>,
     /// ACP clients keyed by task id (new protocol transports).
@@ -1444,6 +1510,7 @@ impl AgentCore {
             state,
             config: Mutex::new(AgentConfig::default()),
             tasks: Mutex::new(Vec::new()),
+            external: Mutex::new(Vec::new()),
             runtimes: Mutex::new(HashMap::new()),
             servers: Mutex::new(HashMap::new()),
             acp_clients: Mutex::new(HashMap::new()),
@@ -1495,6 +1562,14 @@ impl AgentCore {
         *self.tasks.lock().expect("agent tasks lock") = tasks;
         self.mark_tasks_dirty(recovered);
 
+        let claims = self
+            .state
+            .cache
+            .get_snapshot::<Vec<ExternalClaim>>(EXTERNAL_CLAIMS_CACHE_KIND, "latest")
+            .map(|(claims, _)| claims)
+            .unwrap_or_default();
+        *self.external.lock().expect("external claims lock") = claims;
+
         let _ = std::fs::create_dir_all(self.logs_dir());
         let _ = std::fs::create_dir_all(self.events_dir());
         self.persist_tasks();
@@ -1502,6 +1577,262 @@ impl AgentCore {
 
     fn config_snapshot(&self) -> AgentConfig {
         self.config.lock().expect("agent config lock").clone()
+    }
+
+    // -----------------------------------------------------------------------
+    // External AI claims
+    // -----------------------------------------------------------------------
+
+    fn persist_external_claims(&self) {
+        let claims = self.external.lock().expect("external claims lock").clone();
+        self.state
+            .cache
+            .put_snapshot(EXTERNAL_CLAIMS_CACHE_KIND, "latest", &claims);
+    }
+
+    /// Fresh claims only; stale rows are dropped and persisted away.
+    fn external_claims_snapshot(&self) -> Vec<ExternalClaim> {
+        let now = chrono::Utc::now().timestamp();
+        let (claims, dropped) = {
+            let mut claims = self.external.lock().expect("external claims lock");
+            let before = claims.len();
+            claims.retain(|claim| external_claim_fresh_at(claim, now));
+            (claims.clone(), claims.len() != before)
+        };
+        if dropped {
+            self.persist_external_claims();
+        }
+        claims
+    }
+
+    fn fresh_external_claim(&self, workspace_id: &str, bug_id: &str) -> Option<ExternalClaim> {
+        let now = chrono::Utc::now().timestamp();
+        external_claim_blocking(
+            &self.external.lock().expect("external claims lock"),
+            workspace_id,
+            bug_id,
+            now,
+        )
+        .cloned()
+    }
+
+    /// Registers an external AI claim. A queued desktop task yields to it, a
+    /// running one wins, and another fresh external claim blocks it.
+    async fn claim_external(
+        &self,
+        request: ExternalClaimRequest,
+    ) -> Result<ExternalClaimOutcome, String> {
+        let workspace_id = request.workspace_id.trim().to_string();
+        let bug_id = request.bug_id.trim().to_string();
+        if workspace_id.is_empty() || bug_id.is_empty() {
+            return Err("缺少 workspaceId 或 bugId".to_string());
+        }
+
+        let client = {
+            let value = request.client.trim();
+            if value.is_empty() {
+                "外部 AI".to_string()
+            } else {
+                truncate_text(value, 60)
+            }
+        };
+        let model = truncate_text(request.model.trim(), 60);
+        let status = match request.status.trim() {
+            "queued" => "queued",
+            _ => "running",
+        }
+        .to_string();
+        let title = truncate_text(request.title.trim(), 200);
+        let note = truncate_text(request.note.trim(), 500);
+        let now = now();
+
+        // Our own queue owns the bug: a queued task yields, a live one wins.
+        let live = {
+            let tasks = self.tasks.lock().expect("agent tasks lock");
+            tasks
+                .iter()
+                .rev()
+                .find(|task| {
+                    task.workspace_id == workspace_id
+                        && task.bug_id == bug_id
+                        && !task.status.is_terminal()
+                })
+                .cloned()
+        };
+        if let Some(task) = live {
+            let label = if title.is_empty() {
+                task.title.clone()
+            } else {
+                title.clone()
+            };
+            if task.status == TaskStatus::Queued {
+                // The task can finish between the snapshot and the cancel; a
+                // terminal task must not block the external claim.
+                if let Err(error) = self.cancel(&task.id).await {
+                    let still_live = self
+                        .task_snapshot(&task.id)
+                        .is_some_and(|current| !current.status.is_terminal());
+                    if still_live {
+                        return Err(error);
+                    }
+                }
+                let _ = crate::notification::raise_system_note(
+                    "外部 AI 接管任务",
+                    crate::notification::AiTone::Warning,
+                    &format!("“{client}”接管了「{label}」，队列中的 Agent 任务已取消"),
+                    Some(&format!("external-claim:{workspace_id}:{bug_id}:takeover")),
+                );
+            } else {
+                let _ = crate::notification::raise_system_note(
+                    "外部 AI 接管被拒绝",
+                    crate::notification::AiTone::Warning,
+                    &format!("“{client}”想接管「{label}」，桌面 Agent 正在处理，已拒绝"),
+                    Some(&format!("external-claim:{workspace_id}:{bug_id}:rejected")),
+                );
+                return Ok(ExternalClaimOutcome {
+                    claimed: false,
+                    claim: None,
+                    conflict: Some(ExternalClaimConflict {
+                        kind: "desktop_agent".to_string(),
+                        client: "TAPD Client".to_string(),
+                        model: String::new(),
+                        status: task_status_key(task.status).to_string(),
+                        claimed_at: task
+                            .started_at
+                            .clone()
+                            .unwrap_or_else(|| task.created_at.clone()),
+                        message: "桌面 Agent 正在处理该缺陷，请勿修改；完成后会自动回写 TAPD"
+                            .to_string(),
+                    }),
+                    message: "桌面 Agent 正在处理该缺陷，已拒绝外部占用".to_string(),
+                });
+            }
+        }
+
+        // Another external client may already own it.
+        let now_secs = chrono::Utc::now().timestamp();
+        let blocked = {
+            let claims = self.external.lock().expect("external claims lock");
+            claims
+                .iter()
+                .find(|claim| {
+                    claim.workspace_id == workspace_id
+                        && claim.bug_id == bug_id
+                        && external_claim_fresh_at(claim, now_secs)
+                        && claim.client != client
+                })
+                .cloned()
+        };
+        if let Some(existing) = blocked {
+            return Ok(ExternalClaimOutcome {
+                claimed: false,
+                claim: None,
+                conflict: Some(ExternalClaimConflict {
+                    kind: "external".to_string(),
+                    client: existing.client.clone(),
+                    model: existing.model.clone(),
+                    status: existing.status.clone(),
+                    claimed_at: existing.claimed_at.clone(),
+                    message: format!("该缺陷当前由{}处理", external_claim_phrase(&existing)),
+                }),
+                message: format!("该缺陷已被{}占用", external_claim_phrase(&existing)),
+            });
+        }
+
+        // Insert a new claim, or refresh this client's heartbeat in place.
+        let claim = {
+            let mut claims = self.external.lock().expect("external claims lock");
+            claims.retain(|claim| external_claim_fresh_at(claim, now_secs));
+            if let Some(existing) = claims
+                .iter_mut()
+                .find(|claim| claim.workspace_id == workspace_id && claim.bug_id == bug_id)
+            {
+                if !title.is_empty() {
+                    existing.title = title;
+                }
+                // A heartbeat may omit model/note; keep the last known values
+                // instead of blanking the row.
+                if !model.is_empty() {
+                    existing.model = model;
+                }
+                if !note.is_empty() {
+                    existing.note = note;
+                }
+                existing.status = status;
+                existing.last_seen_at = now;
+                existing.clone()
+            } else {
+                let claim = ExternalClaim {
+                    workspace_id,
+                    bug_id,
+                    title,
+                    client,
+                    model,
+                    status,
+                    note,
+                    claimed_at: now.clone(),
+                    last_seen_at: now,
+                };
+                claims.push(claim.clone());
+                // Oldest claims are dropped first if a client floods us.
+                if claims.len() > MAX_EXTERNAL_CLAIMS {
+                    claims.sort_by(|left, right| left.claimed_at.cmp(&right.claimed_at));
+                    let extra = claims.len() - MAX_EXTERNAL_CLAIMS;
+                    claims.drain(0..extra);
+                }
+                claim
+            }
+        };
+        self.persist_external_claims();
+        self.emit_state();
+
+        Ok(ExternalClaimOutcome {
+            claimed: true,
+            claim: Some(claim),
+            conflict: None,
+            message: "已登记占用；请每 15 分钟内再次调用 tapd_claim_bug 续约，完成后调用 tapd_release_bug"
+                .to_string(),
+        })
+    }
+
+    /// Removes a claim. `client` is `Some` for MCP callers (they may only
+    /// release their own claim) and `None` for the user's 取消 button.
+    fn release_external(
+        &self,
+        workspace_id: &str,
+        bug_id: &str,
+        client: Option<&str>,
+    ) -> Result<bool, String> {
+        let now_secs = chrono::Utc::now().timestamp();
+        let mut blocked_by: Option<String> = None;
+        let removed = {
+            let mut claims = self.external.lock().expect("external claims lock");
+            let before = claims.len();
+            claims.retain(|claim| {
+                if claim.workspace_id != workspace_id || claim.bug_id != bug_id {
+                    return true;
+                }
+                if !external_claim_fresh_at(claim, now_secs) {
+                    return false;
+                }
+                if let Some(client) = client {
+                    if claim.client != client {
+                        blocked_by = Some(claim.client.clone());
+                        return true;
+                    }
+                }
+                false
+            });
+            before != claims.len()
+        };
+        if let Some(client) = blocked_by {
+            return Err(format!("该缺陷当前由“{client}”占用"));
+        }
+        if removed {
+            self.persist_external_claims();
+            self.emit_state();
+        }
+        Ok(removed)
     }
 
     fn mark_task_dirty(&self, task: AgentTask) {
@@ -1628,6 +1959,7 @@ impl AgentCore {
     }
 
     fn tasks_state(&self) -> AgentTasksState {
+        let external_claims = self.external_claims_snapshot();
         let tasks = self.tasks.lock().expect("agent tasks lock");
         let counts = task_counts(tasks.as_slice());
         let live: Vec<AgentTask> = tasks
@@ -1637,13 +1969,12 @@ impl AgentCore {
             .collect();
         AgentTasksState {
             active_task_id: active_task_id(tasks.as_slice()),
-            queue_length: counts.queued,
             queued_count: counts.queued,
-            active_count: counts.active,
             waiting_review_count: counts.waiting_review,
             awaiting_approval_count: counts.awaiting_approval,
             queue_paused: self.paused.load(Ordering::SeqCst),
             tasks: live,
+            external_claims,
         }
     }
 
@@ -1758,9 +2089,6 @@ impl AgentCore {
             if let Some(value) = patch.ready_timeout_ms {
                 config.ready_timeout_ms = value;
             }
-            if let Some(value) = patch.auto_open_console {
-                config.auto_open_console = value;
-            }
             config.clone().sanitized()
         };
 
@@ -1846,6 +2174,14 @@ impl AgentCore {
             extra_prompt,
             attachments,
         };
+
+        // An external AI already owns the bug: do not duplicate work.
+        if let Some(claim) = self.fresh_external_claim(workspace_id, bug_id) {
+            return Err(format!(
+                "{}，请稍后再试或先在列表中取消外部占用",
+                external_claim_phrase(&claim)
+            ));
+        }
 
         // One bug owns at most one live task. A double click, the notification
         // flow and a manual enqueue can race; checking and pushing under the
@@ -3801,6 +4137,61 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+fn task_status_key(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Preparing => "preparing",
+        TaskStatus::Running => "running",
+        TaskStatus::WaitingReview => "waiting_review",
+        TaskStatus::AwaitingApproval => "awaiting_approval",
+        TaskStatus::Succeeded => "succeeded",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
+    }
+}
+
+fn parse_rfc3339_secs(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|time| time.timestamp())
+}
+
+/// A claim is valid for `EXTERNAL_CLAIM_TTL_SECS` after its last heartbeat.
+fn external_claim_fresh_at(claim: &ExternalClaim, now_secs: i64) -> bool {
+    parse_rfc3339_secs(&claim.last_seen_at)
+        .is_some_and(|seen| now_secs.saturating_sub(seen) <= EXTERNAL_CLAIM_TTL_SECS)
+}
+
+/// Human phrase for lists and error messages: `“Zcode”正在使用“Deepseek”处理该缺陷`.
+fn external_claim_phrase(claim: &ExternalClaim) -> String {
+    let client = claim.client.trim();
+    let client = if client.is_empty() {
+        "外部 AI"
+    } else {
+        client
+    };
+    let model = claim.model.trim();
+    if model.is_empty() {
+        format!("“{client}”正在处理该缺陷")
+    } else {
+        format!("“{client}”正在使用“{model}”处理该缺陷")
+    }
+}
+
+/// Fresh claim that owns this bug, used to refuse enqueue / claim duplicates.
+fn external_claim_blocking<'a>(
+    claims: &'a [ExternalClaim],
+    workspace_id: &str,
+    bug_id: &str,
+    now_secs: i64,
+) -> Option<&'a ExternalClaim> {
+    claims.iter().find(|claim| {
+        claim.workspace_id == workspace_id
+            && claim.bug_id == bug_id
+            && external_claim_fresh_at(claim, now_secs)
+    })
+}
+
 /// Filters and paginates terminal tasks. Kept free-standing so the paging
 /// contract is unit-testable without an `AppHandle`.
 fn build_history_page(tasks: &[AgentTask], query: HistoryQuery) -> AgentTasksPage {
@@ -4198,6 +4589,61 @@ pub fn mcp_agent_config(app: &AppHandle) -> AgentConfig {
         .unwrap_or_default()
 }
 
+/// Fresh external claim for one bug, for MCP read tools.
+pub fn external_claim_for_bug(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+) -> Option<ExternalClaim> {
+    app.try_state::<Arc<AgentCore>>()?
+        .fresh_external_claim(workspace_id, bug_id)
+}
+
+/// All fresh external claims, for list responses.
+pub fn external_claims(app: &AppHandle) -> Vec<ExternalClaim> {
+    app.try_state::<Arc<AgentCore>>()
+        .map(|core| core.external_claims_snapshot())
+        .unwrap_or_default()
+}
+
+/// MCP `tapd_claim_bug`: registers (or heartbeats) an external AI claim.
+pub async fn claim_external_from_mcp(
+    app: &AppHandle,
+    request: ExternalClaimRequest,
+) -> Result<Value, String> {
+    let core = app
+        .try_state::<Arc<AgentCore>>()
+        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+    let outcome = core.claim_external(request).await?;
+    Ok(json!({
+        "claimed": outcome.claimed,
+        "claim": outcome.claim,
+        "conflict": outcome.conflict,
+        "message": outcome.message,
+    }))
+}
+
+/// MCP `tapd_release_bug`: releases the caller's own claim.
+pub fn release_external_from_mcp(
+    app: &AppHandle,
+    request: ExternalReleaseRequest,
+) -> Result<Value, String> {
+    let core = app
+        .try_state::<Arc<AgentCore>>()
+        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+    let client = request.client.unwrap_or_default();
+    let client = client.trim();
+    let released = core.release_external(
+        request.workspace_id.trim(),
+        request.bug_id.trim(),
+        (!client.is_empty()).then_some(client),
+    )?;
+    Ok(json!({
+        "released": released,
+        "message": if released { "已释放占用" } else { "没有找到可释放的占用" },
+    }))
+}
+
 /// Blocks TAPD comment/status writes from the local agent while its worktree
 /// still has files changed by this run. This enforces "commit first, then write
 /// back" even if the model ignores the prompt. Unrelated dirty files recorded
@@ -4465,6 +4911,17 @@ pub async fn command(
             let task = core.cancel(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
+        "agent_external_release" => {
+            let request: ExternalReleaseRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的释放参数：{error}"))?;
+            if request.bug_id.trim().is_empty() {
+                return Err("缺少 bugId".to_string());
+            }
+            // The user's 取消 button may close any claim.
+            let released =
+                core.release_external(request.workspace_id.trim(), request.bug_id.trim(), None)?;
+            Ok(json!({ "released": released }))
+        }
         "agent_task_retry" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的重试参数：{error}"))?;
@@ -4552,6 +5009,74 @@ pub async fn command(
 mod tests {
     use super::*;
 
+    fn sample_claim(last_seen_at: &str) -> ExternalClaim {
+        ExternalClaim {
+            workspace_id: "45336192".to_string(),
+            bug_id: "1145336192001234567".to_string(),
+            title: "示例缺陷".to_string(),
+            client: "Zcode".to_string(),
+            model: "Deepseek".to_string(),
+            status: "running".to_string(),
+            note: String::new(),
+            claimed_at: "2026-11-11T08:00:00Z".to_string(),
+            last_seen_at: last_seen_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn external_claims_expire_without_a_heartbeat() {
+        let seen = parse_rfc3339_secs("2026-11-11T08:00:00Z").expect("timestamp");
+        let claim = sample_claim("2026-11-11T08:00:00Z");
+        assert!(external_claim_fresh_at(
+            &claim,
+            seen + EXTERNAL_CLAIM_TTL_SECS
+        ));
+        assert!(!external_claim_fresh_at(
+            &claim,
+            seen + EXTERNAL_CLAIM_TTL_SECS + 1
+        ));
+        // A malformed timestamp must never pin a bug forever.
+        assert!(!external_claim_fresh_at(&sample_claim("not-a-time"), seen));
+    }
+
+    #[test]
+    fn fresh_claim_blocks_enqueue_until_it_expires() {
+        let seen = parse_rfc3339_secs("2026-11-11T08:00:00Z").expect("timestamp");
+        let claim = sample_claim("2026-11-11T08:00:00Z");
+        let claims = vec![claim];
+
+        assert!(
+            external_claim_blocking(&claims, "45336192", "1145336192001234567", seen + 60)
+                .is_some()
+        );
+        // Other bugs and workspaces are unaffected.
+        assert!(external_claim_blocking(&claims, "45336192", "999", seen + 60).is_none());
+        assert!(
+            external_claim_blocking(&claims, "999", "1145336192001234567", seen + 60).is_none()
+        );
+        // Stale claims stop blocking.
+        assert!(external_claim_blocking(
+            &claims,
+            "45336192",
+            "1145336192001234567",
+            seen + EXTERNAL_CLAIM_TTL_SECS + 1
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn external_claim_phrase_names_client_and_model() {
+        assert_eq!(
+            external_claim_phrase(&sample_claim("2026-11-11T08:00:00Z")),
+            "“Zcode”正在使用“Deepseek”处理该缺陷"
+        );
+        let mut claim = sample_claim("2026-11-11T08:00:00Z");
+        claim.model.clear();
+        assert_eq!(external_claim_phrase(&claim), "“Zcode”正在处理该缺陷");
+        claim.client.clear();
+        assert_eq!(external_claim_phrase(&claim), "“外部 AI”正在处理该缺陷");
+    }
+
     fn sample_task(id: &str, status: TaskStatus) -> AgentTask {
         AgentTask {
             id: id.to_string(),
@@ -4594,7 +5119,6 @@ mod tests {
         assert!(config.repo_mappings.is_empty());
         assert_eq!(config.ready_quiet_ms, 900);
         assert_eq!(config.ready_timeout_ms, 15_000);
-        assert!(config.auto_open_console);
         assert!(config.prompt_template.contains("{{md_path}}"));
         assert!(config.prompt_template.contains("{{title}}"));
     }
@@ -4625,7 +5149,6 @@ mod tests {
             prompt_template: "  ".to_string(),
             ready_quiet_ms: 1,
             ready_timeout_ms: 999_999,
-            auto_open_console: false,
         }
         .sanitized();
 
@@ -4643,7 +5166,6 @@ mod tests {
             Some("/repo")
         );
         assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE);
-        assert!(!config.auto_open_console);
     }
 
     #[test]
@@ -5030,18 +5552,16 @@ mod tests {
         let state = AgentTasksState {
             tasks: tasks.clone(),
             active_task_id: Some("a".to_string()),
-            queue_length: 0,
             queued_count: 0,
-            active_count: 1,
             waiting_review_count: 1,
             awaiting_approval_count: 0,
             queue_paused: false,
+            external_claims: vec![sample_claim("2026-11-11T08:00:00Z")],
         };
         let value = serde_json::to_value(&state).unwrap();
-        assert_eq!(value["queueLength"], 0);
         assert_eq!(value["queuedCount"], 0);
-        assert_eq!(value["activeCount"], 1);
         assert_eq!(value["waitingReviewCount"], 1);
+        assert_eq!(value["externalClaims"][0]["client"], "Zcode");
         assert_eq!(value["activeTaskId"], "a");
 
         let summary = serde_json::to_value(agent_summary(&tasks)).unwrap();

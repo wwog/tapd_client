@@ -6,9 +6,11 @@ mod commands;
 mod diagnostics;
 mod export;
 mod feature_router;
+mod island_window;
 mod mcp;
 mod mcp_audit;
 mod mcp_import;
+mod media;
 mod notification;
 mod notification_db;
 mod open_with;
@@ -19,6 +21,7 @@ mod session;
 mod shell_path;
 mod state;
 mod update;
+mod window_state;
 
 use std::sync::Arc;
 
@@ -67,17 +70,11 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
-            commands::session_status,
             commands::session_show,
-            commands::session_hide,
             commands::session_login_state,
-            commands::session_refresh_qr,
             commands::session_reload_login,
             commands::session_cache_avatar,
-            commands::session_mark_logged_in,
             commands::session_logout,
-            commands::session_ping,
-            commands::session_http,
             commands::workspace_context,
             commands::bug_list,
             commands::bug_detail,
@@ -117,6 +114,7 @@ pub fn run() {
             update::update_install,
             update::update_cancel,
             update::update_open_manual,
+            window_state::ui_ready,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -149,6 +147,9 @@ pub fn run() {
                 });
             }
 
+            // Reopen at the size/position the user left the window in.
+            window_state::install(&handle, &state);
+
             notification::init(&handle, state.clone());
             agent::init(&handle, state.clone());
             // Check GitHub Releases shortly after launch, then every two hours.
@@ -165,6 +166,8 @@ pub fn run() {
                 // stopped explicitly or they keep working after the app is gone.
                 agent::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    // Persist the final geometry before the config file goes away.
+                    window_state::save_now(app, &state);
                     RuntimeInfo::clear(&state.paths.runtime_file);
                 }
             }
@@ -173,6 +176,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
                 if update::is_updating() {
+                    return;
+                }
+                // Still booting: the first paint reveals the window itself, and
+                // showing it now would flash an unpainted webview.
+                if !window_state::is_revealed() {
                     return;
                 }
                 if let Some(window) = app.get_webview_window("main") {

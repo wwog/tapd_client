@@ -38,6 +38,84 @@ pub const CLIENTS: [&str; 5] = [
     CLIENT_CODEX,
 ];
 
+/// How a client stores the MCP server entry.
+#[derive(Clone, Copy)]
+enum Format {
+    /// A JSON config with the entry at `segments`.
+    Json {
+        segments: &'static [&'static str],
+        entry: fn(&str) -> Value,
+        default_root: fn() -> Value,
+    },
+    /// A TOML config with `[mcp_servers.tapd]`.
+    Toml,
+    /// Registered through the Claude Code CLI (`claude mcp add`).
+    ClaudeCli,
+}
+
+struct ClientSpec {
+    id: &'static str,
+    label: &'static str,
+    path: fn() -> Option<PathBuf>,
+    missing_path_error: &'static str,
+    format: Format,
+}
+
+const CLIENT_SPECS: &[ClientSpec] = &[
+    ClientSpec {
+        id: CLIENT_OPENCODE,
+        label: "opencode",
+        path: opencode_config_path,
+        missing_path_error: "无法定位 opencode 配置目录（未设置 XDG_CONFIG_HOME 或 HOME）",
+        format: Format::Json {
+            segments: &["mcp", "servers", "tapd"],
+            entry: tapd_entry,
+            default_root: opencode_default_root,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_ZCODE,
+        label: "ZCode",
+        path: zcode_config_path,
+        missing_path_error: "无法定位 ZCode 配置目录（未设置 HOME 或 USERPROFILE）",
+        format: Format::Json {
+            segments: &["mcp", "servers", "tapd"],
+            entry: zcode_entry,
+            default_root: empty_config,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_CLAUDE,
+        label: "Claude Code",
+        path: claude_config_path,
+        missing_path_error:
+            "无法定位 Claude Code 配置（未设置 CLAUDE_CONFIG_DIR、HOME 或 USERPROFILE）",
+        format: Format::ClaudeCli,
+    },
+    ClientSpec {
+        id: CLIENT_CURSOR,
+        label: "Cursor",
+        path: cursor_config_path,
+        missing_path_error: "无法定位 Cursor 配置目录（未设置 HOME 或 USERPROFILE）",
+        format: Format::Json {
+            segments: &["mcpServers", "tapd"],
+            entry: cursor_entry,
+            default_root: empty_config,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_CODEX,
+        label: "Codex",
+        path: codex_config_path,
+        missing_path_error: "无法定位 Codex 配置目录（未设置 CODEX_HOME、HOME 或 USERPROFILE）",
+        format: Format::Toml,
+    },
+];
+
+fn client_spec(client: &str) -> Option<&'static ClientSpec> {
+    CLIENT_SPECS.iter().find(|spec| spec.id == client)
+}
+
 /// Location of the opencode global config, if it can be discovered.
 ///
 /// Asks the CLI first (`opencode debug paths`), because XDG overrides and
@@ -56,41 +134,18 @@ pub fn ensure_opencode_mcp(command_path: &str) -> Result<Value, String> {
         return Err("sidecar 路径为空，无法写入 opencode 配置".to_string());
     }
 
-    let path = opencode_config_path().ok_or_else(|| {
-        "无法定位 opencode 配置目录（未设置 XDG_CONFIG_HOME 或 HOME）".to_string()
-    })?;
-    let outcome = ensure_mcp_in_file(&path, command_path)?;
-
-    Ok(json!({
-        "path": path.to_string_lossy(),
-        "backupPath": outcome.backup_path.map(|path| path.to_string_lossy().to_string()),
-        "changed": outcome.changed,
-        "imported": true,
-    }))
+    let spec = client_spec(CLIENT_OPENCODE).expect("opencode spec is present");
+    ensure_client_at(spec, command_path)
 }
 
 /// Config file used by `client`, when it can be located.
 pub fn client_config_path(client: &str) -> Option<PathBuf> {
-    match client {
-        CLIENT_OPENCODE => opencode_config_path(),
-        CLIENT_ZCODE => zcode_config_path(),
-        CLIENT_CLAUDE => claude_config_path(),
-        CLIENT_CURSOR => cursor_config_path(),
-        CLIENT_CODEX => codex_config_path(),
-        _ => None,
-    }
+    client_spec(client).and_then(|spec| (spec.path)())
 }
 
 /// Whether the config file at `path` already registers this sidecar.
 pub fn imported_in_path(client: &str, path: &Path, command_path: &str) -> bool {
-    match client {
-        CLIENT_OPENCODE => is_imported_in(path, command_path),
-        CLIENT_ZCODE => zcode_imported_in(path, command_path),
-        CLIENT_CLAUDE => claude_imported_in(path, command_path),
-        CLIENT_CURSOR => cursor_imported_in(path, command_path),
-        CLIENT_CODEX => codex_imported_in(path, command_path),
-        _ => false,
-    }
+    client_spec(client).is_some_and(|spec| imported_in_file(spec, path, command_path))
 }
 
 /// Ensures the tapd MCP server is present in the client's user-scope config.
@@ -102,38 +157,43 @@ pub fn ensure_client_mcp(client: &str, command_path: &str) -> Result<Value, Stri
         return Err("sidecar 路径为空，无法写入客户端配置".to_string());
     }
 
-    match client {
-        CLIENT_OPENCODE => ensure_opencode_mcp(command_path),
-        CLIENT_ZCODE => {
-            let path = zcode_config_path().ok_or_else(|| {
-                "无法定位 ZCode 配置目录（未设置 HOME 或 USERPROFILE）".to_string()
-            })?;
-            let outcome = ensure_zcode_in_file(&path, command_path)?;
-            Ok(import_result(&path, outcome))
-        }
-        CLIENT_CLAUDE => {
-            let path = claude_config_path().ok_or_else(|| {
-                "无法定位 Claude Code 配置（未设置 CLAUDE_CONFIG_DIR、HOME 或 USERPROFILE）"
-                    .to_string()
-            })?;
-            let outcome = ensure_claude_mcp(&path, command_path)?;
-            Ok(import_result(&path, outcome))
-        }
-        CLIENT_CURSOR => {
-            let path = cursor_config_path().ok_or_else(|| {
-                "无法定位 Cursor 配置目录（未设置 HOME 或 USERPROFILE）".to_string()
-            })?;
-            let outcome = ensure_cursor_in_file(&path, command_path)?;
-            Ok(import_result(&path, outcome))
-        }
-        CLIENT_CODEX => {
-            let path = codex_config_path().ok_or_else(|| {
-                "无法定位 Codex 配置目录（未设置 CODEX_HOME、HOME 或 USERPROFILE）".to_string()
-            })?;
-            let outcome = ensure_codex_in_file(&path, command_path)?;
-            Ok(import_result(&path, outcome))
-        }
-        other => Err(format!("未知的 MCP 客户端：{other}")),
+    let spec = client_spec(client).ok_or_else(|| format!("未知的 MCP 客户端：{client}"))?;
+    ensure_client_at(spec, command_path)
+}
+
+fn ensure_client_at(spec: &ClientSpec, command_path: &str) -> Result<Value, String> {
+    let path = (spec.path)().ok_or_else(|| spec.missing_path_error.to_string())?;
+    let outcome = ensure_in_file(spec, &path, command_path)?;
+    Ok(import_result(&path, outcome))
+}
+
+fn ensure_in_file(
+    spec: &ClientSpec,
+    path: &Path,
+    command_path: &str,
+) -> Result<MergeOutcome, String> {
+    match spec.format {
+        Format::Json {
+            segments,
+            entry,
+            default_root,
+        } => ensure_json_entry(
+            path,
+            segments,
+            entry(command_path),
+            default_root(),
+            spec.label,
+        ),
+        Format::Toml => ensure_codex_in_file(path, command_path),
+        Format::ClaudeCli => ensure_claude_mcp(path, command_path),
+    }
+}
+
+fn imported_in_file(spec: &ClientSpec, path: &Path, command_path: &str) -> bool {
+    match spec.format {
+        Format::Json { segments, .. } => json_command_matches(path, segments, command_path),
+        Format::Toml => codex_imported_in(path, command_path),
+        Format::ClaudeCli => claude_imported_in(path, command_path),
     }
 }
 
@@ -159,12 +219,6 @@ pub async fn command(_state: &SharedState, name: &str, payload: Value) -> Result
             }
             let command_path = crate::commands::sidecar_command_path();
             tokio::task::spawn_blocking(move || ensure_client_mcp(&client, &command_path))
-                .await
-                .map_err(|error| format!("导入任务中断：{error}"))?
-        }
-        "mcp_import_opencode" => {
-            let command_path = crate::commands::sidecar_command_path();
-            tokio::task::spawn_blocking(move || ensure_opencode_mcp(&command_path))
                 .await
                 .map_err(|error| format!("导入任务中断：{error}"))?
         }
@@ -262,12 +316,7 @@ fn is_config_label(label: &str) -> bool {
 }
 
 fn expand_home(value: &str) -> PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Ok(home) = tapd_core::paths::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(value)
+    tapd_core::paths::expand_home(value)
 }
 
 /// The CLI may print either the config directory or the config file itself.
@@ -375,40 +424,20 @@ fn tapd_entry(command_path: &str) -> Value {
     json!({ "type": "local", "command": [command_path] })
 }
 
-/// Merges `mcp.servers.tapd` into the opencode JSON config at `path`.
-fn ensure_mcp_in_file(path: &Path, command_path: &str) -> Result<MergeOutcome, String> {
-    ensure_json_entry(
-        path,
-        &["mcp", "servers", "tapd"],
-        tapd_entry(command_path),
-        json!({ "$schema": CONFIG_SCHEMA }),
-        "opencode",
-    )
+fn zcode_entry(command_path: &str) -> Value {
+    json!({ "type": "stdio", "command": command_path })
 }
 
-/// Merges `mcp.servers.tapd` into ZCode's `~/.zcode/cli/config.json`.
-///
-/// ZCode expects a string `command` (not opencode's `command` array) and a
-/// strict schema, so only canonical fields are written.
-fn ensure_zcode_in_file(path: &Path, command_path: &str) -> Result<MergeOutcome, String> {
-    ensure_json_entry(
-        path,
-        &["mcp", "servers", "tapd"],
-        json!({ "type": "stdio", "command": command_path }),
-        json!({}),
-        "ZCode",
-    )
+fn cursor_entry(command_path: &str) -> Value {
+    json!({ "command": command_path })
 }
 
-/// Merges `mcpServers.tapd` into Cursor's `~/.cursor/mcp.json`.
-fn ensure_cursor_in_file(path: &Path, command_path: &str) -> Result<MergeOutcome, String> {
-    ensure_json_entry(
-        path,
-        &["mcpServers", "tapd"],
-        json!({ "command": command_path }),
-        json!({}),
-        "Cursor",
-    )
+fn opencode_default_root() -> Value {
+    json!({ "$schema": CONFIG_SCHEMA })
+}
+
+fn empty_config() -> Value {
+    json!({})
 }
 
 /// Merges `[mcp_servers.tapd]` into Codex's `config.toml`, preserving the
@@ -553,14 +582,6 @@ fn claude_entry_matches(entry: &Value, command_path: &str) -> bool {
             .is_some_and(|value| command_matches(value, command_path))
 }
 
-fn zcode_imported_in(path: &Path, command_path: &str) -> bool {
-    json_entry_matches(path, &["mcp", "servers", "tapd", "command"], command_path)
-}
-
-fn cursor_imported_in(path: &Path, command_path: &str) -> bool {
-    json_entry_matches(path, &["mcpServers", "tapd", "command"], command_path)
-}
-
 fn codex_imported_in(path: &Path, command_path: &str) -> bool {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return false;
@@ -661,19 +682,14 @@ fn backup_existing(path: &Path, exists: bool) -> Result<Option<PathBuf>, String>
     Ok(Some(backup))
 }
 
-/// Whether the given opencode config already points at this sidecar.
-pub(crate) fn is_imported_in(path: &Path, command_path: &str) -> bool {
-    json_entry_matches(path, &["mcp", "servers", "tapd", "command"], command_path)
-}
-
-fn json_entry_matches(path: &Path, segments: &[&str], command_path: &str) -> bool {
+fn json_command_matches(path: &Path, segments: &[&str], command_path: &str) -> bool {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return false;
     };
     let Ok(config) = serde_json::from_str::<Value>(&raw) else {
         return false;
     };
-    let pointer = format!("/{}", segments.join("/"));
+    let pointer = format!("/{}/command", segments.join("/"));
     config
         .pointer(&pointer)
         .is_some_and(|value| command_matches(value, command_path))
@@ -766,6 +782,81 @@ mod tests {
             .collect()
     }
 
+    fn ensure_for(client: &str, path: &Path, command_path: &str) -> Result<MergeOutcome, String> {
+        ensure_in_file(
+            client_spec(client).expect("known client"),
+            path,
+            command_path,
+        )
+    }
+
+    #[test]
+    fn client_specs_match_public_client_list() {
+        let ids: Vec<&str> = CLIENT_SPECS.iter().map(|spec| spec.id).collect();
+        assert_eq!(ids.as_slice(), &CLIENTS[..]);
+    }
+
+    #[test]
+    fn json_clients_write_exact_entries_and_are_idempotent() {
+        let command = "/Applications/TAPD/tapd-mcp";
+        let cases = [
+            (
+                CLIENT_OPENCODE,
+                json!({
+                    "$schema": CONFIG_SCHEMA,
+                    "mcp": { "servers": { "tapd": { "type": "local", "command": [command] } } }
+                }),
+            ),
+            (
+                CLIENT_ZCODE,
+                json!({
+                    "mcp": { "servers": { "tapd": { "type": "stdio", "command": command } } }
+                }),
+            ),
+            (
+                CLIENT_CURSOR,
+                json!({ "mcpServers": { "tapd": { "command": command } } }),
+            ),
+        ];
+
+        for (client, expected) in cases {
+            let dir = temp_dir(client);
+            let path = dir.join("config.json");
+
+            let outcome = ensure_for(client, &path, command).expect("first import");
+            assert!(outcome.changed, "{client}: first import must write");
+            assert!(
+                outcome.backup_path.is_none(),
+                "{client}: new file has no backup"
+            );
+
+            let written: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(written, expected, "{client}: exact generated config");
+
+            assert!(
+                imported_in_path(client, &path, command),
+                "{client}: entry detected"
+            );
+            assert!(
+                !imported_in_path(client, &path, "/opt/other"),
+                "{client}: other command rejected"
+            );
+
+            let before = std::fs::read_to_string(&path).unwrap();
+            let second = ensure_for(client, &path, command).expect("second import");
+            assert!(!second.changed, "{client}: second import is a no-op");
+            assert!(second.backup_path.is_none(), "{client}: no backup on no-op");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+            assert!(
+                backup_files(&dir).is_empty(),
+                "{client}: no backup files on no-op"
+            );
+
+            cleanup(&dir);
+        }
+    }
+
     #[test]
     fn merge_preserves_other_settings() {
         let dir = temp_dir("merge");
@@ -777,7 +868,7 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
 
-        let outcome = ensure_mcp_in_file(&path, "/Applications/TAPD/tapd-mcp").unwrap();
+        let outcome = ensure_for(CLIENT_OPENCODE, &path, "/Applications/TAPD/tapd-mcp").unwrap();
         assert!(outcome.changed);
         let backup = outcome.backup_path.expect("backup created");
         assert!(backup.is_file());
@@ -794,8 +885,16 @@ mod tests {
             written.pointer("/mcp/servers/tapd"),
             Some(&json!({ "type": "local", "command": ["/Applications/TAPD/tapd-mcp"] }))
         );
-        assert!(is_imported_in(&path, "/Applications/TAPD/tapd-mcp"));
-        assert!(!is_imported_in(&path, "/Applications/TAPD/other"));
+        assert!(imported_in_path(
+            CLIENT_OPENCODE,
+            &path,
+            "/Applications/TAPD/tapd-mcp"
+        ));
+        assert!(!imported_in_path(
+            CLIENT_OPENCODE,
+            &path,
+            "/Applications/TAPD/other"
+        ));
 
         cleanup(&dir);
     }
@@ -805,7 +904,7 @@ mod tests {
         let dir = temp_dir("missing");
         let path = dir.join("nested").join("opencode").join(CONFIG_JSON);
 
-        let outcome = ensure_mcp_in_file(&path, "/opt/tapd-mcp").unwrap();
+        let outcome = ensure_for(CLIENT_OPENCODE, &path, "/opt/tapd-mcp").unwrap();
         assert!(outcome.changed);
         assert!(outcome.backup_path.is_none());
 
@@ -821,24 +920,6 @@ mod tests {
     }
 
     #[test]
-    fn second_import_is_noop() {
-        let dir = temp_dir("idempotent");
-        let path = dir.join(CONFIG_JSON);
-
-        let first = ensure_mcp_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(first.changed);
-        let written = std::fs::read_to_string(&path).unwrap();
-
-        let second = ensure_mcp_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(!second.changed);
-        assert!(second.backup_path.is_none());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
-        assert!(backup_files(&dir).is_empty());
-
-        cleanup(&dir);
-    }
-
-    #[test]
     fn invalid_json_is_rejected_without_changes() {
         let dir = temp_dir("invalid");
         let path = dir.join(CONFIG_JSONC);
@@ -846,7 +927,7 @@ mod tests {
             "{\n  // JSONC comment\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n";
         std::fs::write(&path, original).unwrap();
 
-        let error = ensure_mcp_in_file(&path, "/opt/tapd-mcp").unwrap_err();
+        let error = ensure_for(CLIENT_OPENCODE, &path, "/opt/tapd-mcp").unwrap_err();
         assert!(error.contains("JSON"), "unexpected error: {error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(backup_files(&dir).is_empty());
@@ -861,7 +942,7 @@ mod tests {
         let original = r#"{"mcp": "not-an-object"}"#;
         std::fs::write(&path, original).unwrap();
 
-        let error = ensure_mcp_in_file(&path, "/opt/tapd-mcp").unwrap_err();
+        let error = ensure_for(CLIENT_OPENCODE, &path, "/opt/tapd-mcp").unwrap_err();
         assert!(error.contains("mcp"), "unexpected error: {error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(backup_files(&dir).is_empty());
@@ -879,15 +960,35 @@ mod tests {
         )
         .unwrap();
 
-        assert!(is_imported_in(&path, "/opt/tapd-mcp"));
-        assert!(!is_imported_in(&path, "/opt/other"));
-        assert!(!is_imported_in(&dir.join("missing.json"), "/opt/tapd-mcp"));
+        assert!(imported_in_path(CLIENT_OPENCODE, &path, "/opt/tapd-mcp"));
+        assert!(!imported_in_path(CLIENT_OPENCODE, &path, "/opt/other"));
+        assert!(!imported_in_path(
+            CLIENT_OPENCODE,
+            &dir.join("missing.json"),
+            "/opt/tapd-mcp"
+        ));
 
         let broken = dir.join("broken.json");
         std::fs::write(&broken, "{ // comment\n}").unwrap();
-        assert!(!is_imported_in(&broken, "/opt/tapd-mcp"));
+        assert!(!imported_in_path(CLIENT_OPENCODE, &broken, "/opt/tapd-mcp"));
 
         cleanup(&dir);
+    }
+
+    #[test]
+    fn rejects_empty_command_and_unknown_client() {
+        assert_eq!(
+            ensure_client_mcp(CLIENT_OPENCODE, " ").unwrap_err(),
+            "sidecar 路径为空，无法写入客户端配置"
+        );
+        assert_eq!(
+            ensure_opencode_mcp(" ").unwrap_err(),
+            "sidecar 路径为空，无法写入 opencode 配置"
+        );
+        assert_eq!(
+            ensure_client_mcp("unknown", "/opt/tapd-mcp").unwrap_err(),
+            "未知的 MCP 客户端：unknown"
+        );
     }
 
     #[test]
@@ -922,66 +1023,6 @@ db         /Users/me/.local/share/opencode/opencode.db
     }
 
     #[test]
-    fn zcode_merge_preserves_config_and_uses_string_command() {
-        let dir = temp_dir("zcode");
-        let path = dir.join("config.json");
-        std::fs::write(
-            &path,
-            r#"{"plugins":{"enabled":["x"]},"mcp":{"servers":{"other":{"type":"stdio","command":"other"}}}}"#,
-        )
-        .unwrap();
-
-        let first = ensure_zcode_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(first.changed);
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written.pointer("/plugins/enabled"), Some(&json!(["x"])));
-        assert_eq!(
-            written.pointer("/mcp/servers/other/command"),
-            Some(&json!("other"))
-        );
-        assert_eq!(
-            written.pointer("/mcp/servers/tapd"),
-            Some(&json!({ "type": "stdio", "command": "/opt/tapd-mcp" }))
-        );
-        assert!(zcode_imported_in(&path, "/opt/tapd-mcp"));
-        assert!(!zcode_imported_in(&path, "/opt/other"));
-
-        let second = ensure_zcode_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(!second.changed);
-
-        cleanup(&dir);
-    }
-
-    #[test]
-    fn cursor_merge_preserves_other_servers_and_is_idempotent() {
-        let dir = temp_dir("cursor");
-        let path = dir.join("mcp.json");
-        std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"other"}}}"#).unwrap();
-
-        let first = ensure_cursor_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(first.changed);
-        assert!(first.backup_path.is_some());
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            written.pointer("/mcpServers/other/command"),
-            Some(&json!("other"))
-        );
-        assert_eq!(
-            written.pointer("/mcpServers/tapd/command"),
-            Some(&json!("/opt/tapd-mcp"))
-        );
-        assert!(cursor_imported_in(&path, "/opt/tapd-mcp"));
-        assert!(!cursor_imported_in(&path, "/opt/other"));
-
-        let second = ensure_cursor_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(!second.changed);
-
-        cleanup(&dir);
-    }
-
-    #[test]
     fn codex_merge_preserves_other_entries_and_is_idempotent() {
         let dir = temp_dir("codex");
         let path = dir.join("config.toml");
@@ -991,19 +1032,32 @@ db         /Users/me/.local/share/opencode/opencode.db
         )
         .unwrap();
 
-        let first = ensure_codex_in_file(&path, "/opt/tapd-mcp").unwrap();
-        assert!(first.changed);
-        let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.contains("model = \"gpt-5\""));
-        assert!(written.contains("[mcp_servers.other]"));
-        let document: DocumentMut = written.parse().unwrap();
-        assert_eq!(codex_command(&document), Some("/opt/tapd-mcp"));
-        assert!(codex_imported_in(&path, "/opt/tapd-mcp"));
-        assert!(!codex_imported_in(&path, "/opt/other"));
+        assert!(matches!(
+            client_spec(CLIENT_CODEX).expect("codex spec").format,
+            Format::Toml
+        ));
 
-        let second = ensure_codex_in_file(&path, "/opt/tapd-mcp").unwrap();
+        let first = ensure_for(CLIENT_CODEX, &path, "/opt/tapd-mcp").unwrap();
+        assert!(first.changed);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            concat!(
+                "model = \"gpt-5\"\n",
+                "\n",
+                "[mcp_servers.other]\n",
+                "command = \"other\"\n",
+                "\n",
+                "[mcp_servers.tapd]\n",
+                "command = \"/opt/tapd-mcp\"\n",
+            )
+        );
+        assert!(imported_in_path(CLIENT_CODEX, &path, "/opt/tapd-mcp"));
+        assert!(!imported_in_path(CLIENT_CODEX, &path, "/opt/other"));
+
+        let before = std::fs::read_to_string(&path).unwrap();
+        let second = ensure_for(CLIENT_CODEX, &path, "/opt/tapd-mcp").unwrap();
         assert!(!second.changed);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 
         cleanup(&dir);
     }
@@ -1015,7 +1069,7 @@ db         /Users/me/.local/share/opencode/opencode.db
         let original = "model = [unterminated\n";
         std::fs::write(&path, original).unwrap();
 
-        let error = ensure_codex_in_file(&path, "/opt/tapd-mcp").unwrap_err();
+        let error = ensure_for(CLIENT_CODEX, &path, "/opt/tapd-mcp").unwrap_err();
         assert!(error.contains("无法解析"), "unexpected error: {error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(backup_files(&dir).is_empty());
@@ -1033,8 +1087,12 @@ db         /Users/me/.local/share/opencode/opencode.db
         )
         .unwrap();
 
-        assert!(claude_imported_in(&path, "/opt/tapd-mcp"));
-        assert!(!claude_imported_in(&path, "/opt/other"));
+        assert!(matches!(
+            client_spec(CLIENT_CLAUDE).expect("claude spec").format,
+            Format::ClaudeCli
+        ));
+        assert!(imported_in_path(CLIENT_CLAUDE, &path, "/opt/tapd-mcp"));
+        assert!(!imported_in_path(CLIENT_CLAUDE, &path, "/opt/other"));
         assert!(claude_has_tapd(&path));
 
         // Some Claude versions store the executable under `args`.
@@ -1043,9 +1101,10 @@ db         /Users/me/.local/share/opencode/opencode.db
             r#"{"mcpServers":{"tapd":{"type":"stdio","command":"npx","args":["/opt/tapd-mcp"]}}}"#,
         )
         .unwrap();
-        assert!(claude_imported_in(&path, "/opt/tapd-mcp"));
+        assert!(imported_in_path(CLIENT_CLAUDE, &path, "/opt/tapd-mcp"));
 
-        assert!(!claude_imported_in(
+        assert!(!imported_in_path(
+            CLIENT_CLAUDE,
             &dir.join("missing.json"),
             "/opt/tapd-mcp"
         ));

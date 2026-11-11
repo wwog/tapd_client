@@ -26,7 +26,6 @@ pub struct OpenTarget {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTargetSet {
-    pub kind: String,
     /// Currently selected target id, always present in `targets`.
     pub selected: String,
     pub targets: Vec<OpenTarget>,
@@ -273,7 +272,6 @@ pub fn target_set(kind: &str, cache_dir: &Path, open_with: &BTreeMap<String, Str
     }
 
     OpenTargetSet {
-        kind: kind.to_string(),
         selected: selected_target(kind, open_with),
         targets,
     }
@@ -433,7 +431,6 @@ mod tests {
     fn directory_menu_only_offers_editors() {
         let cache = std::env::temp_dir().join("tapd-open-with-test");
         let set = target_set("directory", &cache, &BTreeMap::new());
-        assert_eq!(set.kind, "directory");
         assert_eq!(set.targets[0].label, "访达");
         assert!(set.targets.iter().all(|target| {
             target.id == SYSTEM_TARGET || DIRECTORY_EDITORS.contains(&target.id.as_str())

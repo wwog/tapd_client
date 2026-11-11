@@ -257,6 +257,47 @@ pub(crate) fn info_label(status: &str, info: &TransitionInfo) -> String {
         .unwrap_or_else(|| status.to_string())
 }
 
+/// Moves a starting bug (`new` / `open` / `reopened`) into the workflow's
+/// processing status.
+///
+/// Returns the performed step, or `None` when the bug is not in a starting
+/// status or this workflow has no processing transition. Used by the
+/// notification "处理" action, which must never invent a status key.
+pub(crate) async fn accept_into_processing(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+) -> Result<Option<TransitionStep>, String> {
+    let info = load_transition_info(app, workspace_id, bug_id).await?;
+    if !STARTING_STATUSES.contains(&info.current_status.as_str()) {
+        return Ok(None);
+    }
+    let Some((target, label)) = info
+        .transitions
+        .iter()
+        .find(|(key, _)| PROCESSING_STATUSES.contains(&key.as_str()))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+
+    transition_once(
+        app,
+        workspace_id,
+        bug_id,
+        &info.current_status,
+        &target,
+        &Value::Null,
+    )
+    .await?;
+
+    Ok(Some(TransitionStep {
+        from: info.current_status,
+        to: target,
+        label,
+    }))
+}
+
 /// Moves a bug to `target_input` (key or label), accepting `new` bugs through
 /// the processing step first when the workflow requires it.
 pub(crate) async fn perform_transition(

@@ -14,7 +14,8 @@ import {
   type NotificationSettings as NotificationSettingsValue,
   type NotificationStateSnapshot,
 } from "../lib/notification";
-import { Badge, Button } from "./ui";
+import { Badge, Button, Switch, cardClass } from "./ui";
+import { usePoll } from "../hooks/usePoll";
 
 export function NotificationSettings({ toast }: SettingsSectionProps) {
   const [settings, setSettings] = useState<NotificationSettingsValue>(
@@ -49,11 +50,8 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
   }, [load]);
 
   // Refresh while the panel is open so debug notifications' action results
-  // appear without a manual reload.
-  useEffect(() => {
-    const timer = window.setInterval(() => void load(true), 4000);
-    return () => window.clearInterval(timer);
-  }, [load]);
+  // appear without a manual reload; stop while the window is hidden.
+  usePoll(() => load(true), 4000, { pauseWhenHidden: true });
 
   const settingsRef = useRef(settings);
   useEffect(() => {
@@ -130,7 +128,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
     .slice(0, 4);
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5 ">
+    <section className={cardClass}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -159,7 +157,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               启用新缺陷通知
             </div>
           </div>
-          <Toggle
+          <Switch
             checked={settings.enabled}
             onChange={(value) => patch({ enabled: value })}
             label="启用新缺陷通知"
@@ -220,7 +218,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               </div>
 
             </div>
-            <Toggle
+            <Switch
               checked={settings.aiEnabled}
               onChange={(value) => patch({ aiEnabled: value })}
               label="允许 AI 通知"
@@ -367,7 +365,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               <Clock size={12} className="text-slate-400" />
               免打扰
             </div>
-            <Toggle
+            <Switch
               checked={settings.quietHours.enabled}
               onChange={(value) => patchQuietHours({ enabled: value })}
               label="启用免打扰"
@@ -503,34 +501,7 @@ function SwitchRow(props: {
       <div className="text-ui-caption text-slate-700" title={props.description}>
         {props.label}
       </div>
-      <Toggle checked={props.checked} onChange={props.onChange} label={props.label} />
+      <Switch checked={props.checked} onChange={props.onChange} label={props.label} />
     </div>
-  );
-}
-
-function Toggle(props: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={props.checked}
-      aria-label={props.label}
-      onClick={() => props.onChange(!props.checked)}
-      className={clsx(
-        "relative h-5 w-9 shrink-0 rounded-full transition focus-visible:outline-2 focus-visible:outline-sky-200",
-        props.checked ? "bg-sky-500" : "bg-slate-300",
-      )}
-    >
-      <span
-        className={clsx(
-          "absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-surface transition",
-          props.checked ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
   );
 }

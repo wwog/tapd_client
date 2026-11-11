@@ -67,6 +67,11 @@ pub struct BugListPage {
     pub perpage: u32,
     pub total: u32,
     pub status_map: BTreeMap<String, String>,
+    /// Status keys in the workspace's configured workflow order. TAPD exposes
+    /// this as an ordered object, so it must be read before sorting/grouping;
+    /// `status_map` alone loses the order.
+    #[serde(default)]
+    pub status_order: Vec<String>,
     pub bugs: Vec<BugSummary>,
 }
 
@@ -107,14 +112,6 @@ pub enum MediaKind {
 }
 
 impl MediaKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Image => "image",
-            Self::Video => "video",
-            Self::File => "file",
-        }
-    }
-
     pub fn from_content_type(content_type: &str, filename: &str) -> Self {
         let content_type = content_type.to_ascii_lowercase();
         if content_type.starts_with("image/") {

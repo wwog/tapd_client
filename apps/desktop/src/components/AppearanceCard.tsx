@@ -8,8 +8,12 @@ import {
   FONT_SIZE_MIN,
   setAppearance,
   useAppearance,
+  type IslandDisplayMode,
+  type IslandThemeMode,
   type ThemeMode,
 } from "../lib/appearance";
+import { Segmented } from "./Segmented";
+import { cardClass, inputClass } from "./ui";
 
 const THEMES: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
   { value: "light", label: "浅色", icon: Sun },
@@ -17,16 +21,24 @@ const THEMES: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
   { value: "system", label: "跟随系统", icon: Monitor },
 ];
 
-const FIELD =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+const ISLAND_THEMES: Array<{ value: IslandThemeMode; label: string }> = [
+  { value: "follow", label: "跟随主题" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+];
+
+const ISLAND_DISPLAYS: Array<{ value: IslandDisplayMode; label: string }> = [
+  { value: "always", label: "常驻" },
+  { value: "activity", label: "仅通知" },
+];
 
 /** Appearance card: theme mode, UI font and the shared base font size. */
 export function AppearanceCard() {
   const appearance = useAppearance();
-  const { mode, font, customFont, fontSize } = appearance;
+  const { mode, island, islandDisplay, font, customFont, fontSize } = appearance;
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5 ">
+    <section className={cardClass}>
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -89,7 +101,7 @@ export function AppearanceCard() {
                   font: event.target.value as typeof font,
                 })
               }
-              className={clsx(FIELD, "mt-1.5")}
+              className={clsx(inputClass, "mt-1.5")}
             >
               {FONT_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -106,7 +118,7 @@ export function AppearanceCard() {
                 value={customFont}
                 onChange={(event) => setAppearance({ customFont: event.target.value })}
                 placeholder="如 Inter, PingFang SC"
-                className={clsx(FIELD, "mt-1.5")}
+                className={clsx(inputClass, "mt-1.5")}
                 spellCheck={false}
               />
             </label>
@@ -134,6 +146,35 @@ export function AppearanceCard() {
               <span>宽松</span>
             </span>
           </label>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2.5 border-t border-border pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span
+            className="text-ui-xs font-normal text-slate-500"
+            title="顶部通知胶囊的外观。跟随主题时与应用一起切换，也可固定为浅色或深色。"
+          >
+            胶囊外观
+          </span>
+          <Segmented
+            value={island}
+            options={ISLAND_THEMES}
+            onChange={(value) => setAppearance({ island: value })}
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span
+            className="text-ui-xs font-normal text-slate-500"
+            title="常驻：始终显示胶囊；仅通知：有通知、Agent 运行/待审核、更新或异常时才出现。"
+          >
+            胶囊显示
+          </span>
+          <Segmented
+            value={islandDisplay}
+            options={ISLAND_DISPLAYS}
+            onChange={(value) => setAppearance({ islandDisplay: value })}
+          />
         </div>
       </div>
 

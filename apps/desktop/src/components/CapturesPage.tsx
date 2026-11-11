@@ -14,10 +14,12 @@ import clsx from "clsx";
 
 import {
   api,
-  formatBytes,
   relativeTime,
   type CapturedRequest,
 } from "../lib/api";
+import { formatBytes } from "../lib/format";
+import { copyText } from "../lib/desktop";
+import { usePoll } from "../hooks/usePoll";
 import { Button, EmptyState } from "./ui";
 
 type Props = {
@@ -50,10 +52,10 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 4000);
-    return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  usePoll(() => load(true), 4000, { pauseWhenHidden: true });
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -99,12 +101,11 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
   };
 
   const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       toast("ok", "已复制");
-    } catch (error) {
-      toast("error", String(error));
+      return;
     }
+    toast("error", "复制失败");
   };
 
   return (

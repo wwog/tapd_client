@@ -30,12 +30,24 @@ pub struct AppConfig {
     /// Where the user dragged the status capsule: physical pixels of the
     /// island's (centre x, top y). `None` = top-centre default.
     pub island_anchor: Option<(i32, i32)>,
+    /// Last main-window geometry, restored on the next launch.
+    pub main_window: Option<WindowGeometry>,
     /// TAPD workspaces hidden from the left project list (local preference).
     pub hidden_workspace_ids: Vec<String>,
     /// Capability boundary enforced for every MCP tool call.
     pub mcp_policy: McpPolicy,
     /// RFC 3339 time of the last successful update check (GitHub Releases).
     pub last_update_check_at: Option<String>,
+}
+
+/// Main-window size (logical points) and position (physical pixels).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WindowGeometry {
+    pub width: f64,
+    pub height: f64,
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Policy for the MCP sidecar bridge. Filters can only narrow access; TAPD's
@@ -117,6 +129,7 @@ impl Default for AppConfig {
             device_name: None,
             open_with: BTreeMap::new(),
             island_anchor: None,
+            main_window: None,
             hidden_workspace_ids: Vec::new(),
             mcp_policy: McpPolicy::default(),
             last_update_check_at: None,

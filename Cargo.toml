@@ -15,7 +15,10 @@ license = "MIT"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps TAPD's object key order: the bug list's
+# `workflow_infos.bug.status_map` is ordered by the workspace's configured
+# workflow, which drives the status filter order.
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

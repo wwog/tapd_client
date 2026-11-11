@@ -25,8 +25,6 @@ type SkeletonRowsProps = {
    * The widest entry (usually the first) should use a percentage width.
    */
   columns?: string[];
-  /** Height class applied to every block (defaults to text-height `h-3`). */
-  height?: string;
   className?: string;
   rowClassName?: string;
   /** Announced to screen readers in place of the visual placeholders. */
@@ -40,7 +38,6 @@ export function SkeletonRows(props: SkeletonRowsProps) {
   const {
     rows = 8,
     columns = DEFAULT_COLUMNS,
-    height = "h-3",
     className,
     rowClassName,
     label = "正在加载…",
@@ -59,7 +56,7 @@ export function SkeletonRows(props: SkeletonRowsProps) {
           className={clsx("flex items-center gap-4 px-4 py-3", rowClassName)}
         >
           {columns.map((width, column) => (
-            <SkeletonBlock key={column} className={clsx(height, width)} />
+            <SkeletonBlock key={column} className={clsx("h-3", width)} />
           ))}
         </div>
       ))}

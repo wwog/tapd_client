@@ -1,11 +1,20 @@
 import { useSyncExternalStore } from "react";
+import { emit as emitToAll } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type ThemeMode = "light" | "dark" | "system";
+/** The island capsule can follow the app theme or keep its own fixed theme. */
+export type IslandThemeMode = "follow" | "light" | "dark";
+/** Whether the idle capsule stays on screen or only appears on activity. */
+export type IslandDisplayMode = "always" | "activity";
 export type FontChoice = "system" | "pingfang" | "noto" | "yahei" | "custom";
 
 export type Appearance = {
   mode: ThemeMode;
+  /** Capsule (island window) theme: `follow` mirrors `mode`. */
+  island: IslandThemeMode;
+  /** `always` keeps the capsule resident; `activity` hides it while idle. */
+  islandDisplay: IslandDisplayMode;
   font: FontChoice;
   /** Only used when `font` is `custom`; a comma-separated CSS font stack. */
   customFont: string;
@@ -17,6 +26,8 @@ const STORAGE_KEY = "tapd.appearance.v1";
 
 export const DEFAULT_APPEARANCE: Appearance = {
   mode: "system",
+  island: "follow",
+  islandDisplay: "always",
   font: "system",
   customFont: "",
   fontSize: 14,
@@ -48,6 +59,10 @@ export const FONT_SIZE_MAX = 17;
 
 let current: Appearance = load();
 let media: MediaQueryList | null = null;
+/** Only the main window paints a native background; overlays stay transparent. */
+let windowBackground = true;
+/** The island window resolves its own theme instead of the app theme. */
+let overlay = false;
 const listeners = new Set<() => void>();
 
 function clampSize(value: number): number {
@@ -55,30 +70,43 @@ function clampSize(value: number): number {
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(value)));
 }
 
+function normalize(parsed: Partial<Appearance>): Appearance {
+  const mode: ThemeMode =
+    parsed.mode === "light" || parsed.mode === "dark" || parsed.mode === "system"
+      ? parsed.mode
+      : DEFAULT_APPEARANCE.mode;
+  const island: IslandThemeMode =
+    parsed.island === "light" || parsed.island === "dark" || parsed.island === "follow"
+      ? parsed.island
+      : DEFAULT_APPEARANCE.island;
+  const islandDisplay: IslandDisplayMode =
+    parsed.islandDisplay === "always" || parsed.islandDisplay === "activity"
+      ? parsed.islandDisplay
+      : DEFAULT_APPEARANCE.islandDisplay;
+  const font: FontChoice =
+    parsed.font === "pingfang" ||
+    parsed.font === "noto" ||
+    parsed.font === "yahei" ||
+    parsed.font === "custom"
+      ? parsed.font
+      : "system";
+  return {
+    mode,
+    island,
+    islandDisplay,
+    font,
+    customFont:
+      typeof parsed.customFont === "string" ? parsed.customFont.slice(0, 160) : "",
+    fontSize: clampSize(parsed.fontSize ?? DEFAULT_APPEARANCE.fontSize),
+  };
+}
+
 function load(): Appearance {
   if (typeof window === "undefined") return DEFAULT_APPEARANCE;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_APPEARANCE;
-    const parsed = JSON.parse(raw) as Partial<Appearance>;
-    const mode: ThemeMode =
-      parsed.mode === "light" || parsed.mode === "dark" || parsed.mode === "system"
-        ? parsed.mode
-        : DEFAULT_APPEARANCE.mode;
-    const font: FontChoice =
-      parsed.font === "pingfang" ||
-      parsed.font === "noto" ||
-      parsed.font === "yahei" ||
-      parsed.font === "custom"
-        ? parsed.font
-        : "system";
-    return {
-      mode,
-      font,
-      customFont:
-        typeof parsed.customFont === "string" ? parsed.customFont.slice(0, 160) : "",
-      fontSize: clampSize(parsed.fontSize ?? DEFAULT_APPEARANCE.fontSize),
-    };
+    return normalize(JSON.parse(raw) as Partial<Appearance>);
   } catch {
     return DEFAULT_APPEARANCE;
   }
@@ -113,41 +141,73 @@ function fontStack(appearance: Appearance): string {
 function apply() {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.dataset.theme =
-    current.mode === "system" ? (systemDark() ? "dark" : "light") : current.mode;
+  root.dataset.theme = overlay ? resolvedIslandTheme(current) : resolvedTheme(current);
   root.style.setProperty("--ui-font-size", `${current.fontSize}px`);
   if (current.font === "system") root.style.removeProperty("--font-sans");
   else root.style.setProperty("--font-sans", fontStack(current));
 
   // Match the native window background so rounded corners and resize frames
-  // do not flash light while the webview paints.
-  const dark = root.dataset.theme === "dark";
+  // do not flash light while the webview paints. The transparent island window
+  // must not get one, or its rounded capsule would sit on an opaque rectangle.
+  if (!windowBackground) return;
   try {
     void getCurrentWindow()
-      .setBackgroundColor(dark ? [14, 16, 20, 255] : [244, 244, 242, 255])
+      .setBackgroundColor(canvasRgba(root.dataset.theme === "dark" ? "dark" : "light"))
       .catch(() => undefined);
   } catch {
     // Browser preview outside Tauri.
   }
 }
 
+/**
+ * Native window background, mirroring `styles.css` `--color-canvas` per theme.
+ *
+ * The Rust side reveals the window with this colour, so even a slow first
+ * frame shows the theme instead of the window's configured light default.
+ */
+export function canvasRgba(
+  theme: "light" | "dark" = resolvedTheme(),
+): [number, number, number, number] {
+  return theme === "dark" ? [14, 16, 20, 255] : [244, 244, 242, 255];
+}
+
 function emit() {
   for (const listener of listeners) listener();
+}
+
+/** Mirrors a change into the other webviews (main window <-> island). Only the
+ *  main window broadcasts, so a replica can never bounce the event back. */
+function broadcast() {
+  if (!windowBackground) return;
+  void emitToAll("appearance://changed", current).catch(() => undefined);
 }
 
 function onSystemChange() {
   if (current.mode !== "system") return;
   apply();
   emit();
+  broadcast();
 }
 
 /** Applies the stored appearance before React renders, avoiding a flash. */
-export function initAppearance() {
+export function initAppearance(
+  options: { windowBackground?: boolean; overlay?: boolean } = {},
+) {
   if (typeof window === "undefined") return;
+  windowBackground = options.windowBackground ?? true;
+  overlay = options.overlay ?? false;
   apply();
   if (media) return;
   media = window.matchMedia("(prefers-color-scheme: dark)");
   media.addEventListener("change", onSystemChange);
+}
+
+/** Applies an appearance pushed by the main window without persisting or
+ *  re-broadcasting it. */
+export function applyExternalAppearance(next: Partial<Appearance>) {
+  current = normalize(next);
+  apply();
+  emit();
 }
 
 export function getAppearance(): Appearance {
@@ -163,6 +223,7 @@ export function setAppearance(patch: Partial<Appearance>) {
   apply();
   persist();
   emit();
+  broadcast();
 }
 
 export function resolvedTheme(appearance: Appearance = current): "light" | "dark" {
@@ -171,6 +232,15 @@ export function resolvedTheme(appearance: Appearance = current): "light" | "dark
       ? "dark"
       : "light"
     : appearance.mode;
+}
+
+/** Theme the island window paints with: its own choice, or the app theme. */
+export function resolvedIslandTheme(
+  appearance: Appearance = current,
+): "light" | "dark" {
+  return appearance.island === "light" || appearance.island === "dark"
+    ? appearance.island
+    : resolvedTheme(appearance);
 }
 
 function subscribe(listener: () => void) {

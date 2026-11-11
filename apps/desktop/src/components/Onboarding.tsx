@@ -322,17 +322,6 @@ export function Onboarding({ info, onDone }: Props) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* {step > 0 ? (
-              <button
-                type="button"
-                onClick={() => setStep(0)}
-                disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-ui-sm text-slate-500 transition hover:bg-surface hover:text-slate-700 disabled:opacity-40"
-              >
-                <ArrowLeft size={12} />
-                回看卖点
-              </button>
-            ) : null} */}
             {step === 0 ? (
               <button
                 type="button"

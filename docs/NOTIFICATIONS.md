@@ -17,9 +17,9 @@
 | 免打扰 | 例如 22:00–09:00，期间只累计不弹窗 |
 | 最大展示数 | 同时展示的卡片数，默认 3 |
 
-首次启动、重置或数据目录为空时，第一轮只建立 baseline（不迁移历史数据），不会把历史缺陷一次性弹出来；之后只通知 baseline 之后新出现、转派或重新打开的缺陷。
+**每次启动或重新登录后，每个项目的第一轮只建立 baseline（只记录状态，不弹通知）**；此后才通知新出现、转派或重新打开的缺陷。因此“进入应用就看到一堆历史通知”不会发生，关闭期间产生的变化也会被首轮静默吸收。未读完的截断轮次不会标记完成，下一轮继续静默补齐后才开始通知。
 
-轮询范围：`我的` 会跨所有可访问项目增量轮询，每个项目独立维护 cursor / baseline；`项目` 仍只轮询“上次选择的项目”（`lastWorkspaceId`），避免一个繁忙项目把队列刷爆。
+轮询范围：`我的` 会跨所有可访问项目增量轮询，每个项目独立维护 cursor（cursor 缺失即首轮 baseline）；`项目` 仍只轮询“上次选择的项目”（`lastWorkspaceId`），避免一个繁忙项目把队列刷爆。
 
 ## 2. 通知窗口
 
@@ -42,10 +42,9 @@
 2. 拉取缺陷详情，确认当前处理人与状态。
 3. 若处理人不是我，调用 TAPD 内部接口改派：
    `POST /api/entity/bugs/inline_update`，字段 `current_owner`。
-4. 若状态是起始状态（`new` / `open` / `reopened`），流转到处理中：
-   - 目标依次尝试 `in_progress`、`progressing`（不同项目状态 key 不同）。
-   - 首选 `POST /api/aggregation/kanban_aggregation/transition`，失败回退 `POST /api/entity/workflow/transition`。
-   - 已是处理中或更后状态时不回退，只改派。
+4. 若状态是起始状态（`new` / `open` / `reopened`），读取该缺陷的工作流（`get_bug_transition_info`），选择工作流允许的“处理中”目标（`in_progress` / `progressing`）再流转：
+   - 与详情页状态流转共用 `bug_write::perform_transition` 的端点回退（kanban → workflow），不再盲试所有组合。
+   - 工作流没有处理中节点或当前已不是起始状态时只改派，不流转。
 5. 全部成功后标记 handled，并：
    - 触发 M7 入队事件 `agent://enqueue`；
    - 刷新主界面缺陷列表；
@@ -57,11 +56,12 @@
 
 ## 4. 持久化与重置
 
-- 唯一存储：`<数据目录>/cache.sqlite3` 中的 `notification_*` 表（设置、通知条目、seen 去重、ignored、每个项目的游标与 baseline）。
+- 唯一存储：`<数据目录>/cache.sqlite3` 中的 `notification_*` 表（设置、通知条目、seen 去重、ignored、每个项目的游标）。`baseline_done` 表已移除：cursor 缺失即首轮。
 - 轮询只增量写入发生变化的行，不再每轮重写整份状态。
 - seen 表按 `lastSeen` 保留 90 天，并限制最多 20000 条；被裁剪的 seen 会连同对应的 ignored 一起删除。
+- **每次启动会清空上一会话的通知条目**（保留设置、seen 与游标），因此卡片不会跨重启堆积；每个项目首轮静默建 baseline。
+- **登录 / 退出登录 / 会话过期会清空条目、seen、ignored 与游标**（保留设置），换账号不会继承上一个账号的去重状态。
 - 重置本地数据会删除整个数据目录（含数据库）；下次启动重新建立 baseline，不会触发历史通知。
-- 退出登录会清空离线缓存，但保留通知设置、seen、ignored 与游标。
 - AI / MCP 通知只存在于内存，不写 SQLite，也不会跨重启保留。
 
 ## 5. 已读 / 未读

@@ -4,6 +4,7 @@ import clsx from "clsx";
 
 import { agentApi } from "../lib/agent";
 import { api, type OpenTarget, type OpenTargetSet } from "../lib/api";
+import { useDismiss } from "../hooks/useDismiss";
 
 type Props = {
   workspaceId: string;
@@ -56,29 +57,10 @@ export function ProjectOpenButton({ workspaceId, onError }: Props) {
     };
   }, [workspaceId]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const close = () => setMenuOpen(false);
-    const onPointerDown = (event: MouseEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("resize", close);
-    window.addEventListener("blur", close);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("blur", close);
-    };
-  }, [menuOpen]);
+  useDismiss(menuOpen, rootRef, () => setMenuOpen(false), {
+    resize: true,
+    blur: true,
+  });
 
   if (!repoPath) return null;
 

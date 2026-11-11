@@ -17,7 +17,7 @@ import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { Dialog } from "./Dialog";
 import { NotificationSettings } from "./NotificationSettings";
-import { Button } from "./ui";
+import { Button, cardClass } from "./ui";
 
 type Props = {
   info: AppInfo | null;
@@ -80,7 +80,7 @@ export function SettingsPage(props: Props) {
 
       <AgentManagement toast={toast} />
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -161,7 +161,7 @@ export function SettingsPage(props: Props) {
         </Dialog>
       ) : null}
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2
@@ -218,7 +218,7 @@ export function SettingsPage(props: Props) {
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -237,7 +237,7 @@ export function SettingsPage(props: Props) {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5 ">
+      <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">

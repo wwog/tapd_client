@@ -28,5 +28,4 @@ export const cacheApi = {
     featureCommand<Cached<WorkspaceMember[]>>("cache_workspace_members", {
       workspaceId,
     }),
-  clear: () => featureCommand<{ ok: boolean }>("cache_clear"),
 };

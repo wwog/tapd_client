@@ -52,24 +52,14 @@ export function Button(
   );
 }
 
-type BadgeTone =
-  | "neutral"
-  | "blue"
-  | "green"
-  | "amber"
-  | "red"
-  | "purple"
-  | "cyan"
-  | "slate";
+type BadgeTone = "neutral" | "blue" | "green" | "amber" | "red" | "cyan";
 
 const BADGE_TONES: Record<BadgeTone, string> = {
   neutral: "bg-slate-100 text-slate-600",
-  slate: "bg-slate-800 text-slate-100",
   blue: "bg-sky-50 text-sky-700",
   green: "bg-emerald-50 text-emerald-700",
   amber: "bg-amber-50 text-amber-700",
   red: "bg-rose-50 text-rose-700",
-  purple: "bg-violet-50 text-violet-700",
   cyan: "bg-cyan-50 text-cyan-700",
 };
 
@@ -97,6 +87,58 @@ export function Badge(props: {
 
 export function Spinner({ className }: { className?: string }) {
   return <Loader2 size={16} className={clsx("animate-spin text-slate-400", className)} />;
+}
+
+/** Shared form field styles; callers add layout classes with `clsx`. */
+export const inputClass =
+  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+
+export const selectClass =
+  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+
+export const cardClass = "rounded-2xl border border-border bg-surface p-5";
+
+/** Shared switch; `uncheckedClassName` keeps legacy track shades without restyling. */
+export function Switch(props: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label?: string;
+  disabled?: boolean;
+  className?: string;
+  uncheckedClassName?: string;
+}) {
+  const {
+    checked,
+    onChange,
+    label,
+    disabled = false,
+    className,
+    uncheckedClassName = "bg-slate-300",
+  } = props;
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={clsx(
+        "relative h-5 w-9 shrink-0 rounded-full transition focus-visible:outline-2 focus-visible:outline-sky-200",
+        checked ? "bg-sky-500" : uncheckedClassName,
+        disabled && "cursor-not-allowed opacity-50",
+        className,
+      )}
+    >
+      <span
+        className={clsx(
+          "absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-surface transition",
+          checked ? "translate-x-4" : "translate-x-0",
+        )}
+      />
+    </button>
+  );
 }
 
 export function EmptyState(props: {

@@ -17,6 +17,7 @@ import clsx from "clsx";
 import { agentApi } from "../lib/agent";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
+import { useTauriSubscription } from "../lib/tauriEvent";
 import { Button } from "./ui";
 
 export type AgentComposePayload = {
@@ -136,35 +137,28 @@ export function AgentComposeSheet(props: Props) {
 
   // Native drag & drop only counts when the pointer is over the sheet, so the
   // rest of the workspace keeps its own drop behaviour.
-  useEffect(() => {
-    if (!open) return;
-    let unlisten: (() => void) | undefined;
-    try {
-      void getCurrentWindow()
-        .onDragDropEvent((event) => {
-          const payload = event.payload;
-          if (payload.type === "enter") {
-            setDragging(isOverSheet(payload.position));
-            return;
-          }
-          if (payload.type === "leave") {
+  useTauriSubscription(
+    open
+      ? () =>
+          getCurrentWindow().onDragDropEvent((event) => {
+            const payload = event.payload;
+            if (payload.type === "enter") {
+              setDragging(isOverSheet(payload.position));
+              return;
+            }
+            if (payload.type === "leave") {
+              setDragging(false);
+              return;
+            }
+            if (payload.type !== "drop") return;
+            const overSheet = isOverSheet(payload.position);
             setDragging(false);
-            return;
-          }
-          if (payload.type !== "drop") return;
-          const overSheet = isOverSheet(payload.position);
-          setDragging(false);
-          if (!overSheet) return;
-          addPaths(payload.paths ?? []);
-        })
-        .then((fn) => {
-          unlisten = fn;
-        });
-    } catch {
-      // Browser preview outside Tauri: picker/paste still work.
-    }
-    return () => unlisten?.();
-  }, [addPaths, open]);
+            if (!overSheet) return;
+            addPaths(payload.paths ?? []);
+          })
+      : null,
+    [addPaths, open],
+  );
 
   const commands = useMemo<ICommand[]>(
     () =>

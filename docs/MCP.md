@@ -67,20 +67,22 @@ opencode mcp list
 
 ## 4. 工具
 
-共 14 个工具：7 个查询/导出/提示词 + 2 个修复后回写（评论、状态）+ 2 个桌面胶囊通知（唤起、等待回执）+ 2 个 Agent 改动审核/任务回报 + 1 个接入前自检（whoami）。
+共 16 个工具：7 个查询/导出/提示词 + 2 个修复后回写（评论、状态）+ 2 个外部 AI 占用（登记、释放）+ 2 个桌面胶囊通知（唤起、等待回执）+ 2 个 Agent 改动审核/任务回报 + 1 个接入前自检（whoami）。
 
 | 工具 | 作用 | 关键参数 |
 | --- | --- | --- |
 | `tapd_whoami` | 当前用户、公司、默认项目 | — |
 | `tapd_list_projects` | 可访问项目列表 | — |
 | `tapd_list_bugs` | 查询缺陷 | `workspace_id`、`owner`、`statuses`、`priorities`、`severities`、`keyword`、`only_unresolved`、`limit`、`page` |
-| `tapd_list_my_bugs` | 我的未解决缺陷 | `workspace_id`、`limit`、`page` |
+| `tapd_list_my_bugs` | 我的未解决缺陷 | `workspace_id`、`statuses`、`priorities`、`severities`、`keyword`、`only_unresolved`、`limit`、`page`、`modified_after`、`created_after` |
 | `tapd_get_bug` | 完整详情（含 `embeddedMedia` 内嵌图片/视频、`changes` 变更记录） | `bug_id`（必填）、`workspace_id` |
 | `tapd_export_bug_md` | 导出 MD 包 | `bug_id`（必填）、`workspace_id`、`workspace_name` |
 | `tapd_get_bug_prompt` | 按缺陷 id 生成修复提示词（自动导出/复用 MD 包） | `bug_id`（必填）、`workspace_id`、`root`、`kind`、`template`、`instructions`、`refresh` |
 | `tapd_get_bug_transitions` | 当前状态与允许的下一步 | `bug_id`（必填）、`workspace_id` |
 | `tapd_add_bug_comment` | 追加评论（纯文本自动转富文本） | `bug_id`、`comment`（必填） |
 | `tapd_update_bug_status` | 更新状态，可同时评论 | `bug_id`、`status`（key 或中文名）、`comment`、`fields` |
+| `tapd_claim_bug` | 登记外部 AI 占用（列表显示处理方与用时，阻止本地 Agent 重复入队） | `bug_id`（必填）、`workspace_id`、`root`、`model`、`status`、`title`、`note` |
+| `tapd_release_bug` | 释放自己的外部占用 | `bug_id`（必填）、`workspace_id`、`root` |
 | `tapd_notify_user` | 在顶部胶囊唤起通知，并等待用户点击后回传结果 | `title`（必填）、`tone`、`body`、`fields`、`progress`、`blocks`、`actions`、`tag`、`waitSeconds` |
 | `tapd_wait_notification` | 继续等待之前通知的用户决定 | `id`（必填）、`waitSeconds` |
 | `tapd_request_review` | 复杂改动暂停，等待用户审核后再提交（仅 Agent 任务） | `taskId`（必填）、`summary`（必填）、`files`、`risk` |
@@ -106,6 +108,8 @@ opencode mcp list
 {"tool": "tapd_get_bug_transitions", "arguments": {"bug_id": "1145336192001010582"}}
 {"tool": "tapd_add_bug_comment", "arguments": {"bug_id": "1145336192001010582", "comment": "根因：草稿状态未写入 store。\n方案：补持久化并加回归测试。\n影响范围：会话详情草稿。"}}
 {"tool": "tapd_update_bug_status", "arguments": {"bug_id": "1145336192001010582", "status": "已解决", "comment": "已修复并验证。"}}
+{"tool": "tapd_claim_bug", "arguments": {"bug_id": "1145336192001010582", "model": "Deepseek", "title": "登录页按钮错位"}}
+{"tool": "tapd_release_bug", "arguments": {"bug_id": "1145336192001010582"}}
 {"tool": "tapd_notify_user", "arguments": {"title": "修复完成", "tone": "success", "body": "3 个缺陷已更新并推送。", "fields": [{"label": "耗时", "value": "2m 18s"}], "actions": [{"id": "open", "label": "查看", "style": "primary"}]}}
 {"tool": "tapd_wait_notification", "arguments": {"id": "0b6f…", "waitSeconds": 30}}
 ```
@@ -160,7 +164,7 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 
 按缺陷 id 返回一份可以直接交给 AI 的修复提示词，结构对齐桌面端 Agent 收到的那份：
 
-- `kind`（默认 `mcp`）：`mcp` 用内置模板，去掉只属于桌面 Agent 的 `tapd_request_review` 审核队列；`agent` 返回「设置 → Agent 修复」里的全局模板原文。
+- `kind`（默认 `mcp`）：`mcp` 用内置模板，去掉只属于桌面 Agent 的 `tapd_request_review` 审核队列，并内置「先 `tapd_claim_bug`、定期续约、完成后 `tapd_release_bug`」的协作约定；`agent` 返回「设置 → Agent 修复」里的全局模板原文。
 - `template`：完全自定义模板，优先级最高；支持 `{{title}}`、`{{md_path}}`、`{{repo_path}}`、`{{workspace_name}}`、`{{bug_id}}`、`{{severity}}`、`{{priority}}`、`{{project_rule}}`、`{{user_prompt}}`、`{{attachments}}`、`{{task_id}}`。
 - `instructions`：补充说明，渲染到 `{{user_prompt}}`；模板没有该占位符时自动追加为「用户补充说明」。
 - MD 包：默认复用已有导出，没有才导出；`refresh: true` 强制重新导出。导出失败不会让工具失败，`mdPath` 为 `null`、原因写进 `warnings`，提示词里会提示改用 `tapd_export_bug_md`。
@@ -188,6 +192,42 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 ```
 
 典型用法：AI 在自己的仓库里先用 `tapd_list_bugs`（按 cwd 自动匹配项目）找到缺陷，再调用 `tapd_get_bug_prompt` 把返回的 `prompt` 当作本轮任务说明。
+
+### 4.4 外部 AI 占用（tapd_claim_bug / tapd_release_bug）
+
+外部 AI 开始处理缺陷前先登记占用，桌面端列表会显示「“Zcode”正在使用“Deepseek”进行处理」、创建时间与滚动用时，并禁止本地 Agent 重复入队。
+
+```json
+{"tool": "tapd_claim_bug", "arguments": {"bug_id": "1145336192001010582", "model": "Deepseek", "status": "running"}}
+```
+
+- 客户端名取自 MCP 握手的 `clientInfo.name`；`model` 由调用方传入，缺省时列表只显示客户端名。
+- 占用 15 分钟无心跳自动失效；处理期间请每隔几分钟再次调用 `tapd_claim_bug` 续约（保留首次 `claimedAt`），完成后调用 `tapd_release_bug`。
+- 与本地 Agent 队列互斥：
+  - 本地 Agent 正在运行 / 等权限 / 待审核 → 返回 `claimed: false`，`conflict.kind = "desktop_agent"`，请勿修改该缺陷。
+  - 本地 Agent 只是排队 → 客户端取消该排队任务并在胶囊通知用户「“Zcode”接管了「标题」，队列中的 Agent 任务已取消」，占用登记成功。
+  - 另一个外部客户端已占用 → 返回 `conflict.kind = "external"`。
+- 列表里该缺陷只保留「查看（点行）」与「取消（释放占用）」；取消后外部 AI 下次心跳会收到冲突。
+- `tapd_get_bug` 返回 `externalClaim`，`tapd_list_bugs` 返回当前项目的 `externalClaims`，AI 可据此跳过已被占用的缺陷。
+
+返回示例：
+
+```json
+{
+  "claimed": true,
+  "claim": {
+    "workspaceId": "45336192",
+    "bugId": "1145336192001010582",
+    "client": "Zcode",
+    "model": "Deepseek",
+    "status": "running",
+    "claimedAt": "2026-11-11T08:12:00Z",
+    "lastSeenAt": "2026-11-11T08:12:00Z"
+  },
+  "conflict": null,
+  "message": "已登记占用；请每 15 分钟内再次调用 tapd_claim_bug 续约，完成后调用 tapd_release_bug"
+}
+```
 
 ## 5. 策略与审计
 
@@ -217,7 +257,7 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 
 ```json
 {
-  "dir": "/Users/<you>/Documents/TAPDClient/exports/UU-45336192/<bug-id>-<slug>",
+  "dir": "/Users/<you>/Documents/TAPDClient/exports/UU-45336192/<short-id>-<ascii-slug>",
   "markdownPath": ".../bug.md",
   "assetCount": 1,
   "downloadedBytes": 2420002,

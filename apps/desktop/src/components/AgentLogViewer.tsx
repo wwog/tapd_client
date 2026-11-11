@@ -5,6 +5,7 @@ import { Copy, ExternalLink, FolderOpen, ScrollText, X } from "lucide-react";
 import { agentApi, type AgentTask, type AgentTaskStatus } from "../lib/agent";
 import { stripAnsi } from "../lib/ansi";
 import { bugTitle } from "../lib/bug";
+import { copyText, resumeTaskSession } from "../lib/desktop";
 import { AgentTerminal } from "./AgentTerminal";
 
 /** Statuses where the PTY is still alive and accepts keystrokes. */
@@ -58,7 +59,10 @@ export function AgentLogViewer({ task, onClose, toast }: Props) {
   const copyLog = async () => {
     try {
       const { data } = await agentApi.taskLog(task.id);
-      await navigator.clipboard.writeText(stripAnsi(data));
+      if (!(await copyText(stripAnsi(data)))) {
+        toast("error", "复制失败");
+        return;
+      }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch (reason) {
@@ -73,11 +77,7 @@ export function AgentLogViewer({ task, onClose, toast }: Props) {
   };
 
   const resume = async () => {
-    try {
-      await agentApi.openSession(task.id);
-    } catch (reason) {
-      toast("error", String(reason));
-    }
+    await resumeTaskSession(task, toast);
   };
 
   return (

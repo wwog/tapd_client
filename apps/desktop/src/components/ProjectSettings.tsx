@@ -6,11 +6,9 @@ import clsx from "clsx";
 import { agentApi, type ProjectAgentConfig } from "../lib/agent";
 import { api, type Workspace, type WorkspaceContext } from "../lib/api";
 import type { SettingsSectionProps } from "../lib/feature";
-import { Button } from "./ui";
+import { useTauriSubscription } from "../lib/tauriEvent";
+import { Button, cardClass, inputClass } from "./ui";
 import { FolderPicker } from "./FolderPicker";
-
-const INPUT_CLASS =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
 
 const emptyProject = (): ProjectAgentConfig => ({ repoPath: "", rule: "" });
 
@@ -77,10 +75,9 @@ export function ProjectSettings(props: {
   }, [persist]);
 
   // Dropping a folder (or a file inside it) onto a project card sets its path.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void getCurrentWindow()
-      .onDragDropEvent((event) => {
+  useTauriSubscription(
+    () =>
+      getCurrentWindow().onDragDropEvent((event) => {
         const payload = event.payload;
         if (payload.type === "enter") {
           setDragging(true);
@@ -117,12 +114,9 @@ export function ProjectSettings(props: {
             });
           })
           .catch((error) => toast("error", String(error)));
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => unlisten?.();
-  }, [persist, toast]);
+      }),
+    [persist, toast],
+  );
 
   // TAPD projects plus any project already configured but not in the list.
   const workspaces = useMemo<Workspace[]>(() => {
@@ -147,7 +141,7 @@ export function ProjectSettings(props: {
   const pickerProject = pickerFor ? projects[pickerFor] ?? emptyProject() : null;
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5 ">
+    <section className={cardClass}>
       <h2
         className="flex items-center gap-2 text-ui-base text-slate-900"
         title="每个项目可设置本地文件夹、项目规则和是否显示在左侧列表；改动自动保存。"
@@ -244,7 +238,7 @@ export function ProjectSettings(props: {
                     }}
                     placeholder="/Users/you/projects/repo"
                     spellCheck={false}
-                    className={`${INPUT_CLASS} font-mono`}
+                    className={`${inputClass} font-mono`}
                   />
                   <Button
                     size="sm"
@@ -267,7 +261,7 @@ export function ProjectSettings(props: {
                     rows={4}
                     title="默认提示词模板里的 {{project_rule}} 会引入这段规则。"
                     placeholder={"例如：\n- 只改 Rust 层，UI 交给同事\n- 提交前必须跑 cargo test"}
-                    className={`${INPUT_CLASS} mt-1 resize-y leading-5`}
+                    className={`${inputClass} mt-1 resize-y leading-5`}
                   />
                 </div>
               ) : null}

@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-macOS%20arm64-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="下载 macOS arm64 版" />
   </a>
   <a href="docs/MCP.md">
-    <img src="https://img.shields.io/badge/MCP-14%20tools-34C759?style=for-the-badge" alt="MCP 14 tools" />
+    <img src="https://img.shields.io/badge/MCP-16%20tools-34C759?style=for-the-badge" alt="MCP 16 tools" />
   </a>
   <a href="CHANGELOG.md">
     <img src="https://img.shields.io/github/v/release/wwog/tapd_client?style=for-the-badge&label=version&color=1F2937" alt="版本" />
@@ -44,7 +44,7 @@
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统结构、模块地图、关键链路与设计取舍 |
 | [UI_STYLE.md](docs/UI_STYLE.md) | 边框、色彩、字重、文案与主题的硬性规范 |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发命令、首次运行、本地数据位置 |
-| [MCP.md](docs/MCP.md) | 14 个工具、目录匹配项目、修复提示词、AI 通知格式、Agent 审核、客户端接入、策略与审计 |
+| [MCP.md](docs/MCP.md) | 16 个工具、目录匹配项目、修复提示词、外部占用、AI 通知格式、Agent 审核、客户端接入、策略与审计 |
 | [NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | 通知范围、轮询、去重与 AI 卡片 |
 | [AGENT.md](docs/AGENT.md) | 修复队列、审核与任务状态 |
 | [RELEASE.md](docs/RELEASE.md) | 打包、签名与发版 |

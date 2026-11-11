@@ -129,7 +129,7 @@ fn attribute_value(tag: &str, name: &str) -> Option<String> {
         if quote == '"' || quote == '\'' {
             rest = &rest[quote.len_utf8()..];
             let end = rest.find(quote)?;
-            return Some(decode_entities(&rest[..end]));
+            return Some(crate::tapd::api::decode_entities(&rest[..end]));
         }
         let end = rest
             .find(|character: char| character.is_whitespace() || character == '>')
@@ -137,23 +137,14 @@ fn attribute_value(tag: &str, name: &str) -> Option<String> {
         if end == 0 {
             return None;
         }
-        return Some(decode_entities(&rest[..end]));
+        return Some(crate::tapd::api::decode_entities(&rest[..end]));
     }
 
     None
 }
 
-fn decode_entities(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-}
-
 fn normalize_media_url(url: &str) -> String {
-    let url = decode_entities(url.trim());
+    let url = crate::tapd::api::decode_entities(url.trim());
     if let Some(rest) = url.strip_prefix("//") {
         return format!("https://{rest}");
     }
@@ -563,36 +554,30 @@ fn cleanup(markdown: &str) -> String {
 }
 
 /// Short, filesystem-safe slug used in export directory names.
-pub fn slugify(title: &str) -> String {
+///
+/// ASCII-only on purpose: TAPD titles are usually Chinese, and non-ASCII paths
+/// break on some Windows toolchains. The full title still lives in `bug.md`,
+/// so the directory only needs to be short and unique. Returns an empty string
+/// when the title has no usable ASCII characters, letting the caller fall back
+/// to the bug id.
+pub fn ascii_slug(value: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
 
-    for character in title.chars() {
-        if character.is_alphanumeric() || is_cjk(character) {
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
             slug.push(character);
             last_dash = false;
-        } else if !last_dash {
+        } else if !last_dash && !slug.is_empty() {
             slug.push('-');
             last_dash = true;
         }
-        if slug.chars().count() >= 48 {
+        if slug.len() >= 40 {
             break;
         }
     }
 
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "bug".to_string()
-    } else {
-        slug
-    }
-}
-
-fn is_cjk(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF
-    )
+    slug.trim_matches('-').to_string()
 }
 
 #[cfg(test)]
@@ -741,8 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn slugify_keeps_cjk_and_trims() {
-        assert_eq!(slugify("【rust-会话详情】上传文件崩溃"), "rust-会话详情-上传文件崩溃");
-        assert_eq!(slugify("???"), "bug");
+    fn ascii_slug_drops_non_ascii() {
+        assert_eq!(ascii_slug("【rust-会话详情】Upload Crash"), "rust-Upload-Crash");
+        assert_eq!(ascii_slug("通话记录清空"), "");
+        assert_eq!(ascii_slug("???"), "");
+        assert_eq!(ascii_slug("BUG-1234"), "BUG-1234");
     }
 }

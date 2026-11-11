@@ -11,27 +11,26 @@ import {
 } from "lucide-react";
 
 import { api } from "../lib/api";
+import { formatBytes } from "../lib/format";
 import {
-  formatBytes,
   formatCheckTime,
   getUpdateSnapshot,
   subscribeUpdate,
   UPDATE_PHASE_LABELS,
   updateApi,
+  updateOwnsScreen,
 } from "../lib/update";
-import { Button } from "./ui";
+import { Button, cardClass } from "./ui";
 
 type Props = {
   toast?: (kind: "ok" | "error", text: string) => void;
-  /** Hides the card chrome when the panel is embedded in the update dialog. */
-  bare?: boolean;
 };
 
 /**
  * Version + release-notes card. Used by Settings, the account page and the
  * title-bar update dialog; all three share the same store.
  */
-export function UpdatePanel({ toast, bare = false }: Props) {
+export function UpdatePanel({ toast }: Props) {
   const state = useSyncExternalStore(
     subscribeUpdate,
     getUpdateSnapshot,
@@ -43,11 +42,7 @@ export function UpdatePanel({ toast, bare = false }: Props) {
   const phase = state?.phase ?? "idle";
   const available = state?.available ?? null;
   const progress = state?.progress ?? null;
-  const ownsScreen =
-    phase === "downloading" ||
-    phase === "installing" ||
-    phase === "ready" ||
-    phase === "error";
+  const ownsScreen = updateOwnsScreen(phase);
 
   const check = async () => {
     setChecking(true);
@@ -118,8 +113,6 @@ export function UpdatePanel({ toast, bare = false }: Props) {
         </span>
         <span className="text-slate-300">·</span>
         <span>上次检查 {formatCheckTime(state?.checkedAt ?? null)}</span>
-        <span className="text-slate-300">·</span>
-        <span>每小时自动检查</span>
         <button
           type="button"
           onClick={() =>
@@ -218,14 +211,9 @@ export function UpdatePanel({ toast, bare = false }: Props) {
     </>
   );
 
-  if (bare) return <div>{body}</div>;
-
   return (
     <section
-      className={clsx(
-        "rounded-2xl border border-border bg-surface p-5 ",
-        phase === "available" && "border-sky-200",
-      )}
+      className={clsx(cardClass, phase === "available" && "border-sky-200")}
     >
       {body}
     </section>

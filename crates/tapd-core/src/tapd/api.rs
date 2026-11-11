@@ -14,7 +14,6 @@ pub const PATH_BUG_DETAIL: &str =
     "/api/aggregation/workitem_aggregation/common_get_info";
 pub const PATH_USER_WORKSPACE: &str =
     "/api/aggregation/user_and_workspace_aggregation/get_user_and_workspace_basic_info";
-pub const PATH_FILTER_OPTIONS: &str = "/api/new_filter/new_filter/get_options_batch";
 pub const PATH_WORKSPACE_MEMBERS: &str = "/api/basic/user/get_workspace_members";
 pub const PATH_USER_CHOOSER: &str = "/api/basic/user/user_chooser";
 
@@ -50,6 +49,8 @@ pub struct BugQuery {
     pub workspace_id: String,
     /// Exact TAPD nickname.
     pub owner: Option<String>,
+    /// Creator (TAPD `reporter`) nickname.
+    pub creator: Option<String>,
     /// Status keys such as `new`, `in_progress`, `reopened`.
     pub statuses: Vec<String>,
     /// Priority keys such as `urgent`, `high`, `medium`, `low`.
@@ -74,6 +75,7 @@ impl Default for BugQuery {
         Self {
             workspace_id: String::new(),
             owner: None,
+            creator: None,
             statuses: Vec::new(),
             priorities: Vec::new(),
             severities: Vec::new(),
@@ -106,6 +108,14 @@ impl BugQuery {
                 "user_chooser",
                 "equal",
                 json!(owner),
+            ));
+        }
+        if let Some(creator) = non_empty(self.creator.as_deref()) {
+            filters.push(filter_expr(
+                "reporter",
+                "user_chooser",
+                "equal",
+                json!(creator),
             ));
         }
         if !self.statuses.is_empty() {
@@ -232,22 +242,6 @@ pub fn bug_detail_body(workspace_id: &str, bug_id: &str) -> Value {
     })
 }
 
-pub fn options_body(workspace_id: &str, dsc_token: &str) -> Value {
-    json!({
-        "workspace_ids": [workspace_id],
-        "fields": [
-            {"field": "status", "entity_type": "bug", "is_system": "1", "html_type": "select", "menu_workitem_type_id": ""},
-            {"field": "priority", "entity_type": "bug", "is_system": "1", "html_type": "select", "menu_workitem_type_id": ""},
-            {"field": "severity", "entity_type": "bug", "is_system": "1", "html_type": "select", "menu_workitem_type_id": ""}
-        ],
-        "use_scene": "bug_list",
-        "app_id": "1",
-        "filter_status": "",
-        "include_in_process": false,
-        "dsc_token": dsc_token,
-    })
-}
-
 pub fn bug_web_url(workspace_id: &str, bug_id: &str) -> String {
     format!("{TAPD_BASE}/tapd_fe/{workspace_id}/bug/detail/{bug_id}")
 }
@@ -292,12 +286,6 @@ pub fn preview_to_download(url: &str) -> String {
     url.replace(
         "/attachments/preview_attachments/",
         "/attachments/download/",
-    )
-}
-
-pub fn workspace_video_poster_url(workspace_id: &str, attachment_id: &str) -> String {
-    format!(
-        "https://file.tapd.cn/{workspace_id}/attachments/preview_video_poster/{attachment_id}"
     )
 }
 
@@ -419,14 +407,17 @@ pub fn parse_bug_list(root: &Value) -> Result<BugListPage, String> {
         .ok_or_else(|| api_error(root))?;
 
     let status_map = parse_status_map(data.get("status_map"));
-    let workspace_id = text(data, "result_workspace_ids").if_empty_then(|| {
+    let workspace_id = text(data, "result_workspace_ids");
+    let workspace_id = if workspace_id.is_empty() {
         data.get("result_workspace_ids")
             .and_then(Value::as_array)
             .and_then(|ids| ids.first())
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string()
-    });
+    } else {
+        workspace_id
+    };
 
     let bugs = data
         .get("bugs_list")
@@ -442,13 +433,79 @@ pub fn parse_bug_list(root: &Value) -> Result<BugListPage, String> {
         })
         .unwrap_or_default();
 
+    let status_order = parse_status_order(data, &workspace_id, &status_map, &bugs);
+
     Ok(BugListPage {
         page: number(data, "page").unwrap_or(1),
         perpage: number(data, "perpage").unwrap_or(50),
         total: number(data, "total_count").unwrap_or(bugs.len() as u32),
         status_map,
+        status_order,
         bugs,
     })
+}
+
+/// Status keys in the workspace's configured workflow order.
+///
+/// TAPD returns `workspace_configs.workflow_infos.bug.status_map` as a
+/// workspace-keyed object, and its key order is exactly the order the workflow
+/// settings page renders the status columns in (both are built from the
+/// workspace's transition configuration). `serde_json` keeps that insertion
+/// order because the workspace enables its `preserve_order` feature.
+///
+/// The top-level `status_map` is only a label lookup: it also carries the
+/// synthetic `start`/`end` keys and its own key order is not meaningful.
+fn parse_status_order(
+    data: &Value,
+    workspace_id: &str,
+    status_map: &BTreeMap<String, String>,
+    bugs: &[BugSummary],
+) -> Vec<String> {
+    let mut ordered: Vec<String> = Vec::new();
+
+    // `result_workspace_ids` is absent on some responses; the bug rows still
+    // carry `project_id`, so borrow it rather than dropping to the fallback.
+    let workspace_id = if workspace_id.trim().is_empty() {
+        bugs.first()
+            .map(|bug| bug.workspace_id.as_str())
+            .unwrap_or_default()
+    } else {
+        workspace_id
+    };
+
+    if let Some(entry) = data
+        .pointer("/workspace_configs/workflow_infos/bug/status_map")
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(workspace_id))
+        .and_then(Value::as_object)
+    {
+        for key in entry.keys() {
+            if key != "start" && key != "end" {
+                ordered.push(key.clone());
+            }
+        }
+    }
+
+    // Older responses omit `workspace_configs`: fall back to the known TAPD
+    // status order, kept only for keys this workspace actually uses.
+    if ordered.is_empty() {
+        ordered.extend(
+            DEFAULT_STATUS_ORDER
+                .iter()
+                .filter(|key| status_map.contains_key(**key))
+                .map(|key| (*key).to_string()),
+        );
+    }
+
+    // Defensive: a bug with a status outside the configured list must still be
+    // selectable in the filter menu.
+    for bug in bugs {
+        if !bug.status.is_empty() && !ordered.iter().any(|key| key == &bug.status) {
+            ordered.push(bug.status.clone());
+        }
+    }
+
+    ordered
 }
 
 pub fn parse_bug_detail(root: &Value) -> Result<BugDetail, String> {
@@ -718,6 +775,21 @@ fn parse_custom_fields(bug: &Value) -> BTreeMap<String, String> {
     fields
 }
 
+/// TAPD's built-in status order, used only when a response carries no
+/// workspace workflow configuration.
+const DEFAULT_STATUS_ORDER: &[&str] = &[
+    "new",
+    "in_progress",
+    "resolved",
+    "verified",
+    "reopened",
+    "rejected",
+    "closed",
+    "open",
+    "progressing",
+    "done",
+];
+
 fn default_status_map() -> BTreeMap<String, String> {
     [
         ("new", "新"),
@@ -785,15 +857,21 @@ pub fn html_to_text(html: &str) -> String {
         }
     }
 
-    let text = text
+    decode_entities(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Decodes the entities TAPD emits inside HTML attributes and text.
+pub fn decode_entities(value: &str) -> String {
+    value
         .replace("&nbsp;", " ")
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
-        .replace("&#39;", "'");
-
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+        .replace("&#39;", "'")
 }
 
 fn api_error(root: &Value) -> String {
@@ -835,20 +913,6 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-trait IfEmptyThen {
-    fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String;
-}
-
-impl IfEmptyThen for String {
-    fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String {
-        if self.is_empty() {
-            fallback()
-        } else {
-            self
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +936,24 @@ mod tests {
         assert_eq!(filters[0]["fieldOption"], "equal");
         assert_eq!(filters[1]["fieldSystemName"], "status");
         assert_eq!(filters[1]["value"], json!(["new"]));
+    }
+
+    #[test]
+    fn creator_filter_targets_reporter() {
+        let query = BugQuery {
+            workspace_id: "45336192".to_string(),
+            creator: Some("张芳兰".to_string()),
+            ..BugQuery::default()
+        };
+        let body = query.body();
+        let filters = body
+            .pointer("/filter_expr/data")
+            .and_then(Value::as_array)
+            .expect("filters");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0]["fieldSystemName"], "reporter");
+        assert_eq!(filters[0]["fieldType"], "user_chooser");
+        assert_eq!(filters[0]["value"], "张芳兰");
     }
 
     #[test]
@@ -950,6 +1032,20 @@ mod tests {
                         "status_map": {
                             "45336192": {"new": "新", "start": "new", "end": ["closed"]}
                         },
+                        "workspace_configs": {
+                            "workflow_infos": {
+                                "bug": {
+                                    "status_map": {
+                                        "45336192": {
+                                            "new": "新",
+                                            "in_progress": "接受/处理",
+                                            "resolved": "已解决",
+                                            "closed": "已关闭"
+                                        }
+                                    }
+                                }
+                            }
+                        },
                         "bugs_list": [{
                             "Bug": {
                                 "id": "1145336192001010606",
@@ -976,6 +1072,12 @@ mod tests {
         assert_eq!(page.bugs[0].priority_label, "高");
         assert_eq!(page.bugs[0].owner, "何帅");
         assert_eq!(page.bugs[0].workspace_id, "45336192");
+        // Workflow order, not the alphabetical BTreeMap order, and without the
+        // synthetic start/end keys.
+        assert_eq!(
+            page.status_order,
+            vec!["new", "in_progress", "resolved", "closed"]
+        );
     }
 
     #[test]

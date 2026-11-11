@@ -86,3 +86,14 @@ pub fn home_dir() -> std::io::Result<PathBuf> {
         "cannot determine home directory",
     ))
 }
+
+/// Expands a leading `~/` so hand-typed paths behave like the folder picker's.
+pub fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match home_dir() {
+            Ok(home) => home.join(rest),
+            Err(_) => PathBuf::from(path),
+        },
+        None => PathBuf::from(path),
+    }
+}
