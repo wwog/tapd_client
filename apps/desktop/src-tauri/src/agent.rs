@@ -1,25 +1,23 @@
-//! M7 — opencode agent queue, PTY session and console window.
+//! Agent queue: one serial worker that runs a coding agent's TUI in a PTY.
 //!
-//! Owned by the M7 implementation. Exposed through `feature_command` names
-//! starting with `agent_`.
+//! Exposed through `feature_command` names starting with `agent_`.
 //!
 //! Design notes:
 //! - The queue is strictly serial: one tokio worker picks `queued` tasks and
 //!   runs them one at a time. Commands never start tasks directly. Every task
 //!   body runs inside its own `tokio::spawn` so a panic cannot kill the worker.
-//! - Each task gets a private `opencode serve` on a free loopback port. The
-//!   TUI runs in a PTY connected to that server (`--server`), which lets the
-//!   worker observe turn completion/permission asks and advance the queue
-//!   without waiting for the TUI to exit.
+//! - Every runtime is a CLI started in a PTY (see `runtime_catalog`). The prompt
+//!   is delivered as argv, as a flag, or by bracketed paste on stdin once the
+//!   TUI has been quiet for `ready_quiet_ms`.
+//! - A turn ends on MCP `agent_task_report`, on process exit, or when output has
+//!   been silent for `idle_complete_ms`; the uncommitted-work safety net can
+//!   still force a review afterwards.
 //! - PTY work happens on dedicated std threads (reader, batcher, wait) so the
 //!   async worker only awaits a oneshot result (or an event-driven completion
 //!   notification).
 //! - All task state changes are persisted atomically and broadcast through
 //!   `agent://state` plus the lightweight `agent://summary`. Terminal output is
 //!   batched and sent via `agent://output`.
-//! - If the server surface is unavailable the worker falls back to the old
-//!   TUI-only path (the TUI exit code decides), logging the reason instead of
-//!   hanging the queue.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -270,7 +268,8 @@ pub struct AgentRuntimeDescriptor {
     pub fallback: &'static str,
 }
 
-/// Lifecycle is shared by every runtime; only the transport differs.
+/// Lifecycle is shared by every runtime; only the launch command and prompt
+/// delivery differ.
 fn runtime_lifecycle() -> Vec<AgentLifecycleStage> {
     vec![
         AgentLifecycleStage {
