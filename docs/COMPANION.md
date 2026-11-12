@@ -1,6 +1,6 @@
 # 移动端伴侣（Companion）— v1 计划
 
-> 状态：**计划已确认，未执行**（2026-11-13）。执行时从 §4 实现步骤按序推进。
+> 状态：**v1 已实现**（2026-11-13，分支 `feat/mobile-companion`，提交 10ec793 / b59f16b / 46d4812）。cargo test 243 全绿，双端 typecheck 与构建通过；§6.3 真机全链路待走查。实现与计划的差异见文末「实现记录」。
 >
 > 核心原则：**移动端是纯渲染终端，零执行能力**——只渲染客户端的数据与行为，所有数据获取与动作执行都由桌面客户端代理。手机↔桌面之间只传视图数据；未来的写操作也只是「动作意图」下发，由桌面端执行。
 
@@ -122,3 +122,15 @@
 - **v1.5 写操作**：手机只发「动作意图」（评论 / 状态流转 / Agent 审批），桌面端核心函数执行——与「移动端零执行能力」原则一致，接口形状即桌面命令形状。Agent 手机审批（`awaiting_approval`）是杀手级场景。
 - **v2 外网**：cloudflared quick tunnel（`--protocol http2`）或国内 VPS + frp；QR 内容换成隧道 URL 即可，前端零改动；HTTPS 后启用 Service Worker 系统级通知（iOS 加主屏 PWA）。
 - **WS 推送**：notification 轮询完成处引入 `tokio::sync::broadcast`，桌面 emit 与 companion WS hub 同源订阅，避免双轮询。
+
+## 8. 实现记录（2026-11-13）
+
+与计划的差异与集成决定（均为架构师验收时拍板）：
+
+- **`/companion/api/notifications` 返回裸数组**（计划初稿的 `{ items, serverTime }` 中 serverTime 无消费方，砍掉；手机端本地 last-seen 即事实源）。
+- **`/companion/api/media` 鉴权支持 `t` 查询参数**：`<img>`/`<video>` 无法设置 Authorization 头，会话 token 经 `t=` 传递（与桌面 `/media?token=` 的既有模式同构）；前端 `mediaUrl` 同步拼参。
+- **`GET /companion/api/bug` 参数为 camelCase**（`workspaceId`/`bugId`，serde rename_all 统一）。
+- **`dist-companion/` 由构建链保证**：根 `build` 先 `build:companion` 再 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。
+- **配对细节**：一次性码 TTL 10min 单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对覆盖旧 token；`companion_status` 不返回 token_hash。
+- **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
+- 验证：cargo test 243 通过（含 15 条 companion 单测：码 TTL/单次/未知、token 命中、限速、serde roundtrip、replace-by-name）；双端 tsc 与 vite 构建通过；移动端 mock 后端浏览器全链路冒烟通过。**真机走查（§6.3）待办**——需运行中的已登录桌面端与同 Wi-Fi 手机。
