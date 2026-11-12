@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Ref } from "react";
 import clsx from "clsx";
 import { Archive, Bug, Check, Eye, FolderOpen, Loader2, ShieldAlert } from "lucide-react";
 
@@ -17,6 +17,10 @@ type Props = {
   onResumeQueue: () => void;
   onOpenBug: (workspaceId: string, bugId: string) => void;
   onOpenExportDir: (task: AgentTask) => void;
+  /** Split container, measured by the page to auto-collapse the list. */
+  areaRef?: Ref<HTMLDivElement>;
+  /** Leave the width to the review card. */
+  listCollapsed?: boolean;
 };
 
 /**
@@ -72,68 +76,69 @@ export function AgentApproval(props: Props) {
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1 gap-3">
-        <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface ">
-          <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
-            <ShieldAlert size={13} className="text-amber-500" />
-            <span className="text-ui-sm font-normal text-slate-500">待审核改动</span>
-            <span className="ml-auto text-ui-xs tabular-nums text-slate-400">
-              {tasks.length} 个
-            </span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
-            {ordered.length === 0 ? (
-              <div className="px-3 py-8 text-center text-ui-caption leading-5 text-slate-400">
-                没有待审核的改动
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {ordered.map((task) => (
-                  <button
-                    key={task.id}
-                    type="button"
-                    onClick={() => setSelectedId(task.id)}
-                    className={clsx(
-                      "w-full rounded-lg px-2.5 py-2 text-left transition",
-                      task.id === selectedId
-                        ? "bg-amber-50 border border-amber-200"
-                        : "hover:bg-slate-50",
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Badge tone="amber" dot>
-                        待审核
-                      </Badge>
-                      <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
-                        {relativeTime(
-                          task.approval?.requestedAt ?? task.createdAt,
-                        )}
-                      </span>
-                    </div>
-                    <div
-                      className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
-                      title={bugTitle(task.title)}
+      <div ref={props.areaRef} className="flex min-h-0 flex-1 gap-3">
+        {props.listCollapsed ? null : (
+          <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface ">
+            <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
+              <ShieldAlert size={13} className="text-amber-500" />
+              <span className="text-ui-sm font-normal text-slate-500">待审核改动</span>
+              <span className="ml-auto text-ui-xs tabular-nums text-slate-400">
+                {tasks.length} 个
+              </span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+              {ordered.length === 0 ? (
+                <div className="px-3 py-8 text-center text-ui-caption leading-5 text-slate-400">
+                  没有待审核的改动
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {ordered.map((task) => (
+                    <button
+                      key={task.id}
+                      type="button"
+                      onClick={() => setSelectedId(task.id)}
+                      className={clsx(
+                        "w-full rounded-lg px-2.5 py-2 text-left transition",
+                        task.id === selectedId
+                          ? "bg-amber-50 border border-amber-200"
+                          : "hover:bg-slate-50",
+                      )}
                     >
-                      {bugTitle(task.title) || "（无标题）"}
-                    </div>
-                    <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
-                      <span className="min-w-0 truncate">
-                        {task.workspaceName || task.workspaceId} · #
-                        {task.bugId.slice(-7)}
-                      </span>
-                      {task.approval?.files?.length ? (
-                        <span className="shrink-0">
-                          {task.approval.files.length} 个文件
+                      <div className="flex items-center gap-1.5">
+                        <Badge tone="amber" dot>
+                          待审核
+                        </Badge>
+                        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+                          {relativeTime(
+                            task.approval?.requestedAt ?? task.createdAt,
+                          )}
                         </span>
-                      ) : null}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </aside>
-
+                      </div>
+                      <div
+                        className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
+                        title={bugTitle(task.title)}
+                      >
+                        {bugTitle(task.title) || "（无标题）"}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
+                        <span className="min-w-0 truncate">
+                          {task.workspaceName || task.workspaceId} · #
+                          {task.bugId.slice(-7)}
+                        </span>
+                        {task.approval?.files?.length ? (
+                          <span className="shrink-0">
+                            {task.approval.files.length} 个文件
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
         <section className="min-w-0 flex-1 overflow-y-auto rounded-xl border border-border bg-surface p-4 ">
           {selected ? (
             <ReviewCard key={selected.id} task={selected} {...props} />

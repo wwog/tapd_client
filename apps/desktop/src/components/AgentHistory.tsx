@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from "react";
 import clsx from "clsx";
 import {
   Bug,
@@ -45,6 +45,10 @@ type Props = {
   /** Called after a retry so the parent can focus the task in the run tab. */
   onQueued?: (taskId: string) => void;
   toast: (kind: "ok" | "error", text: string) => void;
+  /** Split container, measured by the page to auto-collapse the list. */
+  areaRef?: Ref<HTMLDivElement>;
+  /** Leave the width to the record detail. */
+  listCollapsed?: boolean;
 };
 
 /** Execution records: server-filtered, paginated newest-first list plus detail. */
@@ -54,6 +58,8 @@ export function AgentHistory({
   onOpenBug,
   onQueued,
   toast,
+  areaRef,
+  listCollapsed = false,
 }: Props) {
   const [workspaceFilter, setWorkspaceFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | AgentTaskStatus>("all");
@@ -276,44 +282,46 @@ export function AgentHistory({
         <span className="shrink-0 text-ui-sm text-slate-400">{total} 条记录</span>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="w-[300px] shrink-0 overflow-y-auto rounded-xl border border-border bg-surface p-1.5 ">
-          {tasks.length === 0 ? (
-            <div className="grid place-items-center px-3 py-8 text-center text-ui-caption text-slate-400">
-              {loading ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <Loader2 size={13} className="animate-spin" />
-                  加载中…
-                </span>
-              ) : (
-                "没有匹配的执行记录"
-              )}
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {tasks.map((task) => (
-                <HistoryRow
-                  key={task.id}
-                  task={task}
-                  selected={task.id === selectedId}
-                  onSelect={selectTask}
-                  onMenu={openRowMenu}
-                />
-              ))}
-              {hasMore ? (
-                <button
-                  type="button"
-                  disabled={loadingMore}
-                  onClick={() => void fetchPage(tasks.length)}
-                  className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
-                >
-                  {loadingMore ? <Loader2 size={12} className="animate-spin" /> : null}
-                  加载更多（已显示 {tasks.length} / {total}）
-                </button>
-              ) : null}
-            </div>
-          )}
-        </div>
+      <div ref={areaRef} className="flex min-h-0 flex-1 gap-3">
+        {listCollapsed ? null : (
+          <div className="w-[300px] shrink-0 overflow-y-auto rounded-xl border border-border bg-surface p-1.5 ">
+            {tasks.length === 0 ? (
+              <div className="grid place-items-center px-3 py-8 text-center text-ui-caption text-slate-400">
+                {loading ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 size={13} className="animate-spin" />
+                    加载中…
+                  </span>
+                ) : (
+                  "没有匹配的执行记录"
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {tasks.map((task) => (
+                  <HistoryRow
+                    key={task.id}
+                    task={task}
+                    selected={task.id === selectedId}
+                    onSelect={selectTask}
+                    onMenu={openRowMenu}
+                  />
+                ))}
+                {hasMore ? (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => void fetchPage(tasks.length)}
+                    className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {loadingMore ? <Loader2 size={12} className="animate-spin" /> : null}
+                    加载更多（已显示 {tasks.length} / {total}）
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="min-w-0 flex-1 overflow-y-auto rounded-xl border border-border bg-surface ">
           {!selected ? (

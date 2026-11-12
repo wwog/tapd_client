@@ -50,7 +50,7 @@
 3. 若处理人不是我，调用 TAPD 内部接口改派：
    `POST /api/entity/bugs/inline_update`，字段 `current_owner`。
 4. 若状态是起始状态（`new` / `open` / `reopened`），读取该缺陷的工作流（`get_bug_transition_info`），选择工作流允许的“处理中”目标（`in_progress` / `progressing`）再流转：
-   - 与详情页状态流转共用 `bug_write::perform_transition` 的端点回退（kanban → workflow），不再盲试所有组合。
+   - 与详情页状态流转共用 `bug_write::perform_transition`：直接走详情页的 `change_bug_status`（带上工作流表单字段），不再回退到 kanban / workflow 端点，TAPD 的业务错误即最终结果。
    - 工作流没有处理中节点或当前已不是起始状态时只改派，不流转。
 5. 全部成功后标记 handled，并：
    - 触发 M7 入队事件 `agent://enqueue`；

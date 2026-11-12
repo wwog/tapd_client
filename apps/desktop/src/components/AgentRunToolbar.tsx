@@ -6,6 +6,13 @@ import { Button } from "./ui";
 
 export type AgentTab = "run" | "approval" | "history" | "config";
 
+/** Left list column names, used by the collapse toggle. */
+const LIST_LABELS: Record<Exclude<AgentTab, "config">, { list: string; detail: string }> = {
+  run: { list: "执行队列", detail: "终端" },
+  approval: { list: "待审核列表", detail: "审核详情" },
+  history: { list: "执行记录列表", detail: "记录详情" },
+};
+
 export type AgentCounts = {
   queued: number;
   active: number;
@@ -18,9 +25,9 @@ type Props = {
   onTabChange: (tab: AgentTab) => void;
   counts: AgentCounts;
   actionBusy: string | null;
-  /** Run tab only: the execution queue column is currently out of layout. */
-  queueCollapsed: boolean;
-  onToggleQueue: () => void;
+  /** Current tab's left list column is currently out of layout. */
+  listCollapsed: boolean;
+  onToggleList: () => void;
   onResumeQueue: () => void;
   onRefresh: () => void;
 };
@@ -32,27 +39,28 @@ export function AgentRunToolbar(props: Props) {
     onTabChange,
     counts,
     actionBusy,
-    queueCollapsed,
-    onToggleQueue,
+    listCollapsed,
+    onToggleList,
     onResumeQueue,
     onRefresh,
   } = props;
+  const listLabels = tab === "config" ? null : LIST_LABELS[tab];
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
-      {tab === "run" ? (
+      {listLabels ? (
         <button
           type="button"
-          aria-label={queueCollapsed ? "展开执行队列" : "收起执行队列"}
+          aria-label={`${listCollapsed ? "展开" : "收起"}${listLabels.list}`}
           title={
-            queueCollapsed
-              ? "展开执行队列（空间不足时会自动收起）"
-              : "收起执行队列，把宽度留给终端"
+            listCollapsed
+              ? `展开${listLabels.list}（空间不足时会自动收起）`
+              : `收起${listLabels.list}，把宽度留给${listLabels.detail}`
           }
-          onClick={onToggleQueue}
+          onClick={onToggleList}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
         >
-          {queueCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+          {listCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
         </button>
       ) : null}
 

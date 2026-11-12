@@ -442,7 +442,16 @@ function BugListViewImpl(props: Props) {
             cacheApi.bugDetail(workspace.id, id).catch(() => null),
           ),
         );
-        if (requestId !== requestIdRef.current) return;
+        if (requestId !== requestIdRef.current) {
+          // A newer request (usually a scope switch back to 我负责的 / 全部) owns
+          // the page. Hand the in-flight slot back: this batch will never reach
+          // its `finally`, and leaving the flag set would make every later
+          // 处理中 load bail out for the rest of the session.
+          processingInFlightRef.current = false;
+          processingForceRef.current = false;
+          processingDirtyRef.current = false;
+          return;
+        }
         const cached = entries.flatMap((entry) =>
           entry?.data ? [entry.data] : [],
         );

@@ -27,13 +27,26 @@ const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running"];
 const isActiveStatus = (status: AgentTaskStatus) => ACTIVE_STATUSES.includes(status);
 const isApprovalStatus = (status: AgentTaskStatus) => status === "awaiting_approval";
 
-/** Gap between the queue column and the terminal section. */
-const QUEUE_PANE_GAP = 12;
-/** Terminal width that still fits the task header and a readable TUI. */
-const MIN_TERMINAL_WIDTH = 560;
-/** Below this the queue column collapses and leaves the width to the terminal. */
-const QUEUE_AUTO_COLLAPSE_WIDTH =
-  QUEUE_PANE_WIDTH + QUEUE_PANE_GAP + MIN_TERMINAL_WIDTH;
+/** Tabs whose left column is a list that can collapse into the detail pane. */
+const LIST_TABS = ["run", "approval", "history"] as const;
+type ListTab = (typeof LIST_TABS)[number];
+const isListTab = (tab: AgentTab): tab is ListTab =>
+  (LIST_TABS as readonly AgentTab[]).includes(tab);
+
+/** Gap between the list column and the detail section. */
+const LIST_PANE_GAP = 12;
+/**
+ * Detail width each tab still reads well at. Narrower than this and the list
+ * column auto-collapses: the TUI needs room for the task header, the review
+ * card and record detail just need their buttons and meta grid to wrap sanely.
+ */
+const DETAIL_MIN_WIDTH: Record<ListTab, number> = {
+  run: 560,
+  approval: 480,
+  history: 480,
+};
+const autoCollapseWidth = (tab: ListTab) =>
+  QUEUE_PANE_WIDTH + LIST_PANE_GAP + DETAIL_MIN_WIDTH[tab];
 
 type Props = {
   /** Task selected by the island capsule (`agent://focus`). */
@@ -68,13 +81,21 @@ export function AgentPage({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Runtime catalog, used to show which agent owns the selected task. */
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
-  /** Run tab: the queue column collapsed to give the terminal its width. */
-  const [queueCollapsed, setQueueCollapsed] = useState(false);
-  /** Width of the run split (queue + terminal), measured, not the viewport. */
-  const [runAreaWidth, setRunAreaWidth] = useState<number | null>(null);
-  const runAreaRef = useRef<HTMLDivElement | null>(null);
-  /** Latched narrow flag; widening never re-expands the queue by itself. */
-  const runNarrowRef = useRef(false);
+  /** List tab -> its left column is collapsed to give the detail its width. */
+  const [listCollapsed, setListCollapsed] = useState<Record<ListTab, boolean>>({
+    run: false,
+    approval: false,
+    history: false,
+  });
+  /** Width of the mounted list split (not the viewport), measured. */
+  const [listAreaWidth, setListAreaWidth] = useState<number | null>(null);
+  const listAreaRef = useRef<HTMLDivElement | null>(null);
+  /** Latched narrow flag per tab; widening never re-expands the list. */
+  const listNarrowRef = useRef<Record<ListTab, boolean>>({
+    run: false,
+    approval: false,
+    history: false,
+  });
 
   const appliedFocusRef = useRef<string | null>(null);
   const focusRefreshRef = useRef<string | null>(null);
@@ -114,28 +135,33 @@ export function AgentPage({
     };
   }, []);
 
-  // Measure the run split rather than the viewport: the detail drawer and the
-  // project column both take width away from this page.
+  // Measure the list split rather than the viewport: the detail drawer and the
+  // project column both take width away from this page. Only one list tab is
+  // mounted at a time, so one ref and one observer cover all three.
   useEffect(() => {
-    if (tab !== "run") return;
-    const node = runAreaRef.current;
+    const node = listAreaRef.current;
+    setListAreaWidth(null);
     if (!node) return;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
-      if (typeof width === "number" && width > 0) setRunAreaWidth(width);
+      if (typeof width === "number" && width > 0) setListAreaWidth(width);
     });
     observer.observe(node);
     return () => observer.disconnect();
   }, [tab]);
 
-  // Collapsing is one-way: crossing into a narrow run area hides the queue, but
-  // widening the window leaves the user's expanded choice alone.
+  // Collapsing is one-way per tab: crossing into a narrow area hides the list,
+  // but widening the window leaves the user's expanded choice alone.
   useEffect(() => {
-    if (tab !== "run" || runAreaWidth === null) return;
-    const narrow = runAreaWidth < QUEUE_AUTO_COLLAPSE_WIDTH;
-    if (narrow && !runNarrowRef.current) setQueueCollapsed(true);
-    runNarrowRef.current = narrow;
-  }, [tab, runAreaWidth]);
+    if (!isListTab(tab) || listAreaWidth === null) return;
+    const narrow = listAreaWidth < autoCollapseWidth(tab);
+    if (narrow && !listNarrowRef.current[tab]) {
+      setListCollapsed((current) =>
+        current[tab] ? current : { ...current, [tab]: true },
+      );
+    }
+    listNarrowRef.current[tab] = narrow;
+  }, [tab, listAreaWidth]);
 
   // Follow the island capsule's focus request. Terminal tasks belong to the
   // history tab; active/queued ones to the run tab.
@@ -292,8 +318,11 @@ export function AgentPage({
         onTabChange={setTab}
         counts={counts}
         actionBusy={actionBusy}
-        queueCollapsed={queueCollapsed}
-        onToggleQueue={() => setQueueCollapsed((current) => !current)}
+        listCollapsed={isListTab(tab) ? listCollapsed[tab] : false}
+        onToggleList={() => {
+          if (!isListTab(tab)) return;
+          setListCollapsed((current) => ({ ...current, [tab]: !current[tab] }));
+        }}
         onResumeQueue={handleResumeQueue}
         onRefresh={() => void refresh()}
       />
@@ -320,6 +349,8 @@ export function AgentPage({
             setTab("run");
           }}
           toast={toast}
+          areaRef={listAreaRef}
+          listCollapsed={listCollapsed.history}
         />
       ) : tab === "approval" ? (
         <AgentApproval
@@ -331,10 +362,12 @@ export function AgentPage({
           onResumeQueue={handleResumeQueue}
           onOpenBug={onOpenBug}
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
+          areaRef={listAreaRef}
+          listCollapsed={listCollapsed.approval}
         />
       ) : (
-        <div ref={runAreaRef} className="flex min-h-0 flex-1 gap-3">
-          {queueCollapsed ? null : (
+        <div ref={listAreaRef} className="flex min-h-0 flex-1 gap-3">
+          {listCollapsed.run ? null : (
             <AgentQueuePane
               loaded={loaded}
               runTasks={runTasks}
