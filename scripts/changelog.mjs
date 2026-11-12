@@ -115,8 +115,9 @@ if (previous) {
 /**
  * Splits a "## 未发布" section out of the changelog.
  *
- * The section ends at the next level-1/2 heading, so its `###` groups are kept
- * as content and become `##` in the release body.
+ * The section ends at the next level-1 heading (the previous release), so both
+ * `##` and `###` group headings stay as content; `###` is normalised to `##`
+ * for sections written that way.
  */
 function takeUnreleased(text) {
   const all = text.split("\n");
@@ -124,7 +125,7 @@ function takeUnreleased(text) {
   if (start === -1) return null;
   let end = all.length;
   for (let index = start + 1; index < all.length; index += 1) {
-    if (/^#{1,2}[ \t]+\S/.test(all[index])) {
+    if (/^#[ \t]+\S/.test(all[index])) {
       end = index;
       break;
     }
