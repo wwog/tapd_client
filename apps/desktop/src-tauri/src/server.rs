@@ -79,7 +79,9 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/call", post(dev::dev_call))
         .route("/dev/cookies", get(dev::dev_cookies))
         .route("/dev/export", post(dev::dev_export))
-        .route("/dev/feature", post(dev::dev_feature));
+        .route("/dev/feature", post(dev::dev_feature))
+        .route("/dev/companion", get(dev::dev_companion))
+        .route("/dev/companion/pairing", post(dev::dev_companion_pairing));
 
     let router = router.with_state(api_state);
 
