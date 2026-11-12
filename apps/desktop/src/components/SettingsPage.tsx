@@ -220,7 +220,7 @@ export function SettingsPage(props: Props) {
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
               <FileJson size={15} className="text-slate-400" />
-              接口抓包
+              接口历史
             </h2>
           </div>
           <Button
@@ -255,7 +255,7 @@ export function SettingsPage(props: Props) {
 
       {capturesOpen ? (
         <Dialog
-          title="接口抓包"
+          title="接口历史"
           icon={<FileJson size={15} className="text-slate-400" />}
           onClose={() => setCapturesOpen(false)}
           size="wide"

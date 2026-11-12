@@ -95,10 +95,10 @@ export function CoworkerPage({ toast }: Props) {
           <div>
             <h2 className="flex items-center gap-1.5 text-ui-lg text-slate-900">
               <Users size={16} className="text-slate-400" />
-              找几个同事搭伙
+              找同事搭伙
             </h2>
             <p className="mt-1 text-ui-sm text-slate-500">
-              启用的同事会把自己的角色和技能包带进每一次 Agent 修复。
+              找同事一起干活吧，工作不是一个人的工作。
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -223,7 +223,7 @@ export function CoworkerPage({ toast }: Props) {
             <ArrowRight size={11} className="text-slate-300" />
             <Step label="PR" />
             <span className="ml-1 text-slate-400">
-              规范见 README；坏包会在本页提示。
+              规范见 README；
             </span>
           </div>
         </section>
