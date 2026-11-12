@@ -64,7 +64,8 @@ pub(crate) async fn fetch_tapd_media(
     url: &str,
     range: Option<String>,
 ) -> Result<MediaFetch, (StatusCode, String)> {
-    if !crate::commands::open::is_tapd_media_url(url) {
+    let absolute = absolute_media_url(url);
+    if !crate::commands::open::is_tapd_media_url(&absolute) {
         return Err((StatusCode::BAD_REQUEST, "unsupported media url".to_string()));
     }
 
@@ -85,7 +86,7 @@ pub(crate) async fn fetch_tapd_media(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
     let mut request = client
-        .get(url)
+        .get(absolute)
         .header(header::COOKIE, cookie)
         .header(header::REFERER, media::REFERER)
         .header(header::ACCEPT, "*/*");
@@ -190,4 +191,36 @@ fn media_error(status: StatusCode, message: &str) -> Response {
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(axum::body::Body::from(message.to_string()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// TAPD rich text embeds site-relative image paths (`/tfl/captures/...`);
+/// resolve them against the main site so the host allowlist sees one form.
+fn absolute_media_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix('/') {
+        format!("{}{rest}", session::TAPD_HOME)
+    } else {
+        url.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::absolute_media_url;
+
+    #[test]
+    fn resolves_site_relative_paths_against_tapd_home() {
+        assert_eq!(
+            absolute_media_url("/tfl/captures/2026-11/a.png"),
+            "https://www.tapd.cn/tfl/captures/2026-11/a.png"
+        );
+    }
+
+    #[test]
+    fn keeps_absolute_urls_untouched() {
+        assert_eq!(
+            absolute_media_url("https://file.tapd.cn/a/b.png"),
+            "https://file.tapd.cn/a/b.png"
+        );
+        assert_eq!(absolute_media_url("file:///etc/passwd"), "file:///etc/passwd");
+    }
 }

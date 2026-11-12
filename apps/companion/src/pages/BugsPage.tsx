@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Settings } from "lucide-react";
 
-import { api, asApiError, type BugListPage, type CompanionState } from "../lib/api";
+import { api, asApiError, type BugListPage, type Workspace } from "../lib/api";
 import { bugTitle, ownerNames, relativeTime } from "../lib/format";
 import { navigate } from "../lib/router";
 import { Badge, PriorityDot, STATUS_TONES } from "../components/Badge";
@@ -31,7 +31,7 @@ function ListSkeleton() {
 /** Bug list: keyword search, unresolved filter, paged rows. */
 export function BugsPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [workspaces, setWorkspaces] = useState<CompanionState["workspaces"]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [keyword, setKeyword] = useState("");
   const [query, setQuery] = useState("");
   const [onlyOpen, setOnlyOpen] = useState(false);
@@ -46,9 +46,9 @@ export function BugsPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const state = await api.state();
+        const context = await api.workspaces();
         if (cancelled) return;
-        const sorted = [...state.workspaces].sort(
+        const sorted = [...context.workspaces].sort(
           (a, b) => visitedStamp(b.lastVisitedTime) - visitedStamp(a.lastVisitedTime),
         );
         setWorkspaces(sorted);
@@ -144,7 +144,7 @@ export function BugsPage() {
             >
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>
-                  {workspace.prettyName || workspace.name}
+                  {workspace.name || workspace.prettyName}
                 </option>
               ))}
             </select>

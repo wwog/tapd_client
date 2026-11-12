@@ -270,6 +270,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<CompanionState>("/companion/api/state"),
 
+  /** Project list from the desktop's workspace context (default = most recent). */
+  workspaces: () => request<WorkspaceContext>("/companion/api/workspaces"),
+
   /** One-time pairing code -> long-lived session token. */
   pair: (token: string, name: string) =>
     request<{ sessionToken: string }>("/companion/api/pair", {
