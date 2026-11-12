@@ -30,7 +30,6 @@ pub const TOOLS: &[ToolSpec] = &[
     query::TAPD_LIST_MY_BUGS,
     bug::TAPD_GET_BUG,
     bug::TAPD_EXPORT_BUG_MD,
-    bug::TAPD_GET_BUG_PROMPT,
     bug::TAPD_GET_BUG_TRANSITIONS,
     bug::TAPD_ADD_BUG_COMMENT,
     bug::TAPD_UPDATE_BUG_STATUS,
@@ -57,8 +56,8 @@ mod tests {
     use super::{names, tool, TOOLS};
 
     #[test]
-    fn manifest_exposes_sixteen_unique_tool_names() {
-        assert_eq!(TOOLS.len(), 16);
+    fn manifest_exposes_fifteen_unique_tool_names() {
+        assert_eq!(TOOLS.len(), 15);
 
         let mut seen = std::collections::HashSet::new();
         for name in names() {

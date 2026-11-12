@@ -13,6 +13,7 @@ import {
   api,
   ensureMediaEndpoint,
   type BugDetail,
+  type BugTransitionChoice,
   type BugTransitionInfo,
   type ExportResult,
   type OpenMediaMode,
@@ -37,6 +38,7 @@ import { BugCommentComposer, BugComments } from "./BugComments";
 import { BugChanges } from "./BugChanges";
 import { BugCustomFields, BugMetaGrid } from "./BugMetaGrid";
 import { BugDrawerFooter } from "./BugDrawerFooter";
+import { BugTransitionDialog } from "./BugTransitionDialog";
 
 type Props = {
   open: boolean;
@@ -72,7 +74,11 @@ type Props = {
   onClaim: (detail: BugDetail) => Promise<void>;
   onAddComment: (detail: BugDetail, comment: string) => Promise<void>;
   onChangeField: (detail: BugDetail, field: string, value: string) => Promise<void>;
-  onTransition: (detail: BugDetail, status: string) => Promise<void>;
+  onTransition: (
+    detail: BugDetail,
+    status: string,
+    fields?: Record<string, string>,
+  ) => Promise<void>;
 };
 
 function BugDetailDrawerImpl(props: Props) {
@@ -120,6 +126,9 @@ function BugDetailDrawerImpl(props: Props) {
   const [transitions, setTransitions] = useState<BugTransitionInfo | null>(null);
   const [transitionsLoading, setTransitionsLoading] = useState(false);
   const [transitionsError, setTransitionsError] = useState<string | null>(null);
+  /** Transition whose workflow form dialog is open; null when closed. */
+  const [transitionTarget, setTransitionTarget] =
+    useState<BugTransitionChoice | null>(null);
 
   const mine = detail ? isMyBug(detail.owner, me) : true;
 
@@ -139,17 +148,25 @@ function BugDetailDrawerImpl(props: Props) {
       // drawer's listener was registered first, so it must ask instead of
       // relying on propagation order.
       if (hasOpenDismissLayer()) return;
+      // The transition form handles its own Escape; don't close the drawer.
+      if (transitionTarget) return;
       onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, transitionTarget]);
 
   // A different bug starts with an empty comment box.
   useEffect(() => {
     setCommentText("");
     setCopiedId(null);
+    setTransitionTarget(null);
   }, [detail?.id]);
+
+  // Closing the drawer also drops any transition form left open.
+  useEffect(() => {
+    if (!open) setTransitionTarget(null);
+  }, [open]);
 
   // Only bugs the user owns expose workflow transitions.
   useEffect(() => {
@@ -206,13 +223,15 @@ function BugDetailDrawerImpl(props: Props) {
     }
   };
 
-  const runTransition = async (status: string) => {
+  const submitTransition = async (
+    status: string,
+    fields: Record<string, string>,
+  ) => {
     if (!detail || busy) return;
     setBusy(`transition:${status}`);
     try {
-      await onTransition(detail, status);
-    } catch {
-      // Reported upstream.
+      await onTransition(detail, status, fields);
+      setTransitionTarget(null);
     } finally {
       setBusy(null);
     }
@@ -392,7 +411,12 @@ function BugDetailDrawerImpl(props: Props) {
                             variant="secondary"
                             loading={busy === `transition:${choice.key}`}
                             disabled={busy !== null}
-                            onClick={() => void runTransition(choice.key)}
+                            onClick={() =>
+                              setTransitionTarget({
+                                key: choice.key,
+                                label: choice.label,
+                              })
+                            }
                           >
                             {choice.label}
                           </Button>
@@ -462,6 +486,22 @@ function BugDetailDrawerImpl(props: Props) {
             onAgentCompose={onAgentCompose}
             onOpenAgentTask={onOpenAgentTask}
             onExport={onExport}
+          />
+        ) : null}
+
+        {transitionTarget && detail ? (
+          <BugTransitionDialog
+            detail={detail}
+            status={transitionTarget.key}
+            label={transitionTarget.label}
+            members={members}
+            membersLoading={membersLoading}
+            busy={busy !== null}
+            onClose={() => {
+              if (!busy) setTransitionTarget(null);
+            }}
+            onRefreshMembers={onRefreshMembers}
+            onSubmit={submitTransition}
           />
         ) : null}
     </aside>

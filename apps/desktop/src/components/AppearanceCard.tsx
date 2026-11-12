@@ -32,10 +32,43 @@ const ISLAND_DISPLAYS: Array<{ value: IslandDisplayMode; label: string }> = [
   { value: "activity", label: "仅通知" },
 ];
 
+/** Three theme tiles; shared by the settings card and first-run onboarding. */
+export function ThemePicker({ className }: { className?: string }) {
+  const { mode } = useAppearance();
+
+  return (
+    <div className={clsx("grid grid-cols-3 gap-2", className)}>
+      {THEMES.map((item) => {
+        const selected = mode === item.value;
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => setAppearance({ mode: item.value })}
+            className={clsx(
+              "group relative overflow-hidden rounded-xl border p-1.5 text-left transition",
+              selected ? "border-sky-400" : "border-border hover:border-slate-300",
+            )}
+          >
+            <ThemeThumb mode={item.value} />
+            <span className="mt-1.5 flex items-center gap-1 px-0.5 pb-0.5 text-ui-xs text-slate-600">
+              <Icon size={11} className="text-slate-400" />
+              {item.label}
+              {selected ? <Check size={11} className="ml-auto text-sky-500" /> : null}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Appearance card: theme mode, UI font and the shared base font size. */
 export function AppearanceCard() {
   const appearance = useAppearance();
-  const { mode, island, islandDisplay, font, customFont, fontSize } = appearance;
+  const { island, islandDisplay, font, customFont, fontSize } = appearance;
 
   return (
     <section className={cardClass}>
@@ -61,34 +94,7 @@ export function AppearanceCard() {
       <div className="mt-4 grid gap-4 lg:grid-cols-[1.15fr_1fr]">
         <div>
           <div className="text-ui-xs font-normal text-slate-500">主题</div>
-          <div className="mt-2 grid grid-cols-3 gap-2">
-            {THEMES.map((item) => {
-              const selected = mode === item.value;
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.value}
-                  type="button"
-                  onClick={() => setAppearance({ mode: item.value })}
-                  className={clsx(
-                    "group relative overflow-hidden rounded-xl border p-1.5 text-left transition",
-                    selected
-                      ? "border-sky-400"
-                      : "border-border hover:border-slate-300",
-                  )}
-                >
-                  <ThemeThumb mode={item.value} />
-                  <span className="mt-1.5 flex items-center gap-1 px-0.5 pb-0.5 text-ui-xs text-slate-600">
-                    <Icon size={11} className="text-slate-400" />
-                    {item.label}
-                    {selected ? (
-                      <Check size={11} className="ml-auto text-sky-500" />
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+          <ThemePicker className="mt-2" />
         </div>
 
         <div className="space-y-3">

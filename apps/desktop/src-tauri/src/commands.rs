@@ -11,14 +11,14 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tapd_core::{
     bridge::CapturedRequest,
-    config::McpPolicy,
+    config::{McpPolicy, ONBOARDING_VERSION},
     tapd::{
         api::{
             bug_list_url, parse_bug_list, parse_workspace_members, parse_workspaces,
             user_chooser_all_body, user_chooser_url, user_workspace_url, workspace_members_url,
             BugQuery,
         },
-        BugDetail, BugListPage, Workspace, WorkspaceMember,
+        BugDetail, BugListPage, BugSummary, Workspace, WorkspaceMember,
     },
 };
 use tauri::{AppHandle, Manager, State};
@@ -34,7 +34,7 @@ use auth::{
     current_user_avatar, is_logged_in, logout_session, reset_session_and_open_login,
     session_request_json, string_field,
 };
-use bugs::{fetch_bug_detail, fetch_workspace_members, main_window_focused};
+use bugs::{fetch_bug_detail, fetch_bug_summary, fetch_workspace_members, main_window_focused};
 use open::{download_media, is_tapd_media_url, open_local, run_open, selected_open_target};
 
 pub(crate) mod auth;
@@ -72,6 +72,7 @@ pub struct AppInfo {
     media_token: Option<String>,
     session_url: Option<String>,
     hidden_workspace_ids: Vec<String>,
+    /// True when the stored guide revision matches [`ONBOARDING_VERSION`].
     onboarded: bool,
 }
 
@@ -145,7 +146,7 @@ pub fn app_info(state: State<'_, SharedState>) -> AppInfo {
         media_token: runtime.map(|runtime| runtime.media_token),
         session_url: config.last_session_url,
         hidden_workspace_ids: config.hidden_workspace_ids,
-        onboarded: config.onboarded,
+        onboarded: config.onboarded_version == ONBOARDING_VERSION,
     }
 }
 
@@ -336,6 +337,20 @@ pub async fn bug_detail(
     Ok(detail)
 }
 
+/// One bug's list-row fields, without the change-history pages.
+///
+/// The 处理中 view only knows bug ids from live agent state, so it needs the
+/// summary fields per row. Deliberately not cached: a summary has no history or
+/// description, and writing it would degrade the detail pane's cache-first paint.
+#[tauri::command]
+pub async fn bug_summary(
+    app: AppHandle,
+    workspace_id: String,
+    bug_id: String,
+) -> Result<BugSummary, String> {
+    fetch_bug_summary(&app, &workspace_id, &bug_id).await
+}
+
 /// Lists the people who can be assigned as owner / developer in a workspace.
 ///
 /// `get_workspace_members` is the primary source; older workspaces may answer
@@ -474,6 +489,34 @@ pub async fn bug_transitions(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BugTransitionForm {
+    from: String,
+    status: String,
+    label: String,
+    fields: Vec<bug_write::TransitionField>,
+}
+
+/// Returns the fields TAPD shows before a workflow transition.
+#[tauri::command]
+pub async fn bug_transition_form(
+    app: AppHandle,
+    workspace_id: String,
+    bug_id: String,
+    status: String,
+) -> Result<BugTransitionForm, String> {
+    let (from, status, label, fields) =
+        bug_write::load_transition_form(&app, workspace_id.trim(), bug_id.trim(), status.trim())
+            .await?;
+    Ok(BugTransitionForm {
+        from,
+        status,
+        label,
+        fields,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BugTransitionResult {
     from: String,
     status: String,
@@ -488,13 +531,15 @@ pub async fn bug_transition(
     workspace_id: String,
     bug_id: String,
     status: String,
+    fields: Option<Value>,
 ) -> Result<BugTransitionResult, String> {
+    let overrides = fields.unwrap_or_else(|| json!({}));
     let outcome = bug_write::perform_transition(
         &app,
         workspace_id.trim(),
         bug_id.trim(),
         status.trim(),
-        &json!([]),
+        &overrides,
     )
     .await?;
 
@@ -552,14 +597,14 @@ pub(crate) fn sidecar_command_path() -> String {
 #[tauri::command]
 pub fn reset_onboarding(state: State<'_, SharedState>) -> Result<(), String> {
     state
-        .update_config(|config| config.onboarded = false)
+        .update_config(|config| config.onboarded_version = 0)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn complete_onboarding(state: State<'_, SharedState>) -> Result<(), String> {
     state
-        .update_config(|config| config.onboarded = true)
+        .update_config(|config| config.onboarded_version = ONBOARDING_VERSION)
         .map_err(|error| error.to_string())
 }
 
@@ -774,6 +819,7 @@ pub async fn capture_clear(app: AppHandle) -> Result<(), String> {
 pub async fn capture_export(
     app: AppHandle,
     state: State<'_, SharedState>,
+    target_dir: Option<String>,
 ) -> Result<String, String> {
     let captures = snapshot_captures(&app).await?;
     let names = format!(
@@ -781,7 +827,16 @@ pub async fn capture_export(
         chrono::Local::now().format("%Y%m%d-%H%M%S"),
         captures.len()
     );
-    let path = state.paths.captures_dir.join(names);
+    // The native picker supplies the destination; captures_dir stays the
+    // fallback for callers that do not pass one.
+    let dir = target_dir
+        .as_deref()
+        .map(std::path::Path::new)
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| state.paths.captures_dir.clone());
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(names);
     let raw = serde_json::to_vec_pretty(&captures).map_err(|error| error.to_string())?;
     std::fs::write(&path, raw).map_err(|error| error.to_string())?;
 

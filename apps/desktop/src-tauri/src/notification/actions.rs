@@ -78,10 +78,19 @@ pub async fn command(
                 .get("expanded")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            // External AI cards are rendered by the frontend from the Agent
+            // summary, so the backend only needs their count to size the
+            // window (and to allow an expansion with no pending notifications).
+            let extra = payload
+                .get("extra")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            crate::island_window::set_extra_cards(extra);
             let (items, _quiet) = service.pending_payload();
-            let expanded = expanded && !items.is_empty();
-            crate::island_window::apply_island(app, state, expanded, items.len(), true);
-            Ok(json!({ "ok": true, "expanded": expanded, "count": items.len() }))
+            let count = items.len() + extra;
+            let expanded = expanded && count > 0;
+            crate::island_window::apply_island(app, state, expanded, count, true);
+            Ok(json!({ "ok": true, "expanded": expanded, "count": count }))
         }
         "notification_island_peek" => {
             // Hovering the collapsed capsule reveals which task the Agent is
@@ -118,6 +127,18 @@ pub async fn command(
         }
         "notification_open_main" => {
             focus_main_window(app);
+            Ok(json!({ "ok": true }))
+        }
+        "notification_open_bug" => {
+            // Same path as the card's 查看缺陷: focus the main window and let
+            // the workspace hook switch project + load the detail pane.
+            let workspace_id = payload_str(&payload, "workspaceId")?;
+            let bug_id = payload_str(&payload, "bugId")?;
+            focus_main_window(app);
+            let _ = app.emit(
+                "notification://open-bug",
+                json!({ "workspaceId": workspace_id, "bugId": bug_id }),
+            );
             Ok(json!({ "ok": true }))
         }
         "notification_start_drag" => {

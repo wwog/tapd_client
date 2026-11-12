@@ -78,6 +78,7 @@ pub(super) async fn dev_export(
         &request.workspace_id,
         &request.bug_id,
         request.workspace_name,
+        Some(crate::export::PromptOptions::default()),
     )
     .await
     {

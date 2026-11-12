@@ -1,19 +1,25 @@
 import { useState, type ReactNode } from "react";
+import clsx from "clsx";
 import {
+  ArrowLeft,
   ArrowRight,
   Bell,
   Bot,
   Bug,
   Check,
-  Loader2,
+  Palette,
   Plug,
-  ShieldCheck,
   Sparkles,
-  Workflow,
+  Users,
 } from "lucide-react";
 
 import appIcon from "../assets/app-icon.png";
 import { api, type AppInfo } from "../lib/api";
+import { copyText } from "../lib/desktop";
+import { ThemePicker } from "./AppearanceCard";
+import { CoworkerGrid, useCoworkers } from "./CoworkerPicker";
+import { McpClientImport } from "./McpClientImport";
+import { Button, cardClass } from "./ui";
 
 type Props = {
   info: AppInfo;
@@ -27,7 +33,7 @@ type Props = {
 
 function NotificationArt() {
   return (
-    <div className="relative h-[108px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-100 via-sky-50 to-white p-3">
+    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-100 via-sky-50 to-surface p-3">
       <div className="absolute right-3 top-3 flex h-5 items-center gap-1 rounded-full bg-slate-900 px-2 text-[7px] text-slate-200 ">
         <span className="h-1 w-1 rounded-full bg-emerald-400" />
         TAPD 待命
@@ -55,7 +61,7 @@ function NotificationArt() {
 
 function FocusArt() {
   return (
-    <div className="h-[108px] overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 via-white to-sky-50 p-2.5">
+    <div className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 via-surface to-sky-50 p-2.5">
       <div className="flex h-full gap-1.5 rounded-lg bg-surface p-1.5  border border-border/70">
         <div className="flex w-6 flex-col items-center gap-1 rounded-md bg-slate-50 py-1">
           <span className="h-2 w-2 rounded bg-sky-400" />
@@ -83,7 +89,7 @@ function FocusArt() {
 
 function FixArt() {
   return (
-    <div className="relative h-[108px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-white to-violet-50">
+    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-violet-50">
       <div className="absolute left-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-2xl bg-surface  border border-border">
         <div className="relative">
           <Bot size={26} className="text-slate-800" strokeWidth={1.8} />
@@ -102,9 +108,89 @@ function FixArt() {
   );
 }
 
+function AgentArt() {
+  const rows: Array<{ title: string; state: string; ink: string; dot: string }> = [
+    { title: "BUG-1024", state: "运行中", ink: "text-sky-600", dot: "bg-sky-500" },
+    { title: "BUG-1019", state: "待审核", ink: "text-amber-600", dot: "bg-amber-500" },
+    { title: "BUG-1012", state: "已回写", ink: "text-emerald-600", dot: "bg-emerald-500" },
+  ];
+
+  return (
+    <div className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-slate-100 p-2.5">
+      <div className="flex h-full flex-col gap-1 rounded-lg border border-border bg-surface p-2">
+        <div className="flex items-center gap-1 text-[7px] text-slate-500">
+          <Bot size={9} className="text-sky-500" />
+          内部 Agent
+          <span className="ml-auto rounded bg-sky-50 px-1 text-sky-600">本机执行</span>
+        </div>
+        {rows.map((row) => (
+          <div
+            key={row.title}
+            className="flex items-center gap-1 rounded border border-border/60 px-1 py-0.5 text-[7px] text-slate-500"
+          >
+            <span className="font-mono text-slate-600">{row.title}</span>
+            <span className={clsx("ml-auto", row.ink)}>{row.state}</span>
+            <span className={clsx("h-1 w-1 rounded-full", row.dot)} />
+          </div>
+        ))}
+        <div className="mt-auto flex items-center gap-1 text-[7px] text-slate-400">
+          <Check size={8} className="text-emerald-500" />
+          改完自动回写 TAPD
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CoworkerArt() {
+  const people: Array<{ role: string; ink: string; bg: string }> = [
+    { role: "产品", ink: "text-amber-600", bg: "bg-amber-500/15" },
+    { role: "前端", ink: "text-sky-600", bg: "bg-sky-500/15" },
+    { role: "测试", ink: "text-emerald-600", bg: "bg-emerald-500/15" },
+  ];
+
+  return (
+    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-amber-50 via-surface to-sky-50 p-2.5">
+      <div className="flex h-full flex-col gap-1.5">
+        <div className="flex items-center gap-1.5">
+          {people.map((person, index) => (
+            <div
+              key={person.role}
+              className={clsx(
+                "relative flex flex-1 flex-col items-center gap-1 rounded-lg border bg-surface py-1.5",
+                index === 1 ? "border-sky-300" : "border-border",
+              )}
+            >
+              <span
+                className={clsx(
+                  "grid h-6 w-6 place-items-center rounded-full",
+                  person.bg,
+                  person.ink,
+                )}
+              >
+                <Users size={11} />
+              </span>
+              <span className={clsx("text-[7px]", person.ink)}>{person.role}</span>
+              {index === 1 ? (
+                <span className="absolute right-1 top-1 grid h-3 w-3 place-items-center rounded-full bg-sky-500 text-white">
+                  <Check size={7} strokeWidth={3} />
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-center gap-1 rounded-md bg-slate-900 py-1 text-[7px] text-slate-200">
+          <Sparkles size={7} className="text-emerald-300" />
+          技能包跟着任务一起进提示词
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function McpArt() {
   return (
-    <div className="relative h-[108px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 p-3 text-slate-200">
+    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 p-3 text-slate-200">
       <span className="absolute left-3 top-2.5 rounded bg-white/5 px-1.5 py-1 font-mono text-[7px] text-slate-300">
         {"{ }"}
       </span>
@@ -148,8 +234,18 @@ const FEATURES: Array<{
   },
   {
     title: "一键修复",
-    copy: "交给 Agent，修完自动回写 TAPD。",
+    copy: "详情页交给 Agent，修完自动回写 TAPD。",
     art: <FixArt />,
+  },
+  {
+    title: "内部 Agent",
+    copy: "任务队列、实时输出、审核提交，全在客户端。",
+    art: <AgentArt />,
+  },
+  {
+    title: "同事搭伙",
+    copy: "挑几位同事，技能包与角色一起进提示词。",
+    art: <CoworkerArt />,
   },
   {
     title: "MCP 给外部",
@@ -158,63 +254,88 @@ const FEATURES: Array<{
   },
 ];
 
+const STEP_HEADINGS = [
+  { title: "你的工作从未如此轻松", copy: "像微信聊天一样处理你的事物" },
+  { title: "先把基础设置好", copy: "主题与 MCP 之后都能在设置里改" },
+  { title: "找同事搭伙", copy: "选中的同事会参与之后的 Agent 任务" },
+];
+
 export function Onboarding({ info, onDone }: Props) {
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(
+    null,
+  );
+
+  const showNotice = (kind: "ok" | "error", text: string) => {
+    setNotice({ kind, text });
+    if (kind === "ok") {
+      window.setTimeout(
+        () => setNotice((current) => (current?.text === text ? null : current)),
+        1600,
+      );
+    }
+  };
+
+  const coworkers = useCoworkers(showNotice);
 
   const finish = async () => {
     setBusy(true);
-    setError(null);
+    setNotice(null);
     try {
       await api.completeOnboarding();
       onDone();
     } catch (cause) {
-      setError(String(cause));
+      showNotice("error", String(cause));
     } finally {
       setBusy(false);
     }
   };
 
+  const handleCopy = async (text: string) => {
+    const copied = await copyText(text);
+    showNotice(copied ? "ok" : "error", copied ? "已复制" : "复制失败");
+  };
+
+  const heading = STEP_HEADINGS[step];
+  const last = step === 2;
+
   return (
-    <div data-theme="light" className="fixed inset-0 z-[90] grid place-items-center bg-slate-900/30 p-4 backdrop-blur-sm">
-      <div className="max-h-[calc(100vh-2rem)] w-full max-w-[720px] overflow-y-auto rounded-3xl bg-surface  border border-black/5">
-        <div className="relative overflow-hidden bg-gradient-to-br from-sky-50 via-white to-emerald-50 px-7 pb-6 pt-7">
-          <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-sky-200/50 blur-3xl" />
-          <div className="pointer-events-none absolute -left-20 bottom-0 h-44 w-44 rounded-full bg-emerald-200/40 blur-3xl" />
-
-          <div className="relative flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-surface  border border-black/5">
-              <img
-                src={appIcon}
-                alt="TAPD 客户端"
-                draggable={false}
-                className="h-9 w-9 select-none object-contain"
-              />
-            </div>
-            <div className="min-w-0">
-              <div className="text-ui-xs font-normal uppercase tracking-[0.18em] text-sky-600/70">
-                TAPD Client · V{info.version}
-              </div>
-              <h2 className="mt-0.5 text-[21px] font-normal tracking-tight text-slate-900">
-                {step === 0 ? "你的工作从未如此轻松" : "安全，默认在本地"}
-              </h2>
-              <p className="mt-0.5 text-ui-sm text-slate-500">
-                {step === 0
-                  ? "像微信聊天一样处理你的事物"
-                  : "登录态、缓存和写操作都在本机闭环"}
-              </p>
-            </div>
-          </div>
+    <div className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-canvas text-slate-900">
+      <header
+        data-tauri-drag-region
+        className="flex shrink-0 items-center gap-3 border-b border-border bg-surface pb-4 pl-[86px] pr-6 pt-5"
+      >
+        <div className="pointer-events-none grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-border bg-surface">
+          <img
+            src={appIcon}
+            alt="TAPD 客户端"
+            draggable={false}
+            className="h-8 w-8 select-none object-contain"
+          />
         </div>
+        <div className="pointer-events-none min-w-0 flex-1">
+          <div className="text-ui-2xs uppercase tracking-[0.16em] text-sky-600/70">
+            TAPD Client · V{info.version}
+          </div>
+          <h1 className="truncate text-[19px] font-normal tracking-tight text-slate-900">
+            {heading.title}
+          </h1>
+          <p className="truncate text-ui-sm text-slate-500">{heading.copy}</p>
+        </div>
+        <span className="pointer-events-none shrink-0 text-ui-xs tabular-nums text-slate-400">
+          {step + 1} / 3
+        </span>
+      </header>
 
-        <div className="flex min-h-[380px] flex-col justify-center px-7 py-5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6">
+        <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col justify-center">
           {step === 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((feature) => (
                 <div
                   key={feature.title}
-                  className="rounded-2xl border border-slate-100 bg-surface p-3 transition hover:border-border "
+                  className="rounded-2xl border border-border bg-surface p-3 transition hover:border-slate-300"
                 >
                   {feature.art}
                   <div className="mt-3 text-ui-base font-normal text-slate-900">
@@ -226,129 +347,122 @@ export function Onboarding({ info, onDone }: Props) {
                 </div>
               ))}
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-slate-100 bg-surface p-4">
-                  <div className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
-                    <ShieldCheck size={16} className="text-emerald-500" />
-                    安全
+          ) : null}
+
+          {step === 1 ? (
+            <div className="mx-auto w-full max-w-4xl space-y-4">
+              <section className={cardClass}>
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="min-w-0 max-w-[260px]">
+                    <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+                      <Palette size={15} className="text-slate-400" />
+                      主题
+                    </h2>
+                    <p className="mt-1 text-ui-caption leading-5 text-slate-500">
+                      选一个看着舒服的，立即生效。
+                    </p>
                   </div>
-                  <ul className="mt-3 space-y-2 text-ui-sm leading-5 text-slate-600">
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-emerald-500" />
-                      Cookie 只存在隐藏 WebView，不上传。
-                    </li>
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-emerald-500" />
-                      MCP 只监听 127.0.0.1，token 每次启动轮换。
-                    </li>
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-emerald-500" />
-                      写操作可关闭、逐条审计，不记录正文。
-                    </li>
-                  </ul>
+                  <ThemePicker className="w-[420px] max-w-full" />
                 </div>
+              </section>
 
-                <div className="rounded-2xl border border-slate-100 bg-surface p-4">
-                  <div className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
-                    <Workflow size={16} className="text-sky-500" />
-                    实现方式
-                  </div>
-                  <ul className="mt-3 space-y-2 text-ui-sm leading-5 text-slate-600">
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-sky-500" />
-                      WebView 复用登录态 → SQLite 快照 → 界面。
-                    </li>
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-sky-500" />
-                      MCP sidecar ↔ 本地回环 ↔ 桌面客户端。
-                    </li>
-                    <li className="flex gap-2">
-                      <Check size={12} className="mt-0.5 shrink-0 text-sky-500" />
-                      Agent 在本机 opencode 执行，权限手动批准。
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl bg-slate-50 px-3 py-2 text-ui-xs text-slate-400">
-                <span className="rounded-full bg-surface px-2 py-0.5">TAPD WebView</span>
-                <ArrowRight size={10} />
-                <span className="rounded-full bg-surface px-2 py-0.5">SQLite</span>
-                <ArrowRight size={10} />
-                <span className="rounded-full bg-surface px-2 py-0.5">界面</span>
-                <span className="mx-1 h-3 w-px bg-slate-200" />
-                <span className="rounded-full bg-surface px-2 py-0.5">AI</span>
-                <ArrowRight size={10} />
-                <span className="rounded-full bg-surface px-2 py-0.5">MCP</span>
-                <ArrowRight size={10} />
-                <span className="rounded-full bg-surface px-2 py-0.5">本机 App</span>
-              </div>
-            </div>
-          )}
-
-          {error ? (
-            <div className="mt-4 rounded-xl bg-rose-50 px-3 py-2 text-ui-sm text-rose-700 border border-rose-100">
-              {error}
+              <McpClientImport
+                onCopy={(text) => void handleCopy(text)}
+                toast={showNotice}
+              />
             </div>
           ) : null}
-        </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/60 px-7 py-4">
-          <button
-            type="button"
-            onClick={() => void finish()}
-            disabled={busy}
-            className="text-ui-sm text-slate-400 transition hover:text-slate-600 disabled:opacity-40"
-          >
-            跳过
-          </button>
+          {step === 2 ? (
+            <CoworkerGrid
+              coworkers={coworkers.coworkers}
+              selectedIds={coworkers.selectedIds}
+              busy={coworkers.busy}
+              loadError={coworkers.loadError}
+              onRetry={() => void coworkers.reload()}
+              onToggle={coworkers.toggle}
+            />
+          ) : null}
+        </div>
+      </div>
+
+      <footer className="shrink-0 border-t border-border bg-surface px-6 py-3">
+        <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void finish()}
+              disabled={busy}
+              className="text-ui-sm text-slate-400 transition hover:text-slate-600 disabled:opacity-40"
+            >
+              跳过
+            </button>
+            {notice ? (
+              <span
+                className={clsx(
+                  "truncate text-ui-xs",
+                  notice.kind === "ok" ? "text-emerald-600" : "text-rose-600",
+                )}
+                title={notice.text}
+              >
+                {notice.text}
+              </span>
+            ) : null}
+          </div>
 
           <div className="flex items-center gap-1.5">
-            {[0, 1].map((index) => (
+            {STEP_HEADINGS.map((_, index) => (
               <button
                 key={index}
                 type="button"
                 aria-label={`第 ${index + 1} 页`}
                 onClick={() => setStep(index)}
-                className={
+                className={clsx(
+                  "h-1.5 rounded-full transition-all",
                   index === step
-                    ? "h-1.5 w-5 rounded-full bg-sky-500 transition-all"
-                    : "h-1.5 w-1.5 rounded-full bg-slate-300 transition-all hover:bg-slate-400"
-                }
+                    ? "w-5 bg-sky-500"
+                    : "w-1.5 bg-slate-300 hover:bg-slate-400",
+                )}
               />
             ))}
           </div>
 
           <div className="flex items-center gap-2">
-            {step === 0 ? (
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-ui-sm font-normal text-primary-foreground transition hover:bg-primary-hover"
+            {step > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<ArrowLeft size={12} />}
+                disabled={busy}
+                onClick={() => setStep(step - 1)}
+              >
+                上一步
+              </Button>
+            ) : null}
+            {last ? (
+              <Button
+                size="sm"
+                variant="primary"
+                loading={busy}
+                onClick={() => void finish()}
+                icon={<Check size={12} />}
+              >
+                开始使用
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy}
+                onClick={() => setStep(step + 1)}
+                icon={<ArrowRight size={12} />}
               >
                 下一步
-                <ArrowRight size={12} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void finish()}
-                disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg bg-sky-500 px-3 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:opacity-60"
-              >
-                {busy ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <ShieldCheck size={12} />
-                )}
-                开始使用
-              </button>
+              </Button>
             )}
           </div>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }

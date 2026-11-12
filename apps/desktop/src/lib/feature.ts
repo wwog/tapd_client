@@ -42,6 +42,7 @@ export type FeatureCommandName =
   | "notification_island_expand"
   | "notification_island_peek"
   | "notification_island_visible"
+  | "notification_open_bug"
   | "notification_open_main"
   | "notification_settings_get"
   | "notification_settings_set"

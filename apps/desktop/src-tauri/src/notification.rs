@@ -298,13 +298,8 @@ impl NotificationService {
             json!({ "items": items, "quiet": quiet }),
         );
 
-        crate::island_window::apply_island(
-            &self.app,
-            &self.state,
-            !items.is_empty() && !quiet,
-            items.len(),
-            true,
-        );
+        let (expanded, count) = island_layout_state(&items, quiet);
+        crate::island_window::apply_island(&self.app, &self.state, expanded, count, true);
     }
 }
 
@@ -388,10 +383,25 @@ pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
     let (expanded, count) = service()
         .map(|service| {
             let (items, _quiet) = service.pending_payload();
-            (!items.is_empty(), items.len())
+            island_layout_state(&items, false)
         })
         .unwrap_or((false, 0));
     crate::island_window::apply_island(app, state, expanded, count, true);
+}
+
+/// Expanded state and row count for a layout refresh. External AI cards are
+/// rendered by the frontend and registered on the island itself: an expansion
+/// that only holds those cards stays open, but a collapsed capsule never
+/// auto-expands for them.
+fn island_layout_state(items: &[NotificationItem], quiet: bool) -> (bool, usize) {
+    let extra = crate::island_window::extra_cards();
+    let count = items.len() + extra;
+    let expanded = if items.is_empty() {
+        extra > 0 && crate::island_window::is_expanded()
+    } else {
+        !quiet
+    };
+    (expanded, count)
 }
 
 // ---------------------------------------------------------------------------

@@ -68,59 +68,6 @@ pub(crate) fn bug_reference(summary: &BugSummary) -> String {
         .collect()
 }
 
-/// Reuses an existing export of the same bug. An explicit `workspace_name`
-/// changes the parent directory, so every `<slug>-<workspace_id>` folder is
-/// scanned; the newest `bug.md` wins.
-///
-/// Both the short id and the long id are accepted so exports created before
-/// the naming change are still reused.
-pub(crate) fn find_existing_export(
-    paths: &AppPaths,
-    workspace_id: &str,
-    bug_ref: &str,
-    bug_id: &str,
-) -> Option<PathBuf> {
-    let suffix = format!("-{workspace_id}");
-    let refs: Vec<String> = [
-        bug_ref.trim().to_string(),
-        bug_id.trim().to_string(),
-    ]
-    .into_iter()
-    .filter(|value| !value.is_empty())
-    .collect();
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-
-    for workspace_entry in std::fs::read_dir(&paths.exports_dir).ok()?.flatten() {
-        if !workspace_entry.path().is_dir() {
-            continue;
-        }
-        if !workspace_entry.file_name().to_string_lossy().ends_with(&suffix) {
-            continue;
-        }
-        let Ok(children) = std::fs::read_dir(workspace_entry.path()) else {
-            continue;
-        };
-        for child in children.flatten() {
-            let dir = child.path();
-            let name = child.file_name().to_string_lossy().to_string();
-            let matches_bug = refs.iter().any(|reference| {
-                name == *reference || name.starts_with(&format!("{reference}-"))
-            });
-            if !dir.is_dir() || !matches_bug || !dir.join("bug.md").is_file() {
-                continue;
-            }
-            let modified = std::fs::metadata(&dir)
-                .and_then(|meta| meta.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            if best.as_ref().is_none_or(|(latest, _)| modified > *latest) {
-                best = Some((modified, dir));
-            }
-        }
-    }
-
-    best.map(|(_, dir)| dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -654,6 +654,9 @@ pub struct TaskApproval {
 pub struct ExternalClaim {
     pub workspace_id: String,
     pub bug_id: String,
+    /// Project name resolved when the claim registered; empty for old records.
+    #[serde(default)]
+    pub workspace_name: String,
     #[serde(default)]
     pub title: String,
     /// MCP client name from the handshake (for example "Zcode").
@@ -682,6 +685,7 @@ const EXTERNAL_CLAIMS_CACHE_KIND: &str = "external_claims";
 pub struct ExternalClaimRequest {
     pub workspace_id: String,
     pub bug_id: String,
+    pub workspace_name: String,
     pub title: String,
     pub client: String,
     pub model: String,
@@ -799,6 +803,9 @@ pub struct AgentSummary {
     title: Option<String>,
     workspace_name: Option<String>,
     bug_id: Option<String>,
+    /// Fresh external AI work. The capsule shows the client/model here even
+    /// when the desktop queue is idle.
+    external_claims: Vec<ExternalClaim>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1043,11 +1050,20 @@ fn active_task_id(tasks: &[AgentTask]) -> Option<String> {
         .map(|task| task.id.clone())
 }
 
-fn agent_summary(tasks: &[AgentTask]) -> AgentSummary {
+fn agent_summary(tasks: &[AgentTask], mut external_claims: Vec<ExternalClaim>) -> AgentSummary {
     let active_id = active_task_id(tasks);
     let active = active_id
         .as_ref()
         .and_then(|id| tasks.iter().find(|task| &task.id == id));
+
+    // Running claims first, then the newest; the capsule only has room for
+    // the top item and the expanded cards read in this order.
+    external_claims.sort_by(|left, right| {
+        let rank = |status: &str| if status == "running" { 0 } else { 1 };
+        rank(&left.status)
+            .cmp(&rank(&right.status))
+            .then_with(|| right.claimed_at.cmp(&left.claimed_at))
+    });
 
     AgentSummary {
         running: tasks.iter().any(|task| task.status.is_active()),
@@ -1059,6 +1075,7 @@ fn agent_summary(tasks: &[AgentTask]) -> AgentSummary {
         title: active.map(|task| task.title.clone()),
         workspace_name: active.map(|task| task.workspace_name.clone()),
         bug_id: active.map(|task| task.bug_id.clone()),
+        external_claims,
     }
 }
 
@@ -1451,6 +1468,7 @@ impl AgentCore {
             }
         };
         let model = truncate_text(request.model.trim(), 60);
+        let workspace_name = truncate_text(request.workspace_name.trim(), 60);
         let status = match request.status.trim() {
             "queued" => "queued",
             _ => "running",
@@ -1537,7 +1555,7 @@ impl AgentCore {
                     claim.workspace_id == workspace_id
                         && claim.bug_id == bug_id
                         && external_claim_fresh_at(claim, now_secs)
-                        && claim.client != client
+                        && !same_client(&claim.client, &client)
                 })
                 .cloned()
         };
@@ -1573,6 +1591,9 @@ impl AgentCore {
                 if !model.is_empty() {
                     existing.model = model;
                 }
+                if !workspace_name.is_empty() {
+                    existing.workspace_name = workspace_name;
+                }
                 if !note.is_empty() {
                     existing.note = note;
                 }
@@ -1583,6 +1604,7 @@ impl AgentCore {
                 let claim = ExternalClaim {
                     workspace_id,
                     bug_id,
+                    workspace_name,
                     title,
                     client,
                     model,
@@ -1634,7 +1656,7 @@ impl AgentCore {
                     claim.workspace_id == workspace_id
                         && claim.bug_id == bug_id
                         && external_claim_fresh_at(claim, now_secs)
-                        && client.is_some_and(|caller| claim.client != caller)
+                        && client.is_some_and(|caller| !same_client(&claim.client, caller))
                 })
                 .map(|claim| claim.client.clone())
         };
@@ -1692,7 +1714,10 @@ impl AgentCore {
     }
 
     fn summary(&self) -> AgentSummary {
-        agent_summary(&self.tasks.lock().expect("agent tasks lock"))
+        // Same lock order as `tasks_state`: claims before tasks.
+        let external_claims = self.external_claims_snapshot();
+        let tasks = self.tasks.lock().expect("agent tasks lock");
+        agent_summary(&tasks, external_claims)
     }
 
     fn emit_state(&self) {
@@ -2445,13 +2470,15 @@ impl AgentCore {
     async fn run_task(self: &Arc<Self>, mut task: AgentTask) {
         let mut config = self.config_snapshot();
 
-        // 1. Export the bug package (bug.md + assets).
+        // 1. Export the bug package (bug.md + assets). The task prompt is built
+        //    below for the running agent, so no external prompt is written.
         let export = crate::export::run_export(
             &self.app,
             &self.state.paths,
             &task.workspace_id,
             &task.bug_id,
             Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
+            None,
         )
         .await;
 
@@ -2711,6 +2738,13 @@ fn parse_rfc3339_secs(value: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value.trim())
         .ok()
         .map(|time| time.timestamp())
+}
+
+/// The client name is whatever the MCP host sends as `clientInfo.name`, and a
+/// host does not spell it consistently across processes (`Zcode` / `zcode`).
+/// Ownership checks must not hinge on that casing.
+fn same_client(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
 }
 
 /// A claim is valid for `EXTERNAL_CLAIM_TTL_SECS` after its last heartbeat.
@@ -3514,6 +3548,7 @@ mod tests {
         ExternalClaim {
             workspace_id: "45336192".to_string(),
             bug_id: "1145336192001234567".to_string(),
+            workspace_name: "UU".to_string(),
             title: "示例缺陷".to_string(),
             client: "Zcode".to_string(),
             model: "Deepseek".to_string(),
@@ -3576,6 +3611,15 @@ mod tests {
         assert_eq!(external_claim_phrase(&claim), "“Zcode”正在处理该缺陷");
         claim.client.clear();
         assert_eq!(external_claim_phrase(&claim), "“外部 AI”正在处理该缺陷");
+    }
+
+    #[test]
+    fn same_client_ignores_casing_and_padding() {
+        assert!(same_client("Zcode", "zcode"));
+        assert!(same_client(" Zcode ", "zcode"));
+        assert!(same_client("Claude Code", "claude code"));
+        assert!(!same_client("Zcode", "zcode cli"));
+        assert!(!same_client("opencode", "zcode"));
     }
 
     fn sample_task(id: &str, status: TaskStatus) -> AgentTask {
@@ -4115,11 +4159,17 @@ mod tests {
         assert_eq!(value["externalClaims"][0]["client"], "Zcode");
         assert_eq!(value["activeTaskId"], "a");
 
-        let summary = serde_json::to_value(agent_summary(&tasks)).unwrap();
+        let summary = serde_json::to_value(agent_summary(
+            &tasks,
+            vec![sample_claim("2026-11-11T08:00:00Z")],
+        ))
+        .unwrap();
         assert_eq!(summary["running"], true);
         assert_eq!(summary["activeTaskId"], "a");
         assert_eq!(summary["workspaceName"], "UU");
         assert_eq!(summary["bugId"], "1145336192001234567");
+        assert_eq!(summary["externalClaims"][0]["client"], "Zcode");
+        assert_eq!(summary["externalClaims"][0]["workspaceName"], "UU");
     }
 
     #[test]
@@ -4144,7 +4194,7 @@ mod tests {
         assert_eq!(counts.active, 1);
         assert_eq!(counts.awaiting_approval, 1);
 
-        let summary = agent_summary(&tasks);
+        let summary = agent_summary(&tasks, Vec::new());
         assert!(summary.running);
         assert_eq!(summary.awaiting_approval, 1);
         // The first active task in list order is the running one.

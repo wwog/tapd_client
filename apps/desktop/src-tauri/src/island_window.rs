@@ -7,7 +7,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Mutex,
     },
     time::Duration,
@@ -53,6 +53,23 @@ static EXPANDED: AtomicBool = AtomicBool::new(false);
 /// Hover peek requested by the frontend. Only the collapsed layout honours it;
 /// expanded notification cards always win.
 static PEEK: AtomicBool = AtomicBool::new(false);
+/// Cards rendered by the frontend outside the notification payload (external
+/// AI claims). Their count keeps an expansion open across unrelated refreshes
+/// and sizes it when no pending notification exists.
+static EXTRA_CARDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Records how many frontend-fed cards are on the expanded island.
+pub fn set_extra_cards(count: usize) {
+    EXTRA_CARDS.store(count, Ordering::SeqCst);
+}
+
+pub fn extra_cards() -> usize {
+    EXTRA_CARDS.load(Ordering::SeqCst)
+}
+
+pub fn is_expanded() -> bool {
+    EXPANDED.load(Ordering::SeqCst)
+}
 
 /// Records the frontend's wish to keep the idle capsule on screen.
 pub fn set_collapsed_visible(visible: bool) {

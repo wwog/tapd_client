@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use tapd_core::tapd::{
     api::{bug_detail_body, bug_detail_url, parse_bug_detail, parse_workspace_members},
-    changes_list_url, parse_changes_html, BugDetail, ChangeHistory, WorkspaceMember,
+    changes_list_url, parse_changes_html, BugDetail, BugSummary, ChangeHistory,
+    WorkspaceMember,
 };
 use tauri::{AppHandle, Manager};
 
@@ -48,6 +49,23 @@ pub(crate) async fn fetch_bug_detail(
     });
 
     Ok(detail)
+}
+
+/// List-row fields for the 处理中 view.
+///
+/// Same request as the detail, minus the legacy change-history pages: the table
+/// only renders summary fields, and those pages make a per-row call several
+/// times more expensive than it needs to be.
+pub(crate) async fn fetch_bug_summary(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+) -> Result<BugSummary, String> {
+    let body = bug_detail_body(workspace_id, bug_id);
+    let url = bug_detail_url();
+    let root =
+        session_request_json(app, "POST", &url, Some(body), Duration::from_secs(45)).await?;
+    Ok(parse_bug_detail(&root)?.summary)
 }
 
 /// The legacy page returns at most one page of changes per request.

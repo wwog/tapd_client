@@ -45,7 +45,7 @@ use model::{AvailableUpdate, Inner, UpdatePhase, UpdateProgress, UpdateState};
 use notes::{parse_notes, recorded_force};
 
 const RELEASES_URL: &str = "https://github.com/wwog/tapd_client/releases";
-const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
+const CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const STATE_EVENT: &str = "update://state";
 
 /// First line of the release notes when the maintainer requires this update.

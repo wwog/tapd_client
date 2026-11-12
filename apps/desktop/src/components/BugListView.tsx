@@ -250,6 +250,10 @@ function BugListViewImpl(props: Props) {
    * locally, so typing in the search box never re-fetches bug details.
    */
   const processingBugsRef = useRef<BugSummary[]>([]);
+  /** Rows belong to one project; a switch must not paint another project's bugs. */
+  useEffect(() => {
+    processingBugsRef.current = [];
+  }, [workspace?.id]);
   const buildProcessingPageRef = useRef(buildProcessingPage);
   buildProcessingPageRef.current = buildProcessingPage;
   /** A detail batch is in flight; another one would only queue up behind it. */
@@ -350,12 +354,18 @@ function BugListViewImpl(props: Props) {
 
   /**
    * 处理中 has no server query: the rows are exactly the bugs named by live
-   * agent state, so their summaries come from the detail cache plus one live
-   * detail call per bug.
+   * agent state. A scope switch is therefore a local filter over the rows this
+   * session already fetched; only bugs never seen get a summary call (one
+   * request each, no change history).
+   *
+   * `force` refreshes rows that are already on screen: the silent tick, the
+   * retry buttons and tool writes. Entering the tab never forces.
    */
   /** Re-enters `loadProcessing` with the latest ids after a coalesced batch. */
-  const processingRetryRef = useRef<() => void>(() => {});
-  const loadProcessing = useCallback(async () => {
+  const processingRetryRef = useRef<(force: boolean) => void>(() => {});
+  /** A coalesced batch ended while a forced refresh was pending. */
+  const processingForceRef = useRef(false);
+  const loadProcessing = useCallback(async (force = false) => {
     if (!workspace) return;
     const ids = processingKey ? processingKey.split("\u0000") : [];
     if (ids.length === 0) {
@@ -368,54 +378,94 @@ function BugListViewImpl(props: Props) {
       return;
     }
     // A write or `data://refresh` arriving mid-batch must not start a second
-    // round of detail calls: remember it and run once more when this one ends.
+    // round of calls: remember it and run once more when this one ends.
     if (processingInFlightRef.current) {
       processingDirtyRef.current = true;
+      processingForceRef.current = processingForceRef.current || force;
       return;
     }
+
+    const known = new Map(processingBugsRef.current.map((bug) => [bug.id, bug]));
+    /** Bugs already fetched this session; only the rest need a call. */
+    const seen = new Set(known.keys());
+    /** Rows in memory paint immediately; the network only fills the gaps. */
+    const paint = () => {
+      const bugs = ids.flatMap((id) => {
+        const bug = known.get(id);
+        return bug ? [bug] : [];
+      });
+      if (bugs.length === 0) return 0;
+      processingBugsRef.current = bugs;
+      setPage(buildProcessingPageRef.current(bugs));
+      return bugs.length;
+    };
+
+    const painted = paint();
+    const targets = force ? ids : ids.filter((id) => !seen.has(id));
+
+    // Every row is already in memory and nothing asked for a refresh (the user
+    // just switched to this tab): a purely local filter, so no request at all.
+    if (!force && targets.length === 0) {
+      // Still advance the id so a list response from the previous scope cannot
+      // paint over these rows.
+      requestIdRef.current += 1;
+      loadingRef.current = false;
+      lastLoadedAtRef.current = Date.now();
+      setLoading(false);
+      setError(null);
+      setSnapshotAt(null);
+      return;
+    }
+
     const requestId = ++requestIdRef.current;
-    const buildPage = buildProcessingPageRef.current;
     processingInFlightRef.current = true;
     loadingRef.current = true;
     setError(null);
-    setLoading(true);
+    // A first visit has nothing to paint; rows already on screen never dim.
+    if (painted === 0) setLoading(true);
 
-    // Cache-first, like the list: bugs already opened paint immediately, then
-    // the live pass replaces them.
-    let cachedBugs: BugSummary[] = [];
+    // Cache-first for bugs this session has not fetched yet, so a first visit
+    // still paints before the summary calls return.
     let cachedAt: number | null = null;
-    try {
-      const entries = await Promise.all(
-        ids.map((id) => cacheApi.bugDetail(workspace.id, id).catch(() => null)),
-      );
-      if (requestId !== requestIdRef.current) return;
-      cachedBugs = entries.flatMap((entry) => (entry?.data ? [entry.data] : []));
-      if (cachedBugs.length > 0) {
-        const times = entries.flatMap((entry) =>
-          entry?.fetchedAt ? [entry.fetchedAt] : [],
+    if (!force && targets.length > 0) {
+      try {
+        const entries = await Promise.all(
+          targets.map((id) =>
+            cacheApi.bugDetail(workspace.id, id).catch(() => null),
+          ),
         );
-        cachedAt = times.length > 0 ? Math.min(...times) : null;
-        processingBugsRef.current = cachedBugs;
-        setPage(buildPage(cachedBugs));
-        setSnapshotAt(cachedAt);
+        if (requestId !== requestIdRef.current) return;
+        const cached = entries.flatMap((entry) =>
+          entry?.data ? [entry.data] : [],
+        );
+        if (cached.length > 0) {
+          const times = entries.flatMap((entry) =>
+            entry?.fetchedAt ? [entry.fetchedAt] : [],
+          );
+          cachedAt = times.length > 0 ? Math.min(...times) : null;
+          for (const bug of cached) known.set(bug.id, bug);
+          paint();
+          setLoading(false);
+        }
+      } catch {
+        // Cache misses are not page failures; the summary calls decide.
       }
-    } catch {
-      // Cache misses are not page failures; the live request decides.
     }
 
     try {
       const settled = await Promise.allSettled(
-        ids.map((id) => api.bugDetail(workspace.id, id)),
+        targets.map((id) => api.bugSummary(workspace.id, id)),
       );
       if (requestId !== requestIdRef.current) return;
-      const cachedById = new Map(cachedBugs.map((bug) => [bug.id, bug]));
-      // A bug whose live detail failed keeps its cached row instead of
-      // disappearing from the set.
-      const bugs = ids.flatMap((id, index) => {
+      const fresh = targets.flatMap((id, index) => {
         const result = settled[index];
-        if (result?.status === "fulfilled") return [result.value];
-        const cached = cachedById.get(id);
-        return cached ? [cached] : [];
+        if (result?.status !== "fulfilled") return [];
+        known.set(id, result.value);
+        return [result.value];
+      });
+      const bugs = ids.flatMap((id) => {
+        const bug = known.get(id);
+        return bug ? [bug] : [];
       });
       if (bugs.length === 0) {
         setError("正在处理的缺陷加载失败，请稍后重试。");
@@ -424,25 +474,31 @@ function BugListViewImpl(props: Props) {
         return;
       }
       processingBugsRef.current = bugs;
-      setPage(buildPage(bugs));
-      // Only claim freshness when every row came from the live pass.
-      setSnapshotAt(bugs.length === ids.length ? null : cachedAt);
+      setPage(buildProcessingPageRef.current(bugs));
+      // Only claim freshness when every requested row came from the network.
+      if (fresh.length === targets.length) {
+        setSnapshotAt(null);
+      } else if (cachedAt !== null) {
+        setSnapshotAt(cachedAt);
+      }
       setError(null);
     } catch (cause) {
       if (requestId !== requestIdRef.current) return;
-      if (cachedBugs.length === 0) {
+      if (painted === 0) {
         setError(String(cause));
         setPage(null);
         setSnapshotAt(null);
       }
     } finally {
       processingInFlightRef.current = false;
+      const retryForce = processingForceRef.current;
+      processingForceRef.current = false;
       if (processingDirtyRef.current) {
         processingDirtyRef.current = false;
         // Only when this batch is still the newest; a newer request already
         // owns the page.
         if (requestId === requestIdRef.current) {
-          processingRetryRef.current();
+          processingRetryRef.current(retryForce);
         }
       }
       if (requestId === requestIdRef.current) {
@@ -453,14 +509,14 @@ function BugListViewImpl(props: Props) {
     }
   }, [workspace, processingKey]);
 
-  processingRetryRef.current = () => void loadProcessing();
+  processingRetryRef.current = (force) => void loadProcessing(force);
 
   const load = useCallback(
     async (silent = false) => {
       if (scope === "processing") {
-        // The silent 30s tick is a no-op here: activity state arrives as
-        // props, and re-fetching every detail would hammer TAPD.
-        if (!silent) await loadProcessing();
+        // Always a background refresh: the rows on screen stay put and only
+        // their summaries are re-read (no change history).
+        await loadProcessing(true);
         return;
       }
       await loadList(silent);
@@ -471,9 +527,10 @@ function BugListViewImpl(props: Props) {
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  // Server views reload on query changes. 处理中 only reloads when the agent
-  // bug set or the project changes: its filters are applied over the rows it
-  // already has (below), so typing in the search box is not a network event.
+  // Server views reload on query changes. 处理中 is a filter over live agent
+  // state: entering the tab repaints the rows this session already fetched and
+  // only calls for unseen bugs, so typing in the search box is not a network
+  // event either.
   useEffect(() => {
     if (scope === "processing") return;
     void loadList();
@@ -481,8 +538,30 @@ function BugListViewImpl(props: Props) {
 
   useEffect(() => {
     if (scope !== "processing") return;
-    void loadProcessing();
-  }, [scope, loadProcessing, reloadTick, refreshToken]);
+    void loadProcessing(false);
+  }, [scope, loadProcessing]);
+
+  /**
+   * Rows on screen may have changed while a refresh token arrived (tool write,
+   * notification poll, retry pressed); re-read them in the background. Tokens
+   * observed on another scope are not replayed on entry.
+   */
+  const processingTokenRef = useRef({ refreshToken, reloadTick });
+  useEffect(() => {
+    if (scope !== "processing") {
+      processingTokenRef.current = { refreshToken, reloadTick };
+      return;
+    }
+    const previous = processingTokenRef.current;
+    processingTokenRef.current = { refreshToken, reloadTick };
+    if (
+      previous.refreshToken === refreshToken &&
+      previous.reloadTick === reloadTick
+    ) {
+      return;
+    }
+    void loadProcessing(true);
+  }, [scope, refreshToken, reloadTick, loadProcessing]);
 
   useEffect(() => {
     if (scope !== "processing" || processingBugsRef.current.length === 0) return;

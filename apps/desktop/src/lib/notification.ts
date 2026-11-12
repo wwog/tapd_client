@@ -168,11 +168,12 @@ export const notificationApi = {
     actions?: AiAction[];
     tag?: string;
   }) => featureCommand<{ ok: boolean; item: NotificationItem }>("notification_ai_debug", payload),
-  /** Expands the island into cards (or collapses it back to the capsule). */
-  expandIsland: (expanded: boolean) =>
+  /** Expands the island into cards (or collapses it back to the capsule).
+   *  `extra` counts live cards fed by other stores (external AI claims). */
+  expandIsland: (expanded: boolean, extra = 0) =>
     featureCommand<{ ok: boolean; expanded: boolean; count: number }>(
       "notification_island_expand",
-      { expanded },
+      { expanded, extra },
     ),
   /** Shows/hides the collapsed capsule. The idle capsule is not a permanent
    *  indicator, so the frontend hides it once nothing needs attention. */
@@ -184,6 +185,9 @@ export const notificationApi = {
   setPeek: (active: boolean) =>
     featureCommand<{ ok: boolean; active: boolean }>("notification_island_peek", { active }),
   openMain: () => featureCommand<{ ok: boolean }>("notification_open_main"),
+  /** Focus the main window and open one bug's detail (查看缺陷). */
+  openBug: (workspaceId: string, bugId: string) =>
+    featureCommand<{ ok: boolean }>("notification_open_bug", { workspaceId, bugId }),
   /** Starts an OS window drag; the Rust side persists the final position. */
   startDrag: () => featureCommand<{ ok: boolean }>("notification_start_drag"),
 };

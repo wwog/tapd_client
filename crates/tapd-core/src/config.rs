@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Revision of the first-run guide. Bump it whenever the guide changes so every
+/// client sees the new flow once after upgrading.
+pub const ONBOARDING_VERSION: u32 = 2;
+
 /// Persistent user configuration. Secrets are never stored here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -20,8 +24,9 @@ pub struct AppConfig {
     pub last_session_url: Option<String>,
     /// Request capture used during the API discovery phase.
     pub capture_enabled: bool,
-    /// Whether the user has completed first-run onboarding.
-    pub onboarded: bool,
+    /// Onboarding revision the user last completed; `0` = never. The guide is
+    /// shown again whenever this differs from [`ONBOARDING_VERSION`].
+    pub onboarded_version: u32,
     /// Name shown in the UI; purely cosmetic.
     pub device_name: Option<String>,
     /// Chosen "open with" target per resource kind (`image` / `video` / `file`);
@@ -145,7 +150,7 @@ impl Default for AppConfig {
             last_workspace_id: None,
             last_session_url: None,
             capture_enabled: true,
-            onboarded: false,
+            onboarded_version: 0,
             device_name: None,
             open_with: BTreeMap::new(),
             island_anchor: None,
@@ -175,7 +180,16 @@ impl ConfigStore {
 
     pub fn load(&self) -> AppConfig {
         match std::fs::read_to_string(&self.path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            Ok(raw) => {
+                let mut config: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
+                // Configs written before revision tracking used `onboarded: true`
+                // for the first guide. Keep that as revision 1 so an upgrade to
+                // revision 2 still shows the new flow exactly once.
+                if config.onboarded_version == 0 && legacy_onboarded(&raw) {
+                    config.onboarded_version = 1;
+                }
+                config
+            }
             Err(_) => AppConfig::default(),
         }
     }
@@ -199,6 +213,14 @@ impl ConfigStore {
         std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
+}
+
+/// Reads the pre-revision `onboarded` flag out of a raw config document.
+fn legacy_onboarded(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("onboarded").and_then(|flag| flag.as_bool()))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -228,5 +250,50 @@ mod policy_tests {
         assert!(policy.allows_workspace("anything"));
         assert!(policy.allows_status("anything"));
         assert!(policy.writes_enabled);
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> ConfigStore {
+        let path = std::env::temp_dir().join(format!(
+            "tapd-config-test-{name}-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        ConfigStore::new(path)
+    }
+
+    #[test]
+    fn legacy_flag_migrates_to_first_revision() {
+        let store = temp_store("legacy");
+        std::fs::write(store.path(), r#"{"onboarded": true}"#).expect("write config");
+        assert_eq!(store.load().onboarded_version, 1);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn missing_version_means_never_onboarded() {
+        let store = temp_store("fresh");
+        std::fs::write(store.path(), r#"{"onboarded": false}"#).expect("write config");
+        assert_eq!(store.load().onboarded_version, 0);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn stored_version_wins_over_legacy_flag() {
+        let store = temp_store("versioned");
+        std::fs::write(
+            store.path(),
+            r#"{"onboarded": true, "onboardedVersion": 2}"#,
+        )
+        .expect("write config");
+        assert_eq!(store.load().onboarded_version, 2);
+        let _ = std::fs::remove_file(store.path());
     }
 }
