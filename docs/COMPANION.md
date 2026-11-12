@@ -133,4 +133,7 @@
 - **`dist-companion/` 由构建链保证**：根 `build` 先 `build:companion` 再 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。
 - **配对细节**：一次性码 TTL 10min 单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对覆盖旧 token；`companion_status` 不返回 token_hash。
 - **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
-- 验证：cargo test 243 通过（含 15 条 companion 单测：码 TTL/单次/未知、token 命中、限速、serde roundtrip、replace-by-name）；双端 tsc 与 vite 构建通过；移动端 mock 后端浏览器全链路冒烟通过。**真机走查（§6.3）待办**——需运行中的已登录桌面端与同 Wi-Fi 手机。
+- **联调修复（2026-11-13 真实环境）**：移动端列表改用 `/companion/api/workspaces`（state 不含项目）；项目下拉显示 `name`（TAPD `prettyName` 是数字 ID）；`fetch_tapd_media` 将站内相对路径（`/tfl/...`）补全到 `TAPD_HOME` 后再过白名单。
+- **debug 调试缝**：`GET /dev/companion`（运行态快照）与 `POST /dev/companion/pairing`（生成配对码），debug-only，供自动化测试绕开设置卡。
+- **真实环境交互走查（已做，IAB 移动视口 390×844 + 已登录 dev 应用 + Quick Tunnel）**：配对→列表（20 条/15 页）→搜索（关键词 2 条）→详情（信息栅格/短 ID/描述内联截图经媒体代理加载）→翻页（第 2 页）→主题浅/深/跟随系统与字号 14→16px（持久化 `companion.prefs`）→sessionStorage 标签页隔离（新标签页自动回 #/pair）→配对码独占（已消费码二次配对报「配对码无效或已过期」）→Quick Tunnel HTTPS 全链路（`isSecureContext=true`，系统通知分支就位，IAB 宿主 permission=denied 时回落页内横幅）。cargo test 全绿、双端 tsc 通过。桌面端真实手机扫码走查待用户验证。
+- **遗留观察**：IAB 的 Playwright click 命中目标不可靠（fill/坐标点击正常），非产品问题；临时端口重启即换 → 手机端重启后需重新扫码（固有行为）。
