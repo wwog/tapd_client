@@ -13,6 +13,11 @@
 
 - 外部 MCP 的 `tapd_get_bug_prompt` 与应用内 Agent 共用同事注入：启用的同事角色与 `SKILL.md` 路径会写入返回的提示词。
 - Agent 管理从设置页移到 Agent 页的「配置」子视图：运行时选择、参数、生命周期、能力与互通限制平铺显示，不再弹窗。
+- 外观主题与缺陷列表的列、筛选、排序偏好改存本地配置：退出登录清空 WebView 存储后仍然保留。
+
+## 修复
+
+- 顶部胶囊不再抢占焦点：悬停摘要卡不用先点一下胶囊，点击胶囊或卡片按钮时主窗口也保持焦点。悬停改由 AppKit 原生监听（WebKit 与 tao 的默认 tracking rect 只给 key window 报悬停），窗口本身不再成为 key window。
 
 # TAPD Client v1.1.3
 

@@ -34,5 +34,17 @@ toml_edit = "0.22"
 tapd-core = { path = "../../../crates/tapd-core" }
 tauri-plugin-dialog = "2"
 
+# The capsule needs AppKit itself: it must never become the key window, and its
+# hover has to be tracked natively (see `island_window/macos.rs`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+  "NSWindow",
+  "NSView",
+  "NSTrackingArea",
+  "NSEvent",
+] }
+objc2-foundation = { version = "0.3", features = ["NSObject", "NSGeometry"] }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

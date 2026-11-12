@@ -22,6 +22,8 @@ use tauri::{
 use crate::state::SharedState;
 
 mod geometry;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use geometry::{
     island_size, lerp, place_island, ISLAND_TOP_MARGIN, PEEK_HEIGHT, PEEK_WIDTH, PILL_HEIGHT,
@@ -108,9 +110,17 @@ pub(crate) fn ensure_window(app: &AppHandle, state: &SharedState) -> Result<Webv
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
+        // The capsule never takes focus, so the first click has to be delivered
+        // without it being the key window (Electron's `acceptFirstMouse`).
+        .accept_first_mouse(true)
         .visible(false)
         .build()
         .map_err(|error| error.to_string())?;
+
+    // Never become the key window, and track hover natively: WebKit and the
+    // default tracking rect only report hover to the key window.
+    #[cfg(target_os = "macos")]
+    macos::install(app, &window);
 
     let window_for_events = window.clone();
     let app_for_events = app.clone();
@@ -120,6 +130,11 @@ pub(crate) fn ensure_window(app: &AppHandle, state: &SharedState) -> Result<Webv
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window_for_events.hide();
+            }
+            // The capsule must never take focus; log it if it ever does so a
+            // regression is visible instead of "the main window just lost focus".
+            tauri::WindowEvent::Focused(focused) => {
+                tracing::debug!(focused, "capsule focus");
             }
             tauri::WindowEvent::Moved(position) => {
                 // Ignore the moves produced by our own layout animation.

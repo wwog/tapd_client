@@ -26,6 +26,7 @@ import {
   formatNotificationTime,
   NOTIFICATION_KIND_LABELS,
   notificationApi,
+  onIslandHover,
   onIslandLayout,
   onNotificationShow,
   pendingItems,
@@ -77,6 +78,12 @@ export function IslandWindow() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
   const [agentSummary, setAgentSummary] = useState<AgentSummary | null>(null);
+  /** Pointer on the capsule: reported by AppKit (`island://hover`), because the
+   *  window never becomes key and WebKit only tracks hover for that one. */
+  const [nativeHover, setNativeHover] = useState(false);
+  /** DOM hover, kept for platforms without the native tracking above. */
+  const [domHover, setDomHover] = useState(false);
+  const hovered = nativeHover || domHover;
   /** Hovering the collapsed capsule asks Rust to grow the Agent summary card. */
   const [peeking, setPeeking] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
@@ -140,6 +147,7 @@ export function IslandWindow() {
   );
 
   useTauriSubscription(() => onIslandLayout(setLayout), []);
+  useTauriSubscription(() => onIslandHover(setNativeHover), []);
 
   // The main window broadcasts appearance changes; the island applies them so
   // the capsule follows light/dark without a reload.
@@ -267,8 +275,8 @@ export function IslandWindow() {
   // something in flight; notification cards, an update panel and a finished
   // Agent all close it.
   useEffect(() => {
-    if (!agentActive || layout.expanded || updateActive) setPeeking(false);
-  }, [agentActive, layout.expanded, updateActive]);
+    setPeeking(hovered && agentActive && !layout.expanded && !updateActive);
+  }, [hovered, agentActive, layout.expanded, updateActive]);
 
   // Rust owns the window size, so each peek change round-trips once.
   const peekSynced = useRef(false);
@@ -288,16 +296,15 @@ export function IslandWindow() {
     return (
       <div
         className="flex h-full w-full flex-col items-center overflow-hidden"
-        // The card sits inside the same window: leaving the window closes the
-        // peek, moving from the pill down into the card keeps it open.
-        onMouseLeave={() => setPeeking(false)}
+        // The card sits inside the same window: leaving it closes the peek,
+        // moving from the pill down into the card keeps it open. macOS reports
+        // this natively; the DOM events only cover the platforms without it.
+        onMouseLeave={() => setDomHover(false)}
       >
         <div className="flex h-[34px] shrink-0 items-center">
           <button
             type="button"
-            onMouseEnter={() => {
-              if (agentActive) setPeeking(true);
-            }}
+            onMouseEnter={() => setDomHover(true)}
             onMouseDown={(event) => {
               if (event.button === 0) dragStart.current = { x: event.clientX, y: event.clientY };
             }}
@@ -347,7 +354,12 @@ export function IslandWindow() {
                     ? "单击展开通知 · 双击打开客户端 · 可拖动"
                     : "双击打开客户端 · 可拖动"
             }
-            className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition hover:bg-island-hover active:cursor-grabbing"
+            className={clsx(
+              "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
+              // `hover:` only fires in a key window; the native hover state does
+              // not, so it picks the same background itself.
+              hovered ? "bg-island-hover" : "bg-island hover:bg-island-hover",
+            )}
           >
             <StatusDot tone={tone} />
             <span className="font-normal text-island-ink">TAPD</span>

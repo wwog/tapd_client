@@ -208,6 +208,17 @@ export const onIslandLayout = (
 ): Promise<UnlistenFn> =>
   listen<IslandLayout>("island://layout", (event) => callback(event.payload));
 
+/**
+ * Pointer enter/exit of the capsule, tracked by AppKit: the window never
+ * becomes the key window, and WebKit only reports hover to that one.
+ */
+export const onIslandHover = (
+  callback: (active: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ active: boolean }>("island://hover", (event) =>
+    callback(Boolean(event.payload?.active)),
+  );
+
 export const pendingItems = (items: NotificationItem[]): NotificationItem[] =>
   items.filter((item) => item.state === "pending");
 
