@@ -19,12 +19,18 @@ pub(super) struct MediaQuery {
     url: String,
 }
 
+/// One fetched media body plus the upstream headers the proxies forward.
+pub(crate) struct MediaFetch {
+    /// `206` when the upstream honored a forwarded `Range`, else `200`.
+    pub status: StatusCode,
+    pub content_type: String,
+    pub content_range: Option<String>,
+    pub bytes: axum::body::Bytes,
+}
+
 /// Proxies TAPD-hosted images/videos with the session cookies so the main
 /// window can render thumbnails and previews (`<img>`/`<video>` cannot send
 /// the bearer token, hence the separate `media_token` query capability).
-///
-/// `Range` is forwarded and `206`/`Content-Range` are passed through, which is
-/// what the video element needs to seek.
 pub(super) async fn media_proxy(
     State(ctx): State<ApiState>,
     headers: HeaderMap,
@@ -36,39 +42,62 @@ pub(super) async fn media_proxy(
     if query.token.is_empty() || query.token != runtime.media_token {
         return media_error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
-    if !crate::commands::open::is_tapd_media_url(&query.url) {
-        return media_error(StatusCode::BAD_REQUEST, "unsupported media url");
+
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    match fetch_tapd_media(&ctx.app, &query.url, range).await {
+        Ok(fetch) => media_response(fetch),
+        Err((status, message)) => media_error(status, &message),
+    }
+}
+
+/// Fetches a TAPD media URL with the hidden webview session's cookies. Shared
+/// by the loopback media proxy and the companion server; the callers own their
+/// auth and their response envelope.
+///
+/// `Range` is forwarded and `206`/`Content-Range` are passed through, which is
+/// what the video element needs to seek.
+pub(crate) async fn fetch_tapd_media(
+    app: &tauri::AppHandle,
+    url: &str,
+    range: Option<String>,
+) -> Result<MediaFetch, (StatusCode, String)> {
+    let absolute = absolute_media_url(url);
+    if !crate::commands::open::is_tapd_media_url(&absolute) {
+        return Err((StatusCode::BAD_REQUEST, "unsupported media url".to_string()));
     }
 
-    let Some(window) = ctx.app.get_webview_window(session::SESSION_LABEL) else {
-        return media_error(StatusCode::SERVICE_UNAVAILABLE, "session window missing");
+    let Some(window) = app.get_webview_window(session::SESSION_LABEL) else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session window missing".to_string(),
+        ));
     };
     let Ok(cookie) = session::cookie_header(&window) else {
-        return media_error(StatusCode::UNAUTHORIZED, "no session cookie");
+        return Err((StatusCode::UNAUTHORIZED, "no session cookie".to_string()));
     };
 
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent(media::USER_AGENT)
         .timeout(Duration::from_secs(180))
         .build()
-    {
-        Ok(client) => client,
-        Err(error) => return media_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
-    };
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
     let mut request = client
-        .get(&query.url)
+        .get(absolute)
         .header(header::COOKIE, cookie)
         .header(header::REFERER, media::REFERER)
         .header(header::ACCEPT, "*/*");
-    if let Some(range) = headers.get(header::RANGE).and_then(|value| value.to_str().ok()) {
+    if let Some(range) = range {
         request = request.header(header::RANGE, range);
     }
 
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(error) => return media_error(StatusCode::BAD_GATEWAY, &error.to_string()),
-    };
+    let upstream = request
+        .send()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
 
     let status = upstream.status();
     let content_type = upstream
@@ -83,17 +112,20 @@ pub(super) async fn media_proxy(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    let bytes = match upstream.bytes().await {
-        Ok(bytes) => bytes,
-        Err(error) => return media_error(StatusCode::BAD_GATEWAY, &error.to_string()),
-    };
+    let bytes = upstream
+        .bytes()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
     if bytes.len() as u64 > media::MAX_PROXY_BYTES {
-        return media_error(StatusCode::PAYLOAD_TOO_LARGE, "media file is too large");
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "media file is too large".to_string(),
+        ));
     }
     if !status.is_success() {
         let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(160)]).to_string();
-        tracing::warn!(url = %query.url, status = %status, "media proxy failed");
-        return media_error(StatusCode::BAD_GATEWAY, &preview);
+        tracing::warn!(url = %url, status = %status, "media proxy failed");
+        return Err((StatusCode::BAD_GATEWAY, preview));
     }
 
     // TAPD answers with a bare `image` (no subtype) for editor captures.
@@ -103,23 +135,34 @@ pub(super) async fn media_proxy(
         sniff_media_type(&bytes, &content_type)
     };
 
-    let mut response = Response::builder()
-        .status(if status == reqwest::StatusCode::PARTIAL_CONTENT {
+    Ok(MediaFetch {
+        status: if status == reqwest::StatusCode::PARTIAL_CONTENT {
             StatusCode::PARTIAL_CONTENT
         } else {
             StatusCode::OK
-        })
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_LENGTH, bytes.len())
+        },
+        content_type,
+        content_range,
+        bytes,
+    })
+}
+
+/// Builds the proxy response for a fetched media body: `Range`/`206` headers
+/// pass through so video elements can seek.
+pub(crate) fn media_response(fetch: MediaFetch) -> Response {
+    let mut response = Response::builder()
+        .status(fetch.status)
+        .header(header::CONTENT_TYPE, fetch.content_type)
+        .header(header::CONTENT_LENGTH, fetch.bytes.len())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CACHE_CONTROL, "private, max-age=300");
 
-    if let Some(content_range) = content_range {
+    if let Some(content_range) = fetch.content_range {
         response = response.header(header::CONTENT_RANGE, content_range);
     }
 
     response
-        .body(axum::body::Body::from(bytes))
+        .body(axum::body::Body::from(fetch.bytes))
         .unwrap_or_else(|error| media_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()))
 }
 
@@ -148,4 +191,36 @@ fn media_error(status: StatusCode, message: &str) -> Response {
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(axum::body::Body::from(message.to_string()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// TAPD rich text embeds site-relative image paths (`/tfl/captures/...`);
+/// resolve them against the main site so the host allowlist sees one form.
+fn absolute_media_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix('/') {
+        format!("{}{rest}", session::TAPD_HOME)
+    } else {
+        url.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::absolute_media_url;
+
+    #[test]
+    fn resolves_site_relative_paths_against_tapd_home() {
+        assert_eq!(
+            absolute_media_url("/tfl/captures/2026-11/a.png"),
+            "https://www.tapd.cn/tfl/captures/2026-11/a.png"
+        );
+    }
+
+    #[test]
+    fn keeps_absolute_urls_untouched() {
+        assert_eq!(
+            absolute_media_url("https://file.tapd.cn/a/b.png"),
+            "https://file.tapd.cn/a/b.png"
+        );
+        assert_eq!(absolute_media_url("file:///etc/passwd"), "file:///etc/passwd");
+    }
 }

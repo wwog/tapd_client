@@ -27,6 +27,7 @@ use tapd_core::runtime::RuntimeInfo;
 use crate::state::SharedState;
 
 use auth::{authorized, unauthorized};
+pub(crate) use proxy::{fetch_tapd_media, media_response};
 
 #[derive(Clone)]
 struct ApiState {
@@ -78,7 +79,9 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/call", post(dev::dev_call))
         .route("/dev/cookies", get(dev::dev_cookies))
         .route("/dev/export", post(dev::dev_export))
-        .route("/dev/feature", post(dev::dev_feature));
+        .route("/dev/feature", post(dev::dev_feature))
+        .route("/dev/companion", get(dev::dev_companion))
+        .route("/dev/companion/pairing", post(dev::dev_companion_pairing));
 
     let router = router.with_state(api_state);
 
@@ -212,7 +215,7 @@ fn decode_form(value: &str) -> String {
 }
 
 /// Two concatenated v4 UUIDs: 64 hex characters of unpredictable token.
-fn opaque_token() -> String {
+pub(crate) fn opaque_token() -> String {
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),

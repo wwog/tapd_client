@@ -236,13 +236,15 @@ pub async fn session_logout(app: AppHandle, state: State<'_, SharedState>) -> Re
     Ok(())
 }
 
-#[tauri::command]
-pub async fn workspace_context(
-    app: AppHandle,
-    state: State<'_, SharedState>,
+/// Loads the signed-in user and their workspaces; also refreshes the cached
+/// avatar on every call. Shared by the Tauri command and the companion server,
+/// so the phone renders exactly the data the desktop UI sees.
+pub async fn workspace_context_core(
+    app: &AppHandle,
+    state: &SharedState,
 ) -> Result<WorkspaceContext, String> {
     let root = session_request_json(
-        &app,
+        app,
         "GET",
         &user_workspace_url("0"),
         None,
@@ -287,21 +289,28 @@ pub async fn workspace_context(
     Ok(context)
 }
 
+#[tauri::command]
+pub async fn workspace_context(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<WorkspaceContext, String> {
+    workspace_context_core(&app, state.inner()).await
+}
+
 /// Fetches one bug-list page.
 ///
 /// `observe` means the caller has the bug list on screen. The backend still
 /// requires the main window to be focused right now, so a background
 /// auto-refresh while the user is in another app never silences notifications.
-#[tauri::command]
-pub async fn bug_list(
-    app: AppHandle,
-    state: State<'_, SharedState>,
+pub async fn bug_list_core(
+    app: &AppHandle,
+    state: &SharedState,
     query: BugQuery,
-    observe: Option<bool>,
+    observe: bool,
 ) -> Result<BugListPage, String> {
     let body = query.body();
     let root = session_request_json(
-        &app,
+        app,
         "POST",
         &bug_list_url(),
         Some(body),
@@ -315,11 +324,37 @@ pub async fn bug_list(
     // A focused list refresh (manual or the periodic one) is an observation
     // round: the user already sees these rows, so a later poll must not turn
     // them into notifications.
-    if observe.unwrap_or(false) && main_window_focused(&app) {
+    if observe && main_window_focused(app) {
         crate::notification::observe_bug_page(&page.bugs);
     }
 
     Ok(page)
+}
+
+#[tauri::command]
+pub async fn bug_list(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    query: BugQuery,
+    observe: Option<bool>,
+) -> Result<BugListPage, String> {
+    bug_list_core(&app, state.inner(), query, observe.unwrap_or(false)).await
+}
+
+/// Loads one bug detail and refreshes the offline cache. Companion callers go
+/// through here so the phone's reads warm the same cache the desktop paints
+/// from; MCP/export callers keep using `fetch_bug_detail` directly because
+/// they need the freshest detail and skip the cache write.
+pub async fn bug_detail_core(
+    app: &AppHandle,
+    state: &SharedState,
+    workspace_id: &str,
+    bug_id: &str,
+) -> Result<BugDetail, String> {
+    let detail = fetch_bug_detail(app, workspace_id, bug_id).await?;
+    state.cache.put_bug_detail(workspace_id, bug_id, &detail);
+
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -329,12 +364,7 @@ pub async fn bug_detail(
     workspace_id: String,
     bug_id: String,
 ) -> Result<BugDetail, String> {
-    // Cached here (not in `fetch_bug_detail`) so MCP/export callers, which need
-    // the freshest detail for their own output, don't pay for cache writes.
-    let detail = fetch_bug_detail(&app, &workspace_id, &bug_id).await?;
-    state.cache.put_bug_detail(&workspace_id, &bug_id, &detail);
-
-    Ok(detail)
+    bug_detail_core(&app, state.inner(), &workspace_id, &bug_id).await
 }
 
 /// One bug's list-row fields, without the change-history pages.

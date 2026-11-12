@@ -35,6 +35,10 @@ toml_edit = "0.22"
 tapd-core = { path = "../../../crates/tapd-core" }
 tapd-workflow = { path = "../../../crates/tapd-workflow" }
 tauri-plugin-dialog = "2"
+# Companion LAN server: local address for the pairing URL, embedded SPA assets
+# (debug builds read `dist-companion/` from disk, release embeds them).
+local-ip-address = "0.6"
+rust-embed = "8"
 
 # The capsule needs AppKit itself: it must never become the key window, and its
 # hover has to be tracked natively (see `island_window/macos.rs`).

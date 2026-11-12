@@ -184,3 +184,49 @@ pub(super) async fn dev_call(
         ),
     }
 }
+
+/// Companion runtime snapshot for dev tooling: server port, LAN IP and the
+/// current one-time pairing code, so tests can drive the companion without
+/// clicking the settings card.
+pub(super) async fn dev_companion(
+    State(ctx): State<ApiState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    if !authorized(&ctx.state, &headers) {
+        return unauthorized();
+    }
+    let runtime = ctx.state.companion.lock().expect("companion lock");
+    let pairing = runtime.pairing.as_ref().map(|pairing| {
+        json!({ "code": pairing.code, "expiresAt": pairing.expires_at.to_rfc3339() })
+    });
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "data": {
+                "enabled": ctx.state.config_snapshot().companion.enabled,
+                "running": runtime.task.is_some(),
+                "port": runtime.port,
+                "lanIp": crate::companion::lan_ipv4().map(|ip| ip.to_string()),
+                "pairing": pairing,
+            }
+        })),
+    )
+}
+
+/// Generates a fresh one-time pairing code (same path as the settings card).
+pub(super) async fn dev_companion_pairing(
+    State(ctx): State<ApiState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    if !authorized(&ctx.state, &headers) {
+        return unauthorized();
+    }
+    match crate::companion::pairing_code(&ctx.state) {
+        Ok(info) => (StatusCode::OK, Json(json!({ "ok": true, "data": info }))),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+    }
+}

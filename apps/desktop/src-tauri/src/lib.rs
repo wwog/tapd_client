@@ -3,6 +3,7 @@ mod agent_scan;
 mod bug_write;
 mod cache;
 mod commands;
+mod companion;
 mod coworker;
 mod diagnostics;
 mod export;
@@ -109,6 +110,11 @@ pub fn run() {
             commands::list_dirs,
             commands::open_targets,
             commands::set_open_target,
+            companion::companion_status,
+            companion::companion_set_enabled,
+            companion::companion_set_require_code,
+            companion::companion_pairing_code,
+            companion::companion_unpair,
             update::update_state,
             update::update_check,
             update::update_install,
@@ -127,6 +133,17 @@ pub fn run() {
                     tracing::error!(%error, "local API server stopped");
                 }
             });
+
+            // Companion LAN server, opt-in: only boots when the user enabled it.
+            if setup_state.config_snapshot().companion.enabled {
+                let companion_state = setup_state.clone();
+                let companion_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = companion::start(companion_handle, companion_state).await {
+                        tracing::error!(%error, "companion server failed to start");
+                    }
+                });
+            }
 
             // The TAPD webview is a background session holder only. The login
             // screen mirrors its QR code, so it must never be shown at boot.
@@ -169,6 +186,9 @@ pub fn run() {
                     // Persist the final geometry before the config file goes away.
                     window_state::save_now(app, &state);
                     RuntimeInfo::clear(&state.paths.runtime_file);
+                    // The companion listener and its in-memory pairing code must
+                    // not outlive the process.
+                    companion::stop(state.inner());
                 }
             }
             // macOS: clicking the Dock icon brings the hidden main window back,

@@ -324,6 +324,29 @@ export type DiagnosticsResult = {
   zipped: boolean;
 };
 
+/** One phone paired with the desktop companion server. */
+export type CompanionDevice = {
+  id: string;
+  name: string;
+  pairedAt: string;
+};
+
+export type CompanionStatus = {
+  enabled: boolean;
+  running: boolean;
+  requirePairingCode: boolean;
+  port?: number;
+  lanIp?: string | null;
+  devices: CompanionDevice[];
+};
+
+/** One-time pairing code: TTL 10 minutes, single use. */
+export type PairingCode = {
+  code: string;
+  url: string;
+  expiresAt: string;
+};
+
 export type OpenMediaMode = "file" | "browser" | "reveal" | "path";
 
 export type DirEntryInfo = { name: string; path: string };
@@ -445,6 +468,17 @@ export const api = {
     }),
   /** Wipes the app data directory and restarts the app. */
   clearAppData: () => invoke<void>("clear_app_data"),
+};
+
+/** Mobile companion server: status, enablement, pairing and unpairing. */
+export const companionApi = {
+  status: () => invoke<CompanionStatus>("companion_status"),
+  setRequireCode: (require: boolean) =>
+    invoke<void>("companion_set_require_code", { require }),
+  setEnabled: (enabled: boolean) =>
+    invoke<void>("companion_set_enabled", { enabled }),
+  pairingCode: () => invoke<PairingCode>("companion_pairing_code"),
+  unpair: (deviceId: string) => invoke<void>("companion_unpair", { deviceId }),
 };
 
 export const onSessionChanged = (callback: () => void): Promise<UnlistenFn> =>
