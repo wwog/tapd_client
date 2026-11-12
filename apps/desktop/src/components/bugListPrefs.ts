@@ -80,7 +80,7 @@ export type BugFilters = {
   owners: string[];
   /** 创建人 (TAPD `reporter`) nickname. */
   creator: string;
-  /** Title keyword, matched with TAPD's `like` filter. */
+  /** Title keyword; digits-only values match a bug id (full or short). */
   keyword: string;
 };
 

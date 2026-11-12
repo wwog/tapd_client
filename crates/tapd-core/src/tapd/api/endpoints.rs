@@ -57,6 +57,7 @@ pub struct BugQuery {
     pub priorities: Vec<String>,
     /// Severity keys such as `fatal`, `serious`, `normal`, `prompt`, `advice`.
     pub severities: Vec<String>,
+    /// Title keyword; a digits-only keyword is matched as a bug id instead.
     pub keyword: Option<String>,
     /// `YYYY-MM-DD HH:MM:SS`; matched with an open-ended range.
     pub modified_after: Option<String>,
@@ -97,6 +98,17 @@ impl BugQuery {
             workspace_id: workspace_id.into(),
             ..Self::default()
         }
+    }
+
+    /// The bug id the keyword points at, when the keyword is digits only.
+    ///
+    /// TAPD's `id` filter accepts both the full id and the workspace short id
+    /// shown in the list column (`#1010667`); the leading `#` is part of the
+    /// caption, not the id.
+    pub fn keyword_id(&self) -> Option<&str> {
+        let keyword = self.keyword.as_deref()?.trim();
+        let id = keyword.strip_prefix('#').unwrap_or(keyword).trim();
+        (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then_some(id)
     }
 
     pub fn body(&self) -> Value {
@@ -158,7 +170,15 @@ impl BugQuery {
             ));
         }
         if let Some(keyword) = non_empty(self.keyword.as_deref()) {
-            filters.push(filter_expr("name", "input", "like", json!(keyword)));
+            // A digits-only keyword is an id lookup, not a title match. Keeping
+            // it a single filter (instead of OR-ing `id` with `name`) leaves
+            // every other filter combined with AND.
+            match self.keyword_id() {
+                // The value must stay a JSON string: a full TAPD id is larger
+                // than JavaScript's safe integer range.
+                Some(id) => filters.push(filter_expr("id", "input", "equal", json!(id))),
+                None => filters.push(filter_expr("name", "input", "like", json!(keyword))),
+            }
         }
         if let Some(after) = non_empty(self.modified_after.as_deref()) {
             filters.push(filter_expr(

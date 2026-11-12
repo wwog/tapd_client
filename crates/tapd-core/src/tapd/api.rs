@@ -100,6 +100,44 @@ mod tests {
     }
 
     #[test]
+    fn digits_keyword_filters_by_bug_id() {
+        let query = BugQuery {
+            workspace_id: "45336192".to_string(),
+            // The list column renders `#<short id>`; pasting it must work.
+            keyword: Some(" #1010667 ".to_string()),
+            ..BugQuery::default()
+        };
+        let body = query.body();
+        let filters = body
+            .pointer("/filter_expr/data")
+            .and_then(Value::as_array)
+            .expect("filters");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0]["fieldSystemName"], "id");
+        assert_eq!(filters[0]["fieldType"], "input");
+        assert_eq!(filters[0]["fieldOption"], "equal");
+        // A JSON number of this size loses precision in TAPD's web session.
+        assert_eq!(filters[0]["value"], json!("1010667"));
+    }
+
+    #[test]
+    fn text_keyword_filters_by_title() {
+        let query = BugQuery {
+            workspace_id: "45336192".to_string(),
+            keyword: Some("崩溃".to_string()),
+            ..BugQuery::default()
+        };
+        let body = query.body();
+        let filters = body
+            .pointer("/filter_expr/data")
+            .and_then(Value::as_array)
+            .expect("filters");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0]["fieldSystemName"], "name");
+        assert_eq!(filters[0]["fieldOption"], "like");
+    }
+
+    #[test]
     fn parses_workspace_list() {
         let root = json!({
             "data": {

@@ -99,7 +99,6 @@ async fn dispatch(
         "tapd_list_my_bugs" => read::list_my_bugs(app, state, arguments).await,
         "tapd_get_bug" => read::get_bug(app, state, arguments).await,
         "tapd_export_bug_md" => read::export_bug_md(app, state, arguments).await,
-        "tapd_get_bug_prompt" => read::get_bug_prompt(app, state, arguments).await,
         "tapd_get_bug_transitions" => write::get_bug_transitions(app, state, arguments).await,
         "tapd_add_bug_comment" => write::add_bug_comment(app, state, arguments).await,
         "tapd_update_bug_status" => write::update_bug_status(app, state, arguments).await,
@@ -125,14 +124,13 @@ mod manifest_tests {
 
     /// Mirrors the arms in [`super::dispatch`]. The test below fails when this
     /// list and `tapd_core::mcp::TOOLS` drift apart in either direction.
-    const DISPATCHED_TOOLS: [&str; 16] = [
+    const DISPATCHED_TOOLS: [&str; 15] = [
         "tapd_whoami",
         "tapd_list_projects",
         "tapd_list_bugs",
         "tapd_list_my_bugs",
         "tapd_get_bug",
         "tapd_export_bug_md",
-        "tapd_get_bug_prompt",
         "tapd_get_bug_transitions",
         "tapd_add_bug_comment",
         "tapd_update_bug_status",

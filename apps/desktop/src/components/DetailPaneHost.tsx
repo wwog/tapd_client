@@ -43,7 +43,11 @@ type Props = {
   onClaim: (detail: BugDetail) => Promise<void>;
   onAddComment: (detail: BugDetail, comment: string) => Promise<void>;
   onChangeField: (detail: BugDetail, field: string, value: string) => Promise<void>;
-  onTransition: (detail: BugDetail, status: string) => Promise<void>;
+  onTransition: (
+    detail: BugDetail,
+    status: string,
+    fields?: Record<string, string>,
+  ) => Promise<void>;
 };
 
 /**

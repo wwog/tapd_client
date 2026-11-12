@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { api, type AppInfo } from "../lib/api";
+import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
@@ -50,11 +51,11 @@ export function SettingsPage(props: Props) {
   const exportDiagnostics = async () => {
     setDiagnosing(true);
     try {
-      const result = await api.exportDiagnostics();
-      toast(
-        "ok",
-        `诊断包已导出（${result.files} 个文件，${formatKilobytes(result.bytes)}）：${result.path}`,
-      );
+      const dir = await pickExportDir(info?.paths.exportsDir);
+      if (!dir) return;
+      const result = await api.exportDiagnostics(dir);
+      // Opening the destination is the success signal; toasts stay reserved
+      // for failures.
       onOpenPath(result.folder);
     } catch (error) {
       toast("error", String(error));
@@ -225,7 +226,7 @@ export function SettingsPage(props: Props) {
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
               <FileJson size={15} className="text-slate-400" />
-              接口抓包
+              接口历史
             </h2>
           </div>
           <Button
@@ -234,7 +235,7 @@ export function SettingsPage(props: Props) {
             onClick={() => setCapturesOpen(true)}
             icon={<FileJson size={13} />}
           >
-            打开抓包
+            打开历史
           </Button>
         </div>
       </section>
@@ -260,7 +261,7 @@ export function SettingsPage(props: Props) {
 
       {capturesOpen ? (
         <Dialog
-          title="接口抓包"
+          title="接口历史"
           icon={<FileJson size={15} className="text-slate-400" />}
           onClose={() => setCapturesOpen(false)}
           size="wide"
@@ -270,12 +271,6 @@ export function SettingsPage(props: Props) {
       ) : null}
     </div>
   );
-}
-
-function formatKilobytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function PlainRow(props: { label: string; value: string; onCopy: (text: string) => void }) {

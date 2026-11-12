@@ -5,7 +5,7 @@ use super::ToolSpec;
 
 pub(super) const TAPD_GET_BUG: ToolSpec = ToolSpec {
     name: r#"tapd_get_bug"#,
-    description: r#"获取缺陷完整详情：描述（含内联图片/视频链接）、评论、附件、元数据与自定义字段。"#,
+    description: r#"获取缺陷完整详情：描述（含内联图片/视频链接）、评论、附件、元数据与自定义字段。返回的 tapdIntegration 是交付流程的唯一说明：认领、简单/复杂改动是否先由用户复核测试、commit 与回写顺序；客户端启用了同事时还会返回 coworkerSkills（技能包 SKILL.md 路径），动手前先完整读取。要开始修复时调用 tapd_export_bug_md，它会返回完整的修复提示词 prompt。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -31,7 +31,7 @@ pub(super) const TAPD_GET_BUG: ToolSpec = ToolSpec {
 
 pub(super) const TAPD_EXPORT_BUG_MD: ToolSpec = ToolSpec {
     name: r#"tapd_export_bug_md"#,
-    description: r#"把缺陷导出为可直接交给 AI 的 Markdown 包：bug.md + assets/ + bug.json。返回本地绝对路径。"#,
+    description: r#"导出缺陷为可直接交给 AI 的 Markdown 包：bug.md + assets/ + bug.json + prompt.md，并直接返回 prompt（项目规则、本地仓库、同事技能包组成的修复提示词，可直接作为本轮任务说明）。客户端启用了同事时，技能包会一并复制到 skills/，bug.md 末尾列出这些 SKILL.md。返回本地绝对路径与 prompt / promptPath。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -50,54 +50,10 @@ pub(super) const TAPD_EXPORT_BUG_MD: ToolSpec = ToolSpec {
     "workspace_name": {
       "type": "string",
       "description": "项目名称，仅用于目录命名"
-    }
-  },
-  "required": [
-    "bug_id"
-  ],
-  "additionalProperties": false
-}"#,
-};
-
-pub(super) const TAPD_GET_BUG_PROMPT: ToolSpec = ToolSpec {
-    name: r#"tapd_get_bug_prompt"#,
-    description: r#"按缺陷 id 生成一份可直接使用的修复提示词：复用客户端 Agent 的 {{变量}} 渲染，包含项目规则、本地仓库与已导出的 bug.md 路径。默认使用面向外部 AI 的 MCP 模板；kind=agent 返回「设置 → Agent 修复」中的全局模板原文；也可用 template 传自定义模板。返回 prompt 以及 mdPath / repoPath 等结构化字段。"#,
-    schema: r#"{
-  "type": "object",
-  "properties": {
-    "workspace_id": {
-      "type": "string",
-      "description": "项目 ID；省略时按 root 匹配或使用上次选择的项目"
-    },
-    "root": {
-      "type": "string",
-      "description": "本地仓库/工作目录绝对路径；用于按项目设置里的「本地文件夹」自动匹配 TAPD 项目。省略时由客户端 cwd 自动填入"
-    },
-    "bug_id": {
-      "type": "string",
-      "description": "缺陷长 ID"
-    },
-    "kind": {
-      "type": "string",
-      "enum": [
-        "mcp",
-        "agent"
-      ],
-      "default": "mcp",
-      "description": "mcp：内置模板（无审核队列，适合外部客户端）；agent：客户端「设置 → Agent 修复」里的全局模板原文"
-    },
-    "template": {
-      "type": "string",
-      "description": "自定义模板，优先级最高。支持 {{title}} {{md_path}} {{repo_path}} {{workspace_name}} {{bug_id}} {{severity}} {{priority}} {{project_rule}} {{user_prompt}} {{attachments}} {{task_id}}"
     },
     "instructions": {
       "type": "string",
-      "description": "补充说明，渲染到 {{user_prompt}}"
-    },
-    "refresh": {
-      "type": "boolean",
-      "default": false,
-      "description": "强制重新导出 MD 包（默认复用已有导出）"
+      "description": "可选；补充说明，渲染到返回 prompt 的末尾，作为本轮额外要求"
     }
   },
   "required": [
@@ -165,7 +121,7 @@ pub(super) const TAPD_ADD_BUG_COMMENT: ToolSpec = ToolSpec {
 
 pub(super) const TAPD_UPDATE_BUG_STATUS: ToolSpec = ToolSpec {
     name: r#"tapd_update_bug_status"#,
-    description: r#"更新缺陷状态。status 可传 key（如 resolved）或中文名（如 已解决）。若目标不能直接到达（例如 new → 已解决），会自动先流转到处理中再执行。可先调用 tapd_get_bug_transitions 查看允许的下一步。可同时传入 comment，在状态变更前追加说明。"#,
+    description: r#"更新缺陷状态。status 可传 key（如 resolved）或中文名（如 已解决）。若目标不能直接到达（例如 new → 已解决），会自动先流转到处理中再执行。可先调用 tapd_get_bug_transitions 查看允许的下一步。可同时传入 comment，在状态变更前追加说明。客户端会按 TAPD 工作流配置自动填充本次流转所需的工作流字段默认值（处理人/开发人员/测试人员等，与 TAPD 网页端流转弹窗一致），可用 fields 覆盖这些默认值。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -189,7 +145,33 @@ pub(super) const TAPD_UPDATE_BUG_STATUS: ToolSpec = ToolSpec {
       "description": "可选；状态变更前追加的评论"
     },
     "fields": {
-      "description": "可选；透传给 TAPD 流转接口的额外字段，通常为空数组"
+      "type": [
+        "object",
+        "array",
+        "null"
+      ],
+      "description": "可选；覆盖本次流转的工作流字段默认值。推荐用对象映射，例如 {\"current_owner\":\"张三\",\"resolution\":\"fixed\"}；也接受 [{ \"name\": \"current_owner\", \"value\": \"张三\" }] 形式的行数组（字段名也可用 field 或 key）。未提供的字段沿用 TAPD 工作流配置（如处理人取记录值或创建人）；null 或空数组 [] 都表示全部使用工作流默认值。",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "required": [

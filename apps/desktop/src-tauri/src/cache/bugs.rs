@@ -142,8 +142,13 @@ fn matches_query(query: &BugQuery, bug: &BugSummary) -> bool {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let needle = keyword.to_lowercase();
-        if !bug.title.to_lowercase().contains(&needle) {
+        // Same rule as the server-side filter: digits are an id lookup, which
+        // covers both the full id and the short id shown in the list.
+        let hit = match query.keyword_id() {
+            Some(id) => bug.id == id || bug.short_id == id,
+            None => bug.title.to_lowercase().contains(&keyword.to_lowercase()),
+        };
+        if !hit {
             return false;
         }
     }

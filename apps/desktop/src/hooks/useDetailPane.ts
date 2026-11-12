@@ -269,18 +269,23 @@ export function useDetailPane({
   );
 
   const transitionBug = useCallback(
-    async (target: BugDetail, status: string) => {
+    async (
+      target: BugDetail,
+      status: string,
+      fields?: Record<string, string>,
+    ) => {
       try {
         const result = await api.bugTransition(
           target.workspaceId,
           target.id,
           status,
+          fields,
         );
         showToast("ok", `状态已流转为「${result.label}」`);
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
-        showToast("error", String(error));
+        // The transition dialog shows the failure inline; no toast on top.
         throw error;
       }
     },

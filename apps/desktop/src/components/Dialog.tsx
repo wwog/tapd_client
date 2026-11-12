@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
+import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 
 /** Shared settings modal: overlay, fixed header and a scrolling body. */
@@ -16,7 +17,7 @@ export function Dialog(props: {
   bodyScroll?: boolean;
   children: ReactNode;
 }) {
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[1px]"
       onMouseDown={(event) => {
@@ -58,6 +59,7 @@ export function Dialog(props: {
           {props.children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

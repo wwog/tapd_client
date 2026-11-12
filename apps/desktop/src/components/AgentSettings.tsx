@@ -15,6 +15,7 @@ const PROMPT_VARIABLES = [
   "{{severity}}",
   "{{priority}}",
   "{{project_rule}}",
+  "{{coworker}}",
 ];
 
 type Props = {
@@ -104,7 +105,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span
               className="text-ui-sm text-slate-600"
-              title="变量会替换为缺陷信息；{{project_rule}} 来自项目设置。"
+              title="变量会替换为缺陷信息；{{project_rule}} 来自项目设置，{{coworker}} 来自同事页启用的同事（没有插槽时自动追加）。"
             >
               提示词模板
             </span>
@@ -129,6 +130,10 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
               </span>
             ))}
           </div>
+          <p className="mt-1.5 text-ui-xs text-slate-400">
+            当前启用 {config.coworkerIds?.length ?? 0} 位同事，任务开始时填入{" "}
+            <span className="font-mono">{"{{coworker}}"}</span>；模板没有该变量时自动追加。
+          </p>
         </div>
 
         <details className="rounded-xl border border-slate-100 bg-slate-50/50">

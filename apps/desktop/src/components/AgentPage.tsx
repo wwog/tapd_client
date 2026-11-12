@@ -16,7 +16,7 @@ import { openTaskExportDir } from "../lib/desktop";
 import { AgentApproval } from "./AgentApproval";
 import { AgentConfigPane } from "./AgentConfigPane";
 import { AgentHistory } from "./AgentHistory";
-import { AgentQueuePane } from "./AgentQueuePane";
+import { AgentQueuePane, QUEUE_PANE_WIDTH } from "./AgentQueuePane";
 import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
 import { AgentTaskHeader } from "./AgentTaskHeader";
@@ -26,6 +26,27 @@ import { Button } from "./ui";
 const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running"];
 const isActiveStatus = (status: AgentTaskStatus) => ACTIVE_STATUSES.includes(status);
 const isApprovalStatus = (status: AgentTaskStatus) => status === "awaiting_approval";
+
+/** Tabs whose left column is a list that can collapse into the detail pane. */
+const LIST_TABS = ["run", "approval", "history"] as const;
+type ListTab = (typeof LIST_TABS)[number];
+const isListTab = (tab: AgentTab): tab is ListTab =>
+  (LIST_TABS as readonly AgentTab[]).includes(tab);
+
+/** Gap between the list column and the detail section. */
+const LIST_PANE_GAP = 12;
+/**
+ * Detail width each tab still reads well at. Narrower than this and the list
+ * column auto-collapses: the TUI needs room for the task header, the review
+ * card and record detail just need their buttons and meta grid to wrap sanely.
+ */
+const DETAIL_MIN_WIDTH: Record<ListTab, number> = {
+  run: 560,
+  approval: 480,
+  history: 480,
+};
+const autoCollapseWidth = (tab: ListTab) =>
+  QUEUE_PANE_WIDTH + LIST_PANE_GAP + DETAIL_MIN_WIDTH[tab];
 
 type Props = {
   /** Task selected by the island capsule (`agent://focus`). */
@@ -63,6 +84,21 @@ export function AgentPage({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Runtime catalog, used to show which agent owns the selected task. */
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
+  /** List tab -> its left column is collapsed to give the detail its width. */
+  const [listCollapsed, setListCollapsed] = useState<Record<ListTab, boolean>>({
+    run: false,
+    approval: false,
+    history: false,
+  });
+  /** Width of the mounted list split (not the viewport), measured. */
+  const [listAreaWidth, setListAreaWidth] = useState<number | null>(null);
+  const listAreaRef = useRef<HTMLDivElement | null>(null);
+  /** Latched narrow flag per tab; widening never re-expands the list. */
+  const listNarrowRef = useRef<Record<ListTab, boolean>>({
+    run: false,
+    approval: false,
+    history: false,
+  });
 
   const appliedFocusRef = useRef<string | null>(null);
   const focusRefreshRef = useRef<string | null>(null);
@@ -101,6 +137,34 @@ export function AgentPage({
       cancelled = true;
     };
   }, []);
+
+  // Measure the list split rather than the viewport: the detail drawer and the
+  // project column both take width away from this page. Only one list tab is
+  // mounted at a time, so one ref and one observer cover all three.
+  useEffect(() => {
+    const node = listAreaRef.current;
+    setListAreaWidth(null);
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number" && width > 0) setListAreaWidth(width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [tab]);
+
+  // Collapsing is one-way per tab: crossing into a narrow area hides the list,
+  // but widening the window leaves the user's expanded choice alone.
+  useEffect(() => {
+    if (!isListTab(tab) || listAreaWidth === null) return;
+    const narrow = listAreaWidth < autoCollapseWidth(tab);
+    if (narrow && !listNarrowRef.current[tab]) {
+      setListCollapsed((current) =>
+        current[tab] ? current : { ...current, [tab]: true },
+      );
+    }
+    listNarrowRef.current[tab] = narrow;
+  }, [tab, listAreaWidth]);
 
   // Follow the island capsule's focus request. Terminal tasks belong to the
   // history tab; active/queued ones to the run tab.
@@ -263,6 +327,11 @@ export function AgentPage({
         onTabChange={setTab}
         counts={counts}
         actionBusy={actionBusy}
+        listCollapsed={isListTab(tab) ? listCollapsed[tab] : false}
+        onToggleList={() => {
+          if (!isListTab(tab)) return;
+          setListCollapsed((current) => ({ ...current, [tab]: !current[tab] }));
+        }}
         onResumeQueue={handleResumeQueue}
         onRefresh={() => void refresh()}
       />
@@ -289,6 +358,8 @@ export function AgentPage({
             setTab("run");
           }}
           toast={toast}
+          areaRef={listAreaRef}
+          listCollapsed={listCollapsed.history}
         />
       ) : tab === "approval" ? (
         <AgentApproval
@@ -300,19 +371,23 @@ export function AgentPage({
           onResumeQueue={handleResumeQueue}
           onOpenBug={onOpenBug}
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
+          areaRef={listAreaRef}
+          listCollapsed={listCollapsed.approval}
         />
       ) : (
-        <div className="flex min-h-0 flex-1 gap-3">
-          <AgentQueuePane
-            loaded={loaded}
-            runTasks={runTasks}
-            activeRunTasks={activeRunTasks}
-            queuedTasks={queuedTasks}
-            selectedId={selectedId}
-            queuePosition={queuePosition}
-            runtimeStatus={tasksState?.runtimeStatus}
-            onSelect={setExplicitTaskId}
-          />
+        <div ref={listAreaRef} className="flex min-h-0 flex-1 gap-3">
+          {listCollapsed.run ? null : (
+            <AgentQueuePane
+              loaded={loaded}
+              runTasks={runTasks}
+              activeRunTasks={activeRunTasks}
+              queuedTasks={queuedTasks}
+              selectedId={selectedId}
+              queuePosition={queuePosition}
+              runtimeStatus={tasksState?.runtimeStatus}
+              onSelect={setExplicitTaskId}
+            />
+          )}
 
           {/* Right: PTY terminal for the running task, queue card otherwise. */}
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface ">

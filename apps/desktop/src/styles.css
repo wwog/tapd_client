@@ -371,6 +371,53 @@ select,
   }
 }
 
+/* Coworker tab: a short wave, so the rail keeps one gesture per destination. */
+@keyframes rail-users-wave {
+  0%,
+  100% {
+    transform: rotate(0deg) translateY(0);
+  }
+  20% {
+    transform: rotate(-14deg) translateY(-2px);
+  }
+  45% {
+    transform: rotate(10deg) translateY(-1px);
+  }
+  70% {
+    transform: rotate(-5deg);
+  }
+}
+
+.rail-users-wave {
+  animation: rail-users-wave 520ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: 50% 85%;
+}
+
+/* Coworker cards settle in with a slight stagger; hover is handled by Tailwind.
+   Only `transform` is animated: a paused/occluded webview must never leave a
+   card stuck at `opacity: 0`. */
+@keyframes coworker-pop {
+  from {
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* `backwards`, not `both`: the finished animation must release `transform`
+   so the card's hover lift and press scale still apply. */
+.coworker-card {
+  animation: coworker-pop 280ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-users-wave,
+  .coworker-card {
+    animation: none;
+  }
+}
+
 /* Bottom sheet used for the Agent compose mode. */
 @keyframes agent-sheet-up {
   from {

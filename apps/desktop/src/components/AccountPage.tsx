@@ -1,6 +1,7 @@
 import { ExternalLink, LogOut, RefreshCw } from "lucide-react";
 
-import { avatarSrc, type AppInfo, type WorkspaceContext } from "../lib/api";
+import { avatarSrc, api, type AppInfo, type WorkspaceContext } from "../lib/api";
+import { PROJECT_LABEL, PROJECT_URL } from "../lib/links";
 import { Avatar } from "./Avatar";
 import { UpdatePanel } from "./UpdatePanel";
 import { Badge, Button } from "./ui";
@@ -84,6 +85,26 @@ export function AccountPage({
             </Button>
           </div>
         </div>
+      </section>
+
+      <section className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border bg-surface px-4 py-3">
+        <span className="text-ui-sm text-slate-600">项目地址</span>
+        <button
+          type="button"
+          title="在浏览器中打开 GitHub 仓库：问题反馈、同事技能投稿"
+          onClick={() =>
+            void api
+              .openPath(PROJECT_URL)
+              .catch((error) => toast?.("error", String(error)))
+          }
+          className="inline-flex min-w-0 items-center gap-1 font-mono text-ui-xs text-sky-600 transition hover:text-sky-700"
+        >
+          <span className="truncate">{PROJECT_LABEL}</span>
+          <ExternalLink size={10} className="shrink-0" />
+        </button>
+        <span className="ml-auto text-ui-xs text-slate-400">
+          问题反馈 · 同事技能投稿
+        </span>
       </section>
 
       <UpdatePanel toast={toast} />

@@ -17,6 +17,7 @@ import {
   relativeTime,
   type CapturedRequest,
 } from "../lib/api";
+import { pickExportDir } from "../lib/exportDir";
 import { formatBytes } from "../lib/format";
 import { copyText } from "../lib/desktop";
 import { usePoll } from "../hooks/usePoll";
@@ -78,7 +79,9 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
   const exportCaptures = async () => {
     setBusy(true);
     try {
-      const path = await api.exportCaptures();
+      const dir = await pickExportDir();
+      if (!dir) return;
+      const path = await api.exportCaptures(dir);
       setLastExport(path);
     } catch (error) {
       toast("error", String(error));

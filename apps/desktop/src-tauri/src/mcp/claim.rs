@@ -17,11 +17,17 @@ pub(super) async fn claim_bug(
     client: &str,
 ) -> Result<Value, String> {
     let bug_id = string_arg(arguments, "bug_id").ok_or_else(|| "bug_id is required".to_string())?;
-    let (workspace_id, _) = resolve_call_workspace(app, state, arguments).await?;
+    let (workspace_id, workspaces) = resolve_call_workspace(app, state, arguments).await?;
+    let workspace_name = workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_default();
 
     let request = agent::ExternalClaimRequest {
         workspace_id,
         bug_id,
+        workspace_name,
         title: string_arg(arguments, "title").unwrap_or_default(),
         client: client.to_string(),
         model: string_arg(arguments, "model").unwrap_or_default(),

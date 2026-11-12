@@ -162,7 +162,8 @@ export function BugTableToolbar(props: Props) {
         <input
           value={keyword}
           onChange={(event) => onKeywordChange(event.target.value)}
-          placeholder="搜索标题"
+          placeholder="搜索标题或 ID"
+          title="支持标题关键词、完整 ID 或列表里的短 ID"
           className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
         />
       </div>

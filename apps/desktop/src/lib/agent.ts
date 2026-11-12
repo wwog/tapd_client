@@ -23,6 +23,8 @@ export type AgentConfig = {
   repoMappings: Record<string, string>;
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
+  /** Enabled coworker ids (selection order); managed from the 同事 page. */
+  coworkerIds: string[];
   readyQuietMs: number;
   readyTimeoutMs: number;
   /** TUI 运行时输出静默多久视为本轮结束；0 表示只依赖 MCP 回报。 */
@@ -188,6 +190,8 @@ export type ExternalClaimStatus = "queued" | "running";
 export type ExternalClaim = {
   workspaceId: string;
   bugId: string;
+  /** Resolved project name; empty for claims registered before it existed. */
+  workspaceName?: string;
   title: string;
   /** MCP client name from the handshake, e.g. "Zcode". */
   client: string;
@@ -234,6 +238,17 @@ export function externalClaimLabel(claim: ExternalClaim): string {
     : `“${client}”正在处理`;
 }
 
+/** Compact capsule label: `Zcode · Deepseek`, plus `+N` for more claims. */
+export function externalClaimPillLabel(
+  claim: ExternalClaim,
+  total = 1,
+): string {
+  const client = claim.client.trim() || "外部 AI";
+  const model = claim.model.trim();
+  const base = model ? `${client} · ${model}` : client;
+  return total > 1 ? `${base} +${total - 1}` : base;
+}
+
 /** Paginated terminal-task history; filtering and paging run in Rust. */
 export type AgentHistoryQuery = {
   workspaceId?: string;
@@ -264,6 +279,8 @@ export type AgentSummary = {
   title: string | null;
   workspaceName: string | null;
   bugId: string | null;
+  /** Fresh external AI work, running first (backend drops expired claims). */
+  externalClaims?: ExternalClaim[];
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */

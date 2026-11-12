@@ -206,6 +206,25 @@ export type BugTransitionResult = {
   changed: boolean;
 };
 
+export type BugTransitionFieldOption = { value: string; label: string };
+
+export type BugTransitionField = {
+  name: string;
+  label: string;
+  htmlType: string;
+  value: string;
+  required: boolean;
+  disabled: boolean;
+  options: BugTransitionFieldOption[];
+};
+
+export type BugTransitionForm = {
+  from: string;
+  status: string;
+  label: string;
+  fields: BugTransitionField[];
+};
+
 export type BugDetail = BugSummary & {
   descriptionHtml: string;
   descriptionText: string;
@@ -333,6 +352,10 @@ export type ExportResult = {
   markdownPath: string;
   assetCount: number;
   downloadedBytes: number;
+  /** Fix prompt for an external AI; null when prompt.md was skipped. */
+  prompt: string | null;
+  promptPath: string | null;
+  skills: { coworkerId: string; coworkerName: string; name: string; path: string; relativePath?: string }[];
   warnings: string[];
 };
 
@@ -346,7 +369,8 @@ export const api = {
   logout: () => invoke<void>("session_logout"),
   captures: () => invoke<CapturedRequest[]>("capture_snapshot"),
   clearCaptures: () => invoke<void>("capture_clear"),
-  exportCaptures: () => invoke<string>("capture_export"),
+  exportCaptures: (targetDir?: string | null) =>
+    invoke<string>("capture_export", { targetDir: targetDir ?? null }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
   /** Opens a bound project folder in the saved editor (or `target`). */
   openDirectory: (path: string, target?: string) =>
@@ -367,6 +391,9 @@ export const api = {
     invoke<BugListPage>("bug_list", { query, observe }),
   bugDetail: (workspaceId: string, bugId: string) =>
     invoke<BugDetail>("bug_detail", { workspaceId, bugId }),
+  /** Summary fields only: the 处理中 list does not need history/description. */
+  bugSummary: (workspaceId: string, bugId: string) =>
+    invoke<BugSummary>("bug_summary", { workspaceId, bugId }),
   workspaceMembers: (workspaceId: string) =>
     invoke<WorkspaceMember[]>("workspace_members", { workspaceId }),
   bugAddComment: (workspaceId: string, bugId: string, comment: string) =>
@@ -381,8 +408,20 @@ export const api = {
   ) => invoke<void>("bug_update_field", { workspaceId, bugId, field, value, claim }),
   bugTransitions: (workspaceId: string, bugId: string) =>
     invoke<BugTransitionInfo>("bug_transitions", { workspaceId, bugId }),
-  bugTransition: (workspaceId: string, bugId: string, status: string) =>
-    invoke<BugTransitionResult>("bug_transition", { workspaceId, bugId, status }),
+  bugTransitionForm: (workspaceId: string, bugId: string, status: string) =>
+    invoke<BugTransitionForm>("bug_transition_form", { workspaceId, bugId, status }),
+  bugTransition: (
+    workspaceId: string,
+    bugId: string,
+    status: string,
+    fields?: Record<string, string>,
+  ) =>
+    invoke<BugTransitionResult>("bug_transition", {
+      workspaceId,
+      bugId,
+      status,
+      fields: fields ?? null,
+    }),
   exportBugMd: (workspaceId: string, bugId: string, workspaceName: string | null) =>
     invoke<ExportResult>("export_bug_md", { workspaceId, bugId, workspaceName }),
   setCurrentUser: (nick: string) =>
@@ -404,7 +443,10 @@ export const api = {
     invoke<McpAuditEntry[]>("mcp_audit_list", { limit: limit ?? null }),
   mcpAuditClear: () => invoke<void>("mcp_audit_clear"),
   mcpAuditExport: () => invoke<string>("mcp_audit_export"),
-  exportDiagnostics: () => invoke<DiagnosticsResult>("export_diagnostics"),
+  exportDiagnostics: (targetDir?: string | null) =>
+    invoke<DiagnosticsResult>("export_diagnostics", {
+      targetDir: targetDir ?? null,
+    }),
   /** Wipes the app data directory and restarts the app. */
   clearAppData: () => invoke<void>("clear_app_data"),
 };

@@ -22,6 +22,7 @@ import {
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
 import { BugListView } from "./components/BugListView";
+import { CoworkerPage } from "./components/CoworkerPage";
 import { DetailPaneHost } from "./components/DetailPaneHost";
 import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
@@ -68,6 +69,7 @@ type AgentTarget = {
 const VIEW_TITLES: Record<Exclude<View, "bugs">, string> = {
   projects: "项目管理",
   agent: "Agent",
+  coworker: "同事",
   mcp: "MCP",
   account: "账户与会话",
   settings: "设置",
@@ -561,6 +563,8 @@ export default function App() {
             onFocusConsumed={clearAgentFocus}
           />
         );
+      case "coworker":
+        return <CoworkerPage toast={showToast} />;
       case "mcp":
         return (
           <div className="min-h-0 flex-1 overflow-y-auto p-5">

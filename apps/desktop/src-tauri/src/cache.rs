@@ -135,6 +135,7 @@ mod tests {
         };
         let other = BugSummary {
             id: "2".to_string(),
+            short_id: "0022".to_string(),
             title: "logout crash".to_string(),
             owner: "someone".to_string(),
             status: "new".to_string(),
@@ -177,6 +178,26 @@ mod tests {
         assert_eq!(page.total, 2);
         assert_eq!(page.bugs.len(), 1);
         assert_eq!(page.bugs[0].id, "1");
+
+        // Digits are an id lookup (full id or the list's short id), so the
+        // title need not contain them.
+        let by_id = BugQuery {
+            keyword: Some("#2".to_string()),
+            owners: Vec::new(),
+            ..query.clone()
+        };
+        let (page, _) = cache.query_bugs(&by_id).expect("id rows");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.bugs[0].id, "2");
+
+        let by_short_id = BugQuery {
+            keyword: Some("0022".to_string()),
+            owners: Vec::new(),
+            ..query.clone()
+        };
+        let (page, _) = cache.query_bugs(&by_short_id).expect("short id rows");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.bugs[0].id, "2");
     }
 
     #[test]

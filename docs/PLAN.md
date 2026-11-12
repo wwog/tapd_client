@@ -552,7 +552,7 @@ exporter: "tapd-client/1.0"
 
 | 里程碑 | 状态 | 说明 |
 | --- | --- | --- |
-| M0 技术验证 | ✅ | 登录、隐藏会话、同步/异步桥、接口抓包；结论见 `docs/spike.md` |
+| M0 技术验证 | ✅ | 登录、隐藏会话、同步/异步桥、接口分析；结论见 `docs/spike.md` |
 | M1 骨架与登录 | ✅ | Tauri 2 + React、配置/日志、本地 HTTP、runtime 握手 |
 | M2 数据层 | ✅ | 模型、过滤器、响应解析、Tauri 命令；SQLite 离线快照缓存（项目/缺陷列表/详情）已接入 |
 | M3 主界面 | ✅ | 项目切换、我的/全部、状态/优先级/严重度/关键词、分页、并排详情面板、离线优先渲染与骨架屏 |
@@ -561,7 +561,7 @@ exporter: "tapd-client/1.0"
 | M6 通知 | ✅ | 可配置范围（我的/项目、新建/转移/重新打开）、顶部胶囊卡片、忽略/查看、处理=改派+接受；「我的」跨项目增量轮询 |
 | M7 Agent | ✅ | Agent tab（运行/审核/历史）、串行队列、server 事件完成/审核、胶囊状态、日志与 Terminal 恢复 |
 | M8 打包 | ✅ | `tapd-mcp` 作为 externalBin 打进 App；`pnpm build:arm64` 本地出 arm64 dmg；`main` 合并进 `release` 后由 GitHub Actions 出 arm64 dmg 与 artifact，tag 额外发 Release。MCP 策略/审计 UI、首启引导、诊断包已补齐 |
-| M9 自动更新 | ✅ | Tauri updater + GitHub Releases（`latest.json`）；启动后检查、之后每两小时轮询并持久化检查时间；标题栏更新图标 hover 展示日志；主窗口/账户页查看更新说明；更新时隐藏主窗口、胶囊 4 倍显示下载/解包进度；失败可手动下载或取消返回；`scripts/release.sh` 统一版本、日志、合并 `release` 与打 tag |
+| M9 自动更新 | ✅ | Tauri updater + GitHub Releases（`latest.json`）；启动后检查、之后每 30 分钟轮询并持久化检查时间；标题栏更新图标 hover 展示日志；主窗口/账户页查看更新说明；更新时隐藏主窗口、胶囊 4 倍显示下载/解包进度；失败可手动下载或取消返回；`scripts/release.sh` 统一版本、日志、合并 `release` 与打 tag |
 
 ### 与计划的偏差
 

@@ -3,6 +3,7 @@ mod agent_scan;
 mod bug_write;
 mod cache;
 mod commands;
+mod coworker;
 mod diagnostics;
 mod export;
 mod feature_router;
@@ -77,10 +78,12 @@ pub fn run() {
             commands::workspace_context,
             commands::bug_list,
             commands::bug_detail,
+            commands::bug_summary,
             commands::workspace_members,
             commands::bug_add_comment,
             commands::bug_update_field,
             commands::bug_transitions,
+            commands::bug_transition_form,
             commands::bug_transition,
             export::export_bug_md,
             commands::set_current_user,

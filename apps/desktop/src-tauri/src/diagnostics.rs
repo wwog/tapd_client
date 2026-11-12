@@ -31,14 +31,25 @@ pub struct DiagnosticsResult {
 }
 
 #[tauri::command]
-pub fn export_diagnostics(state: State<'_, SharedState>) -> Result<DiagnosticsResult, String> {
-    export_bundle(state.inner())
+pub fn export_diagnostics(
+    state: State<'_, SharedState>,
+    target_dir: Option<String>,
+) -> Result<DiagnosticsResult, String> {
+    export_bundle(state.inner(), target_dir.as_deref().map(Path::new))
 }
 
-fn export_bundle(state: &SharedState) -> Result<DiagnosticsResult, String> {
+fn export_bundle(
+    state: &SharedState,
+    target_dir: Option<&Path>,
+) -> Result<DiagnosticsResult, String> {
     let paths = &state.paths;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let root = paths.data_dir.join("diagnostics");
+    // The user picks the destination from the native folder picker; the data
+    // directory remains the fallback for callers without one.
+    let root = target_dir
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| paths.data_dir.join("diagnostics"));
     let folder = root.join(format!("tapd-client-{stamp}"));
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
 
@@ -119,7 +130,8 @@ fn sanitized_config(state: &SharedState) -> Value {
     json!({
         "loggedIn": config.logged_in,
         "me": config.me,
-        "onboarded": config.onboarded,
+        "onboardedVersion": config.onboarded_version,
+        "onboardingVersionExpected": tapd_core::config::ONBOARDING_VERSION,
         "lastWorkspaceId": config.last_workspace_id,
         "deviceName": config.device_name,
         "openWith": config.open_with,
@@ -318,9 +330,11 @@ mod tests {
             })
             .expect("record audit");
 
-        let result = export_bundle(&state).unwrap();
+        let picked = root.join("picked");
+        let result = export_bundle(&state, Some(&picked)).unwrap();
         assert!(result.files >= 5, "expected meta/settings/log files");
         assert!(Path::new(&result.path).exists());
+        assert!(Path::new(&result.folder).starts_with(&picked));
 
         if result.zipped {
             let listing = Command::new("unzip")
