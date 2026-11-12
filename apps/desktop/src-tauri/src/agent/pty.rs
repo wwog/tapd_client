@@ -120,23 +120,6 @@ pub(super) struct PtyOutcome {
     pub(super) error: Option<String>,
 }
 
-/// 会话 hook 写出的状态文件（见 `OMP_SESSION_HOOK`）。
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct SessionHookState {
-    /// `session_start` / `agent_start` / `turn_end` / `agent_end`.
-    phase: String,
-    session_id: Option<String>,
-    /// 本次 agent_end 之后还会自动继续（不算本轮结束）。
-    will_continue: bool,
-    /// 还在等后台任务回报（不算本轮结束）。
-    awaiting_async_work: bool,
-}
-
-fn read_session_hook_state(path: &Path) -> Option<SessionHookState> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
 /// Tracks whether the initial prompt has been written to the TUI.
 #[derive(Debug, Default)]
 pub(super) struct PromptGuard {
@@ -220,7 +203,7 @@ impl AgentCore {
         guard: Arc<PromptGuard>,
         inject_prompt: bool,
         idle_complete: Option<Duration>,
-        session_hook_state: Option<PathBuf>,
+        monitor_hook: bool,
     ) -> PtyOutcome {
         // A cancel can land between the status update and this thread starting;
         // don't spawn a process that is already doomed.
@@ -448,8 +431,6 @@ impl AgentCore {
             ..PtyOutcome::default()
         };
         let idle_after = idle_complete.filter(|duration| !duration.is_zero());
-        // 已持久化的 session id；只在 hook 上报新值时更新任务，避免轮询重写。
-        let mut known_session_id = task.agent_session_id.clone();
         loop {
             if canceled.load(Ordering::SeqCst) {
                 outcome.canceled = true;
@@ -470,40 +451,26 @@ impl AgentCore {
                 }
             }
 
-            // 会话 hook 在 session_start / agent_end 等事件上写状态文件：
-            // - 记录 session id，历史里可以精确续接会话；
-            // - agent_end 且没有后续工作时结束本轮（TUI 持续重绘时静默判断
-            //   永远不会触发）。
-            if let Some(state_file) = session_hook_state.as_deref() {
-                if let Some(state) = read_session_hook_state(state_file) {
-                    if let Some(session_id) =
-                        state.session_id.as_deref().map(str::trim).filter(|id| !id.is_empty())
-                    {
-                        if known_session_id.as_deref() != Some(session_id) {
-                            let session_id = session_id.to_string();
-                            if self
-                                .update_task(&task.id, |current| {
-                                    current.agent_session_id = Some(session_id.clone());
-                                })
-                                .is_some()
-                            {
-                                known_session_id = Some(session_id);
-                            }
-                        }
-                    }
-
+            // 会话 hook 在 session_start / agent_end 等事件上报到 loopback：
+            // session id 已在服务端落库，这里只处理回合结束。
+            if monitor_hook {
+                if let Some(state) = self.take_hook_event(&task.id) {
                     if state.phase == "agent_end"
                         && !state.will_continue
                         && !state.awaiting_async_work
                     {
-                        let _ = std::fs::remove_file(state_file);
                         tracing::info!(task_id = %task.id, "agent session hook reported agent_end");
-                        let message = "Agent 回合已结束，自动完成本轮".to_string();
-                        outcome.completed = true;
-                        outcome.warning = Some(match outcome.warning.take() {
-                            Some(existing) => format!("{existing}；{message}"),
-                            None => message,
-                        });
+                        if let Some(error) = state.error {
+                            // StopFailure 等事件表示本轮失败，不能按成功收尾。
+                            outcome.error = Some(error);
+                        } else {
+                            let message = "Agent 回合已结束，自动完成本轮".to_string();
+                            outcome.completed = true;
+                            outcome.warning = Some(match outcome.warning.take() {
+                                Some(existing) => format!("{existing}；{message}"),
+                                None => message,
+                            });
+                        }
                         if let Ok(mut runtime) = runtime.lock() {
                             runtime.kill();
                         }
@@ -661,33 +628,4 @@ fn join_with_timeout(handle: Option<std::thread::JoinHandle<()>>, timeout: Durat
         let _ = handle.join();
     }
     // Dropping a JoinHandle detaches the thread; it will exit once the fds close.
-}
-
-#[cfg(test)]
-mod tests {
-    use super::read_session_hook_state;
-
-    #[test]
-    fn parses_session_hook_state() {
-        let dir = std::env::temp_dir().join(format!("tapd-session-hook-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("state.json");
-        std::fs::write(
-            &path,
-            r#"{"phase":"agent_end","sessionId":"01a1ce52","willContinue":false,"awaitingAsyncWork":false,"at":1}"#,
-        )
-        .unwrap();
-
-        let state = read_session_hook_state(&path).expect("hook state parses");
-        assert_eq!(state.phase, "agent_end");
-        assert_eq!(state.session_id.as_deref(), Some("01a1ce52"));
-        assert!(!state.will_continue);
-        assert!(!state.awaiting_async_work);
-
-        // 半写入/损坏的文件只返回 None，下一轮轮询会重试。
-        std::fs::write(&path, "{\"phase\":").unwrap();
-        assert!(read_session_hook_state(&path).is_none());
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }

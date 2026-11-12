@@ -14,8 +14,9 @@
 ## 修改
 
 - Agent 页「配置」重做为单列页面：默认 Agent 改为带检测状态与版本的下拉选择器，运行时参数、生命周期、能力与互通限制按卡片排列，不再使用窄栏长列表。
-- OMP 启动时通过 `--extension` 临时挂载会话监控 hook：监听 `session_start` / `agent_start` / `turn_end` / `agent_end`，回合结束即自动结束任务（TUI 持续重绘时「静默完成」不会触发），并把 `sessionId` 写回任务记录。
-- 「打开系统终端」按运行时续接会话：OMP / Kimi / Qwen 用 `--continue`，Gemini 用 `--resume latest`；OMP 捕获到 session id 时优先 `--resume <id>` 精确恢复对应的会话。
+- Codex、OMP、OpenCode、Claude、Cursor、Gemini、Qwen、OpenClaude、Qoder、Qoder CN、CodeBuddy、Kimi、ZCode 启动时自动安装/刷新会话 hook：Claude 系安装完整的会话、提示词、工具、权限、子 Agent 与结束事件；Codex 同时写入 `hooks.json` 与 `config.toml` 信任哈希；OpenCode 插件上报工具/权限/提问；OMP 使用 `agent_settled` 作为真正的回合结束信号。事件 POST 到桌面端 loopback `/agent/hook`，并把 `sessionId` 写回任务记录。
+- Agent 任务头新增运行时状态条：显示当前工具、等待权限/回答、最后消息、模型与子 Agent 数量；状态只存内存，通过 `agent://runtime` 实时推送，任务结束后清空。
+- 「打开系统终端」按运行时续接会话：OMP / Kimi / Qwen 用 `--continue`，Gemini 用 `--resume latest`；会话 hook 捕获到 session id 时优先 `--resume <id>` 精确恢复对应的会话。
 
 # TAPD Client v1.1.3
 

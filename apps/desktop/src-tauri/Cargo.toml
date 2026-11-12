@@ -30,6 +30,7 @@ reqwest = "0.13"
 base64 = "0.21"
 rusqlite = { version = "0.41", features = ["bundled"] }
 semver = "1"
+sha2 = "0.10"
 toml_edit = "0.22"
 tapd-core = { path = "../../../crates/tapd-core" }
 tauri-plugin-dialog = "2"

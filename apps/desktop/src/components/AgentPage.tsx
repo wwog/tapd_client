@@ -310,6 +310,7 @@ export function AgentPage({
             queuedTasks={queuedTasks}
             selectedId={selectedId}
             queuePosition={queuePosition}
+            runtimeStatus={tasksState?.runtimeStatus}
             onSelect={setExplicitTaskId}
           />
 
@@ -358,6 +359,7 @@ export function AgentPage({
                 <AgentTaskHeader
                   task={selectedTask}
                   runtimeName={runtimeName(selectedTask.runtimeId)}
+                  runtimeStatus={tasksState?.runtimeStatus?.[selectedTask.id]}
                   canCancel={canCancel}
                   actionBusy={actionBusy}
                   live={live}

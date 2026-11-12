@@ -43,7 +43,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 | 通知胶囊 | 随 App | 自绘通知与更新进度，可拖动 |
 | 本地 HTTP | 随 App | 仅监听 `127.0.0.1`，随机端口，每次启动轮换 token |
 | `tapd-mcp` | 由 AI 客户端启动 | stdio MCP，反向调用本地 HTTP |
-| Agent TUI | 每个任务 | 在 PTY 中运行，输出进内嵌终端，完成由 MCP 回报 |
+| Agent TUI | 每个任务 | 在 PTY 中运行，输出进内嵌终端，完成由 MCP 回报 / 会话 hook / 静默兜底 |
 
 登录页不是独立窗口：主窗口直接镜像隐藏 WebView 里的企业微信二维码，扫码完成后隐藏 WebView 保留会话。
 
@@ -82,7 +82,7 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 
 1. 从缺陷生成 Markdown 包（`bug.md` + `assets/` + `bug.json`）。
 2. 队列固定并发 1，所有运行时都在 PTY 中启动自己的 TUI。
-3. 完成由 MCP `agent_task_report`、进程退出或输出静默判定；任务结束自动回收进程并继续队列。
+3. 完成由 MCP `agent_task_report`、会话 hook 事件、进程退出或输出静默判定；任务结束自动回收进程并继续队列。
 4. 权限确认在右侧内嵌终端里完成，桌面不代为回执。
 5. 复杂改动：prompt 要求调用 `tapd_request_review`，任务进入 `awaiting_approval` 并中止本轮；工作区保留 diff，队列停住。未调用时，本轮结束若出现新的未提交文件也会自动进入待审核。
 6. 待审核页「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
@@ -142,7 +142,8 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 
 - Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。
 - Agent 改动审核：待审核卡片展示摘要、文件与风险，通过后重新入队提交，停止则按文件 `git stash` 并暂停队列；主窗口标题栏与顶部胶囊都会提示待审核数量。
-- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 运行时状态：hook 事件归一化为 `idle / working / waiting_permission / waiting_question / error`，记录当前工具、最后消息、模型与子 Agent 数量；只存内存并通过 `agent://runtime` 推送，任务头显示，任务结束清空。
 - Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；设置页「默认 Agent」下拉框可查看版本、切换默认、手动刷新，「管理全部运行时」跳到 Agent 页「配置」。缺陷详情的提交面板可以只为本次任务指定运行时。
 - 终端输出：后端按显示帧节拍（16ms，单次上限 32KB）合批推送，**不能**用「输出静默 N ms 才发」——TUI 的 spinner 每 ~17ms 重绘一次，静默判断永远不触发，会把几秒的输出攒在内存里，表现为输入无回显；前端 xterm 走 WebGL 渲染器（DOM 渲染器跟不上 60fps 全屏重绘），无上下文时自动回退。
 - 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude/OMP/Kimi/Qwen `--continue`、codex `resume`、gemini `--resume latest`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。

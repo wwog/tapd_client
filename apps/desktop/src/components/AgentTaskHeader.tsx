@@ -3,16 +3,32 @@ import { Bug, FolderOpen, Loader2, Square, Terminal } from "lucide-react";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  type AgentRuntimePhase,
+  type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
+import { ActivityGlyph } from "./ActivityGlyph";
 import { Badge, Button } from "./ui";
+
+const RUNTIME_TONES = {
+  idle: "neutral",
+  working: "blue",
+  waiting_permission: "amber",
+  waiting_question: "cyan",
+  error: "red",
+} as const satisfies Record<
+  AgentRuntimePhase,
+  "neutral" | "blue" | "amber" | "cyan" | "red"
+>;
 
 type Props = {
   task: AgentTask;
   /** Human-readable name of the runtime that owns this task. */
   runtimeName?: string;
+  /** 运行中的当前动作、等待状态与最后消息。 */
+  runtimeStatus?: AgentRuntimeStatus;
   canCancel: boolean;
   actionBusy: string | null;
   live: boolean;
@@ -26,6 +42,7 @@ export function AgentTaskHeader(props: Props) {
   const {
     task,
     runtimeName,
+    runtimeStatus,
     canCancel,
     actionBusy,
     live,
@@ -77,6 +94,37 @@ export function AgentTaskHeader(props: Props) {
               <span className="shrink-0">exit {task.exitCode}</span>
             ) : null}
           </div>
+          {runtimeStatus ? (
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-ui-xs">
+              <Badge tone={RUNTIME_TONES[runtimeStatus.phase]} dot>
+                {runtimeStatus.label}
+              </Badge>
+              {runtimeStatus.tool ? (
+                <span className="truncate font-mono text-slate-500">
+                  {runtimeStatus.tool}
+                </span>
+              ) : null}
+              {runtimeStatus.subagents > 0 ? (
+                <span className="text-slate-500">
+                  {runtimeStatus.subagents} 个子 Agent
+                </span>
+              ) : null}
+              {runtimeStatus.model ? (
+                <span className="truncate text-slate-400">{runtimeStatus.model}</span>
+              ) : null}
+            </div>
+          ) : null}
+          {runtimeStatus?.message || runtimeStatus?.detail ? (
+            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-ui-xs text-slate-500">
+              <ActivityGlyph seed={task.id} />
+              <span
+                className="truncate"
+                title={runtimeStatus.message ?? runtimeStatus.detail}
+              >
+                {runtimeStatus.message ?? runtimeStatus.detail}
+              </span>
+            </div>
+          ) : null}
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">

@@ -241,6 +241,7 @@ mod tests {
             prompt_flag: None,
             argv_separator: None,
             session_hook: false,
+            hook_kind: Default::default(),
             available: true,
             capabilities: crate::agent::AgentRuntimeCapabilities {
                 interactive_terminal: true,
