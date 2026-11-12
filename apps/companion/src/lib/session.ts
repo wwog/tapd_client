@@ -1,9 +1,11 @@
-/** Pairing session token, stored only on the phone. */
+/** Pairing session token, kept for this tab's lifetime only: the page stays
+ * open and the session stays usable; closing it forgets the token on purpose,
+ * so a borrowed device cannot hold a live session. */
 const KEY = "companion.session";
 
 export const getSession = (): string | null => {
   try {
-    return localStorage.getItem(KEY);
+    return sessionStorage.getItem(KEY);
   } catch {
     return null;
   }
@@ -11,7 +13,7 @@ export const getSession = (): string | null => {
 
 export const setSession = (token: string): void => {
   try {
-    localStorage.setItem(KEY, token);
+    sessionStorage.setItem(KEY, token);
   } catch {
     // Private browsing: pairing will not survive a reload.
   }
@@ -19,7 +21,7 @@ export const setSession = (token: string): void => {
 
 export const clearSession = (): void => {
   try {
-    localStorage.removeItem(KEY);
+    sessionStorage.removeItem(KEY);
   } catch {
     // Ignore.
   }
