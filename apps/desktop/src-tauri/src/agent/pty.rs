@@ -207,7 +207,7 @@ impl AgentCore {
     ) -> PtyOutcome {
         // A cancel can land between the status update and this thread starting;
         // don't spawn a process that is already doomed.
-        if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
+        if self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
             return PtyOutcome {
                 canceled: true,
                 ..PtyOutcome::default()
@@ -271,7 +271,7 @@ impl AgentCore {
 
         // Close the race where a cancel arrived just before the runtime became
         // visible to `agent_task_cancel`.
-        if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
+        if self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
             canceled.store(true, Ordering::SeqCst);
             if let Ok(mut runtime) = runtime.lock() {
                 runtime.kill();
@@ -543,203 +543,6 @@ impl AgentCore {
             .remove(&task.id);
 
         outcome
-    }
-
-    pub(super) async fn finish_task(&self, task_id: &str, outcome: PtyOutcome) {
-        // Shutdown already suspended the task back to Queued. A late PTY
-        // outcome must not turn that into Canceled/Failed/Succeeded.
-        if self.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        let warning = outcome.warning.clone();
-        let (dirty_files, committed, changed_files, inspection_error) =
-            match self.task_snapshot(task_id) {
-                Some(task)
-                    if !task.status.is_terminal()
-                        && !matches!(
-                            task.status,
-                            TaskStatus::AwaitingApproval
-                                | TaskStatus::AwaitingMerge
-                                | TaskStatus::Merging
-                        ) =>
-                {
-                    // git status/diff/rev-parse block; keep them off the async
-                    // runtime.
-                    let task_for_git = task.clone();
-                    let inspection = tokio::task::spawn_blocking(move || {
-                        let dirty = uncommitted_files(task_for_git.work_dir())?
-                            .into_iter()
-                            .filter(|file| !task_for_git.baseline_dirty.contains(file))
-                            .collect::<Vec<_>>();
-                        let committed = committed_since_baseline(&task_for_git)?;
-                        let changed = if committed {
-                            let mut files = changed_files_since(
-                                task_for_git.work_dir(),
-                                task_for_git.baseline_head.as_deref(),
-                            )?;
-                            for file in &dirty {
-                                if !files.contains(file) {
-                                    files.push(file.clone());
-                                }
-                            }
-                            files
-                        } else {
-                            dirty.clone()
-                        };
-                        Ok::<_, String>((dirty, committed, changed))
-                    })
-                    .await;
-                    match inspection {
-                        Ok(Ok((dirty, committed, changed))) => (dirty, committed, changed, None),
-                        Ok(Err(error)) => (Vec::new(), false, Vec::new(), Some(error)),
-                        Err(error) => (
-                            Vec::new(),
-                            false,
-                            Vec::new(),
-                            Some(format!("检查工作区失败：{error}")),
-                        ),
-                    }
-                }
-                _ => (Vec::new(), false, Vec::new(), None),
-            };
-        let review_files = if committed {
-            Vec::new()
-        } else {
-            dirty_files.clone()
-        };
-        let snapshot = self.update_task(task_id, |task| {
-            let at = now();
-            apply_finish(task, &outcome, &at);
-            if task.status != TaskStatus::Succeeded {
-                return;
-            }
-            if let Some(error) = inspection_error.as_deref() {
-                task.status = TaskStatus::Failed;
-                task.error = Some(format!("无法确认工作区状态，已停止：{error}"));
-                task.finished_at = Some(at);
-                return;
-            }
-
-            // Worktree tasks always pass through review/merge: the branch is
-            // the deliverable, so any change (committed or dirty) needs a human
-            // decision before it lands in the main repository.
-            let is_worktree = task.worktree_branch.is_some();
-            if is_worktree {
-                if task.commit_only {
-                    // The commit phase is the last chance to persist the
-                    // approved change on the task branch.
-                    if !dirty_files.is_empty() {
-                        task.status = TaskStatus::Failed;
-                        task.error =
-                            Some("提交轮未提交改动，已停止；请检查工作区后重试".to_string());
-                        task.finished_at = Some(at);
-                        return;
-                    }
-                    task.status = TaskStatus::AwaitingMerge;
-                    task.commit_only = false;
-                    task.finished_at = None;
-                    task.error = None;
-                    let repo = task.repo_path.clone();
-                    let branch = task.worktree_branch.clone().unwrap_or_default();
-                    task.merge = Some(TaskMerge {
-                        instructions: Some(manual_merge_instructions(&repo, &branch)),
-                        ..TaskMerge::default()
-                    });
-                    return;
-                }
-
-                if changed_files.is_empty() {
-                    // Nothing to merge: success without a merge stage.
-                    return;
-                }
-                set_awaiting_approval(
-                    task,
-                    "Agent 已完成修改，等待审核后合并。".to_string(),
-                    changed_files.clone(),
-                    Some("改动在任务分支，审核通过后合并回主仓库".to_string()),
-                    &at,
-                );
-                return;
-            }
-
-            if task.commit_only {
-                // Non-worktree commit phase: reporting success with a dirty
-                // tree would leave the fix uncommitted and TAPD not written
-                // back.
-                if dirty_files.is_empty() {
-                    return;
-                }
-                task.status = TaskStatus::Failed;
-                task.error = Some("提交轮未提交改动，已停止；请检查工作区后重试".to_string());
-                task.finished_at = Some(at);
-                return;
-            }
-            if review_files.is_empty() {
-                return;
-            }
-            set_awaiting_approval(
-                task,
-                "Agent 已完成修改但未提交，等待确认后提交。".to_string(),
-                review_files,
-                Some("存在未提交的改动".to_string()),
-                &at,
-            );
-        });
-
-        if let Some(task) = &snapshot {
-            // A successful task no longer needs its isolated directory; the
-            // branch keeps the commit. Cleanup failure must not turn a
-            // finished fix into a failure, so it only warns.
-            if task.status == TaskStatus::Succeeded {
-                if let Some(path) = task.worktree_path.clone() {
-                    if !dirty_files.is_empty() {
-                        // The agent committed part of its work but left other
-                        // files dirty. Never force-delete those: keep the
-                        // worktree so the user can inspect or commit them.
-                        tracing::warn!(
-                            task_id,
-                            files = dirty_files.len(),
-                            "worktree kept: uncommitted files remain after commit"
-                        );
-                    } else {
-                        let repo = task.repo_path.clone();
-                        let removed = {
-                            let _worktree_guard = self.worktree_lock.lock().await;
-                            tokio::task::spawn_blocking(move || worktree::remove(&repo, &path))
-                                .await
-                        };
-                        match removed {
-                            Ok(Ok(())) => {
-                                self.update_task(task_id, |task| {
-                                    if task.status == TaskStatus::Succeeded {
-                                        task.worktree_path = None;
-                                    }
-                                });
-                            }
-                            Ok(Err(error)) => {
-                                tracing::warn!(task_id, %error, "failed to remove agent worktree");
-                            }
-                            Err(error) => {
-                                tracing::warn!(task_id, %error, "worktree cleanup task failed");
-                            }
-                        }
-                    }
-                }
-            }
-            if task.status == TaskStatus::Succeeded {
-                if let Some(warning) = warning {
-                    tracing::warn!(task_id, %warning, "agent finished with a warning");
-                }
-                tracing::info!(task_id, exit_code = ?task.exit_code, "agent task succeeded");
-            } else if task.status == TaskStatus::Failed || task.status == TaskStatus::Canceled {
-                tracing::warn!(
-                    task_id,
-                    status = ?task.status,
-                    error = ?task.error,
-                    "agent task did not succeed"
-                );
-            }
-        }
     }
 }
 

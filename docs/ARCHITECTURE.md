@@ -85,14 +85,14 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 2. 队列默认串行；开启「Agent 执行 → Worktree 隔离」后按执行单元（1–8，默认 2）并行，每个任务在自己的 git worktree 中运行。
 3. 完成由进程退出、会话 hook 事件或输出静默判定；任务结束自动回收进程并继续队列。
 4. 权限确认在右侧内嵌终端里完成，桌面不代为回执。
-5. Worktree 关闭时的复杂改动：prompt 要求不 commit、不评论、不更新 TAPD；本轮结束后若出现新的未提交文件，`finish_task` 的安全网自动把任务置为 `awaiting_approval`，工作区保留 diff，单队列停止启动新任务。
+5. Worktree 关闭时的复杂改动：prompt 要求不 commit、不评论、不更新 TAPD；本轮结束由工作流根据 `RunFinished` 的改动事实判定，出现新的未提交文件就置为 `awaiting_approval`，工作区保留 diff，单队列停止启动新任务。
 6. 待处理页：非 Worktree 任务「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；Worktree 任务「通过并进入合并」→ 必要时先跑只 commit 的提交轮，随后进入 `awaiting_merge`。「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
 7. Worktree 开启时，任务只要产生改动（简单任务已 commit，复杂任务保留未提交改动）都进入 `awaiting_approval`；审核通过后（必要时先跑只 commit 的提交轮）进入 `awaiting_merge`，用户确认后由原 Agent 在主仓库合并分支并统一回写 TAPD。校验 `git merge-base --is-ancestor <branch> HEAD` 通过后才 `succeeded`。
 8. 合并不可用（原 Agent 不可用、主仓有未提交改动、同仓库已有合并）时不判失败，保持 `awaiting_merge`，写 `merge.error` 与手动步骤；手动合并后点「我已手动合并」按同一祖先关系校验。
 9. 客户端在 MCP 层拒绝未提交时的 TAPD 写操作，保证 commit 先于评论/状态更新；Worktree 任务在合并完成前同样拒绝写回。
 10. 输出不落盘，实时渲染到右侧内嵌终端；任务结束后可在历史里用系统终端续接该会话。
-11. 进入门禁与恢复：`load()` 保留 SQLite 里的原状态，worker 在 `entered=false` 时等待。登录有效 + 引导完成后前端调用 `agent_enter_system`，后端通过 `tapd-workflow` 的恢复规则改写任务：`queued` 保留；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多自动重试 3 次）；`merging` → `awaiting_merge` + 手动步骤；`awaiting_approval/awaiting_merge` 保留。恢复报告经命令返回并 emit `agent://recovery`，主界面 header 下方 `RecoveryBanner` 展示数量。
-12. 关闭：`shutdown` 先 `suspend`（`preparing/running → queued`、`merging → awaiting_merge`），持久化后再杀 PTY；`shutting_down` 守卫阻止迟到的完成 / 失败回调覆盖已停靠状态。
+11. 工作流所有权：`AgentCore` 只持有 `workflow: Mutex<Workflow>`，任务状态、队列、审核 / 合并与恢复都由 crate 决定；`AgentTask` 只是 UI 与持久化视图。宿主执行 Effect（worktree / PTY / 导出 / git / SQLite / UI）并以 Input 回执；approve、merge_start、verify_merge 中需要同步结果的 git 检查在命令路径当场执行。登录有效 + 引导完成后前端调用 `agent_enter_system`，走 `SystemEntered → LoadSnapshot → SnapshotLoaded`：`queued` 保留（关闭「启动恢复排队」时保留但暂停）；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多自动重试 3 次）；`merging` → `awaiting_merge` + 手动步骤；`awaiting_approval/awaiting_merge` 保留。恢复报告经命令返回并 emit `agent://recovery`，主界面 header 下方 `RecoveryBanner` 展示数量。
+12. 关闭：`shutdown` 对工作流应用 `Suspend`（`preparing/running → queued`、`merging → awaiting_merge`），把 `PersistChanged` / `PersistPaused` 同步写入 SQLite 后再杀 PTY；未进入系统时直接跳过。迟到的 `RunFinished` 因任务已不是 `preparing/running` 被核心忽略，不会覆盖已停靠状态。
 
 ### 3.5 MCP 调用
 
@@ -147,9 +147,10 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 
 - Agent tab：子页为运行 / 待处理 / 历史；运行栏只显示排队 / 准备 / 运行 / 合并中，待处理显示待审核与待合并，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。三个列表子页的左侧列表都可收起：工具栏左侧按钮按 tab 显示对应名称，测量的分栏宽度低于「列表宽 + 详情最小宽」（运行 560 / 待处理与历史 480）时自动收起且窗口变宽不弹回，收起状态按 tab 各自记忆。
 - Agent 改动审核：待处理卡片展示摘要、文件与风险。Worktree 关闭时通过后重新入队提交、停止则按文件 `git stash` 并暂停队列；Worktree 开启时通过后进入待合并，确认后用原 Agent 合并回主仓库，合并失败保持待合并并展示手动步骤。主窗口标题栏与顶部胶囊都会提示待审核 / 待合并数量。
-- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 通过 `PersistChanged` upsert 到 `agent_tasks.payload`。
 - Agent 执行：默认串行；设置 →「Agent 执行」可开启 Worktree 隔离并把执行单元调到 1–8（默认 2）。开启后每个任务在独立 worktree 中运行，合并成功后删除目录保留分支，失败 / 取消 / 待审核 / 待合并保留目录，删除任务记录时清理，重试新建。队列存在非终态任务时 Worktree 开关锁定，执行单元仍可调。
-- Agent 启动恢复：登录有效 + 引导完成前不启动队列，此后由 `agent_enter_system` 应用 `tapd-workflow` 的恢复规则（中断的运行任务重新排队、合并中回到待合并、待审核 / 待合并保留）；主界面 header 下方的 `RecoveryBanner` 展示恢复数量，可查看任务或关闭。关闭客户端时先停靠队列再杀 PTY，重启后沿用持久化状态。
+- Agent 工作流所有权：任务状态、队列、审核 / 合并与恢复由 `tapd-workflow` 的 `Workflow` 唯一决定；`AgentCore` 只持有该状态机并执行 Effect，`AgentTask` 仅作为 UI 与 `agent_tasks.payload` 的视图。命令路径对 approve / merge_start / verify_merge 需要的 git 检查同步执行，其余副作用异步回执。
+- Agent 启动恢复：登录有效 + 引导完成前不加载任务、不启动队列；此后由 `agent_enter_system` 应用恢复规则（中断的运行任务重新排队、合并中回到待合并、待审核 / 待合并保留）；关闭「启动恢复排队」时保留排队任务但暂停队列。主界面 header 下方的 `RecoveryBanner` 展示恢复数量，可查看任务或关闭。关闭客户端时先停靠队列并持久化，再杀 PTY；重启后沿用持久化状态。
 - Agent 任务字段：`jsonPath` 指向 `bug.json`；`worktreePath` / `worktreeBranch` 只在开启隔离时出现。旧 `mdPath` 不做迁移，读作空。
 - Agent 运行时状态：hook 事件归一化为 `idle / working / waiting_permission / waiting_question / error`，记录当前工具、最后消息、模型与子 Agent 数量；只存内存并通过 `agent://runtime` 推送，任务头显示，任务结束清空。
 - Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；设置页「默认 Agent」下拉框可查看版本、切换默认、手动刷新，「管理全部运行时」跳到 Agent 页「配置」。缺陷详情的提交面板可以只为本次任务指定运行时。
@@ -185,10 +186,11 @@ apps/desktop/
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
-    agent.rs                 Agent 队列、运行时目录、PTY、任务持久化、审核与合并阶段
-    agent/workflow_bridge.rs 桌面 AgentTask 与 tapd-workflow Task 的 JSON 往返、恢复 / 停靠接入
+    agent.rs                 Agent 宿主：运行时目录、PTY、导出 / git / SQLite 适配器，持有 `workflow: Mutex<Workflow>`
+    agent/workflow_bridge.rs `AgentTask` 与 `tapd-workflow` `Task` 的 JSON 往返与宿主配置映射
+    agent/persist.rs         Effect 驱动的增量持久化（`agent_tasks` / `agent_queue_state`）
     agent/git.rs             git 辅助（未提交文件、分支差异、分支是否已并入 HEAD）
-    agent/pty.rs             任务收尾、安全网与 worktree 清理
+    agent/pty.rs             PTY 运行与收尾
     agent/worktree.rs        每任务 git worktree 的创建与清理
     coworker.rs              同事包注册表、技能 frontmatter、提示词注入与 skill map
     mcp.rs                   MCP 工具调度、策略强制与审计记录
@@ -213,7 +215,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - **缓存是快照**：优先保证打开即见，不做全量后台同步与离线搜索。
 - **Agent 默认串行，Worktree 开启后并行**：默认关闭 Worktree，同一时间只有一个任务使用主仓库；开启后每个任务在独立 worktree 中运行，执行单元可调到 1–8，避免互相踩踏。改动先审核、合并回主仓后才算完成，TAPD 回写集中在合并阶段，避免分支旁的中间状态污染缺陷。
 - **通知自绘**：不使用系统通知，才能承载处理 / 查看 / 忽略三个动作与更新进度。
-- **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行，便于穷举并发、审核、合并与恢复场景；当前只接入了恢复 / 关闭 / 门禁与纯策略，完整状态机迁移仍在下一阶段。
+- **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行；桌面 `AgentCore` 只持有 `Mutex<Workflow>`，任务 / 队列 / 审核 / 合并 / 恢复没有第二份实现，便于穷举并发、审核、合并与恢复场景。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
@@ -233,6 +235,5 @@ scripts/                     图标、sidecar、发版等构建工具
 2. 如确有需要，再扩展「项目」范围的多项目轮询与更细的游标策略。
 3. 签名 / 公证发布，以及 MCP 调用限流与按 `clientInfo.name` 的独立策略档案。
 4. 更细的并发调度与资源限制（当前按执行单元限制并行数，Worktree 关闭时固定 1）。
-5. 把 `AgentCore` 的完整队列 / 审核 / 合并状态机迁移到 `tapd-workflow`，宿主只保留 PTY、git、SQLite 等适配器。
 
 更完整的阶段计划与验收记录见 [PLAN.md](PLAN.md)，接口验证见 [spike.md](spike.md)。

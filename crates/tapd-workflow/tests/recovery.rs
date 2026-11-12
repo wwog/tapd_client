@@ -67,7 +67,7 @@ fn disabled_restore_keeps_queued_tasks_but_pauses_the_queue() {
 #[test]
 fn report_queue_paused_follows_the_outcome() {
     let queued = task_with_status("q", "bug-q", TaskStatus::Queued);
-    let (mut workflow, _) = boot_with(paused_config(), vec![queued.clone()], false);
+    let (workflow, _) = boot_with(paused_config(), vec![queued.clone()], false);
     assert!(!workflow.recovery_report().unwrap().queue_paused);
     assert!(!workflow.paused());
     // The default policy lets the queue continue: the task is scheduled at once.

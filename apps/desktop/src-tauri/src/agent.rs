@@ -1,24 +1,28 @@
-//! Agent queue: a concurrency-limited worker that runs coding agents in PTYs.
+//! Agent workflow host: runs coding agents in PTYs on behalf of
+//! `tapd_workflow::Workflow`.
 //!
 //! Exposed through `feature_command` names starting with `agent_`.
 //!
 //! Design notes:
-//! - The queue runs up to `effective_execution_units()` tasks in parallel (one
-//!   when worktree isolation is off). Commands never start tasks directly.
-//!   Every task body runs inside its own `tokio::spawn` so a panic fails only
-//!   that task and cannot kill the worker loop.
+//! - `AgentCore` owns no task state of its own. Commands, UI events and host
+//!   facts become `tapd_workflow::Input`; the workflow returns `Effect`s
+//!   (worktree, PTY, merge, persistence, UI) that this module executes. Every
+//!   platform result travels back as another `Input`.
+//! - The workflow schedules up to `effective_execution_units()` tasks in
+//!   parallel (one when worktree isolation is off). Commands never start tasks
+//!   directly.
 //! - Every runtime is a CLI started in a PTY (see `runtime_catalog`). The prompt
 //!   is delivered as argv, as a flag, or by bracketed paste on stdin once the
 //!   TUI has been quiet for `ready_quiet_ms`.
 //! - A turn ends on process exit, on a session hook `settled` event, or when
 //!   output has been silent for `idle_complete_ms`; the uncommitted-work safety
-//!   net can still force a review afterwards.
+//!   net is reported to the workflow as a `RunOutcome`.
 //! - PTY work happens on dedicated std threads (reader, batcher, wait) so the
-//!   async worker only awaits a oneshot result (or an event-driven completion
-//!   notification).
-//! - All task state changes are persisted atomically and broadcast through
-//!   `agent://state` plus the lightweight `agent://summary`. Terminal output is
-//!   batched and sent via `agent://output`.
+//!   async effect runners only await a oneshot result (or an event-driven
+//!   completion notification).
+//! - Persistence is effect-driven and broadcast through `agent://state` plus
+//!   the lightweight `agent://summary`. Terminal output is batched and sent via
+//!   `agent://output`.
 
 mod git;
 mod hooks;
@@ -44,6 +48,10 @@ use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, Master
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tapd_core::store::{read_json, write_json_atomic};
+use tapd_workflow::{
+    Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSpec,
+    TaskStatus as WorkflowStatus, Workflow,
+};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::{shell_path, state::SharedState};
@@ -1583,8 +1591,8 @@ pub struct AgentTasksState {
     queued_count: usize,
     awaiting_approval_count: usize,
     awaiting_merge_count: usize,
-    /// True after the user stopped a review; the worker stays idle until
-    /// `agent_queue_resume`.
+    /// True after the user stopped a review; the workflow queue stays paused
+    /// until `agent_queue_resume`.
     queue_paused: bool,
     /// Last persistence failure, cleared by the next successful write.
     storage_error: Option<String>,
@@ -1636,14 +1644,6 @@ pub struct AgentSummary {
     title: Option<String>,
     workspace_name: Option<String>,
     bug_id: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TaskCounts {
-    queued: usize,
-    active: usize,
-    awaiting_approval: usize,
-    awaiting_merge: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1821,10 +1821,107 @@ fn template_uses_removed_contract(template: &str) -> bool {
     .any(|marker| template.contains(marker))
 }
 
-fn next_queued_index(tasks: &[AgentTask]) -> Option<usize> {
-    tasks
-        .iter()
-        .position(|task| task.status == TaskStatus::Queued)
+/// Builds the enqueue facts from a request. Runtime overrides fall back to the
+/// configured default when empty or unknown, so a bad payload cannot stall the
+/// queue.
+fn task_spec_from_request(
+    request: &EnqueueRequest,
+    config: &AgentConfig,
+    source: &str,
+) -> Result<TaskSpec, String> {
+    let workspace_id = request.workspace_id.trim();
+    let bug_id = request.bug_id.trim();
+    if workspace_id.is_empty() || bug_id.is_empty() {
+        return Err("缺少 workspaceId 或 bugId".to_string());
+    }
+
+    let runtime_id = request
+        .runtime_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| runtime_descriptor(id).is_some())
+        .map(str::to_string)
+        .unwrap_or_else(|| config.runtime_id.clone());
+    let workspace_name = request
+        .workspace_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace_id.to_string());
+    let title = request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("缺陷 {bug_id}"));
+    let extra_prompt = request
+        .extra_prompt
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut seen = HashSet::new();
+    let attachments: Vec<String> = request
+        .attachments
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
+        .collect();
+
+    Ok(TaskSpec {
+        workspace_id: workspace_id.to_string(),
+        workspace_name,
+        bug_id: bug_id.to_string(),
+        title,
+        severity: request
+            .severity
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        priority: request
+            .priority
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        repo_path: config.repo_path_for(workspace_id),
+        runtime_id,
+        source: source.trim().to_string(),
+        extra_prompt,
+        attachments,
+    })
+}
+
+/// Host-side repository facts for the workflow: files changed by this run,
+/// whether uncommitted work remains, and whether a commit was produced.
+/// `baseline_dirty` files belong to the user and are excluded.
+fn inspect_changes(task: &AgentTask, work_dir: &str) -> Result<tapd_workflow::ChangeSet, String> {
+    let dirty: Vec<String> = uncommitted_files(work_dir)?
+        .into_iter()
+        .filter(|file| !task.baseline_dirty.contains(file))
+        .collect();
+    let committed = committed_since_baseline(task)?;
+    let mut files = if committed {
+        changed_files_since(work_dir, task.baseline_head.as_deref())?
+    } else {
+        dirty.clone()
+    };
+    for file in &dirty {
+        if !files.contains(file) {
+            files.push(file.clone());
+        }
+    }
+    Ok(tapd_workflow::ChangeSet {
+        files,
+        dirty: !dirty.is_empty(),
+        committed,
+    })
 }
 
 fn default_task_runtime() -> String {
@@ -1848,106 +1945,6 @@ fn normalize_coworker_ids(values: Vec<String>) -> Vec<String> {
     out
 }
 
-/// The live task that already owns a bug, if any. Terminal tasks are ignored so
-/// a bug can be fixed again after a cancel/failure.
-fn live_task_for_bug<'a>(
-    tasks: &'a [AgentTask],
-    workspace_id: &str,
-    bug_id: &str,
-) -> Option<&'a AgentTask> {
-    tasks.iter().find(|task| {
-        task.workspace_id == workspace_id && task.bug_id == bug_id && !task.status.is_terminal()
-    })
-}
-
-fn task_counts(tasks: &[AgentTask]) -> TaskCounts {
-    let mut counts = TaskCounts {
-        queued: 0,
-        active: 0,
-        awaiting_approval: 0,
-        awaiting_merge: 0,
-    };
-    for task in tasks {
-        match task.status {
-            TaskStatus::Queued => counts.queued += 1,
-            TaskStatus::Preparing | TaskStatus::Running | TaskStatus::Merging => counts.active += 1,
-            TaskStatus::AwaitingApproval => counts.awaiting_approval += 1,
-            TaskStatus::AwaitingMerge => counts.awaiting_merge += 1,
-            _ => {}
-        }
-    }
-    counts
-}
-
-/// Picks the task the console should display: active first, then the next
-/// review/merge decision, then the next queued task, then the most recently
-/// created finished task.
-fn active_task_id(tasks: &[AgentTask]) -> Option<String> {
-    tasks
-        .iter()
-        .find(|task| task.status.is_active())
-        .or_else(|| {
-            tasks
-                .iter()
-                .find(|task| task.status == TaskStatus::AwaitingApproval)
-        })
-        .or_else(|| {
-            tasks
-                .iter()
-                .find(|task| task.status == TaskStatus::AwaitingMerge)
-        })
-        .or_else(|| tasks.iter().find(|task| task.status == TaskStatus::Queued))
-        .or_else(|| tasks.iter().rev().find(|task| task.status.is_terminal()))
-        .map(|task| task.id.clone())
-}
-
-fn agent_summary(tasks: &[AgentTask]) -> AgentSummary {
-    let active_id = active_task_id(tasks);
-    let active = active_id
-        .as_ref()
-        .and_then(|id| tasks.iter().find(|task| &task.id == id));
-
-    AgentSummary {
-        running: tasks.iter().any(|task| task.status.is_active()),
-        awaiting_approval: tasks
-            .iter()
-            .filter(|task| task.status == TaskStatus::AwaitingApproval)
-            .count(),
-        awaiting_merge: tasks
-            .iter()
-            .filter(|task| task.status == TaskStatus::AwaitingMerge)
-            .count(),
-        active_task_id: active_id,
-        title: active.map(|task| task.title.clone()),
-        workspace_name: active.map(|task| task.workspace_name.clone()),
-        bug_id: active.map(|task| task.bug_id.clone()),
-    }
-}
-
-/// Repository path for a task: the value resolved when the task was enqueued
-/// wins, then the current per-project config. The old `repo_mappings` map is
-/// always empty after `sanitized()`, which used to fail every task.
-fn resolve_repo_path(task: &AgentTask, config: &AgentConfig) -> Result<String, String> {
-    let from_task = task.repo_path.trim();
-    if !from_task.is_empty() {
-        return Ok(from_task.to_string());
-    }
-
-    let from_config = config.repo_path_for(&task.workspace_id);
-    let from_config = from_config.trim();
-    if !from_config.is_empty() {
-        return Ok(from_config.to_string());
-    }
-
-    Err("未配置项目仓库路径，请在 设置 → Agent 修复 中配置".to_string())
-}
-
-/// 存在非终态任务时不允许切换 Worktree；执行单元始终可调。纯逻辑，便于单测。
-/// 规则由 `tapd-workflow` 持有，避免核心与宿主各写一份。
-fn worktree_switch_blocked(current: bool, next: bool, has_live_task: bool) -> bool {
-    tapd_workflow::worktree_toggle_locked(current, next, has_live_task)
-}
-
 /// Prompt for the merge runner: merge the reviewed branch and then (and only
 /// then) write back to TAPD.
 fn merge_prompt(repo: &str, branch: &str) -> String {
@@ -1958,86 +1955,6 @@ fn merge_prompt(repo: &str, branch: &str) -> String {
 /// user prefers to do it themselves).
 fn manual_merge_instructions(repo: &str, branch: &str) -> String {
     tapd_workflow::manual_merge_instructions(repo, branch)
-}
-
-fn finish_status(canceled: bool, exit_code: Option<i32>) -> TaskStatus {
-    if canceled {
-        TaskStatus::Canceled
-    } else if exit_code == Some(0) {
-        TaskStatus::Succeeded
-    } else {
-        TaskStatus::Failed
-    }
-}
-
-/// Moves a task into the post-work review state without touching the working
-/// tree.
-fn set_awaiting_approval(
-    task: &mut AgentTask,
-    summary: String,
-    files: Vec<String>,
-    risk: Option<String>,
-    now: &str,
-) {
-    task.status = TaskStatus::AwaitingApproval;
-    task.finished_at = None;
-    task.error = None;
-    task.approval = Some(TaskApproval {
-        summary,
-        files,
-        risk,
-        requested_at: now.to_string(),
-        approved_at: None,
-        stash: None,
-    });
-}
-
-/// Applies a PTY/event outcome to a task. Returns whether anything changed.
-///
-/// A task that already reached a terminal state is never downgraded: a late
-/// `finish_task` must not turn an event-driven `succeeded` into `failed`.
-fn apply_finish(task: &mut AgentTask, outcome: &PtyOutcome, now: &str) -> bool {
-    if task.status.is_terminal()
-        || matches!(
-            task.status,
-            TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
-        )
-    {
-        return false;
-    }
-
-    if outcome.canceled {
-        task.status = TaskStatus::Canceled;
-        task.finished_at = Some(now.to_string());
-        if task.error.is_none() {
-            task.error = Some("已取消".to_string());
-        }
-        return true;
-    }
-
-    task.finished_at = Some(now.to_string());
-    task.exit_code = outcome.exit_code;
-
-    let status = if outcome.completed {
-        TaskStatus::Succeeded
-    } else {
-        finish_status(false, outcome.exit_code)
-    };
-    if status == TaskStatus::Succeeded {
-        task.status = TaskStatus::Succeeded;
-        task.error = None;
-    } else {
-        task.status = TaskStatus::Failed;
-        let message = outcome
-            .error
-            .clone()
-            .unwrap_or_else(|| match outcome.exit_code {
-                Some(code) => format!("Agent 进程退出码 {code}"),
-                None => "Agent 进程异常结束".to_string(),
-            });
-        task.error = Some(message);
-    }
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -2115,41 +2032,20 @@ pub struct AgentCore {
     app: AppHandle,
     state: SharedState,
     config: Mutex<AgentConfig>,
-    tasks: Mutex<Vec<AgentTask>>,
+    /// Single owner of task state, queue, review/merge decisions and recovery.
+    /// The host never mutates task state directly; it feeds facts in and
+    /// executes the effects the workflow returns.
+    workflow: Mutex<Workflow>,
     runtimes: Mutex<HashMap<String, Arc<Mutex<AgentRuntime>>>>,
-    /// Serializes "who owns this bug" decisions between enqueue and retry.
-    /// Without one lock in front of the check-then-act, both can win and two
-    /// tasks edit the same repository at once.
-    admission: tokio::sync::Mutex<()>,
     /// Serializes `git worktree add/remove`: parallel tasks in one repository
     /// would otherwise race on git's worktree metadata.
     worktree_lock: tokio::sync::Mutex<()>,
-    /// Serializes merge starts: a repository must never run two merge agents
-    /// at once, and the check-then-act on `Merging` needs one lock.
-    merge_lock: tokio::sync::Mutex<()>,
     /// Terminal size the UI asked for. The console can be opened before the
     /// PTY exists, so the size is remembered and applied when it starts.
     sizes: Mutex<HashMap<String, (u16, u16)>>,
-    /// Set when the user stops a review. Persisted in `agent_queue_state` so a
-    /// restart does not silently resume a queue the user halted.
-    paused: AtomicBool,
-    /// True once the user entered the system (valid login + onboarding done).
-    /// The workflow never loads or starts a task before that, so a login screen
-    /// cannot resurrect a queue behind the login wall.
-    entered: AtomicBool,
-    /// Set for the rest of the process once shutdown starts. In-flight runners
-    /// must not overwrite the parked queue status after `suspend_tasks`.
-    shutting_down: AtomicBool,
-    /// Snapshots of tasks changed since the last write. Cloning at the
-    /// mutation point keeps persistence O(changed) even with a large history.
-    pending_tasks: Mutex<HashMap<String, AgentTask>>,
-    /// Task ids removed from memory that must be deleted from SQLite. A
-    /// removal must also drop any pending snapshot for the id.
-    removed_tasks: Mutex<HashSet<String>>,
-    /// Serializes writers so an older snapshot can never overwrite a newer one.
+    /// Serializes persistence writers so an older batch can never overwrite a
+    /// newer one.
     persist_lock: Mutex<()>,
-    /// The queue-paused flag needs a write.
-    paused_dirty: AtomicBool,
     /// Last SQLite failure. Surfaced in the Agent header so a broken store is
     /// visible instead of looking like a queue that simply lost history.
     storage_error: Mutex<Option<String>>,
@@ -2164,7 +2060,6 @@ pub struct AgentCore {
     hook_events: Mutex<HashMap<String, HookEvent>>,
     /// 运行中的 Agent 状态（当前工具、等待类型、消息），只存在于内存。
     runtime_status: Mutex<HashMap<String, AgentRuntimeStatus>>,
-    wake: tokio::sync::Notify,
 }
 
 impl AgentCore {
@@ -2173,26 +2068,19 @@ impl AgentCore {
             app,
             state,
             config: Mutex::new(AgentConfig::default()),
-            tasks: Mutex::new(Vec::new()),
+            workflow: Mutex::new(Workflow::with_config(workflow_bridge::workflow_config(
+                &AgentConfig::default(),
+            ))),
             runtimes: Mutex::new(HashMap::new()),
-            admission: tokio::sync::Mutex::new(()),
             worktree_lock: tokio::sync::Mutex::new(()),
-            merge_lock: tokio::sync::Mutex::new(()),
             sizes: Mutex::new(HashMap::new()),
-            paused: AtomicBool::new(false),
-            entered: AtomicBool::new(false),
-            shutting_down: AtomicBool::new(false),
-            pending_tasks: Mutex::new(HashMap::new()),
-            removed_tasks: Mutex::new(HashSet::new()),
             persist_lock: Mutex::new(()),
-            paused_dirty: AtomicBool::new(false),
             storage_error: Mutex::new(None),
             scan: Mutex::new(None),
             scan_lock: Mutex::new(()),
             hook_tokens: Mutex::new(HashMap::new()),
             hook_events: Mutex::new(HashMap::new()),
             runtime_status: Mutex::new(HashMap::new()),
-            wake: tokio::sync::Notify::new(),
         }
     }
 
@@ -2207,139 +2095,382 @@ impl AgentCore {
         if let Err(error) = write_json_atomic(&self.config_path(), &loaded) {
             tracing::warn!(%error, "failed to persist agent config");
         }
-        *self.config.lock().expect("agent config lock") = loaded;
+        *self.config.lock().expect("agent config lock") = loaded.clone();
+        // Keep the workflow configuration in step with the host settings. The
+        // snapshot loaded on system entry carries it again; applying it here
+        // lets config commands issued before entry work.
+        {
+            let mut workflow = self.workflow.lock().expect("agent workflow lock");
+            let _ = workflow.apply(Input::SetConfig {
+                config: workflow_bridge::workflow_config(&loaded),
+            });
+        }
         // Cached install scan; stale or missing results are refreshed by the
         // background daily scan started in `init`.
         *self.scan.lock().expect("agent scan lock") =
             crate::agent_scan::load(&self.state.paths.data_dir);
 
-        // SQLite is the only task store. A failed read is a startup error, not
-        // an empty queue: log it loudly so the user can find the cause instead
-        // of watching their history disappear.
-        let mut load_failed = false;
-        let (tasks, paused) = match self.state.cache.load_agent_tasks() {
-            Some(loaded) => loaded,
-            None => {
-                tracing::error!(
-                    "failed to load agent tasks from SQLite; starting with an empty queue"
-                );
-                load_failed = true;
-                (Vec::new(), false)
-            }
-        };
-        self.paused.store(paused, Ordering::SeqCst);
-        self.paused_dirty.store(false, Ordering::SeqCst);
-
-        // The persisted status is kept as-is: recovery runs once the user
-        // enters the system (`enter_system`), and the worker does not start
-        // anything before that. Marking live tasks failed here would turn a
-        // login-screen window into lost work.
-        *self.tasks.lock().expect("agent tasks lock") = tasks;
-
-        // The agent console no longer records per-task logs; drop what earlier
-        // versions left behind instead of keeping unread files forever. This
-        // also clears the per-task completion markers from the last run.
+        // Tasks are loaded from SQLite on system entry, not here: the login /
+        // onboarding screens must not resurrect or start a queue.
         remove_legacy_logs(&self.state.paths.data_dir);
-        self.persist_tasks();
-        if load_failed {
-            // `persist_tasks` may have cleared a write error; a failed read is
-            // still a real data-loss signal and must stay visible.
-            self.set_storage_error(Some("本地任务存储不可用，历史任务可能无法读取".to_string()));
-        }
     }
 
     /// Initializes the workflow once the user actually entered the system
-    /// (valid login + onboarding complete): applies the core's recovery rules
-    /// to the queue loaded from SQLite, persists what changed and reports the
-    /// outcome. Idempotent: a second call while already entered is a no-op.
-    pub(crate) fn enter_system(&self) -> Result<Option<tapd_workflow::RecoveryReport>, String> {
-        if !workflow_bridge::claim_entry(&self.entered) {
+    /// (valid login + onboarding complete): `SystemEntered` asks for the
+    /// durable snapshot, `SnapshotLoaded` runs the core's recovery rules,
+    /// persists what changed and reports the outcome. Idempotent: a second call
+    /// while already entered is a no-op.
+    pub(crate) async fn enter_system(
+        self: &Arc<Self>,
+    ) -> Result<Option<tapd_workflow::RecoveryReport>, String> {
+        let effects = self.apply_input(Input::SystemEntered { now: now() })?;
+        if !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::LoadSnapshot))
+        {
             return Ok(None);
         }
 
         let config = self.config_snapshot();
-        let at = now();
-        // Recovery only rewrites live tasks, so they are the only records that
-        // can differ afterwards. Remember them by id to persist just those.
-        let live_ids: HashSet<String> = {
-            let tasks = self.tasks.lock().expect("agent tasks lock");
-            tasks
-                .iter()
-                .filter(|task| task.status.is_active())
-                .map(|task| task.id.clone())
-                .collect()
+        let (views, paused) = match self.state.cache.load_agent_tasks() {
+            Some(loaded) => loaded,
+            None => {
+                tracing::error!(
+                    "failed to load agent tasks from SQLite; refusing to fake an empty queue"
+                );
+                self.set_storage_error(Some(
+                    "本地任务存储不可用，队列未恢复；请检查本地数据后重试".to_string(),
+                ));
+                let _ = self.apply_input(Input::Suspend { now: now() });
+                return Err("无法读取本地任务存储，队列未恢复".to_string());
+            }
+        };
+        let mut tasks = Vec::with_capacity(views.len());
+        for view in &views {
+            match workflow_bridge::to_workflow_task(view) {
+                Ok(task) => tasks.push(task),
+                Err(error) => {
+                    tracing::error!(%error, task_id = %view.id, "failed to load a persisted agent task");
+                    self.set_storage_error(Some(format!("任务记录无法解析：{error}")));
+                    let _ = self.apply_input(Input::Suspend { now: now() });
+                    return Err(format!("恢复任务失败：{error}"));
+                }
+            }
+        }
+        let snapshot = Snapshot {
+            schema_version: tapd_workflow::SCHEMA_VERSION,
+            config: workflow_bridge::workflow_config(&config),
+            paused,
+            tasks,
+            generation: 0,
         };
 
-        let recovered = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            workflow_bridge::recover_tasks(&mut tasks, &config, &at)
-        };
-        let report = match recovered {
-            Ok(report) => report,
+        let effects = match self.apply_input(Input::SnapshotLoaded { snapshot }) {
+            Ok(effects) => effects,
             Err(error) => {
-                // A failed recovery must not leave the workflow half-entered:
-                // release the claim so a later login can retry, and surface the
-                // error instead of pretending the queue is fine.
-                workflow_bridge::release_entry(&self.entered);
+                // Never leave the workflow half-entered: reset it so a later
+                // login can retry the recovery instead of waiting forever.
+                let _ = self.apply_input(Input::Suspend { now: now() });
                 tracing::error!(%error, "failed to recover agent tasks on system entry");
                 return Err(format!("恢复任务失败：{error}"));
             }
         };
 
-        // Queued tasks are always restored; when automatic continuation is
-        // disabled the queue is parked instead of dropped, so the worker waits
-        // for an explicit user resume. The pause flag is persisted below.
-        let queue_paused = report.as_ref().is_some_and(|report| report.queue_paused);
-        if queue_paused {
-            self.set_paused(true);
-        }
-
-        let mut state_written = false;
-        if !live_ids.is_empty() {
-            let changed: Vec<AgentTask> = {
-                let tasks = self.tasks.lock().expect("agent tasks lock");
-                tasks
-                    .iter()
-                    .filter(|task| live_ids.contains(&task.id))
-                    .cloned()
-                    .collect()
-            };
-            if !changed.is_empty() {
-                self.mark_tasks_dirty(changed);
-                self.persist_tasks();
-                self.emit_state();
-                state_written = true;
+        let mut report = None;
+        let mut rest = Vec::with_capacity(effects.len());
+        for effect in effects {
+            match effect {
+                Effect::EmitRecoveryReport { report: value } => report = Some(value),
+                other => rest.push(other),
             }
         }
-
-        if queue_paused && !state_written {
-            // Queued tasks are not "active", so the block above may have been
-            // skipped; persist the pause flag itself and refresh the capsule.
-            self.persist_tasks();
-            self.emit_state();
-        }
-
-        if let Some(report) = report.as_ref() {
+        if let Some(value) = report.as_ref() {
             tracing::info!(
-                queued = report.queued,
-                retried = report.retried,
-                awaiting_approval = report.awaiting_approval,
-                awaiting_merge = report.awaiting_merge,
-                failed = report.failed,
-                queue_paused = report.queue_paused,
+                queued = value.queued,
+                retried = value.retried,
+                awaiting_approval = value.awaiting_approval,
+                awaiting_merge = value.awaiting_merge,
+                failed = value.failed,
+                queue_paused = value.queue_paused,
                 "agent workflow recovery completed"
             );
-            if !workflow_bridge::report_is_empty(report) {
-                let _ = self.app.emit("agent://recovery", report);
+            if !workflow_bridge::report_is_empty(value) {
+                let _ = self.app.emit("agent://recovery", value);
             }
         }
-
-        self.wake.notify_one();
-        Ok(report.filter(|report| !workflow_bridge::report_is_empty(report)))
+        self.dispatch_effects(rest).await;
+        if report.as_ref().is_some_and(|value| value.queue_paused) {
+            // Recovery parks the queue in memory. Persist the flag even when
+            // no task changed, so a crash before shutdown cannot resume it.
+            let paused = self.workflow_paused();
+            self.persist_views(&[], paused, &[]);
+        }
+        // Queued-only snapshots may have no changed tasks, so no PersistChanged
+        // effect fired; push the loaded list explicitly before returning.
+        self.emit_state();
+        Ok(report.filter(|value| !workflow_bridge::report_is_empty(value)))
     }
 
     pub(crate) fn config_snapshot(&self) -> AgentConfig {
         self.config.lock().expect("agent config lock").clone()
+    }
+
+    // -- workflow protocol ---------------------------------------------------
+
+    /// Feeds one fact into the workflow. A rejection is returned as an error so
+    /// command paths can surface it; any other effect list is handed back for
+    /// the caller to dispatch.
+    fn apply_input(self: &Arc<Self>, input: Input) -> Result<Vec<Effect>, String> {
+        let effects = {
+            let mut workflow = self.workflow.lock().expect("agent workflow lock");
+            workflow.apply(input)
+        };
+        if let Some(Effect::Rejected { message }) = effects
+            .iter()
+            .find(|effect| matches!(effect, Effect::Rejected { .. }))
+        {
+            let message = if message == "system not entered" {
+                workflow_bridge::NOT_ENTERED.to_string()
+            } else {
+                message.clone()
+            };
+            // The scheduler runs after every input, so a rejected command can
+            // still carry effects for other tasks (a freed execution unit).
+            // Dispatch them instead of dropping them with the error.
+            let rest: Vec<Effect> = effects
+                .into_iter()
+                .filter(|effect| !matches!(effect, Effect::Rejected { .. }))
+                .collect();
+            if !rest.is_empty() {
+                let core = Arc::clone(self);
+                tauri::async_runtime::spawn(async move {
+                    core.dispatch_effects(rest).await;
+                });
+            }
+            return Err(message);
+        }
+        Ok(effects)
+    }
+
+    /// Executes the workflow's effects. Never called while holding the workflow
+    /// lock: persistence, git and the PTY all run outside it.
+    async fn dispatch_effects(self: &Arc<Self>, effects: Vec<Effect>) {
+        for effect in effects {
+            self.dispatch_effect(effect);
+        }
+    }
+
+    fn dispatch_effect(self: &Arc<Self>, effect: Effect) {
+        match effect {
+            Effect::Rejected { message } => {
+                tracing::warn!(%message, "agent workflow rejected an input");
+            }
+            Effect::LoadSnapshot => {
+                tracing::warn!("unexpected LoadSnapshot effect outside system entry");
+            }
+            Effect::StateChanged => self.emit_state(),
+            Effect::PersistChanged { tasks } => {
+                let views = self.views_for(&tasks);
+                let paused = self.workflow_paused();
+                self.persist_views(&views, paused, &[]);
+                self.emit_state();
+            }
+            Effect::PersistDeleted { task_id } => {
+                let paused = self.workflow_paused();
+                self.persist_views(&[], paused, &[task_id.0.clone()]);
+                self.emit_state();
+            }
+            Effect::PersistPaused { paused } => {
+                self.persist_views(&[], paused, &[]);
+                self.emit_state();
+            }
+            Effect::PersistConfig { config } => {
+                // `agent_config_set` already wrote agent.json before applying
+                // SetConfig; the workflow copy is persisted as part of the
+                // task snapshot on the next write.
+                tracing::debug!(
+                    worktree = config.worktree_enabled,
+                    units = config.execution_units,
+                    "agent workflow config updated"
+                );
+            }
+            Effect::AppendHistory { record } => self.append_history(record),
+            Effect::EmitRecoveryReport { report } => {
+                let _ = self.app.emit("agent://recovery", report);
+            }
+            Effect::EmitNotice { level, message } => {
+                let _ = self.app.emit(
+                    "agent://notice",
+                    json!({ "level": level, "message": message }),
+                );
+            }
+            Effect::CreateWorktree {
+                task_id,
+                repo_path,
+                bug_id,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    core.run_create_worktree(task_id, repo_path, bug_id).await;
+                });
+            }
+            Effect::InspectWorkspace { task_id, path, .. } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    match core.inspect_workspace(&task_id, &path).await {
+                        Ok(changes) => core.feed(Input::WorkspaceInspected { task_id, changes }),
+                        Err(error) => {
+                            tracing::warn!(task_id = %task_id, %error, "failed to inspect the workspace");
+                        }
+                    }
+                });
+            }
+            Effect::RemoveWorktree {
+                task_id,
+                repo_path,
+                path,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    core.run_remove_worktree(task_id, repo_path, path).await;
+                });
+            }
+            Effect::StartFixAgent {
+                task_id,
+                runtime_id,
+                cwd,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    core.start_fix_agent(task_id, runtime_id, cwd).await;
+                });
+            }
+            Effect::CancelAgent { task_id } => self.stop_runtime(&task_id.0),
+            Effect::CheckMergePreconditions {
+                task_id,
+                repo_path,
+                branch,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = core
+                        .check_merge_preconditions(&task_id, &repo_path, &branch)
+                        .await;
+                    core.feed(Input::MergePreconditionsChecked { task_id, result });
+                });
+            }
+            Effect::StartMergeAgent {
+                task_id,
+                repo_path,
+                branch,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    core.start_merge_agent(task_id, repo_path, branch).await;
+                });
+            }
+            Effect::VerifyBranchMerged {
+                task_id,
+                repo_path,
+                branch,
+                ..
+            } => {
+                let core = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    core.run_verify_branch_merged(task_id, repo_path, branch)
+                        .await;
+                });
+            }
+        }
+    }
+
+    /// Applies a host receipt and dispatches whatever it produced. Used by
+    /// background effect runners; command paths apply and dispatch inline so
+    /// they can return the final view.
+    fn feed(self: &Arc<Self>, input: Input) {
+        let core = self.clone();
+        tauri::async_runtime::spawn(async move {
+            match core.apply_input(input) {
+                Ok(effects) => core.dispatch_effects(effects).await,
+                Err(error) => {
+                    tracing::warn!(%error, "agent workflow ignored a host receipt");
+                }
+            }
+        });
+    }
+
+    // -- workflow read helpers ----------------------------------------------
+
+    fn workflow_task(&self, task_id: &str) -> Option<WorkflowTask> {
+        let id = TaskId::new(task_id);
+        self.workflow.lock().ok()?.task(&id).cloned()
+    }
+
+    fn workflow_view(&self, task_id: &str) -> Option<AgentTask> {
+        let task = self.workflow_task(task_id)?;
+        match workflow_bridge::from_workflow_task(&task) {
+            Ok(view) => Some(view),
+            Err(error) => {
+                tracing::warn!(%error, task_id, "failed to map a workflow task to its view");
+                None
+            }
+        }
+    }
+
+    fn workflow_status(&self, task_id: &str) -> Option<WorkflowStatus> {
+        let id = TaskId::new(task_id);
+        self.workflow.lock().ok()?.task(&id).map(|task| task.status)
+    }
+
+    fn workflow_paused(&self) -> bool {
+        self.workflow
+            .lock()
+            .map(|workflow| workflow.paused())
+            .unwrap_or(false)
+    }
+
+    fn views_for(&self, tasks: &[WorkflowTask]) -> Vec<AgentTask> {
+        tasks
+            .iter()
+            .filter_map(|task| match workflow_bridge::from_workflow_task(task) {
+                Ok(view) => Some(view),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        task_id = %task.id,
+                        "failed to map a workflow task to its view"
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn append_history(&self, record: HistoryRecord) {
+        let Some(task) = self.workflow_task(&record.task_id) else {
+            tracing::warn!(
+                task_id = %record.task_id,
+                "history record has no live task; nothing to upsert"
+            );
+            return;
+        };
+        let Ok(view) = workflow_bridge::from_workflow_task(&task) else {
+            tracing::warn!(task_id = %record.task_id, "failed to map the history task");
+            return;
+        };
+        let paused = self.workflow_paused();
+        self.persist_views(&[view], paused, &[]);
+        tracing::info!(
+            task_id = %record.task_id,
+            status = ?record.status,
+            finished_at = %record.finished_at,
+            "agent task history appended"
+        );
     }
 
     fn scan_snapshot(&self) -> Option<crate::agent_scan::AgentScanSnapshot> {
@@ -2405,7 +2536,7 @@ impl AgentCore {
 
     /// 校验 hook token 并记录事件。只有该任务仍在准备/运行时才接受，
     /// 避免任务结束后迟到的 hook 把状态改回去。
-    fn record_session_hook(&self, report: &HookReport) -> Result<(), HookError> {
+    fn record_session_hook(self: &Arc<Self>, report: &HookReport) -> Result<(), HookError> {
         let HookReport {
             token,
             task_id,
@@ -2424,8 +2555,9 @@ impl AgentCore {
         if token_task.as_deref() != Some(task_id.as_str()) {
             return Err(HookError::Unauthorized);
         }
-        match self.current_status(task_id) {
-            Some(TaskStatus::Preparing | TaskStatus::Running | TaskStatus::Merging) => {}
+        match self.workflow_status(task_id) {
+            Some(WorkflowStatus::Preparing | WorkflowStatus::Running | WorkflowStatus::Merging) => {
+            }
             Some(_) => return Ok(()),
             None => return Err(HookError::UnknownTask),
         }
@@ -2436,12 +2568,23 @@ impl AgentCore {
             .filter(|id| valid_session_id(id))
         {
             if self.stored_session_id(task_id).as_deref() != Some(session_id) {
-                let session_id = session_id.to_string();
                 // 先落 session id：任务可能马上被 MCP 回报结束，PTY 不一定还有
-                // 下一次轮询机会。
-                self.update_task(task_id, |task| {
-                    task.agent_session_id = Some(session_id.clone());
-                });
+                // 下一次轮询机会。Apply synchronously so the state is visible
+                // before this hook returns; only persistence is deferred.
+                match self.apply_input(Input::SessionObserved {
+                    task_id: TaskId::new(task_id.clone()),
+                    session_id: session_id.to_string(),
+                }) {
+                    Ok(effects) => {
+                        let core = Arc::clone(self);
+                        tauri::async_runtime::spawn(async move {
+                            core.dispatch_effects(effects).await;
+                        });
+                    }
+                    Err(error) => {
+                        tracing::debug!(task_id, %error, "ignored session observation");
+                    }
+                }
             }
         }
 
@@ -2578,32 +2721,34 @@ impl AgentCore {
             format!("保存 Agent 配置失败：{error}")
         })?;
         *self.config.lock().expect("agent config lock") = next.clone();
-        // Concurrency may have changed (worktree on/off or execution units);
-        // wake the worker so it re-evaluates instead of waiting for an event.
-        self.wake.notify_one();
         Ok(next)
     }
 
     fn tasks_state(&self) -> AgentTasksState {
-        let tasks = self.tasks.lock().expect("agent tasks lock");
-        let counts = task_counts(tasks.as_slice());
-        let live: Vec<AgentTask> = tasks
-            .iter()
-            .filter(|task| !task.status.is_terminal())
-            .cloned()
-            .collect();
+        let (tasks, counts, active_task_id, queue_paused) = {
+            let workflow = self.workflow.lock().expect("agent workflow lock");
+            let counts = workflow.counts();
+            let active_task_id = workflow.active_task_id().map(|id| id.0.clone());
+            let live: Vec<WorkflowTask> = workflow
+                .tasks()
+                .iter()
+                .filter(|task| !task.status.is_terminal())
+                .cloned()
+                .collect();
+            (live, counts, active_task_id, workflow.paused())
+        };
         AgentTasksState {
-            active_task_id: active_task_id(tasks.as_slice()),
+            active_task_id,
             queued_count: counts.queued,
             awaiting_approval_count: counts.awaiting_approval,
             awaiting_merge_count: counts.awaiting_merge,
-            queue_paused: self.paused.load(Ordering::SeqCst),
+            queue_paused,
             storage_error: self
                 .storage_error
                 .lock()
                 .expect("agent storage error lock")
                 .clone(),
-            tasks: live,
+            tasks: self.views_for(&tasks),
             runtime_status: self
                 .runtime_status
                 .lock()
@@ -2615,336 +2760,130 @@ impl AgentCore {
     /// One page of terminal tasks, newest first. Filtering and paging happen
     /// here so the frontend never receives the whole history.
     fn history_page(&self, query: HistoryQuery) -> AgentTasksPage {
-        let tasks = self.tasks.lock().expect("agent tasks lock");
-        build_history_page(&tasks, query)
+        let tasks = {
+            let workflow = self.workflow.lock().expect("agent workflow lock");
+            workflow.history()
+        };
+        let views = self.views_for(&tasks);
+        build_history_page(&views, query)
     }
 
     fn summary(&self) -> AgentSummary {
-        let tasks = self.tasks.lock().expect("agent tasks lock");
-        agent_summary(&tasks)
+        let workflow = self.workflow.lock().expect("agent workflow lock");
+        let counts = workflow.counts();
+        let active = workflow
+            .active_task_id()
+            .and_then(|task_id| workflow.task(task_id));
+        AgentSummary {
+            running: counts.active > 0,
+            awaiting_approval: counts.awaiting_approval,
+            awaiting_merge: counts.awaiting_merge,
+            active_task_id: active.map(|task| task.id.0.clone()),
+            title: active.map(|task| task.spec.title.clone()),
+            workspace_name: active.map(|task| task.spec.workspace_name.clone()),
+            bug_id: active.map(|task| task.spec.bug_id.clone()),
+        }
     }
 
     fn emit_state(&self) {
         let state = self.tasks_state();
-        // Same source as the `agent_summary` command: the full task list, not
-        // the live-only slice carried by `state.tasks`.
+        // Same source as the `agent_summary` command: the workflow snapshot,
+        // not the live-only slice carried by `state.tasks`.
         let summary = self.summary();
         let _ = self.app.emit("agent://state", state);
         let _ = self.app.emit("agent://summary", summary);
     }
 
-    fn update_task<F>(&self, task_id: &str, mutate: F) -> Option<AgentTask>
-    where
-        F: FnOnce(&mut AgentTask),
-    {
-        let (snapshot, changed) = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            let task = tasks.iter_mut().find(|task| task.id == task_id)?;
-            let before = task.clone();
-            mutate(task);
-            let changed = *task != before;
-            let snapshot = task.clone();
-            if changed {
-                self.pending_tasks
-                    .lock()
-                    .expect("agent pending lock")
-                    .insert(snapshot.id.clone(), snapshot.clone());
-            }
-            (snapshot, changed)
-        };
-        if changed {
-            self.persist_tasks();
-            self.emit_state();
-        }
-        Some(snapshot)
-    }
-
-    fn task_snapshot(&self, task_id: &str) -> Option<AgentTask> {
-        self.tasks
-            .lock()
-            .expect("agent tasks lock")
-            .iter()
-            .find(|task| task.id == task_id)
-            .cloned()
-    }
-
-    fn current_status(&self, task_id: &str) -> Option<TaskStatus> {
-        self.tasks
-            .lock()
-            .ok()?
-            .iter()
-            .find(|task| task.id == task_id)
-            .map(|task| task.status)
-    }
-
     /// 只读 session id，避免 hook 高频事件触发整份任务克隆。
     fn stored_session_id(&self, task_id: &str) -> Option<String> {
-        self.tasks
+        let id = TaskId::new(task_id);
+        self.workflow
             .lock()
             .ok()?
-            .iter()
-            .find(|task| task.id == task_id)
+            .task(&id)
             .and_then(|task| task.agent_session_id.clone())
     }
 
-    fn fail_task(&self, task_id: &str, message: String) {
-        // Shutdown already parked the queue; a late failure must not replace
-        // the resumable `Queued` state with `Failed`.
-        if self.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        let changed = self.update_task(task_id, |task| {
-            // Never downgrade a task that already reached a terminal state
-            // (e.g. event-driven `succeeded` followed by a late teardown), and
-            // never destroy a task that is waiting for the user's review or
-            // that the merge runner still owns.
-            if task.status.is_terminal()
-                || matches!(
-                    task.status,
-                    TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
-                )
-            {
-                return;
-            }
-            task.status = TaskStatus::Failed;
-            task.error = Some(message);
-            task.finished_at = Some(now());
-        });
-        if changed.is_none() {
-            tracing::warn!(task_id, "agent task disappeared while failing");
-        }
-    }
-
-    async fn update_config(&self, patch: AgentConfigPatch) -> Result<AgentConfig, String> {
-        // Serialize with enqueue/retry: a task cannot slip in between the
-        // "queue idle?" check and the worktree switch being persisted.
-        let _admission = self.admission.lock().await;
-        // Toggling worktree isolation changes how queued/running tasks are
-        // isolated, so it is locked while any task is unfinished. Execution
-        // units are safe to change at any time.
-        if let Some(next) = patch.worktree_enabled {
-            let current = self
-                .config
-                .lock()
-                .expect("agent config lock")
-                .worktree_enabled;
-            let has_live_task = self
-                .tasks
-                .lock()
-                .expect("agent tasks lock")
-                .iter()
-                .any(|task| !task.status.is_terminal());
-            if worktree_switch_blocked(current, next, has_live_task) {
-                return Err(
-                    "队列中还有未结束的任务，不能切换 Worktree；执行单元仍可调整".to_string(),
-                );
-            }
-        }
-
+    async fn update_config(
+        self: &Arc<Self>,
+        patch: AgentConfigPatch,
+    ) -> Result<AgentConfig, String> {
+        // Work on a clone: a rejected workflow config must not be published.
         let next = {
-            let mut config = self.config.lock().expect("agent config lock");
-            patch.apply(&mut config);
-            config.clone().sanitized()
+            let config = self.config.lock().expect("agent config lock");
+            let mut candidate = config.clone();
+            patch.apply(&mut candidate);
+            candidate.sanitized()
         };
-
-        self.store_config(next)
+        // The workflow owns the worktree toggle lock; a rejection leaves the
+        // host config untouched and agent.json is not rewritten.
+        let effects = self.apply_input(Input::SetConfig {
+            config: workflow_bridge::workflow_config(&next),
+        })?;
+        let stored = self.store_config(next)?;
+        self.dispatch_effects(effects).await;
+        Ok(stored)
     }
 
-    async fn enqueue(&self, request: &EnqueueRequest, source: &str) -> Result<AgentTask, String> {
-        // Nothing may enter the queue before the workflow is initialized: the
-        // login/onboarding screens must not start work in the background.
-        workflow_bridge::ensure_entered(&self.entered)?;
-
-        let workspace_id = request.workspace_id.trim();
-        let bug_id = request.bug_id.trim();
-        if workspace_id.is_empty() || bug_id.is_empty() {
-            return Err("缺少 workspaceId 或 bugId".to_string());
-        }
-
-        // Admission is serialized with retry so the "does a live task own it?"
-        // check cannot pass twice and start two agents on one repository.
-        let _admission = self.admission.lock().await;
-
-        let id = uuid::Uuid::new_v4().simple().to_string();
-
+    async fn enqueue(
+        self: &Arc<Self>,
+        request: &EnqueueRequest,
+        source: &str,
+    ) -> Result<AgentTask, String> {
         let config = self.config_snapshot();
-        // 本次任务可以覆盖默认运行时；未知 id 仍回退到默认，避免坏配置卡住队列。
-        let runtime_id = request
-            .runtime_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .filter(|id| runtime_descriptor(id).is_some())
-            .map(str::to_string)
-            .unwrap_or_else(|| config.runtime_id.clone());
-        let workspace_name = request
-            .workspace_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| workspace_id.to_string());
-        let title = request
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("缺陷 {bug_id}"));
-        let severity = request.severity.clone().unwrap_or_default();
-        let priority = request.priority.clone().unwrap_or_default();
-        let repo_path = config.repo_path_for(workspace_id);
-        let extra_prompt = request
-            .extra_prompt
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let mut seen = std::collections::HashSet::new();
-        let attachments: Vec<String> = request
-            .attachments
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty() && seen.insert(path.clone()))
-            .collect();
-
-        let task = AgentTask {
-            id,
-            workspace_id: workspace_id.to_string(),
-            workspace_name,
-            bug_id: bug_id.to_string(),
-            title,
-            severity: severity.trim().to_string(),
-            priority: priority.trim().to_string(),
-            json_path: String::new(),
-            repo_path,
-            worktree_path: None,
-            worktree_branch: None,
-            status: TaskStatus::Queued,
-            created_at: now(),
-            started_at: None,
-            finished_at: None,
-            exit_code: None,
-            error: None,
-            prompt: String::new(),
-            source: source.to_string(),
-            runtime_id,
-            agent_session_id: None,
-            approval: None,
-            merge: None,
-            commit_only: false,
-            baseline_dirty: Vec::new(),
-            baseline_head: None,
-            extra_prompt,
-            attachments,
-            attempt: 0,
-            interrupted: false,
-            changes: None,
-        };
+        let spec = task_spec_from_request(request, &config, source)?;
 
         // One bug owns at most one live task. A double click, the notification
-        // flow and a manual enqueue can race; checking and pushing under the
-        // same lock makes the operation idempotent.
-        {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            if let Some(existing) = live_task_for_bug(&tasks, workspace_id, bug_id) {
-                return Ok(existing.clone());
-            }
-            tasks.push(task.clone());
+        // flow and a manual enqueue can race; returning the existing record
+        // keeps the operation idempotent. The workflow enforces the same rule.
+        if let Some(existing) = self.live_task_for_bug(&spec.workspace_id, &spec.bug_id) {
+            return workflow_bridge::from_workflow_task(&existing);
         }
-        self.mark_task_dirty(task.clone());
-        self.persist_tasks();
-        self.emit_state();
-        self.wake.notify_one();
 
-        tracing::info!(task_id = %task.id, bug_id = %task.bug_id, source, "agent task queued");
-        Ok(task)
+        let task_id = TaskId::new(uuid::Uuid::new_v4().simple().to_string());
+        let effects = self.apply_input(Input::Enqueue {
+            task_id: task_id.clone(),
+            spec,
+            now: now(),
+        })?;
+        self.dispatch_effects(effects).await;
+
+        tracing::info!(task_id = %task_id, source, "agent task queued");
+        self.workflow_view(task_id.as_str())
+            .ok_or_else(|| "任务不存在".to_string())
     }
 
-    /// Cancels a task: sets the cancel flag and kills the TUI process group.
-    async fn cancel(&self, task_id: &str) -> Result<AgentTask, String> {
-        let task = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        let status = task.status;
-        if status == TaskStatus::AwaitingApproval {
-            // A paused review owns an uncommitted diff. Cancelling it through
-            // the generic path would drop that diff and leave the queue
-            // unpaused; stop_review stashes it and keeps the queue halted.
+    /// The live workflow task that already owns a bug, if any.
+    fn live_task_for_bug(&self, workspace_id: &str, bug_id: &str) -> Option<WorkflowTask> {
+        let workflow = self.workflow.lock().ok()?;
+        workflow
+            .tasks()
+            .iter()
+            .find(|task| {
+                !task.status.is_terminal()
+                    && task.spec.workspace_id == workspace_id
+                    && task.spec.bug_id == bug_id
+            })
+            .cloned()
+    }
+
+    /// Cancels a task through the workflow; the core stops the runner and
+    /// records the terminal state. A pending review keeps the old stash
+    /// behavior by delegating to `stop_review`.
+    async fn cancel(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        if self
+            .workflow_view(task_id)
+            .is_some_and(|view| view.status == TaskStatus::AwaitingApproval)
+        {
             return self.stop_review(task_id).await;
         }
-        if status == TaskStatus::AwaitingMerge {
-            // Nothing is running yet: cancel the merge decision but keep the
-            // worktree and branch so the fix can still be merged by hand.
-            let updated = self
-                .update_task(task_id, |task| {
-                    if task.status != TaskStatus::AwaitingMerge {
-                        return;
-                    }
-                    task.status = TaskStatus::Canceled;
-                    task.finished_at = Some(now());
-                    task.error = Some("已取消合并".to_string());
-                })
-                .ok_or_else(|| "任务不存在".to_string())?;
-            self.wake.notify_one();
-            return Ok(updated);
-        }
-        if status == TaskStatus::Merging {
-            // The merge runner checks the status after its TUI exits and will
-            // not overwrite this rollback.
-            self.stop_runtime(task_id);
-            let repo = task.repo_path.clone();
-            let branch = task.worktree_branch.clone().unwrap_or_default();
-            let updated = self
-                .update_task(task_id, |task| {
-                    if task.status != TaskStatus::Merging {
-                        return;
-                    }
-                    task.status = TaskStatus::AwaitingMerge;
-                    task.finished_at = None;
-                    task.error = None;
-                    let instructions = manual_merge_instructions(&repo, &branch);
-                    let merge = task.merge.get_or_insert_with(TaskMerge::default);
-                    merge.error = Some("合并已中止".to_string());
-                    merge.instructions = Some(instructions);
-                    merge.started_at = None;
-                })
-                .ok_or_else(|| "任务不存在".to_string())?;
-            self.wake.notify_one();
-            return Ok(updated);
-        }
-        if status.is_terminal() {
-            return Err("任务已经结束，无需取消".to_string());
-        }
-
-        let snapshot = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            let task = tasks
-                .iter_mut()
-                .find(|task| task.id == task_id)
-                .ok_or_else(|| "任务不存在".to_string())?;
-
-            if task.status.is_terminal() {
-                return Err("任务已经结束，无需取消".to_string());
-            }
-            task.status = TaskStatus::Canceled;
-            task.finished_at = Some(now());
-            if task.error.is_none() {
-                task.error = Some("已取消".to_string());
-            }
-            task.clone()
-        };
-
-        self.stop_runtime(task_id);
-        self.mark_task_dirty(snapshot.clone());
-        self.persist_tasks();
-        self.emit_state();
-        // If the worker was parked because this was the only task, let it
-        // re-check the queue instead of sleeping until the next enqueue.
-        self.wake.notify_one();
-        Ok(snapshot)
+        let effects = self.apply_input(Input::Cancel {
+            task_id: TaskId::new(task_id),
+            now: now(),
+        })?;
+        self.dispatch_effects(effects).await;
+        self.workflow_view(task_id)
+            .ok_or_else(|| "任务不存在".to_string())
     }
 
     /// Kills the TUI process group and closes its PTY handles. Idempotent.
@@ -2981,41 +2920,55 @@ impl AgentCore {
     /// The TUI runs in its own session, so a plain process exit leaves it
     /// running: the turn keeps going after the window is gone and keeps
     /// writing back to TAPD while the task already looks abandoned.
-    fn shutdown(&self) {
-        // Stop the worker and any late status writes before parking the queue.
-        self.shutting_down.store(true, Ordering::SeqCst);
-        // Stop the worker from dequeuing anything else while the queue is being
-        // parked: suspended tasks keep their record, so restarting them here
-        // would launch a fresh agent during exit.
-        workflow_bridge::release_entry(&self.entered);
+    fn shutdown(self: &Arc<Self>) {
+        // Nothing was loaded before system entry, so writing a suspend
+        // snapshot would overwrite the durable paused flag with its default.
+        let entered = self
+            .workflow
+            .lock()
+            .map(|workflow| workflow.entered())
+            .unwrap_or(false);
+        if !entered {
+            tracing::info!("agent shutdown before system entry; durable queue untouched");
+            return;
+        }
 
-        // Park live tasks before the processes are killed: a fresh start then
+        // Park the queue before the processes are killed: a fresh start then
         // resumes them (`Queued` + interrupted) instead of finding `Running`
-        // records whose agent no longer exists. A suspend failure is logged and
-        // still tears the processes down — leaving them running is worse.
-        let suspended = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            workflow_bridge::suspend_tasks(&mut tasks, &now())
-        };
-        match suspended {
-            Ok(changed) => {
-                if !changed.is_empty() {
-                    tracing::info!(tasks = changed.len(), "agent tasks suspended for shutdown");
-                    self.mark_tasks_dirty(changed);
-                    self.persist_tasks();
-                }
-            }
+        // records whose agent no longer exists.
+        let effects = match self.apply_input(Input::Suspend { now: now() }) {
+            Ok(effects) => effects,
             Err(error) => {
                 tracing::error!(%error, "failed to suspend agent tasks during shutdown");
+                Vec::new()
+            }
+        };
+        // Shutdown is the last chance to persist the parked queue, so the
+        // suspend effects run inline instead of through the async dispatcher.
+        for effect in effects {
+            match effect {
+                Effect::PersistChanged { tasks } => {
+                    let views = self.views_for(&tasks);
+                    let paused = self.workflow_paused();
+                    if !views.is_empty() {
+                        tracing::info!(tasks = views.len(), "agent tasks suspended for shutdown");
+                    }
+                    self.persist_views(&views, paused, &[]);
+                }
+                Effect::PersistPaused { paused } => {
+                    self.persist_views(&[], paused, &[]);
+                }
+                other => tracing::debug!(effect = ?other, "agent effect skipped during shutdown"),
             }
         }
 
-        let task_ids: Vec<String> = match self.tasks.lock() {
-            Ok(tasks) => tasks.iter().map(|task| task.id.clone()).collect(),
-            Err(error) => {
-                tracing::warn!(%error, "agent tasks lock poisoned during shutdown");
-                Vec::new()
-            }
+        let task_ids: Vec<String> = {
+            let workflow = self.workflow.lock().expect("agent workflow lock");
+            workflow
+                .tasks()
+                .iter()
+                .map(|task| task.id.0.clone())
+                .collect()
         };
         for task_id in &task_ids {
             self.teardown_task(task_id);
@@ -3025,22 +2978,13 @@ impl AgentCore {
 
     // -- post-work review ---------------------------------------------------
 
-    /// True while any task waits for a commit decision; the worker must not
-    /// start the next queued task.
-    fn has_awaiting_approval(&self) -> bool {
-        self.tasks
-            .lock()
-            .expect("agent tasks lock")
-            .iter()
-            .any(|task| task.status == TaskStatus::AwaitingApproval)
-    }
-
-    /// Approves a paused change. A non-worktree task re-enters the queue with
-    /// `commit_only`; a worktree task with nothing left uncommitted goes
-    /// straight to `AwaitingMerge`, otherwise it commits on its branch first.
-    async fn approve_review(&self, task_id: &str) -> Result<AgentTask, String> {
+    /// Approves a paused change. The core decides between the commit-only
+    /// requeue and a direct merge once it knows whether the working tree still
+    /// has uncommitted files; a missing inspection runs inline so the command
+    /// returns the final view.
+    async fn approve_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
@@ -3049,63 +2993,46 @@ impl AgentCore {
             return Err(format!("工作目录不存在：{}", task.work_dir()));
         }
 
-        // Approving is an explicit "continue" signal, so a queue paused by an
-        // earlier stop resumes unless another review still blocks it.
-        self.set_paused(false);
-
-        // Decide from the live working tree instead of a stored flag: old
-        // records predate `commit_only` and the agent may have committed in
-        // the meantime. Never block the async runtime on git.
-        let work_dir = task.work_dir().to_string();
-        let baseline = task.baseline_dirty.clone();
-        let uncommitted = tokio::task::spawn_blocking(move || {
-            uncommitted_files(&work_dir)
-                .map(|files| files.into_iter().any(|file| !baseline.contains(&file)))
-        })
-        .await
-        .map_err(|error| format!("检查工作区失败：{error}"))?
-        .map_err(|error| format!("检查工作区失败：{error}"))?;
-
-        let at = now();
-        let is_worktree = task.worktree_branch.is_some();
-        let repo = task.repo_path.clone();
-        let branch = task.worktree_branch.clone().unwrap_or_default();
-        let updated = self
-            .update_task(task_id, |task| {
-                task.finished_at = None;
-                task.error = None;
-                if let Some(approval) = task.approval.as_mut() {
-                    approval.approved_at = Some(at.clone());
+        let mut effects = self.apply_input(Input::ApproveReview {
+            task_id: TaskId::new(task_id),
+            now: now(),
+        })?;
+        let inspections: Vec<(TaskId, String)> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::InspectWorkspace { task_id, path, .. } => {
+                    Some((task_id.clone(), path.clone()))
                 }
-                if is_worktree && !uncommitted {
-                    task.status = TaskStatus::AwaitingMerge;
-                    task.commit_only = false;
-                    task.merge = Some(TaskMerge {
-                        instructions: Some(manual_merge_instructions(&repo, &branch)),
-                        ..TaskMerge::default()
-                    });
-                } else {
-                    task.status = TaskStatus::Queued;
-                    task.commit_only = true;
-                }
+                _ => None,
             })
-            .ok_or_else(|| "任务不存在".to_string())?;
-
-        if updated.status == TaskStatus::Queued {
-            tracing::info!(task_id, "agent review approved and requeued");
-            self.wake.notify_one();
-        } else {
-            tracing::info!(task_id, "agent review approved; waiting for merge");
+            .collect();
+        if !inspections.is_empty() {
+            effects.retain(|effect| !matches!(effect, Effect::InspectWorkspace { .. }));
+            for (inspect_id, path) in inspections {
+                let changes = self
+                    .inspect_workspace(&inspect_id, &path)
+                    .await
+                    .map_err(|error| format!("检查工作区失败：{error}"))?;
+                let receipts = self.apply_input(Input::WorkspaceInspected {
+                    task_id: inspect_id,
+                    changes,
+                })?;
+                effects.extend(receipts);
+            }
         }
-        Ok(updated)
+        self.dispatch_effects(effects).await;
+
+        tracing::info!(task_id, "agent review approved");
+        self.workflow_view(task_id)
+            .ok_or_else(|| "任务不存在".to_string())
     }
 
     /// Stops a paused review: the uncommitted diff is stashed (including
     /// untracked files) so nothing is lost, the task is canceled and the queue
     /// stays paused until the user resumes it.
-    async fn stop_review(&self, task_id: &str) -> Result<AgentTask, String> {
+    async fn stop_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
@@ -3153,7 +3080,6 @@ impl AgentCore {
         };
 
         self.teardown_task(task_id);
-        self.set_paused(true);
         let mut message = if !dir_exists || stash.contains("无未提交改动") {
             format!("已停止：{stash}")
         } else {
@@ -3184,20 +3110,17 @@ impl AgentCore {
             Ok(_) => {}
             Err(error) => message.push_str(&format!("；无法检查剩余文件：{error}")),
         }
-        let updated = self
-            .update_task(task_id, |task| {
-                task.status = TaskStatus::Canceled;
-                task.finished_at = Some(now());
-                task.exit_code = None;
-                task.error = Some(message.clone());
-                if let Some(approval) = task.approval.as_mut() {
-                    approval.stash = Some(stash.clone());
-                }
-            })
-            .ok_or_else(|| "任务不存在".to_string())?;
+        let effects = self.apply_input(Input::StopReview {
+            task_id: TaskId::new(task_id),
+            now: now(),
+            stash: Some(stash.clone()),
+            error: Some(message.clone()),
+        })?;
+        self.dispatch_effects(effects).await;
 
         tracing::info!(task_id, stash = %stash, "agent review stopped and changes stashed");
-        Ok(updated)
+        self.workflow_view(task_id)
+            .ok_or_else(|| "任务不存在".to_string())
     }
 
     /// Unified diff of the reviewed change. Uses the run's `baseline_head` when
@@ -3206,7 +3129,7 @@ impl AgentCore {
     /// inspect the diff before approving.
     fn review_diff(&self, task_id: &str) -> Result<String, String> {
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
@@ -3248,104 +3171,34 @@ impl AgentCore {
     }
 
     /// Clears the queue pause. Tasks still awaiting review keep blocking the
-    /// worker until the user decides them.
-    fn resume_queue(&self) -> AgentTasksState {
-        self.set_paused(false);
-        self.persist_tasks();
-        self.emit_state();
-        self.wake.notify_one();
+    /// serial queue until the user decides them.
+    async fn resume_queue(self: &Arc<Self>) -> AgentTasksState {
+        if let Ok(effects) = self.apply_input(Input::ResumeQueue { now: now() }) {
+            self.dispatch_effects(effects).await;
+        }
         self.tasks_state()
     }
 
     /// Deletes one finished history record. Only the local record goes away;
     /// the export directory, the bug and any committed code are untouched.
-    async fn delete_task(&self, task_id: &str) -> Result<(), String> {
-        let removed = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            take_terminal_task(&mut tasks, task_id)?
-        };
-        // Drop a queued snapshot first, otherwise the next persist could
-        // resurrect the row before the delete statement runs.
-        self.pending_tasks
-            .lock()
-            .expect("agent pending lock")
-            .remove(&removed.id);
-        self.removed_tasks
-            .lock()
-            .expect("agent removed lock")
-            .insert(removed.id.clone());
-        // The record is gone either way; a failed cleanup only warns so the
-        // user can still remove a record whose directory was deleted manually.
-        if let Some(path) = removed.worktree_path.clone() {
-            let _worktree_guard = self.worktree_lock.lock().await;
-            let repo = removed.repo_path.clone();
-            let removed_id = removed.id.clone();
-            match tokio::task::spawn_blocking(move || worktree::remove(&repo, &path)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(task_id = %removed_id, %error, "failed to remove agent worktree");
-                }
-                Err(error) => {
-                    tracing::warn!(task_id = %removed_id, %error, "worktree cleanup task failed");
-                }
-            }
-        }
-        self.persist_tasks();
-        self.emit_state();
+    async fn delete_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        let effects = self.apply_input(Input::DeleteTerminal {
+            task_id: TaskId::new(task_id),
+        })?;
+        self.dispatch_effects(effects).await;
         Ok(())
     }
 
-    async fn retry(&self, task_id: &str) -> Result<AgentTask, String> {
-        let original = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if !original.status.is_terminal() {
-            return Err("任务仍在队列或运行中，不能重试".to_string());
-        }
-
-        let _admission = self.admission.lock().await;
-
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let mut task = original;
-        task.id = id.clone();
-        task.status = TaskStatus::Queued;
-        task.created_at = now();
-        task.started_at = None;
-        task.finished_at = None;
-        task.exit_code = None;
-        task.error = None;
-        task.approval = None;
-        task.merge = None;
-        // A retry is a fresh fix, not the approved commit phase.
-        task.commit_only = false;
-        task.baseline_dirty.clear();
-        task.baseline_head = None;
-        // A manual retry starts a clean recovery history.
-        task.attempt = 0;
-        task.interrupted = false;
-        task.changes = None;
-        // A retry must start from a clean worktree; the old one (if kept for
-        // inspection) is left in place and cleaned when its record is deleted.
-        task.worktree_path = None;
-        task.worktree_branch = None;
-
-        // Retry is a new admission, not a bypass: the bug may have been
-        // re-queued while this task was terminal.
-        {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            if let Some(existing) = live_task_for_bug(&tasks, &task.workspace_id, &task.bug_id) {
-                return Err(format!(
-                    "该缺陷已有未结束的任务（{}），请先处理",
-                    task_status_key(existing.status)
-                ));
-            }
-            tasks.push(task.clone());
-        }
-        self.mark_task_dirty(task.clone());
-        self.persist_tasks();
-        self.emit_state();
-        self.wake.notify_one();
-        Ok(task)
+    async fn retry(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let new_id = TaskId::new(uuid::Uuid::new_v4().simple().to_string());
+        let effects = self.apply_input(Input::Retry {
+            task_id: TaskId::new(task_id),
+            new_id: new_id.clone(),
+            now: now(),
+        })?;
+        self.dispatch_effects(effects).await;
+        self.workflow_view(new_id.as_str())
+            .ok_or_else(|| "任务不存在".to_string())
     }
 
     fn write_input(&self, task_id: &str, data: &str) -> Result<(), String> {
@@ -3369,7 +3222,7 @@ impl AgentCore {
     /// 会话，两个客户端会互相打架。
     fn open_system_terminal(&self, task_id: &str) -> Result<(), String> {
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if task.status.is_active() {
             return Err("任务仍在运行，请先在嵌入式终端里操作".to_string());
@@ -3425,7 +3278,7 @@ impl AgentCore {
             .map_err(|error| error.to_string())
     }
 
-    // -- queue worker --------------------------------------------------------
+    // -- runtime execution ---------------------------------------------------
 
     /// Makes sure the runtime's user-level config exposes the tapd MCP server.
     /// Idempotent and best effort: a failure only warns and never blocks the
@@ -3458,120 +3311,250 @@ impl AgentCore {
         }
     }
 
-    fn spawn_worker(self: &Arc<Self>) {
-        let core = self.clone();
-        tauri::async_runtime::spawn(async move {
-            // Up to `effective_execution_units()` task runners. Each entry
-            // returns its task id so completion can be torn down per task.
-            let mut running: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
-            loop {
-                // Reap finished runners. Only the finished task is cleaned up;
-                // a panic in one task must not touch the other runners.
-                while let Some(joined) = running.try_join_next() {
-                    match joined {
-                        Ok(task_id) => core.teardown_task(&task_id),
-                        Err(error) => tracing::error!(%error, "agent task wrapper failed"),
-                    }
-                }
+    // -- effect runners ------------------------------------------------------
 
-                // The workflow is not initialized until the user entered the
-                // system. Wait here instead of starting persisted tasks behind
-                // the login/onboarding screen; `enter_system` notifies.
-                if !core.entered.load(Ordering::SeqCst) {
-                    core.wake.notified().await;
-                    continue;
-                }
+    /// Creates the per-task worktree and reports the receipt back. The core
+    /// only accepts the receipt while the task is still `Preparing`.
+    async fn run_create_worktree(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        repo_path: String,
+        bug_id: String,
+    ) {
+        let Some(task) = self.workflow_task(task_id.as_str()) else {
+            tracing::debug!(task_id = %task_id, "worktree create ignored: task is gone");
+            return;
+        };
+        if task.status != WorkflowStatus::Preparing {
+            tracing::debug!(task_id = %task_id, "worktree create ignored: task no longer preparing");
+            return;
+        }
+        let worktrees_dir = self.state.paths.worktrees_dir.clone();
+        let repo = if repo_path.trim().is_empty() {
+            task.spec.repo_path.trim().to_string()
+        } else {
+            repo_path.trim().to_string()
+        };
+        let repo_for_cleanup = repo.clone();
+        let workspace_id = task.spec.workspace_id.clone();
+        let bug_id = if bug_id.trim().is_empty() {
+            task.spec.bug_id.clone()
+        } else {
+            bug_id
+        };
+        let task_text = task_id.0.clone();
 
-                // A user-stopped queue always blocks. Pending reviews only
-                // block the serial (non-worktree) queue: worktree tasks each
-                // own a checkout, so waiting on a decision must not idle the
-                // other execution units. Tasks already running keep going.
-                let blocked = core.paused.load(Ordering::SeqCst)
-                    || (!core.config_snapshot().worktree_enabled && core.has_awaiting_approval());
-                if !blocked {
-                    let limit = core.config_snapshot().effective_execution_units();
-                    while running.len() < limit {
-                        let Some(task) = core.take_next_queued() else {
-                            break;
-                        };
-                        let task_id = task.id.clone();
-                        let runner = core.clone();
-                        running.spawn(async move {
-                            // Inner spawn contains a panic: the JoinError is
-                            // turned into a failure for this task id only, so
-                            // other concurrent tasks keep running.
-                            let inner_id = task_id.clone();
-                            let task_runner = runner.clone();
-                            let handle = tauri::async_runtime::spawn(async move {
-                                task_runner.run_task(task).await;
-                            });
-                            if let Err(error) = handle.await {
-                                tracing::error!(
-                                    task_id = %inner_id,
-                                    %error,
-                                    "agent task runner failed"
-                                );
-                                runner.fail_task(&inner_id, format!("Agent 任务执行异常：{error}"));
-                            }
-                            inner_id
-                        });
-                    }
+        let _guard = self.worktree_lock.lock().await;
+        let created = tokio::task::spawn_blocking(move || {
+            worktree::create(&worktrees_dir, &repo, &workspace_id, &bug_id, &task_text)
+        })
+        .await;
+        match created {
+            Ok(Ok(created)) => {
+                // The task may have been cancelled/suspended while git ran;
+                // never leave an unreferenced worktree behind.
+                if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Preparing) {
+                    let path = created.path.to_string_lossy().to_string();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        worktree::remove(&repo_for_cleanup, &path)
+                    })
+                    .await;
+                    return;
                 }
-
-                if running.is_empty() {
-                    // Nothing to join: sleep until an event (enqueue, resume,
-                    // config change) instead of busy-looping.
-                    core.wake.notified().await;
-                } else {
-                    tokio::select! {
-                        _ = core.wake.notified() => {}
-                        joined = running.join_next() => {
-                            match joined {
-                                Some(Ok(task_id)) => core.teardown_task(&task_id),
-                                Some(Err(error)) => {
-                                    tracing::error!(%error, "agent task wrapper failed");
-                                }
-                                None => {}
-                            }
-                        }
-                    }
-                }
+                tracing::info!(
+                    task_id = %task_id,
+                    branch = %created.branch,
+                    "agent worktree created"
+                );
+                self.feed(Input::WorktreeCreated {
+                    task_id,
+                    worktree: tapd_workflow::WorktreeRef {
+                        path: created.path.to_string_lossy().to_string(),
+                        branch: created.branch,
+                    },
+                });
             }
-        });
-
-        // Resume work left over from a previous session.
-        if next_queued_index(&self.tasks.lock().expect("agent tasks lock")).is_some() {
-            self.wake.notify_one();
+            Ok(Err(error)) => {
+                tracing::warn!(task_id = %task_id, %error, "failed to create agent worktree");
+                self.feed(Input::WorktreeCreateFailed {
+                    task_id,
+                    error: format!("创建任务 worktree 失败：{error}"),
+                });
+            }
+            Err(error) => {
+                tracing::warn!(task_id = %task_id, %error, "worktree create task failed");
+                self.feed(Input::WorktreeCreateFailed {
+                    task_id,
+                    error: format!("创建任务 worktree 失败：{error}"),
+                });
+            }
         }
     }
 
-    fn take_next_queued(&self) -> Option<AgentTask> {
-        let task = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            let index = next_queued_index(&tasks)?;
-            let task = tasks.get_mut(index)?;
-            if task.status != TaskStatus::Queued {
-                return None;
+    /// Removes a worktree directory; the branch is always kept.
+    ///
+    /// A terminal task that is still in the workflow may have uncommitted work
+    /// in its directory (failed fix, commit phase with leftovers): keep it so
+    /// the user can inspect or recover it. A deleted record is removed
+    /// unconditionally.
+    async fn run_remove_worktree(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        repo_path: String,
+        path: String,
+    ) {
+        let _guard = self.worktree_lock.lock().await;
+
+        if self.workflow_task(task_id.as_str()).is_some() {
+            let dir = path.clone();
+            let status = tokio::task::spawn_blocking(move || uncommitted_files(&dir)).await;
+            match status {
+                Ok(Ok(files)) if !files.is_empty() => {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        files = files.len(),
+                        "worktree kept: uncommitted files remain"
+                    );
+                    self.feed(Input::WorktreeRemoved {
+                        task_id,
+                        error: Some("worktree 仍有未提交改动，已保留".to_string()),
+                    });
+                    return;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(task_id = %task_id, %error, "worktree status check failed; keeping it");
+                    self.feed(Input::WorktreeRemoved {
+                        task_id,
+                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(task_id = %task_id, %error, "worktree status task failed; keeping it");
+                    self.feed(Input::WorktreeRemoved {
+                        task_id,
+                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                    });
+                    return;
+                }
             }
-            task.status = TaskStatus::Preparing;
-            task.started_at = Some(now());
-            task.clone()
-        };
-        self.mark_task_dirty(task.clone());
-        self.persist_tasks();
-        self.emit_state();
-        Some(task)
+        }
+
+        let error =
+            match tokio::task::spawn_blocking(move || worktree::remove(&repo_path, &path)).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => {
+                    tracing::warn!(task_id = %task_id, %error, "failed to remove agent worktree");
+                    Some(error)
+                }
+                Err(error) => {
+                    tracing::warn!(task_id = %task_id, %error, "worktree cleanup task failed");
+                    Some(format!("worktree cleanup task failed: {error}"))
+                }
+            };
+        self.feed(Input::WorktreeRemoved { task_id, error });
     }
 
-    async fn run_task(self: &Arc<Self>, mut task: AgentTask) {
-        // The queue was parked for shutdown; do not start a fresh run.
-        if self.shutting_down.load(Ordering::SeqCst) {
+    /// Computes the dirty/committed change set for a task's working directory.
+    async fn inspect_workspace(
+        &self,
+        task_id: &TaskId,
+        path: &str,
+    ) -> Result<tapd_workflow::ChangeSet, String> {
+        let task = self
+            .workflow_view(task_id.as_str())
+            .ok_or_else(|| "任务不存在".to_string())?;
+        let work_dir = if path.trim().is_empty() {
+            task.work_dir().to_string()
+        } else {
+            path.to_string()
+        };
+        tokio::task::spawn_blocking(move || inspect_changes(&task, &work_dir))
+            .await
+            .map_err(|error| format!("检查工作区失败：{error}"))?
+    }
+
+    /// Refuses a merge when the repository is busy, dirty or the runtime is
+    /// unavailable. Every check is a fact the core cannot observe itself.
+    async fn check_merge_preconditions(
+        &self,
+        task_id: &TaskId,
+        repo_path: &str,
+        branch: &str,
+    ) -> Result<(), tapd_workflow::MergeBlock> {
+        let Some(task) = self.workflow_task(task_id.as_str()) else {
+            return Err(tapd_workflow::MergeBlock::WorktreeMissing);
+        };
+        let repo = if repo_path.trim().is_empty() {
+            task.spec.repo_path.trim().to_string()
+        } else {
+            repo_path.trim().to_string()
+        };
+        if repo.is_empty() || branch.trim().is_empty() {
+            return Err(tapd_workflow::MergeBlock::WorktreeMissing);
+        }
+
+        let busy = {
+            let workflow = self.workflow.lock().expect("agent workflow lock");
+            workflow.tasks().iter().any(|other| {
+                other.id != *task_id
+                    && other.status == WorkflowStatus::Merging
+                    && other.spec.repo_path.trim() == repo
+            })
+        };
+        if busy {
+            return Err(tapd_workflow::MergeBlock::RepositoryBusy);
+        }
+
+        let check_repo = repo.clone();
+        let dirty = tokio::task::spawn_blocking(move || uncommitted_files(&check_repo)).await;
+        match dirty {
+            Ok(Ok(files)) if files.is_empty() => {}
+            Ok(Ok(files)) => {
+                return Err(tapd_workflow::MergeBlock::DirtyRepository { files: files.len() })
+            }
+            Ok(Err(error)) => {
+                return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
+                    error: format!("无法检查主仓库状态：{error}"),
+                })
+            }
+            Err(error) => {
+                return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
+                    error: format!("无法检查主仓库状态：{error}"),
+                })
+            }
+        }
+
+        let config = self.config_snapshot();
+        let binary = binary_for_task(
+            &config,
+            &task.spec.runtime_id,
+            self.scan_snapshot().as_ref(),
+        );
+        if let Err(error) = validate_binary(&binary) {
+            return Err(tapd_workflow::MergeBlock::RuntimeUnavailable { error });
+        }
+        Ok(())
+    }
+
+    /// Full fix-run preparation and execution. State changes happen only
+    /// through inputs (`TaskPrepared`, `AgentStarted`, `RunFinished`).
+    async fn start_fix_agent(self: &Arc<Self>, task_id: TaskId, runtime_id: String, cwd: String) {
+        let Some(task) = self.workflow_view(task_id.as_str()) else {
+            return;
+        };
+        if task.status != TaskStatus::Preparing {
             return;
         }
         let mut config = self.config_snapshot();
+        let runtime_id = if runtime_id.trim().is_empty() {
+            task.runtime_id.clone()
+        } else {
+            runtime_id
+        };
 
-        // 1. Export the bug package (bug.json + assets). The task prompt is
-        //    built below for the running agent.
+        // 1. Export the bug package (bug.json + assets).
         let export = crate::export::run_export(
             &self.app,
             &self.state.paths,
@@ -3580,159 +3563,66 @@ impl AgentCore {
             Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
         )
         .await;
-
-        if self.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
-            return;
-        }
-
         let export = match export {
             Ok(export) => export,
             Err(error) => {
-                self.fail_task(&task.id, format!("导出缺陷失败：{error}"));
+                self.feed(Input::AgentStartFailed {
+                    task_id,
+                    error: format!("导出缺陷失败：{error}"),
+                });
                 return;
             }
         };
         for warning in &export.warnings {
-            tracing::warn!(task_id = %task.id, %warning, "bug export warning");
+            tracing::warn!(task_id = %task_id, %warning, "bug export warning");
         }
-        task.json_path = export.bug_json.clone();
-        // Persist the export path early so failed tasks still expose their
-        // generated bug package (e.g. when no repository is configured).
-        let Some(prepared) = self.update_task(&task.id, |current| {
-            if current.status != TaskStatus::Canceled {
-                current.json_path = task.json_path.clone();
-            }
-        }) else {
+        if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Preparing) {
+            // Cancelled while exporting.
             return;
+        }
+
+        // 2. Validate the working directory.
+        let work_dir = if cwd.trim().is_empty() {
+            task.work_dir().to_string()
+        } else {
+            cwd
         };
-        if prepared.status == TaskStatus::Canceled {
+        if work_dir.trim().is_empty() {
+            self.feed(Input::AgentStartFailed {
+                task_id,
+                error: "未配置项目仓库路径，请在 设置 → Agent 修复 中配置".to_string(),
+            });
+            return;
+        }
+        if !Path::new(work_dir.trim()).is_dir() {
+            self.feed(Input::AgentStartFailed {
+                task_id,
+                error: format!("工作目录不存在或不是目录：{work_dir}"),
+            });
             return;
         }
 
-        // 2. Resolve the repository path. The task carries the path resolved at
-        // enqueue time; `repo_mappings` is only a legacy fallback.
-        let repo_path = match resolve_repo_path(&task, &config) {
-            Ok(repo_path) => repo_path,
-            Err(error) => {
-                self.fail_task(&task.id, error);
-                return;
-            }
-        };
-
-        if !Path::new(&repo_path).is_dir() {
-            self.fail_task(
-                &task.id,
-                format!("本地仓库路径不存在或不是目录：{repo_path}"),
-            );
-            return;
-        }
-        task.repo_path = repo_path;
-
-        // 2b. Give the task its own worktree when enabled. A commit-only run
-        //     must reuse the review worktree: recreating it at HEAD would drop
-        //     the approved diff, so a missing directory is an explicit error.
-        if task.commit_only {
-            if let Some(path) = task.worktree_path.as_deref() {
-                let path = path.trim();
-                if !path.is_empty() && !Path::new(path).is_dir() {
-                    self.fail_task(
-                        &task.id,
-                        format!("审核用 worktree 已不存在：{path}，无法继续提交"),
-                    );
-                    return;
-                }
-            }
-        } else if !config.worktree_enabled {
-            task.worktree_path = None;
-            task.worktree_branch = None;
-        }
-
-        let reuse_worktree = task.commit_only
-            && task
-                .worktree_path
-                .as_deref()
-                .is_some_and(|path| Path::new(path.trim()).is_dir());
-
-        // A commit-only run whose review lived in the main repository keeps
-        // using it: a fresh worktree at HEAD would lose the approved diff.
-        if config.worktree_enabled && !reuse_worktree && !task.commit_only {
-            let _worktree_guard = self.worktree_lock.lock().await;
-            let worktrees_dir = self.state.paths.worktrees_dir.clone();
-            let repo = task.repo_path.clone();
-            let workspace_id = task.workspace_id.clone();
-            let bug_id = task.bug_id.clone();
-            let new_task_id = task.id.clone();
-            let created = tokio::task::spawn_blocking(move || {
-                worktree::create(&worktrees_dir, &repo, &workspace_id, &bug_id, &new_task_id)
-            })
-            .await;
-            match created {
-                Ok(Ok(created)) => {
-                    task.worktree_path = Some(created.path.to_string_lossy().to_string());
-                    task.worktree_branch = Some(created.branch);
-                }
-                Ok(Err(error)) => {
-                    self.fail_task(&task.id, format!("创建任务 worktree 失败：{error}"));
-                    return;
-                }
-                Err(error) => {
-                    self.fail_task(&task.id, format!("创建任务 worktree 失败：{error}"));
-                    return;
-                }
-            }
-        }
-
-        // Persist the worktree path before anything else can fail, so the
-        // record still points at the directory for review or deletion.
-        if self.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        let Some(prepared) = self.update_task(&task.id, |current| {
-            current.repo_path = task.repo_path.clone();
-            current.worktree_path = task.worktree_path.clone();
-            current.worktree_branch = task.worktree_branch.clone();
-        }) else {
-            return;
-        };
-        if prepared.status == TaskStatus::Canceled {
-            return;
-        }
-
-        let work_dir = task.work_dir().to_string();
-        if work_dir.trim().is_empty() || !Path::new(work_dir.trim()).is_dir() {
-            self.fail_task(&task.id, format!("工作目录不存在或不是目录：{work_dir}"));
-            return;
-        }
-
-        // 3. Resolve the agent binary. A queued task keeps the runtime it was
-        //    enqueued with: `binary_path` only overrides the currently selected
-        //    runtime, otherwise the descriptor's default command is used.
-        let task_binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
-        // Bare names are looked up on the user's shell PATH and replaced with
-        // the absolute path, so every spawn (serve / TUI) works even when the
-        // app was launched from Finder with a minimal PATH.
+        // 3. Resolve the agent binary.
+        let task_binary = binary_for_task(&config, &runtime_id, self.scan_snapshot().as_ref());
         match validate_binary(&task_binary) {
             Ok(binary) => config.binary_path = binary.to_string_lossy().into_owned(),
             Err(error) => {
-                self.fail_task(&task.id, error);
+                self.feed(Input::AgentStartFailed { task_id, error });
                 return;
             }
         }
 
-        // 3b. Make sure the runtime's user-level config exposes the tapd MCP
-        //     server (also required later by the merge runner).
-        self.ensure_runtime_mcp(&task.runtime_id, &task.id).await;
+        // 4. Make sure the runtime's user-level config exposes the tapd MCP.
+        self.ensure_runtime_mcp(&runtime_id, task_id.as_str()).await;
 
-        let mut vars = PromptVars::from_task(&task);
+        // 5. Render the prompt.
+        let mut view = task.clone();
+        view.runtime_id = runtime_id;
+        view.json_path = export.bug_json.clone();
+        let mut vars = PromptVars::from_task(&view);
         vars.coworker = crate::coworker::prompt_section(&self.app, &config.coworker_ids);
-        let is_worktree = task.worktree_branch.is_some();
-        // Approved reviews re-enter the queue with a commit-only prompt; the
-        // reviewed diff is still in the working tree. Worktree tasks use their
-        // own template because TAPD write-back waits for the merge stage.
-        let template = if task.commit_only {
+        let is_worktree = view.worktree_branch.is_some();
+        let template = if view.commit_only {
             // The commit phase only finishes the reviewed change; the original
             // compose instructions must not run a second time.
             vars.user_prompt.clear();
@@ -3745,82 +3635,242 @@ impl AgentCore {
         } else {
             config.prompt_template.as_str()
         };
-        task.prompt = render_prompt(template, &vars);
-        // Worktree fixes must not write back to TAPD: the merge stage owns the
-        // single, final write-back after the branch lands in the main repo.
-        if is_worktree && !task.commit_only {
-            task.prompt.push_str("\n\n");
-            task.prompt.push_str(WORKTREE_FIX_NOTE);
+        let mut prompt = render_prompt(template, &vars);
+        if is_worktree && !view.commit_only {
+            prompt.push_str("\n\n");
+            prompt.push_str(WORKTREE_FIX_NOTE);
         }
+        view.prompt = prompt.clone();
 
-        // 4. Move to `running` with the resolved paths. Snapshot pre-existing
-        //    dirty files so the uncommitted-change safety net only reacts to
-        //    files this run touched.
-        let baseline: Result<(Vec<String>, Option<String>), String> = if task.commit_only {
-            // Keep the pre-task snapshots so unrelated local files stay
-            // excluded from the write guard during the commit phase.
-            Ok((task.baseline_dirty.clone(), task.baseline_head.clone()))
+        // 6. Capture the baseline so the change safety net only reacts to files
+        //    this run touched. A commit-only run keeps the review baseline.
+        let baseline = if view.commit_only {
+            Ok((view.baseline_dirty.clone(), view.baseline_head.clone()))
         } else {
-            let work_dir = work_dir.clone();
+            let dir = work_dir.clone();
             tokio::task::spawn_blocking(move || {
-                Ok::<_, String>((uncommitted_files(&work_dir)?, git_head(&work_dir)?))
+                Ok::<_, String>((uncommitted_files(&dir)?, git_head(&dir)?))
             })
             .await
             .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
         };
         let (baseline_dirty, baseline_head) = match baseline {
-            Ok(baseline) => baseline,
+            Ok(values) => values,
             Err(error) => {
-                self.fail_task(&task.id, format!("无法读取工作区状态：{error}"));
+                self.feed(Input::AgentStartFailed {
+                    task_id,
+                    error: format!("无法读取工作区状态：{error}"),
+                });
                 return;
             }
-        };
-        let Some(running_task) = self.update_task(&task.id, |current| {
-            // The task may have been cancelled while it was preparing; never
-            // restart it from a terminal or awaiting state. Shutdown has
-            // already parked it back to Queued.
-            if self.shutting_down.load(Ordering::SeqCst) {
-                return;
-            }
-            if current.status.is_terminal()
-                || matches!(
-                    current.status,
-                    TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
-                )
-            {
-                return;
-            }
-            current.json_path = task.json_path.clone();
-            current.repo_path = task.repo_path.clone();
-            current.worktree_path = task.worktree_path.clone();
-            current.worktree_branch = task.worktree_branch.clone();
-            current.prompt = task.prompt.clone();
-            current.baseline_dirty = baseline_dirty.clone();
-            current.baseline_head = baseline_head.clone();
-            current.status = TaskStatus::Running;
-            if current.started_at.is_none() {
-                current.started_at = Some(now());
-            }
-        }) else {
-            self.fail_task(&task.id, "任务在准备阶段丢失".to_string());
-            return;
         };
 
-        if running_task.status != TaskStatus::Running {
+        // 7. Record the preparation facts, then start the run.
+        match self.apply_input(Input::TaskPrepared {
+            task_id: task_id.clone(),
+            prompt,
+            json_path: export.bug_json,
+            baseline_dirty,
+            baseline_head,
+        }) {
+            Ok(effects) => self.dispatch_effects(effects).await,
+            Err(error) => {
+                tracing::info!(
+                    task_id = %task_id,
+                    %error,
+                    "agent start abandoned during preparation"
+                );
+                return;
+            }
+        }
+        if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Preparing) {
+            return;
+        }
+        match self.apply_input(Input::AgentStarted {
+            task_id: task_id.clone(),
+        }) {
+            Ok(effects) => self.dispatch_effects(effects).await,
+            Err(error) => {
+                tracing::warn!(task_id = %task_id, %error, "failed to record agent start");
+                return;
+            }
+        }
+
+        let Some(running) = self.workflow_view(task_id.as_str()) else {
+            return;
+        };
+        if running.status != TaskStatus::Running {
+            return;
+        }
+        let descriptor = runtime_descriptor(&running.runtime_id)
+            .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
+        let outcome = self.run_tui_task(&running, &config, &descriptor).await;
+        if let Some(warning) = outcome.warning.as_deref() {
+            tracing::warn!(task_id = %task_id, warning, "agent finished with a warning");
+        }
+        self.teardown_task(task_id.as_str());
+
+        let run = self.run_outcome(task_id.as_str(), &outcome).await;
+        self.feed(Input::RunFinished {
+            task_id,
+            outcome: run,
+            now: now(),
+        });
+    }
+
+    /// Turns a PTY outcome plus the repository facts into the workflow's
+    /// [`tapd_workflow::RunOutcome`]. It never decides review/merge: only the
+    /// facts travel back.
+    async fn run_outcome(&self, task_id: &str, outcome: &PtyOutcome) -> tapd_workflow::RunOutcome {
+        let canceled = outcome.canceled;
+        let changes = if canceled {
+            None
+        } else {
+            match self.workflow_view(task_id) {
+                Some(view) => {
+                    let dir = view.work_dir().to_string();
+                    match tokio::task::spawn_blocking(move || inspect_changes(&view, &dir)).await {
+                        Ok(Ok(changes)) => Some(changes),
+                        Ok(Err(error)) => {
+                            return tapd_workflow::RunOutcome {
+                                canceled,
+                                success: false,
+                                error: Some(format!("无法检查工作区状态：{error}")),
+                                changes: None,
+                                exit_code: outcome.exit_code,
+                            }
+                        }
+                        Err(error) => {
+                            return tapd_workflow::RunOutcome {
+                                canceled,
+                                success: false,
+                                error: Some(format!("无法检查工作区状态：{error}")),
+                                changes: None,
+                                exit_code: outcome.exit_code,
+                            }
+                        }
+                    }
+                }
+                None => None,
+            }
+        };
+        let success = !canceled
+            && (outcome.completed || outcome.exit_code == Some(0))
+            && outcome.error.is_none();
+        tapd_workflow::RunOutcome {
+            canceled,
+            success,
+            error: outcome.error.clone(),
+            changes,
+            exit_code: outcome.exit_code,
+        }
+    }
+
+    /// Runs the merge turn in the main repository, then lets the core verify
+    /// the branch. The merge runner's exit code never decides the outcome.
+    async fn start_merge_agent(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        repo_path: String,
+        branch: String,
+    ) {
+        let Some(task) = self.workflow_view(task_id.as_str()) else {
+            return;
+        };
+        if task.status != TaskStatus::Merging {
+            return;
+        }
+        let repo = if repo_path.trim().is_empty() {
+            task.repo_path.trim().to_string()
+        } else {
+            repo_path.trim().to_string()
+        };
+        let branch = if branch.trim().is_empty() {
+            task.worktree_branch.clone().unwrap_or_default()
+        } else {
+            branch
+        };
+        if repo.is_empty() || branch.trim().is_empty() || !Path::new(&repo).is_dir() {
+            self.feed(Input::MergeAgentFinished {
+                task_id,
+                outcome: tapd_workflow::RunOutcome::failure(
+                    format!("主仓库路径不存在或不是目录：{repo}"),
+                    None,
+                ),
+                now: now(),
+            });
             return;
         }
 
-        let descriptor = runtime_descriptor(&running_task.runtime_id)
+        let mut config = self.config_snapshot();
+        let binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
+        match validate_binary(&binary) {
+            Ok(binary) => config.binary_path = binary.to_string_lossy().into_owned(),
+            Err(error) => {
+                self.feed(Input::MergeAgentFinished {
+                    task_id,
+                    outcome: tapd_workflow::RunOutcome::failure(error, None),
+                    now: now(),
+                });
+                return;
+            }
+        }
+        self.ensure_runtime_mcp(&task.runtime_id, task_id.as_str())
+            .await;
+
+        // A cancel may have rolled the task back while MCP was being prepared;
+        // never start a merge agent the workflow no longer waits for.
+        if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Merging) {
+            return;
+        }
+
+        // Run in the main repository: clear the worktree path (so `work_dir()`
+        // falls back to `repo_path`) but keep the branch name for the prompt.
+        let mut merge_view = task.clone();
+        merge_view.worktree_path = None;
+        merge_view.commit_only = false;
+        merge_view.prompt = merge_prompt(&repo, &branch);
+        let descriptor = runtime_descriptor(&merge_view.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
-        let outcome = self.run_tui_task(&running_task, &config, &descriptor).await;
-        self.teardown_task(&task.id);
-        self.finish_task(&task.id, outcome).await;
+        let outcome = self.run_tui_task(&merge_view, &config, &descriptor).await;
+        self.teardown_task(task_id.as_str());
+
+        let finished = tapd_workflow::RunOutcome {
+            canceled: outcome.canceled,
+            success: !outcome.canceled
+                && (outcome.completed || outcome.exit_code == Some(0))
+                && outcome.error.is_none(),
+            error: outcome.error.clone(),
+            changes: None,
+            exit_code: outcome.exit_code,
+        };
+        self.feed(Input::MergeAgentFinished {
+            task_id,
+            outcome: finished,
+            now: now(),
+        });
     }
 
-    /// Runs one task through the generic TUI adapter: launch the CLI with the
-    /// prompt delivered per the descriptor, then wait for the PTY to exit or
-    /// for the idle fallback. There is no protocol report: the turn ends when
-    /// the process exits, the session hook settles, or output goes quiet.
+    /// Checks whether the branch really landed in the main repository.
+    async fn run_verify_branch_merged(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        repo_path: String,
+        branch: String,
+    ) {
+        let checked = tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
+        let (merged, error) = match checked {
+            Ok(Ok(merged)) => (merged, None),
+            Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
+            Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
+        };
+        self.feed(Input::BranchMergeVerified {
+            task_id,
+            merged,
+            error,
+        });
+    }
+
     async fn run_tui_task(
         self: &Arc<Self>,
         task: &AgentTask,
@@ -3925,357 +3975,120 @@ impl AgentCore {
 
     // -- merge stage ---------------------------------------------------------
 
-    /// Starts the merge for an awaiting-merge task. Returns `mode=agent` when
-    /// the merge runner was started, or `mode=manual` with instructions when it
-    /// cannot run (dirty main repo, missing agent binary); the task stays
-    /// `AwaitingMerge` in the manual case.
+    /// Starts the merge through the workflow. The repository/binary checks are
+    /// executed inline so the command can report `agent` or `manual` with the
+    /// final task view (`Merging` vs. `AwaitingMerge` + instructions).
     async fn start_merge(self: &Arc<Self>, task_id: &str) -> Result<MergeStart, String> {
+        let mut effects = self.apply_input(Input::StartMerge {
+            task_id: TaskId::new(task_id),
+            now: now(),
+        })?;
+        let checks: Vec<(TaskId, String, String)> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::CheckMergePreconditions {
+                    task_id,
+                    repo_path,
+                    branch,
+                    ..
+                } => Some((task_id.clone(), repo_path.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect();
+        if !checks.is_empty() {
+            effects.retain(|effect| !matches!(effect, Effect::CheckMergePreconditions { .. }));
+            for (check_id, repo_path, branch) in checks {
+                let result = self
+                    .check_merge_preconditions(&check_id, &repo_path, &branch)
+                    .await;
+                let receipts = self.apply_input(Input::MergePreconditionsChecked {
+                    task_id: check_id,
+                    result,
+                })?;
+                effects.extend(receipts);
+            }
+        }
+        self.dispatch_effects(effects).await;
+
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
-        if task.status != TaskStatus::AwaitingMerge {
-            return Err("任务不在待合并状态".to_string());
-        }
-        let branch = task
-            .worktree_branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .ok_or_else(|| "任务没有待合并分支".to_string())?
-            .to_string();
-        let repo = task.repo_path.trim().to_string();
-        if repo.is_empty() || !Path::new(&repo).is_dir() {
-            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
-        }
-
-        // Same-repo merges are serialized: two merge agents on one checkout
-        // would fight over HEAD. Different repos could merge in parallel, but
-        // one short lock is simpler and keeps the check atomic.
-        let merge_guard = self.merge_lock.lock().await;
-        {
-            let tasks = self.tasks.lock().expect("agent tasks lock");
-            if tasks.iter().any(|other| {
-                other.id != task_id
-                    && other.status == TaskStatus::Merging
-                    && other.repo_path.trim() == repo
-            }) {
-                return Err("该仓库已有任务正在合并，请稍后重试".to_string());
-            }
-        }
-
-        // The main repo must be clean; otherwise the merge would mix in the
-        // user's own work, so we fall back to manual instructions instead.
-        let dirty_check = {
-            let repo = repo.clone();
-            tokio::task::spawn_blocking(move || uncommitted_files(&repo)).await
+        let mode = if task.status == TaskStatus::Merging {
+            "agent"
+        } else {
+            "manual"
         };
-        match dirty_check {
-            Ok(Ok(files)) if files.is_empty() => {}
-            Ok(Ok(files)) => {
-                let error = format!("主仓库有 {} 个未提交文件，无法自动合并", files.len());
-                return self.manual_merge(task_id, &repo, &branch, error);
-            }
-            Ok(Err(error)) => {
-                let error = format!("无法检查主仓库状态：{error}");
-                return self.manual_merge(task_id, &repo, &branch, error);
-            }
-            Err(error) => {
-                let error = format!("无法检查主仓库状态：{error}");
-                return self.manual_merge(task_id, &repo, &branch, error);
-            }
+        let instructions = if mode == "manual" {
+            task.merge
+                .as_ref()
+                .and_then(|merge| merge.instructions.clone())
+                .unwrap_or_else(|| {
+                    manual_merge_instructions(
+                        &task.repo_path,
+                        task.worktree_branch.as_deref().unwrap_or(""),
+                    )
+                })
+        } else {
+            String::new()
+        };
+        if mode == "manual" {
+            tracing::warn!(task_id, "agent merge unavailable; manual merge requested");
+        } else {
+            tracing::info!(task_id, "agent merge started");
         }
-
-        let config = self.config_snapshot();
-        let binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
-        if let Err(error) = validate_binary(&binary) {
-            return self.manual_merge(task_id, &repo, &branch, error);
-        }
-
-        let at = now();
-        let updated = self
-            .update_task(task_id, |task| {
-                if task.status != TaskStatus::AwaitingMerge {
-                    return;
-                }
-                task.status = TaskStatus::Merging;
-                task.finished_at = None;
-                let merge = task.merge.get_or_insert_with(TaskMerge::default);
-                merge.error = None;
-                merge.instructions = None;
-                merge.started_at = Some(at.clone());
-                merge.finished_at = None;
-            })
-            .ok_or_else(|| "任务不存在".to_string())?;
-        drop(merge_guard);
-
-        if updated.status != TaskStatus::Merging {
-            return Err("任务状态已变化，无法开始合并".to_string());
-        }
-
-        let core = self.clone();
-        let merge_id = task_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            core.run_merge_runner(merge_id).await;
-        });
-
-        tracing::info!(task_id, repo = %repo, branch = %branch, "agent merge started");
         Ok(MergeStart {
-            mode: "agent",
-            task: updated,
-            instructions: String::new(),
-        })
-    }
-
-    /// Records a manual fallback without leaving `AwaitingMerge`.
-    fn manual_merge(
-        &self,
-        task_id: &str,
-        repo: &str,
-        branch: &str,
-        error: String,
-    ) -> Result<MergeStart, String> {
-        let instructions = manual_merge_instructions(repo, branch);
-        let updated = self
-            .update_task(task_id, |task| {
-                if task.status != TaskStatus::AwaitingMerge {
-                    return;
-                }
-                let merge = task.merge.get_or_insert_with(TaskMerge::default);
-                merge.error = Some(error.clone());
-                merge.instructions = Some(instructions.clone());
-                merge.started_at = None;
-            })
-            .ok_or_else(|| "任务不存在".to_string())?;
-        tracing::warn!(task_id, %error, "agent merge unavailable; manual merge requested");
-        Ok(MergeStart {
-            mode: "manual",
-            task: updated,
+            mode,
+            task,
             instructions,
         })
     }
 
-    /// Runs one merge through an inner spawn so a panic is reported as a merge
-    /// failure and never kills the queue worker or the app.
-    async fn run_merge_runner(self: Arc<Self>, task_id: String) {
-        let core = self.clone();
-        let inner_id = task_id.clone();
-        let inner = tauri::async_runtime::spawn(async move { core.merge_task(&inner_id).await });
-        match inner.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => self.fail_merge(&task_id, error).await,
-            Err(error) => {
-                let message = format!("合并执行异常：{error}");
-                self.fail_merge(&task_id, message).await;
-            }
-        }
-    }
-
-    /// The merge turn itself: run the same runtime in the main repository with
-    /// the merge prompt, then verify the branch actually landed.
-    async fn merge_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        let task = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if task.status != TaskStatus::Merging {
-            return Ok(());
-        }
-        let branch = task
-            .worktree_branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .ok_or_else(|| "任务没有待合并分支".to_string())?
-            .to_string();
-        let repo = task.repo_path.trim().to_string();
-        if repo.is_empty() || !Path::new(&repo).is_dir() {
-            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
-        }
-
-        let mut config = self.config_snapshot();
-        let binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
-        config.binary_path = validate_binary(&binary)?.to_string_lossy().into_owned();
-        self.ensure_runtime_mcp(&task.runtime_id, &task.id).await;
-
-        // Run in the main repository: clear the worktree path (so `work_dir()`
-        // falls back to `repo_path`) but keep the branch name for the prompt.
-        let mut merge_task = task.clone();
-        merge_task.worktree_path = None;
-        merge_task.commit_only = false;
-        merge_task.prompt = merge_prompt(&repo, &branch);
-
-        let descriptor = runtime_descriptor(&merge_task.runtime_id)
-            .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
-        let outcome = self.run_tui_task(&merge_task, &config, &descriptor).await;
-        self.teardown_task(task_id);
-
-        // The user cancelled while merging: `cancel` already moved the task
-        // back to AwaitingMerge, so never overwrite that rollback.
-        if self.current_status(task_id) != Some(TaskStatus::Merging) {
-            return Ok(());
-        }
-
-        let check = {
-            let repo = repo.clone();
-            let branch = branch.clone();
-            tokio::task::spawn_blocking(move || branch_merged(&repo, &branch)).await
-        };
-        match check {
-            Ok(Ok(true)) => self.complete_merge(task_id).await.map(|_| ()),
-            Ok(Ok(false)) => {
-                let error = match outcome.error.clone() {
-                    Some(error) => format!("{error}；分支仍未并入主仓库"),
-                    None => "合并 Agent 结束后分支仍未并入主仓库".to_string(),
-                };
-                Err(error)
-            }
-            Ok(Err(error)) => Err(format!("校验合并结果失败：{error}")),
-            Err(error) => Err(format!("校验合并结果失败：{error}")),
-        }
-    }
-
-    /// Finalizes a merge: remove the worktree directory (the branch is kept),
-    /// mark the task succeeded and close the merge timestamps.
-    async fn complete_merge(&self, task_id: &str) -> Result<AgentTask, String> {
-        let task = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        let repo = task.repo_path.clone();
-        let mut cleaned = false;
-        if let Some(path) = task.worktree_path.clone() {
-            // Never force-delete a worktree that still has uncommitted files;
-            // keep it for inspection instead (mirrors the finish path).
-            let status = {
-                let path = path.clone();
-                tokio::task::spawn_blocking(move || uncommitted_files(&path)).await
-            };
-            let dirty = match status {
-                Ok(Ok(files)) => Some(files),
-                Ok(Err(error)) => {
-                    tracing::warn!(task_id, %error, "worktree status check failed; keeping it");
-                    None
-                }
-                Err(error) => {
-                    tracing::warn!(task_id, %error, "worktree status task failed; keeping it");
-                    None
-                }
-            };
-            if let Some(files) = dirty {
-                if !files.is_empty() {
-                    tracing::warn!(
-                        task_id,
-                        files = files.len(),
-                        "worktree kept: uncommitted files remain after merge"
-                    );
-                } else {
-                    let removed = {
-                        let _guard = self.worktree_lock.lock().await;
-                        tokio::task::spawn_blocking(move || worktree::remove(&repo, &path)).await
-                    };
-                    match removed {
-                        Ok(Ok(())) => cleaned = true,
-                        Ok(Err(error)) => {
-                            tracing::warn!(
-                                task_id,
-                                %error,
-                                "failed to remove agent worktree after merge"
-                            );
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                task_id,
-                                %error,
-                                "worktree cleanup task failed after merge"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        let at = now();
-        let updated = self
-            .update_task(task_id, |task| {
-                if !matches!(task.status, TaskStatus::Merging | TaskStatus::AwaitingMerge) {
-                    return;
-                }
-                task.status = TaskStatus::Succeeded;
-                task.finished_at = Some(at.clone());
-                task.error = None;
-                task.commit_only = false;
-                if cleaned {
-                    task.worktree_path = None;
-                }
-                let merge = task.merge.get_or_insert_with(TaskMerge::default);
-                merge.finished_at = Some(at.clone());
-                merge.error = None;
-                merge.instructions = None;
-            })
-            .ok_or_else(|| "任务不存在".to_string())?;
-        tracing::info!(task_id, "agent merge verified and task succeeded");
-        self.wake.notify_one();
-        Ok(updated)
-    }
-
-    /// Rolls a failed/interrupted merge back to `AwaitingMerge` with a visible
-    /// error and manual steps. A task that is no longer `Merging` is untouched.
-    async fn fail_merge(&self, task_id: &str, error: String) {
-        if self.current_status(task_id) != Some(TaskStatus::Merging) {
-            return;
-        }
-        let Some(task) = self.task_snapshot(task_id) else {
-            return;
-        };
-        let instructions = manual_merge_instructions(
-            &task.repo_path,
-            task.worktree_branch.as_deref().unwrap_or(""),
-        );
-        let updated = self.update_task(task_id, |task| {
-            if task.status != TaskStatus::Merging {
-                return;
-            }
-            task.status = TaskStatus::AwaitingMerge;
-            task.finished_at = None;
-            let merge = task.merge.get_or_insert_with(TaskMerge::default);
-            merge.error = Some(error.clone());
-            merge.instructions = Some(instructions.clone());
-            merge.started_at = None;
-            merge.finished_at = None;
-        });
-        if updated.is_some() {
-            tracing::warn!(task_id, %error, "agent merge failed; awaiting manual merge");
-            self.wake.notify_one();
-        }
-    }
-
     /// Verifies a manual merge: the branch must already be an ancestor of the
-    /// main repo's current HEAD, otherwise the task stays awaiting merge.
-    async fn verify_merge(&self, task_id: &str) -> Result<AgentTask, String> {
+    /// main repository's HEAD. The task view carries the resulting state.
+    async fn verify_merge(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let mut effects = self.apply_input(Input::VerifyMerge {
+            task_id: TaskId::new(task_id),
+            now: now(),
+        })?;
+        let verifications: Vec<(TaskId, String, String)> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::VerifyBranchMerged {
+                    task_id,
+                    repo_path,
+                    branch,
+                    ..
+                } => Some((task_id.clone(), repo_path.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect();
+        effects.retain(|effect| !matches!(effect, Effect::VerifyBranchMerged { .. }));
+        for (verify_id, repo_path, branch) in verifications {
+            let checked =
+                tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
+            let (merged, error) = match checked {
+                Ok(Ok(merged)) => (merged, None),
+                Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
+                Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
+            };
+            let receipts = self.apply_input(Input::BranchMergeVerified {
+                task_id: verify_id,
+                merged,
+                error,
+            })?;
+            effects.extend(receipts);
+        }
+        self.dispatch_effects(effects).await;
         let task = self
-            .task_snapshot(task_id)
+            .workflow_view(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
-        if task.status != TaskStatus::AwaitingMerge {
-            return Err("任务不在待合并状态".to_string());
-        }
-        let branch = task
-            .worktree_branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .ok_or_else(|| "任务没有待合并分支".to_string())?
-            .to_string();
-        let repo = task.repo_path.trim().to_string();
-        if repo.is_empty() || !Path::new(&repo).is_dir() {
-            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
-        }
-
-        let merged = tokio::task::spawn_blocking(move || branch_merged(&repo, &branch))
-            .await
-            .map_err(|error| format!("校验合并结果失败：{error}"))?
-            .map_err(|error| format!("校验合并结果失败：{error}"))?;
-        if !merged {
+        if task.status != TaskStatus::Succeeded {
+            if let Some(error) = task.merge.as_ref().and_then(|merge| merge.error.clone()) {
+                return Err(error);
+            }
             return Err("分支尚未合并到主仓库当前 HEAD".to_string());
         }
-        self.complete_merge(task_id).await
+        Ok(task)
     }
 }
 
@@ -4334,20 +4147,6 @@ fn hook_session_value(value: &Value) -> Option<String> {
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn task_status_key(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::Preparing => "preparing",
-        TaskStatus::Running => "running",
-        TaskStatus::AwaitingApproval => "awaiting_approval",
-        TaskStatus::AwaitingMerge => "awaiting_merge",
-        TaskStatus::Merging => "merging",
-        TaskStatus::Succeeded => "succeeded",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Canceled => "canceled",
-    }
 }
 
 /// Filters and paginates terminal tasks. Kept free-standing so the paging
@@ -4425,19 +4224,6 @@ fn build_history_page(tasks: &[AgentTask], query: HistoryQuery) -> AgentTasksPag
             .map(|(id, name)| AgentWorkspaceRef { id, name })
             .collect(),
     }
-}
-
-/// Removes one finished task from the in-memory list. Active tasks are refused:
-/// the worker and the PTY teardown still hold references to them.
-fn take_terminal_task(tasks: &mut Vec<AgentTask>, task_id: &str) -> Result<AgentTask, String> {
-    let index = tasks
-        .iter()
-        .position(|task| task.id == task_id)
-        .ok_or_else(|| "任务不存在".to_string())?;
-    if !tasks[index].status.is_terminal() {
-        return Err("任务仍在队列或运行中，无法删除".to_string());
-    }
-    Ok(tasks.remove(index))
 }
 
 fn truncate_text(text: &str, max: usize) -> String {
@@ -4657,7 +4443,6 @@ pub fn init(app: &AppHandle, state: SharedState) {
     let core = Arc::new(AgentCore::new(app.clone(), state));
     core.load();
     app.manage(core.clone());
-    core.spawn_worker();
 
     // 每天最多一次的本机 Agent 检测：缓存过期才在后台扫，避免阻塞启动和
     // 前端首帧。completed 后通过 `agent://scan` 推给设置页 / 配置页。
@@ -4729,17 +4514,22 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
         .filter(|id| !id.is_empty());
 
     let task = core
-        .tasks
+        .workflow
         .lock()
         .ok()?
+        .tasks()
         .iter()
         .rev()
         .find(|task| {
-            task.bug_id == bug_id
-                && workspace_id.map_or(true, |workspace| task.workspace_id == workspace)
-                && matches!(task.status, TaskStatus::Running | TaskStatus::Merging)
+            task.spec.bug_id == bug_id
+                && workspace_id.map_or(true, |workspace| task.spec.workspace_id == workspace)
+                && matches!(
+                    task.status,
+                    WorkflowStatus::Running | WorkflowStatus::Merging
+                )
         })
-        .cloned()?;
+        .cloned()
+        .and_then(|task| workflow_bridge::from_workflow_task(&task).ok())?;
 
     // During the merge a worktree fix is not yet in the main repository: block
     // TAPD write-back until the branch is actually an ancestor of HEAD.
@@ -4794,9 +4584,10 @@ pub async fn command(
     name: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    let core = app
+    let registered = app
         .try_state::<Arc<AgentCore>>()
         .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+    let core = registered.inner().clone();
 
     match name {
         "agent_runtimes" => Ok(json!({ "runtimes": runtime_catalog() })),
@@ -4820,7 +4611,7 @@ pub async fn command(
         }
         // Entering the system (valid login + onboarding done) initializes the
         // workflow exactly once and reports what startup recovery changed.
-        "agent_enter_system" => Ok(json!({ "report": core.enter_system()? })),
+        "agent_enter_system" => Ok(json!({ "report": core.enter_system().await? })),
         "agent_save_resource" => {
             let request: SaveResourceRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的资源参数：{error}"))?;
@@ -4840,7 +4631,7 @@ pub async fn command(
             if task_id.is_empty() {
                 return Err("缺少 taskId".to_string());
             }
-            if core.task_snapshot(task_id).is_none() {
+            if core.workflow_view(task_id).is_none() {
                 return Err("任务不存在".to_string());
             }
             focus_main_window(app);
@@ -4889,7 +4680,7 @@ pub async fn command(
             if request.task_id.trim().is_empty() {
                 return Err("缺少 taskId".to_string());
             }
-            let core = core.inner().clone();
+            let core = core.clone();
             let result = core.start_merge(request.task_id.trim()).await?;
             Ok(json!({
                 "mode": result.mode,
@@ -4915,7 +4706,7 @@ pub async fn command(
             let task = core.stop_review(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
-        "agent_queue_resume" => Ok(json!(core.resume_queue())),
+        "agent_queue_resume" => Ok(json!(core.resume_queue().await)),
         "agent_review_diff" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的差异参数：{error}"))?;
@@ -4923,7 +4714,7 @@ pub async fn command(
                 return Err("缺少 taskId".to_string());
             }
             let task_id = request.task_id.trim().to_string();
-            let core = core.inner().clone();
+            let core = core.clone();
             let diff = tokio::task::spawn_blocking(move || core.review_diff(&task_id))
                 .await
                 .map_err(|error| format!("读取差异失败：{error}"))??;
@@ -4932,7 +4723,7 @@ pub async fn command(
         "agent_open_terminal" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的终端参数：{error}"))?;
-            let core = core.inner().clone();
+            let core = core.clone();
             let task_id = request.task_id.trim().to_string();
             tokio::task::spawn_blocking(move || core.open_system_terminal(&task_id))
                 .await
@@ -4963,7 +4754,7 @@ pub async fn command(
         }
         "agent_scan" => {
             let request: ScanRequest = serde_json::from_value(payload).unwrap_or_default();
-            let core = core.inner().clone();
+            let core = core.clone();
             let snapshot = tokio::task::spawn_blocking(move || core.ensure_scan(request.force))
                 .await
                 .map_err(|error| format!("Agent 检测失败：{error}"))?;
@@ -5122,39 +4913,6 @@ mod tests {
             mapped.recovery_policy.max_auto_retry,
             tapd_workflow::DEFAULT_MAX_AUTO_RETRY
         );
-    }
-
-    #[test]
-    fn recovery_report_carries_the_queue_pause_flag() {
-        let mut tasks = vec![
-            sample_task("queued", TaskStatus::Queued),
-            sample_task("running", TaskStatus::Running),
-        ];
-        let config = AgentConfig {
-            restore_queued_tasks: false,
-            ..AgentConfig::default()
-        };
-        let report = workflow_bridge::recover_tasks(&mut tasks, &config, "2026-11-10T01:00:00Z")
-            .expect("bridge")
-            .expect("report");
-
-        // The queued task is kept, the running one is requeued, and the queue
-        // is paused rather than resumed automatically.
-        assert_eq!(tasks[0].status, TaskStatus::Queued);
-        assert_eq!(tasks[1].status, TaskStatus::Queued);
-        assert_eq!(report.queued, 1);
-        assert_eq!(report.retried, 1);
-        assert!(report.queue_paused);
-
-        let mut tasks = vec![sample_task("queued", TaskStatus::Queued)];
-        let report = workflow_bridge::recover_tasks(
-            &mut tasks,
-            &AgentConfig::default(),
-            "2026-11-10T01:00:00Z",
-        )
-        .expect("bridge")
-        .expect("report");
-        assert!(!report.queue_paused);
     }
 
     #[test]
@@ -5602,67 +5360,6 @@ mod tests {
     }
 
     #[test]
-    fn queue_helpers_follow_insertion_order() {
-        let tasks = vec![
-            sample_task("a", TaskStatus::Succeeded),
-            sample_task("b", TaskStatus::Queued),
-            sample_task("c", TaskStatus::Queued),
-        ];
-        assert_eq!(next_queued_index(&tasks), Some(1));
-        let counts = task_counts(&tasks);
-        assert_eq!(counts.queued, 2);
-        assert_eq!(counts.active, 0);
-        assert_eq!(active_task_id(&tasks).as_deref(), Some("b"));
-
-        let mut running = tasks.clone();
-        running[0].status = TaskStatus::Running;
-        assert_eq!(active_task_id(&running).as_deref(), Some("a"));
-
-        let mut preparing = tasks.clone();
-        preparing[2].status = TaskStatus::Preparing;
-        assert_eq!(active_task_id(&preparing).as_deref(), Some("c"));
-    }
-
-    #[test]
-    fn active_task_falls_back_to_latest_finished() {
-        let tasks = vec![
-            sample_task("old", TaskStatus::Failed),
-            sample_task("new", TaskStatus::Succeeded),
-        ];
-        assert_eq!(active_task_id(&tasks).as_deref(), Some("new"));
-        assert_eq!(next_queued_index(&tasks), None);
-        assert_eq!(active_task_id(&[]), None);
-    }
-
-    #[test]
-    fn live_task_lookup_ignores_finished_tasks() {
-        let mut live = sample_task("live", TaskStatus::Queued);
-        live.workspace_id = "100".to_string();
-        live.bug_id = "1".to_string();
-
-        let mut finished = sample_task("finished", TaskStatus::Succeeded);
-        finished.workspace_id = "100".to_string();
-        finished.bug_id = "2".to_string();
-
-        let tasks = vec![live, finished];
-        assert_eq!(
-            live_task_for_bug(&tasks, "100", "1").map(|task| task.id.as_str()),
-            Some("live")
-        );
-        assert!(live_task_for_bug(&tasks, "100", "2").is_none());
-        assert!(live_task_for_bug(&tasks, "100", "3").is_none());
-        assert!(live_task_for_bug(&tasks, "200", "1").is_none());
-    }
-
-    #[test]
-    fn finish_status_maps_exit_codes() {
-        assert_eq!(finish_status(false, Some(0)), TaskStatus::Succeeded);
-        assert_eq!(finish_status(false, Some(2)), TaskStatus::Failed);
-        assert_eq!(finish_status(false, None), TaskStatus::Failed);
-        assert_eq!(finish_status(true, Some(0)), TaskStatus::Canceled);
-    }
-
-    #[test]
     fn statuses_serialize_as_snake_case() {
         let cases = [
             (TaskStatus::Queued, "\"queued\""),
@@ -5776,38 +5473,6 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_approval_is_not_downgraded_by_finish() {
-        let mut task = sample_task("a", TaskStatus::Running);
-        set_awaiting_approval(
-            &mut task,
-            "改了 3 个文件".to_string(),
-            vec!["src/a.rs".to_string()],
-            Some("公共接口变化".to_string()),
-            "2026-11-10T01:00:00Z",
-        );
-        assert_eq!(task.status, TaskStatus::AwaitingApproval);
-        assert_eq!(
-            task.approval.as_ref().map(|approval| approval.files.len()),
-            Some(1)
-        );
-        assert!(task.finished_at.is_none());
-
-        let outcome = PtyOutcome {
-            exit_code: Some(0),
-            ..PtyOutcome::default()
-        };
-        assert!(!apply_finish(&mut task, &outcome, "2026-11-10T01:01:00Z"));
-        assert_eq!(task.status, TaskStatus::AwaitingApproval);
-
-        // Merge-stage states are owned by the merge runner, not the PTY finish.
-        for status in [TaskStatus::AwaitingMerge, TaskStatus::Merging] {
-            let mut task = sample_task("merge", status);
-            assert!(!apply_finish(&mut task, &outcome, "2026-11-10T01:02:00Z"));
-            assert_eq!(task.status, status);
-        }
-    }
-
-    #[test]
     fn work_dir_prefers_the_worktree_and_ignores_blanks() {
         let mut task = sample_task("a", TaskStatus::Running);
         task.repo_path = "/repo".to_string();
@@ -5840,162 +5505,6 @@ mod tests {
             parsed.worktree_branch.as_deref(),
             Some("tapd/01234567-abcdef01")
         );
-    }
-
-    #[test]
-    fn repo_path_uses_the_task_value_before_config() {
-        let config = AgentConfig::default();
-        assert!(config.repo_mappings.is_empty());
-
-        let mut task = sample_task("a", TaskStatus::Queued);
-        task.repo_path = "/tmp/repo".to_string();
-        assert_eq!(
-            resolve_repo_path(&task, &config),
-            Ok("/tmp/repo".to_string())
-        );
-
-        // A blank task path falls back to the per-project setting.
-        let config = AgentConfig {
-            projects: BTreeMap::from([(
-                "45336192".to_string(),
-                ProjectAgentConfig {
-                    repo_path: "/configured/repo".to_string(),
-                    rule: String::new(),
-                },
-            )]),
-            ..AgentConfig::default()
-        };
-        let mut task = sample_task("b", TaskStatus::Queued);
-        task.repo_path = "  ".to_string();
-        assert_eq!(
-            resolve_repo_path(&task, &config),
-            Ok("/configured/repo".to_string())
-        );
-
-        let missing = AgentConfig::default();
-        let mut blank = sample_task("c", TaskStatus::Queued);
-        blank.repo_path = String::new();
-        assert!(resolve_repo_path(&blank, &missing).is_err());
-    }
-
-    #[test]
-    fn state_and_summary_serialize_camel_case() {
-        let tasks = vec![sample_task("a", TaskStatus::Running)];
-        let state = AgentTasksState {
-            tasks: tasks.clone(),
-            active_task_id: Some("a".to_string()),
-            queued_count: 0,
-            awaiting_approval_count: 0,
-            awaiting_merge_count: 0,
-            queue_paused: false,
-            storage_error: None,
-            runtime_status: HashMap::new(),
-        };
-        let value = serde_json::to_value(&state).unwrap();
-        assert_eq!(value["queuedCount"], 0);
-        assert_eq!(value["awaitingMergeCount"], 0);
-        assert!(value.get("externalClaims").is_none());
-        assert_eq!(value["activeTaskId"], "a");
-        assert!(value.get("runtimeStatus").is_some());
-
-        let summary = serde_json::to_value(agent_summary(&tasks)).unwrap();
-        assert_eq!(summary["running"], true);
-        assert_eq!(summary["activeTaskId"], "a");
-        assert_eq!(summary["workspaceName"], "UU");
-        assert_eq!(summary["bugId"], "1145336192001234567");
-        assert!(summary.get("externalClaims").is_none());
-    }
-
-    #[test]
-    fn counts_and_summary_track_review_tasks() {
-        let mut tasks = vec![
-            sample_task("done", TaskStatus::Succeeded),
-            sample_task("running", TaskStatus::Running),
-            sample_task("queued", TaskStatus::Queued),
-            sample_task("approval", TaskStatus::AwaitingApproval),
-        ];
-        tasks[3].approval = Some(TaskApproval {
-            summary: "改了 2 个文件".to_string(),
-            files: vec!["src/a.rs".to_string()],
-            risk: None,
-            requested_at: "2026-11-10T01:00:00Z".to_string(),
-            approved_at: None,
-            stash: None,
-        });
-
-        let counts = task_counts(&tasks);
-        assert_eq!(counts.queued, 1);
-        assert_eq!(counts.active, 1);
-        assert_eq!(counts.awaiting_approval, 1);
-
-        let summary = agent_summary(&tasks);
-        assert!(summary.running);
-        assert_eq!(summary.awaiting_approval, 1);
-        // The first active task in list order is the running one.
-        assert_eq!(summary.active_task_id.as_deref(), Some("running"));
-
-        // Without a live turn, an awaiting task is the thing to open.
-        let only_approval = vec![
-            sample_task("approval", TaskStatus::AwaitingApproval),
-            sample_task("queued", TaskStatus::Queued),
-        ];
-        assert_eq!(active_task_id(&only_approval).as_deref(), Some("approval"));
-        assert_eq!(summary.title.as_deref(), Some("示例缺陷"));
-        assert_eq!(summary.workspace_name.as_deref(), Some("UU"));
-        assert_eq!(summary.bug_id.as_deref(), Some("1145336192001234567"));
-    }
-
-    #[test]
-    fn counts_and_active_id_track_merge_states() {
-        let tasks = vec![
-            sample_task("approval", TaskStatus::AwaitingApproval),
-            sample_task("merge", TaskStatus::AwaitingMerge),
-            sample_task("merging", TaskStatus::Merging),
-            sample_task("queued", TaskStatus::Queued),
-        ];
-        let counts = task_counts(&tasks);
-        assert_eq!(counts.awaiting_approval, 1);
-        assert_eq!(counts.awaiting_merge, 1);
-        assert_eq!(counts.active, 1);
-        assert_eq!(counts.queued, 1);
-
-        let summary = agent_summary(&tasks);
-        assert!(summary.running);
-        assert_eq!(summary.awaiting_approval, 1);
-        assert_eq!(summary.awaiting_merge, 1);
-        // Active (Merging) outranks a pending decision.
-        assert_eq!(summary.active_task_id.as_deref(), Some("merging"));
-
-        // Without an active task, review comes before merge, merge before queue.
-        let decisions = vec![
-            sample_task("merge", TaskStatus::AwaitingMerge),
-            sample_task("approval", TaskStatus::AwaitingApproval),
-            sample_task("queued", TaskStatus::Queued),
-        ];
-        assert_eq!(active_task_id(&decisions).as_deref(), Some("approval"));
-
-        let merge_only = vec![
-            sample_task("merge", TaskStatus::AwaitingMerge),
-            sample_task("queued", TaskStatus::Queued),
-        ];
-        assert_eq!(active_task_id(&merge_only).as_deref(), Some("merge"));
-    }
-
-    #[test]
-    fn status_keys_cover_merge_states() {
-        for (status, expected) in [
-            (TaskStatus::Queued, "queued"),
-            (TaskStatus::Preparing, "preparing"),
-            (TaskStatus::Running, "running"),
-            (TaskStatus::AwaitingApproval, "awaiting_approval"),
-            (TaskStatus::AwaitingMerge, "awaiting_merge"),
-            (TaskStatus::Merging, "merging"),
-            (TaskStatus::Succeeded, "succeeded"),
-            (TaskStatus::Failed, "failed"),
-            (TaskStatus::Canceled, "canceled"),
-        ] {
-            assert_eq!(task_status_key(status), expected);
-        }
     }
 
     #[test]
@@ -6042,246 +5551,6 @@ mod tests {
         assert!(prompt.contains("分支：tapd/01234567-abcdef01"));
         assert!(prompt.contains("tapd_update_bug_status"));
         assert!(!prompt.contains("{{"));
-    }
-
-    #[test]
-    fn worktree_switch_lock_blocks_only_real_switches_with_live_tasks() {
-        // Switching while a task is unfinished is refused.
-        assert!(worktree_switch_blocked(false, true, true));
-        assert!(worktree_switch_blocked(true, false, true));
-        // Re-sending the current value is a no-op even with live tasks.
-        assert!(!worktree_switch_blocked(true, true, true));
-        assert!(!worktree_switch_blocked(false, false, true));
-        // An idle queue may switch either way.
-        assert!(!worktree_switch_blocked(false, true, false));
-        assert!(!worktree_switch_blocked(true, false, false));
-    }
-
-    #[test]
-    fn merging_tasks_recover_to_awaiting_merge() {
-        let mut tasks = vec![
-            sample_task("merge", TaskStatus::Merging),
-            sample_task("running", TaskStatus::Running),
-            sample_task("done", TaskStatus::Succeeded),
-        ];
-        tasks[0].worktree_branch = Some("tapd/1-2".to_string());
-        let report = workflow_bridge::recover_tasks(
-            &mut tasks,
-            &AgentConfig::default(),
-            "2026-11-10T01:00:00Z",
-        )
-        .expect("bridge")
-        .expect("report");
-
-        // Merging rolls back to a retryable state and keeps the branch.
-        assert_eq!(tasks[0].status, TaskStatus::AwaitingMerge);
-        assert_eq!(tasks[0].finished_at, None);
-        assert_eq!(
-            tasks[0]
-                .merge
-                .as_ref()
-                .and_then(|merge| merge.error.as_deref()),
-            Some("客户端重启，合并已中止")
-        );
-        assert_eq!(tasks[0].worktree_branch.as_deref(), Some("tapd/1-2"));
-
-        // An interrupted fix run is requeued instead of failing by default.
-        assert_eq!(tasks[1].status, TaskStatus::Queued);
-        assert!(tasks[1].interrupted);
-        assert_eq!(tasks[1].attempt, 1);
-        assert_eq!(tasks[1].error, None);
-        assert_eq!(tasks[2].status, TaskStatus::Succeeded);
-
-        assert_eq!(report.retried, 1);
-        assert_eq!(report.awaiting_merge, 1);
-        assert_eq!(report.failed, 0);
-    }
-
-    #[test]
-    fn finish_never_downgrades_a_terminal_task() {
-        let mut task = sample_task("a", TaskStatus::Running);
-        let outcome = PtyOutcome {
-            exit_code: Some(0),
-            ..PtyOutcome::default()
-        };
-        assert!(apply_finish(&mut task, &outcome, "2026-11-10T01:00:00Z"));
-        assert_eq!(task.status, TaskStatus::Succeeded);
-
-        // A later PTY exit with a non-zero code must not downgrade it.
-        let late = PtyOutcome {
-            exit_code: Some(2),
-            error: Some("late".to_string()),
-            ..PtyOutcome::default()
-        };
-        assert!(!apply_finish(&mut task, &late, "2026-11-10T01:00:01Z"));
-        assert_eq!(task.status, TaskStatus::Succeeded);
-        assert_eq!(task.error, None);
-    }
-
-    #[test]
-    fn completion_marks_success_without_an_exit_code() {
-        let mut task = sample_task("a", TaskStatus::Running);
-        let outcome = PtyOutcome {
-            completed: true,
-            ..PtyOutcome::default()
-        };
-        assert!(apply_finish(&mut task, &outcome, "2026-11-10T01:00:00Z"));
-        assert_eq!(task.status, TaskStatus::Succeeded);
-        assert_eq!(task.exit_code, None);
-        assert_eq!(task.finished_at.as_deref(), Some("2026-11-10T01:00:00Z"));
-    }
-
-    #[test]
-    fn cancellation_and_failure_are_applied() {
-        let mut task = sample_task("a", TaskStatus::Running);
-        let outcome = PtyOutcome {
-            canceled: true,
-            ..PtyOutcome::default()
-        };
-        assert!(apply_finish(&mut task, &outcome, "2026-11-10T01:00:00Z"));
-        assert_eq!(task.status, TaskStatus::Canceled);
-
-        let mut task = sample_task("b", TaskStatus::Running);
-        let outcome = PtyOutcome {
-            exit_code: Some(1),
-            ..PtyOutcome::default()
-        };
-        assert!(apply_finish(&mut task, &outcome, "2026-11-10T01:00:00Z"));
-        assert_eq!(task.status, TaskStatus::Failed);
-        assert_eq!(task.error.as_deref(), Some("Agent 进程退出码 1"));
-    }
-
-    #[test]
-    fn recovery_keeps_waiting_tasks_and_requeues_in_flight_ones() {
-        let mut tasks = vec![
-            sample_task("queued", TaskStatus::Queued),
-            sample_task("preparing", TaskStatus::Preparing),
-            sample_task("running", TaskStatus::Running),
-            sample_task("review", TaskStatus::AwaitingApproval),
-            sample_task("approved", TaskStatus::AwaitingMerge),
-            sample_task("done", TaskStatus::Succeeded),
-        ];
-        let report = workflow_bridge::recover_tasks(
-            &mut tasks,
-            &AgentConfig::default(),
-            "2026-11-10T01:00:00Z",
-        )
-        .expect("bridge")
-        .expect("report");
-
-        // Queued and review states are untouched.
-        assert_eq!(tasks[0].status, TaskStatus::Queued);
-        assert!(!tasks[0].interrupted);
-        assert_eq!(tasks[3].status, TaskStatus::AwaitingApproval);
-        assert_eq!(tasks[4].status, TaskStatus::AwaitingMerge);
-        assert_eq!(tasks[5].status, TaskStatus::Succeeded);
-
-        // In-flight runs are requeued with the retry counter spent.
-        for task in [&tasks[1], &tasks[2]] {
-            assert_eq!(task.status, TaskStatus::Queued);
-            assert!(task.interrupted);
-            assert_eq!(task.attempt, 1);
-            assert_eq!(task.started_at, None);
-            assert_eq!(task.error, None);
-        }
-
-        assert_eq!(report.queued, 1);
-        assert_eq!(report.retried, 2);
-        assert_eq!(report.awaiting_approval, 1);
-        assert_eq!(report.awaiting_merge, 1);
-        assert_eq!(report.failed, 0);
-    }
-
-    #[test]
-    fn recovery_fails_tasks_after_the_retry_budget() {
-        let mut tasks = vec![sample_task("running", TaskStatus::Running)];
-        tasks[0].attempt = 3;
-        let report = workflow_bridge::recover_tasks(
-            &mut tasks,
-            &AgentConfig::default(),
-            "2026-11-10T01:00:00Z",
-        )
-        .expect("bridge")
-        .expect("report");
-
-        assert_eq!(tasks[0].status, TaskStatus::Failed);
-        assert_eq!(tasks[0].attempt, 4);
-        assert!(tasks[0].interrupted);
-        assert_eq!(
-            tasks[0].error.as_deref(),
-            Some(tapd_workflow::recovery::RETRY_EXHAUSTED_ERROR)
-        );
-        assert_eq!(report.retried, 0);
-        assert_eq!(report.failed, 1);
-    }
-
-    #[test]
-    fn recovery_without_tasks_reports_nothing() {
-        let mut tasks: Vec<AgentTask> = Vec::new();
-        assert!(
-            workflow_bridge::recover_tasks(&mut tasks, &AgentConfig::default(), "now")
-                .expect("bridge")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn suspend_parks_live_tasks_and_keeps_waiting_ones() {
-        let mut tasks = vec![
-            sample_task("running", TaskStatus::Running),
-            sample_task("preparing", TaskStatus::Preparing),
-            sample_task("merge", TaskStatus::Merging),
-            sample_task("queued", TaskStatus::Queued),
-            sample_task("review", TaskStatus::AwaitingApproval),
-            sample_task("approved", TaskStatus::AwaitingMerge),
-        ];
-        tasks[2].worktree_branch = Some("tapd/9-9".to_string());
-        let changed =
-            workflow_bridge::suspend_tasks(&mut tasks, "2026-11-10T01:00:00Z").expect("bridge");
-        let ids: Vec<&str> = changed.iter().map(|task| task.id.as_str()).collect();
-        assert_eq!(ids, vec!["running", "preparing", "merge"]);
-
-        // Suspend keeps the queue but spends no retry: only recover does.
-        assert_eq!(tasks[0].status, TaskStatus::Queued);
-        assert!(tasks[0].interrupted);
-        assert_eq!(tasks[0].attempt, 0);
-        assert_eq!(tasks[1].status, TaskStatus::Queued);
-        assert!(tasks[1].interrupted);
-
-        // An in-flight merge becomes a manual decision again.
-        assert_eq!(tasks[2].status, TaskStatus::AwaitingMerge);
-        assert_eq!(
-            tasks[2]
-                .merge
-                .as_ref()
-                .and_then(|merge| merge.error.as_deref()),
-            Some(tapd_workflow::recovery::RESTARTED_MERGE_ERROR)
-        );
-        assert_eq!(tasks[2].worktree_branch.as_deref(), Some("tapd/9-9"));
-
-        assert_eq!(tasks[3].status, TaskStatus::Queued);
-        assert_eq!(tasks[4].status, TaskStatus::AwaitingApproval);
-        assert_eq!(tasks[5].status, TaskStatus::AwaitingMerge);
-    }
-
-    #[test]
-    fn workflow_entry_is_idempotent_and_gates_the_queue() {
-        let entered = AtomicBool::new(false);
-        assert_eq!(
-            workflow_bridge::ensure_entered(&entered).unwrap_err(),
-            "工作流尚未初始化，请先进入系统"
-        );
-
-        assert!(workflow_bridge::claim_entry(&entered));
-        assert!(workflow_bridge::ensure_entered(&entered).is_ok());
-        // A second entry (e.g. `/login` again) must not re-run recovery.
-        assert!(!workflow_bridge::claim_entry(&entered));
-        assert!(workflow_bridge::ensure_entered(&entered).is_ok());
-
-        // A failed recovery releases the claim so the next entry retries.
-        workflow_bridge::release_entry(&entered);
-        assert!(workflow_bridge::ensure_entered(&entered).is_err());
-        assert!(workflow_bridge::claim_entry(&entered));
     }
 
     #[test]
@@ -6393,26 +5662,6 @@ mod tests {
         assert_eq!(failed.tasks[0].id, "new");
     }
 
-    #[test]
-    fn delete_takes_only_terminal_tasks() {
-        let mut tasks = vec![
-            sample_task("done", TaskStatus::Succeeded),
-            sample_task("running", TaskStatus::Running),
-        ];
-
-        let err = take_terminal_task(&mut tasks, "running").expect_err("active task");
-        assert!(err.contains("运行中"), "{err}");
-        assert_eq!(tasks.len(), 2);
-
-        let err = take_terminal_task(&mut tasks, "missing").expect_err("missing task");
-        assert!(err.contains("不存在"), "{err}");
-
-        let removed = take_terminal_task(&mut tasks, "done").expect("terminal task");
-        assert_eq!(removed.id, "done");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "running");
-    }
-
     #[cfg(unix)]
     #[test]
     fn pty_smoke_test_with_shell_script() {
@@ -6448,5 +5697,581 @@ mod tests {
         assert!(output.contains("pty-smoke-ok"), "output: {output:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    const NOW: &str = "2026-11-10T01:00:00Z";
+
+    fn workflow_snapshot(tasks: Vec<AgentTask>, config: &AgentConfig, paused: bool) -> Snapshot {
+        Snapshot {
+            schema_version: tapd_workflow::SCHEMA_VERSION,
+            config: workflow_bridge::workflow_config(config),
+            paused,
+            tasks: tasks
+                .iter()
+                .map(|task| workflow_bridge::to_workflow_task(task).expect("core task"))
+                .collect(),
+            generation: 0,
+        }
+    }
+
+    /// Enters the workflow and loads a snapshot, mirroring `enter_system`.
+    fn boot(tasks: Vec<AgentTask>, config: &AgentConfig) -> (Workflow, Vec<Effect>) {
+        let mut workflow = Workflow::with_config(workflow_bridge::workflow_config(config));
+        let effects = workflow.apply(Input::SystemEntered {
+            now: NOW.to_string(),
+        });
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::LoadSnapshot)),
+            "system entry must ask for the snapshot"
+        );
+        let effects = workflow.apply(Input::SnapshotLoaded {
+            snapshot: workflow_snapshot(tasks, config, false),
+        });
+        (workflow, effects)
+    }
+
+    fn status_of(workflow: &Workflow, task_id: &str) -> Option<WorkflowStatus> {
+        workflow.task(&TaskId::new(task_id)).map(|task| task.status)
+    }
+
+    fn persisted_status(effects: &[Effect], task_id: &str) -> Option<WorkflowStatus> {
+        effects.iter().find_map(|effect| match effect {
+            Effect::PersistChanged { tasks } => tasks
+                .iter()
+                .find(|task| task.id.as_str() == task_id)
+                .map(|task| task.status),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn enter_system_applies_recovery_rules() {
+        let config = AgentConfig {
+            // Restored queue stays parked until the user resumes it, so the
+            // recovery statuses are observable without the scheduler starting.
+            restore_queued_tasks: false,
+            ..AgentConfig::default()
+        };
+        let tasks = vec![
+            sample_task("queued", TaskStatus::Queued),
+            sample_task("running", TaskStatus::Running),
+            sample_task("merge", TaskStatus::Merging),
+            sample_task("done", TaskStatus::Succeeded),
+        ];
+        let (workflow, effects) = boot(tasks, &config);
+
+        assert!(workflow.paused(), "restore_queued=false parks the queue");
+        assert_eq!(status_of(&workflow, "queued"), Some(WorkflowStatus::Queued));
+        assert_eq!(
+            status_of(&workflow, "running"),
+            Some(WorkflowStatus::Queued)
+        );
+        assert_eq!(
+            status_of(&workflow, "merge"),
+            Some(WorkflowStatus::AwaitingMerge)
+        );
+        assert_eq!(
+            status_of(&workflow, "done"),
+            Some(WorkflowStatus::Succeeded)
+        );
+
+        let running = workflow.task(&TaskId::new("running")).expect("running");
+        assert!(running.interrupted);
+        assert_eq!(running.attempt, 1);
+        assert!(running.error.is_none());
+        let merged = workflow.task(&TaskId::new("merge")).expect("merge");
+        assert_eq!(
+            merged
+                .merge
+                .as_ref()
+                .and_then(|merge| merge.error.as_deref()),
+            Some(tapd_workflow::recovery::RESTARTED_MERGE_ERROR)
+        );
+
+        let report = workflow.recovery_report().expect("report");
+        assert!(report.queue_paused);
+        assert_eq!(report.queued, 1);
+        assert_eq!(report.retried, 1);
+        assert_eq!(report.awaiting_merge, 1);
+        assert!(!effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartFixAgent { .. })));
+    }
+
+    #[test]
+    fn enter_system_schedules_the_restored_queue() {
+        let config = AgentConfig::default();
+        let (workflow, effects) = boot(vec![sample_task("queued", TaskStatus::Queued)], &config);
+        assert!(!workflow.paused());
+        assert_eq!(
+            status_of(&workflow, "queued"),
+            Some(WorkflowStatus::Preparing)
+        );
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartFixAgent { .. })));
+    }
+
+    #[test]
+    fn system_entry_is_idempotent() {
+        let (mut workflow, _) = boot(Vec::new(), &AgentConfig::default());
+        let again = workflow.apply(Input::SystemEntered {
+            now: NOW.to_string(),
+        });
+        assert!(again.is_empty());
+        // Snapshots arriving after the first load are ignored.
+        let ignored = workflow.apply(Input::SnapshotLoaded {
+            snapshot: workflow_snapshot(Vec::new(), &AgentConfig::default(), false),
+        });
+        assert!(ignored.is_empty());
+    }
+
+    #[test]
+    fn worktree_receipt_starts_the_fix_agent() {
+        let config = AgentConfig {
+            worktree_enabled: true,
+            ..AgentConfig::default()
+        };
+        let (mut workflow, effects) = boot(vec![sample_task("t1", TaskStatus::Queued)], &config);
+        let created = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::CreateWorktree { task_id, .. } => Some(task_id.clone()),
+                _ => None,
+            })
+            .expect("create worktree effect");
+        assert_eq!(created.as_str(), "t1");
+
+        let effects = workflow.apply(Input::WorktreeCreated {
+            task_id: created.clone(),
+            worktree: tapd_workflow::WorktreeRef {
+                path: "/tmp/wt".to_string(),
+                branch: "tapd/01234567-task0001".to_string(),
+            },
+        });
+        let cwd = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::StartFixAgent { cwd, .. } => Some(cwd.clone()),
+                _ => None,
+            })
+            .expect("start fix effect");
+        assert_eq!(cwd, "/tmp/wt");
+
+        let effects = workflow.apply(Input::TaskPrepared {
+            task_id: created.clone(),
+            prompt: "prompt".to_string(),
+            json_path: "/tmp/bug.json".to_string(),
+            baseline_dirty: vec!["user.txt".to_string()],
+            baseline_head: None,
+        });
+        assert_eq!(
+            persisted_status(&effects, "t1"),
+            Some(WorkflowStatus::Preparing)
+        );
+        let effects = workflow.apply(Input::AgentStarted {
+            task_id: created.clone(),
+        });
+        assert_eq!(
+            persisted_status(&effects, "t1"),
+            Some(WorkflowStatus::Running)
+        );
+        let task = workflow.task(&created).expect("task");
+        assert_eq!(task.prompt, "prompt");
+        assert_eq!(task.json_path, "/tmp/bug.json");
+        assert_eq!(task.baseline_dirty, vec!["user.txt".to_string()]);
+    }
+
+    #[test]
+    fn enqueue_spec_falls_back_to_the_configured_runtime() {
+        let config = AgentConfig {
+            runtime_id: "claude".to_string(),
+            projects: BTreeMap::from([(
+                "45336192".to_string(),
+                ProjectAgentConfig {
+                    repo_path: "/configured/repo".to_string(),
+                    rule: String::new(),
+                },
+            )]),
+            ..AgentConfig::default()
+        };
+        let request = EnqueueRequest {
+            workspace_id: " 45336192 ".to_string(),
+            bug_id: " 42 ".to_string(),
+            workspace_name: None,
+            title: None,
+            severity: Some(" 严重 ".to_string()),
+            priority: Some(" 高 ".to_string()),
+            source: Some("notification".to_string()),
+            extra_prompt: Some("  只改登录页  ".to_string()),
+            attachments: Some(vec![
+                " /tmp/a.png ".to_string(),
+                "/tmp/a.png".to_string(),
+                "   ".to_string(),
+            ]),
+            runtime_id: Some("not-a-runtime".to_string()),
+        };
+        let spec = task_spec_from_request(&request, &config, "manual").expect("spec");
+        assert_eq!(spec.workspace_id, "45336192");
+        assert_eq!(spec.bug_id, "42");
+        assert_eq!(spec.workspace_name, "45336192");
+        assert_eq!(spec.title, "缺陷 42");
+        assert_eq!(spec.severity, "严重");
+        assert_eq!(spec.priority, "高");
+        assert_eq!(spec.runtime_id, "claude");
+        assert_eq!(spec.repo_path, "/configured/repo");
+        assert_eq!(spec.extra_prompt, "只改登录页");
+        assert_eq!(spec.attachments, vec!["/tmp/a.png".to_string()]);
+
+        let blank = EnqueueRequest {
+            workspace_id: "  ".to_string(),
+            ..request.clone()
+        };
+        assert!(task_spec_from_request(&blank, &config, "manual").is_err());
+
+        // An explicit runtime wins over the configured default.
+        let explicit = EnqueueRequest {
+            runtime_id: Some("opencode".to_string()),
+            ..request
+        };
+        assert_eq!(
+            task_spec_from_request(&explicit, &config, "manual")
+                .expect("spec")
+                .runtime_id,
+            "opencode"
+        );
+    }
+
+    #[test]
+    fn command_inputs_drive_the_workflow() {
+        let config = AgentConfig::default();
+        let (mut workflow, _) = boot(Vec::new(), &config);
+
+        let spec = TaskSpec {
+            workspace_id: "45336192".to_string(),
+            bug_id: "1145336192001234567".to_string(),
+            title: "示例缺陷".to_string(),
+            repo_path: "/tmp/repo".to_string(),
+            runtime_id: DEFAULT_RUNTIME_ID.to_string(),
+            ..TaskSpec::default()
+        };
+        let effects = workflow.apply(Input::Enqueue {
+            task_id: TaskId::new("t1"),
+            spec: spec.clone(),
+            now: NOW.to_string(),
+        });
+        assert_eq!(status_of(&workflow, "t1"), Some(WorkflowStatus::Preparing));
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartFixAgent { .. })));
+
+        // A duplicate bug is rejected by the core, not the host.
+        let duplicate = workflow.apply(Input::Enqueue {
+            task_id: TaskId::new("t2"),
+            spec,
+            now: NOW.to_string(),
+        });
+        assert!(duplicate
+            .iter()
+            .any(|effect| matches!(effect, Effect::Rejected { .. })));
+
+        let effects = workflow.apply(Input::Cancel {
+            task_id: TaskId::new("t1"),
+            now: NOW.to_string(),
+        });
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::CancelAgent { .. })));
+        assert_eq!(status_of(&workflow, "t1"), Some(WorkflowStatus::Canceled));
+
+        workflow.apply(Input::Retry {
+            task_id: TaskId::new("t1"),
+            new_id: TaskId::new("t2"),
+            now: NOW.to_string(),
+        });
+        assert!(workflow.task(&TaskId::new("t2")).is_some());
+        assert_eq!(status_of(&workflow, "t2"), Some(WorkflowStatus::Preparing));
+    }
+
+    #[test]
+    fn review_and_merge_inputs_move_the_task() {
+        let config = AgentConfig {
+            worktree_enabled: true,
+            ..AgentConfig::default()
+        };
+        let mut review = sample_task("review", TaskStatus::AwaitingApproval);
+        review.worktree_path = Some("/tmp/wt".to_string());
+        review.worktree_branch = Some("tapd/01234567-task0001".to_string());
+        review.changes = Some(tapd_workflow::ChangeSet {
+            files: Vec::new(),
+            dirty: false,
+            committed: true,
+        });
+        let (mut workflow, _) = boot(vec![review], &config);
+
+        let effects = workflow.apply(Input::ApproveReview {
+            task_id: TaskId::new("review"),
+            now: NOW.to_string(),
+        });
+        assert_eq!(
+            status_of(&workflow, "review"),
+            Some(WorkflowStatus::AwaitingMerge)
+        );
+        assert_eq!(
+            persisted_status(&effects, "review"),
+            Some(WorkflowStatus::AwaitingMerge)
+        );
+
+        let effects = workflow.apply(Input::StartMerge {
+            task_id: TaskId::new("review"),
+            now: NOW.to_string(),
+        });
+        let check_id = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::CheckMergePreconditions { task_id, .. } => Some(task_id.clone()),
+                _ => None,
+            })
+            .expect("precondition check");
+        let effects = workflow.apply(Input::MergePreconditionsChecked {
+            task_id: check_id,
+            result: Ok(()),
+        });
+        assert_eq!(
+            status_of(&workflow, "review"),
+            Some(WorkflowStatus::Merging)
+        );
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartMergeAgent { .. })));
+
+        let effects = workflow.apply(Input::MergeAgentFinished {
+            task_id: TaskId::new("review"),
+            outcome: tapd_workflow::RunOutcome::success(None),
+            now: NOW.to_string(),
+        });
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::VerifyBranchMerged { .. })));
+        let effects = workflow.apply(Input::BranchMergeVerified {
+            task_id: TaskId::new("review"),
+            merged: true,
+            error: None,
+        });
+        assert_eq!(
+            status_of(&workflow, "review"),
+            Some(WorkflowStatus::Succeeded)
+        );
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::AppendHistory { .. }))
+                .count(),
+            1,
+            "history must be appended exactly once"
+        );
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::RemoveWorktree { .. })));
+
+        // Deleting the terminal task removes the record and its directory.
+        let effects = workflow.apply(Input::DeleteTerminal {
+            task_id: TaskId::new("review"),
+        });
+        assert!(workflow.task(&TaskId::new("review")).is_none());
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistDeleted { .. })));
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::RemoveWorktree { .. })));
+    }
+
+    #[test]
+    fn stopping_a_review_cancels_and_pauses_the_queue() {
+        let mut review = sample_task("review", TaskStatus::AwaitingApproval);
+        review.worktree_path = Some("/tmp/wt".to_string());
+        review.worktree_branch = Some("tapd/1-2".to_string());
+        let (mut workflow, _) = boot(vec![review], &AgentConfig::default());
+
+        let effects = workflow.apply(Input::StopReview {
+            task_id: TaskId::new("review"),
+            now: NOW.to_string(),
+            stash: Some("stash@{0}".to_string()),
+            error: Some("已停止，改动已储藏：stash@{0}".to_string()),
+        });
+        assert_eq!(
+            status_of(&workflow, "review"),
+            Some(WorkflowStatus::Canceled)
+        );
+        assert!(workflow.paused());
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistPaused { paused: true })));
+        let approval = workflow
+            .task(&TaskId::new("review"))
+            .and_then(|task| task.approval.clone())
+            .expect("approval");
+        assert_eq!(approval.stash.as_deref(), Some("stash@{0}"));
+    }
+
+    #[test]
+    fn workflow_counts_and_active_task_track_reviews_and_merges() {
+        let tasks = vec![
+            sample_task("approval", TaskStatus::AwaitingApproval),
+            sample_task("merge", TaskStatus::AwaitingMerge),
+            sample_task("queued", TaskStatus::Queued),
+            sample_task("done", TaskStatus::Succeeded),
+        ];
+        let (workflow, _) = boot(tasks, &AgentConfig::default());
+        let counts = workflow.counts();
+        assert_eq!(counts.awaiting_approval, 1);
+        assert_eq!(counts.awaiting_merge, 1);
+        assert_eq!(counts.queued, 1);
+        assert_eq!(counts.active, 0);
+        // A pending review outranks the merge decision and the queue.
+        assert_eq!(
+            workflow.active_task_id().map(|id| id.as_str()),
+            Some("approval")
+        );
+
+        // Entering the system rolls an in-flight merge back to AwaitingMerge.
+        let merging = vec![sample_task("merging", TaskStatus::Merging)];
+        let (workflow, _) = boot(merging, &AgentConfig::default());
+        assert_eq!(workflow.counts().active, 0);
+        assert_eq!(
+            workflow.active_task_id().map(|id| id.as_str()),
+            Some("merging")
+        );
+
+        let done = vec![
+            sample_task("old", TaskStatus::Failed),
+            sample_task("new", TaskStatus::Succeeded),
+        ];
+        let (workflow, _) = boot(done, &AgentConfig::default());
+        assert_eq!(workflow.active_task_id().map(|id| id.as_str()), Some("new"));
+    }
+
+    #[test]
+    fn crate_status_keys_cover_merge_states() {
+        for (status, expected) in [
+            (WorkflowStatus::Queued, "queued"),
+            (WorkflowStatus::Preparing, "preparing"),
+            (WorkflowStatus::Running, "running"),
+            (WorkflowStatus::AwaitingApproval, "awaiting_approval"),
+            (WorkflowStatus::AwaitingMerge, "awaiting_merge"),
+            (WorkflowStatus::Merging, "merging"),
+            (WorkflowStatus::Succeeded, "succeeded"),
+            (WorkflowStatus::Failed, "failed"),
+            (WorkflowStatus::Canceled, "canceled"),
+        ] {
+            assert_eq!(tapd_workflow::status_key(status), expected);
+        }
+    }
+
+    #[test]
+    fn worktree_switch_lock_blocks_only_real_switches_with_live_tasks() {
+        assert!(tapd_workflow::worktree_toggle_locked(false, true, true));
+        assert!(tapd_workflow::worktree_toggle_locked(true, false, true));
+        assert!(!tapd_workflow::worktree_toggle_locked(true, true, true));
+        assert!(!tapd_workflow::worktree_toggle_locked(false, false, true));
+        assert!(!tapd_workflow::worktree_toggle_locked(false, true, false));
+        assert!(!tapd_workflow::worktree_toggle_locked(true, false, false));
+    }
+
+    #[test]
+    fn suspend_parks_live_tasks_and_keeps_waiting_ones() {
+        let tasks = vec![
+            sample_task("running", TaskStatus::Running),
+            sample_task("preparing", TaskStatus::Preparing),
+            sample_task("merge", TaskStatus::Merging),
+            sample_task("queued", TaskStatus::Queued),
+            sample_task("review", TaskStatus::AwaitingApproval),
+            sample_task("approved", TaskStatus::AwaitingMerge),
+        ];
+        let (mut workflow, _) = boot(tasks, &AgentConfig::default());
+        let effects = workflow.apply(Input::Suspend {
+            now: NOW.to_string(),
+        });
+
+        assert_eq!(
+            status_of(&workflow, "running"),
+            Some(WorkflowStatus::Queued)
+        );
+        assert_eq!(
+            status_of(&workflow, "preparing"),
+            Some(WorkflowStatus::Queued)
+        );
+        let running = workflow.task(&TaskId::new("running")).expect("running");
+        assert!(running.interrupted);
+        // Recovery already spent this attempt before the suspend.
+        assert_eq!(running.attempt, 1);
+        assert_eq!(
+            status_of(&workflow, "merge"),
+            Some(WorkflowStatus::AwaitingMerge)
+        );
+        assert_eq!(status_of(&workflow, "queued"), Some(WorkflowStatus::Queued));
+        assert_eq!(
+            status_of(&workflow, "review"),
+            Some(WorkflowStatus::AwaitingApproval)
+        );
+        assert_eq!(
+            status_of(&workflow, "approved"),
+            Some(WorkflowStatus::AwaitingMerge)
+        );
+        // Shutdown reports the paused flag even if it did not change.
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistPaused { .. })));
+        assert!(!workflow.entered());
+    }
+
+    #[test]
+    fn terminal_runs_append_history_once_and_late_receipts_are_ignored() {
+        let config = AgentConfig::default();
+        let (mut workflow, _) = boot(vec![sample_task("t1", TaskStatus::Queued)], &config);
+        workflow.apply(Input::TaskPrepared {
+            task_id: TaskId::new("t1"),
+            prompt: "p".to_string(),
+            json_path: "/tmp/bug.json".to_string(),
+            baseline_dirty: Vec::new(),
+            baseline_head: None,
+        });
+        workflow.apply(Input::AgentStarted {
+            task_id: TaskId::new("t1"),
+        });
+        let effects = workflow.apply(Input::RunFinished {
+            task_id: TaskId::new("t1"),
+            outcome: tapd_workflow::RunOutcome {
+                canceled: false,
+                success: true,
+                error: None,
+                changes: Some(tapd_workflow::ChangeSet {
+                    files: vec!["src/a.rs".to_string()],
+                    dirty: false,
+                    committed: true,
+                }),
+                exit_code: Some(0),
+            },
+            now: NOW.to_string(),
+        });
+        assert_eq!(status_of(&workflow, "t1"), Some(WorkflowStatus::Succeeded));
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::AppendHistory { .. }))
+                .count(),
+            1
+        );
+
+        // A late run receipt must not rewrite the terminal state.
+        let late = workflow.apply(Input::RunFinished {
+            task_id: TaskId::new("t1"),
+            outcome: tapd_workflow::RunOutcome::failure("late", None),
+            now: NOW.to_string(),
+        });
+        assert!(late.is_empty());
+        assert_eq!(status_of(&workflow, "t1"), Some(WorkflowStatus::Succeeded));
     }
 }

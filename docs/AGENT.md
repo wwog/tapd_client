@@ -44,6 +44,7 @@ Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理�
 | --- | --- |
 | Worktree 隔离 | 默认关闭。开启后每个任务在独立 git worktree 中运行，产生改动先审核、再确认合并回主仓库；队列有未结束任务时不能切换 |
 | 执行单元 | Worktree 关闭时固定为 1；开启后可调 1–8，默认 2。执行单元不受开关锁影响，随时可调 |
+| 启动恢复排队 | 默认开启。关闭后重启仍保留排队任务，但队列保持暂停，等用户手动「继续队列」，不会自动继续执行 |
 
 每个 TAPD 项目在项目卡片里配置本地仓库路径与项目规则；缺失仓库时任务会失败并提示去配置。项目规则不再注入内置提示词，而是通过 `tapd_get_bug` 的 `projectRule` 返回。
 
@@ -62,7 +63,7 @@ Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理�
 
 任务入队后：
 
-1. 状态 `queued`，立即返回前端（提示“已加入队列”）。
+1. 状态 `queued`，立即返回前端（提示“已加入队列”）；任务记录写入来源 `source`（缺陷页 / 列表手动发起为 `manual`，通知卡「处理」为 `notification`），历史页展示。
 2. `preparing`：调用导出，生成 `bug.json` + `assets/`。
 3. 解析并校验主仓库；开启 Worktree 时创建或复用独立 worktree，确定 `work_dir()`（worktree 或项目主仓库）。
 4. 校验运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex / OMP / Kimi Code / Gemini CLI / Qwen Code；失败只记录 warning）。随后为支持会话 hook 的运行时安装/刷新原生 hook（Codex / OpenCode / Claude / Cursor / Gemini / Qwen / OpenClaude / Qoder / Qoder CN / CodeBuddy / Kimi / ZCode / OMP），事件 POST 到桌面端 loopback `/agent/hook`。Codex 会同时写入 `hooks.json` 与 `config.toml` 的信任哈希。最后在 `work_dir()` 用 PTY 启动运行时。
@@ -93,27 +94,27 @@ Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理�
 
 ## 5. 任务与历史
 
-- SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
-- 任务字段：`jsonPath` 指向导出的 `bug.json`；开启 Worktree 时另有 `worktreePath` 与 `worktreeBranch`。旧记录的 `mdPath` 不再读取，字段为空即可，不做迁移。
+- SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。终态历史也 upsert 到同一张 `agent_tasks` 表，不另建历史表。
+- 任务字段：`jsonPath` 指向导出的 `bug.json`；`source` 记录来源（`manual` 手动发起 / `notification` 通知卡处理），历史页据此展示「来源」；开启 Worktree 时另有 `worktreePath` 与 `worktreeBranch`。旧记录的 `mdPath` 不再读取，字段为空即可，不做迁移。
 - 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」优先用 hook 捕获的 `sessionId` 精确恢复（Claude/Cursor/OMP 用 `--resume <id>`，OpenCode/Kimi 用 `--session <id>`，Codex 用 `resume <id>`，Gemini 用 `--resume <id>`）；没有 id 时退回各 CLI 的「继续最近会话」（`--continue`，Gemini 用 `--resume latest`）。
 - 状态：`queued | preparing | running | awaiting_approval | awaiting_merge | merging | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
-- 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
+- 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码、来源与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
 - SQLite 读写失败时 Agent 页会显示存储错误横幅；任务变更先保留在内存并在下次写入时重试。
 - 取消会 kill PTY 进程组；开放的其他子进程仍可能残留。
 
 ### 启动、关闭与恢复
 
-恢复规则由 `crates/tapd-workflow` 提供（纯逻辑 + 单元测试），桌面端通过 `agent/workflow_bridge.rs` 做 JSON 往返接入；完整审核 / 合并状态机仍在 `agent.rs`，尚未迁移。
+任务状态、队列、审核 / 合并与恢复全部由 `crates/tapd-workflow` 的 `Workflow` 决定；`AgentCore` 只持有 `workflow: Mutex<Workflow>`，`AgentTask` 是 UI 与持久化的视图。宿主执行 crate 产出的 Effect（worktree、PTY、导出、git、SQLite、UI），再以 Input 回执事实；队列 / 审核 / 合并不再有宿主侧重复状态机。
 
-- **启动加载**：`load()` 读取 SQLite 后原样保留持久化状态，不再把 `preparing/running` 标成 `failed`。在登录有效且引导完成之前，worker 在 `entered == false` 时等待，不会在登录页后面启动任务；此阶段队列命令返回「工作流尚未初始化，请先进入系统」。
-- **进入系统**：前端在登录有效 + 引导完成后调用 `agent_enter_system`（同一会话只请求一次，失败会释放门禁以便下次重试）。后端对内存任务执行恢复：
-  - `queued` 保留并继续排队。
+- **启动加载**：`load()` 只加载 Agent 配置与安装检测缓存，不读任务、不启动队列。在登录有效且引导完成之前，工作流尚未进入系统，队列命令返回「工作流尚未初始化，请先进入系统」。
+- **进入系统**：前端在登录有效 + 引导完成后调用 `agent_enter_system`（同一会话只请求一次，失败可重试）。后端走 `SystemEntered → LoadSnapshot → SnapshotLoaded`，从 SQLite 读取任务并应用恢复规则：
+  - `queued` 保留并继续排队；关闭「启动恢复排队」后仍保留任务，但队列暂停，等用户手动继续。
   - `preparing` / `running` → `queued`，标记 `interrupted`，`attempt += 1`；默认自动重试，最多 3 次，超过上限 → `failed`（「客户端重启，自动重试次数已用尽」）。
   - `merging` → `awaiting_merge`，写入「客户端重启，合并已中止」与手动合并步骤。
   - `awaiting_approval` / `awaiting_merge` 保留，等待用户操作。
 - **恢复提示**：后端返回 `RecoveryReport` 并 emit `agent://recovery`；主界面 header 下方的 `RecoveryBanner` 显示「已恢复 N 个任务」以及已重新排队 / 待审核 / 待合并 / 失败数量，可「查看任务」或「知道了」。空报告不展示，已关闭的报告在同一次会话内不重复弹出。
-- **关闭**：`shutdown` 先设置 `shutting_down` 并释放进入门禁，再通过 `suspend_tasks` 把 `preparing/running` 停靠为 `queued`（`interrupted=true`）、`merging` 停靠为 `awaiting_merge`；**先同步持久化，再杀 PTY**。`shutting_down` 守卫会忽略迟到的完成 / 失败回调，避免把已停靠的队列覆盖成 `failed` 或 `succeeded`。
+- **关闭**：`shutdown` 对工作流应用 `Suspend`：`preparing/running` 停靠为 `queued`（`interrupted=true`）、`merging` 停靠为 `awaiting_merge`；先把 `PersistChanged` / `PersistPaused` 同步写入 SQLite，**再杀 PTY**。未进入系统时直接跳过，避免覆盖持久化的队列暂停标记。运行中的任务不再默认失败；迟到的 `RunFinished` 因为任务已不是 `preparing/running` 被核心忽略。
 
 ## 6. Worktree 隔离
 

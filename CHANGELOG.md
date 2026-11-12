@@ -4,10 +4,12 @@
 
 ## 新增
 
-- 新增 `crates/tapd-workflow`：sans-IO 的工作流核心，包含任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，启用 `#![forbid(unsafe_code)]`，当前有 75 个测试。桌面端本阶段只接入启动恢复、关闭停靠、进入门禁与纯策略复用，完整审核 / 合并状态机迁移仍是下一阶段。
-- 启动恢复：登录有效且引导完成后，前端调用 `agent_enter_system`，后端对持久化队列应用恢复规则——`queued` 保留；`preparing/running` 重新排队并标记中断，`attempt + 1`，默认最多自动重试 3 次；`merging` 回到 `awaiting_merge` 并写入「客户端重启，合并已中止」与手动步骤；`awaiting_approval/awaiting_merge` 保留。
+- 新增 `crates/tapd-workflow`：sans-IO 的工作流核心，包含任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，启用 `#![forbid(unsafe_code)]`，当前有 92 个测试。桌面端已完整接入：`AgentCore` 只持有 `workflow: Mutex<Workflow>`，`AgentTask` 只是 UI 与持久化视图。
+- Agent 任务新增 `source` 字段：记录任务来源（`manual` 手动发起 / `notification` 通知卡「处理」），历史页与恢复后的记录都会展示「来源」。
+- 设置 →「Agent 执行」新增「启动恢复排队」开关：默认开启；关闭后重启仍保留排队任务，但队列保持暂停，等用户手动「继续队列」，不会自动继续执行。
+- 启动恢复：登录有效且引导完成后，前端调用 `agent_enter_system`，后端对持久化队列应用恢复规则——`queued` 保留（关闭「启动恢复排队」时保留但暂停）；`preparing/running` 重新排队并标记中断，`attempt + 1`，默认最多自动重试 3 次；`merging` 回到 `awaiting_merge` 并写入「客户端重启，合并已中止」与手动步骤；`awaiting_approval/awaiting_merge` 保留。
 - 登录后恢复提示：主界面 header 下方新增 `RecoveryBanner`，展示已重新排队 / 待审核 / 待合并 / 失败数量，可「查看任务」或「知道了」；空报告不展示。
-- 进入系统门禁：登录有效 + 引导完成前不初始化工作流，worker 在 `entered=false` 时等待；此阶段队列命令返回「工作流尚未初始化，请先进入系统」，避免在登录页后启动持久化任务。
+- 进入系统门禁：登录有效 + 引导完成前不加载任务、不初始化工作流；此阶段队列命令返回「工作流尚未初始化，请先进入系统」，避免在登录页后启动持久化任务。
 - 设置页新增「Agent 执行」卡片：Worktree 隔离开关与执行单元。默认关闭且固定单任务；开启后执行单元可调 1–8、默认 2，每个任务在独立 git worktree 中运行。
 - Worktree 任务新增「待合并 / 合并中」阶段：审核通过后进入待合并，用户确认后用原 Agent 把任务分支合并回主仓库，并统一回写 TAPD；校验分支已并入当前 HEAD 后才算完成。
 - 合并失败提供手动回退：原 Agent 不可用、主仓有未提交改动或同仓库已有合并时，任务保持待合并，展示 `merge.error` 与手动步骤（cd、git status、git merge、冲突解决、测试、TAPD 回写），手动合并后可点「我已手动合并」校验。
@@ -21,8 +23,12 @@
 
 ## 修改
 
-- 关闭语义改为「先停靠、再持久化、最后杀 PTY」：`shutdown` 调用 `suspend_tasks` 把 `preparing/running` 停靠为 `queued`（`interrupted=true`）、`merging` 停靠为 `awaiting_merge`，同步写入 SQLite 后才回收进程；`shutting_down` 守卫阻止迟到的完成 / 失败回调覆盖已停靠状态。
-- 启动加载不再把遗留的 `preparing/running` 直接标记为 `failed`，持久化状态原样保留到进入系统后再按恢复规则处理。
+- Agent 工作流全量迁移到 `tapd-workflow`：`AgentCore` 只持有 `workflow: Mutex<Workflow>` 作为任务状态 / 队列 / 审核 / 合并 / 恢复的唯一 owner，`AgentTask` 只是 UI 与持久化视图；宿主执行 crate 产出的 Effect（worktree / PTY / 导出 / git / SQLite / UI）并以 Input 回执；approve、merge_start、verify_merge 需要的 git 检查在命令路径同步执行。
+- 删除宿主重复状态机：`tasks`、`spawn_worker`、`take_next_queued`、`finish_task`、`apply_finish`、`recover_incomplete`、`persist_tasks`、`update_task`、`entered` / `shutting_down` 标志、`wake`，以及 `claim_entry` / `release_entry` / `ensure_entered` 门禁；`AgentCore` 只保留宿主配置、PTY runtimes、hook、scan、storage_error、worktree / persist 锁等平台职责。
+- 持久化改由 Effect 驱动：`PersistChanged` / `PersistDeleted` / `PersistPaused` 写现有 `agent_tasks` / `agent_queue_state`，`AppendHistory` 也 upsert 到 `agent_tasks`；写入失败设置 `storage_error` 并在 Agent 页提示，不静默吞掉。
+- 关闭语义改为「先停靠、再持久化、最后杀 PTY」：`shutdown` 对工作流应用 `Suspend`，把 `preparing/running` 停靠为 `queued`（`interrupted=true`）、`merging` 停靠为 `awaiting_merge`，`PersistChanged` / `PersistPaused` 同步写入 SQLite 后才回收进程；运行中的任务不再默认判失败，迟到的 `RunFinished` 因状态已不是 `preparing/running` 被核心忽略。
+- 启动加载只加载 Agent 配置，不读任务、不启动队列；持久化状态保留到进入系统后再按恢复规则处理。
+- 测试：`tapd-workflow` 增至 92 个测试（新增宿主协议 13 个），workspace 测试全部通过，前端 `typecheck` 与 `build` 通过。
 - MCP 工具收敛到 10 个：删除 `tapd_export_bug_md`、`tapd_claim_bug`、`tapd_release_bug`、`tapd_request_review` 与 `agent_task_report`；导出并入 `tapd_get_bug`，外部占用与任务回报不再存在。
 - `tapd_get_bug` 现在只写 `bug.json` + `assets/`，返回 `warnings` / `downloadedBytes` / `bugJson` / `assetCount` / `skills` / `projectRule` / `prompt`；不再返回缺陷详情内联、`tapdIntegration`、`coworkerSkills`、`externalClaim`，也不再写 `bug.md` / `prompt.md` / `skills/`。
 - `skills` 改为 name→SkillRef 的 map：value 的 `path` 是 `SKILL.md` 绝对路径；重名先用 `<coworkerId>/<name>`，仍重名追加序号。`projectRule` 独立返回，不再作为提示词模板变量。

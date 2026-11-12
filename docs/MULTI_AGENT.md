@@ -91,7 +91,7 @@ struct AgentRuntimeDescriptor {
 
 任务入队时固化 `runtime_id`，之后修改设置不影响已排队任务。缺陷详情的提交面板可以只给本次任务指定 `runtimeId`；未指定时使用设置里的默认 Agent。
 
-`AgentTask` 的详情文件字段是 `jsonPath`（`bug.json` 绝对路径）。开启 Worktree 隔离时另有 `worktreePath` / `worktreeBranch`；`repoPath` 仍是项目主仓库，所有运行时工作目录取 `work_dir()`（优先 worktree）。旧记录的 `mdPath` 不迁移，读为空。
+`AgentTask` 的详情文件字段是 `jsonPath`（`bug.json` 绝对路径）；`source` 记录来源（`manual` / `notification`），历史页展示与恢复。开启 Worktree 隔离时另有 `worktreePath` / `worktreeBranch`；`repoPath` 仍是项目主仓库，所有运行时工作目录取 `work_dir()`（优先 worktree）。旧记录的 `mdPath` 不迁移，读为空。
 
 `crates/tapd-workflow` 的 `Task` 与这份 JSON 形状对齐：camelCase、`TaskSpec` 平铺、`TaskId` 为 transparent 字符串 newtype、时间戳为字符串；`agent/workflow_bridge.rs` 直接做 serde JSON 往返。
 
@@ -114,6 +114,8 @@ run_task
         └─ kill 进程组，进入完成、待审核或待合并
 ```
 
+状态迁移由 `tapd-workflow` 的 Effect 驱动，上面的步骤只是宿主执行的副作用；每一步完成后以 Input 回执（worktree 创建、导出、AgentStarted、RunFinished 等），由核心决定下一步。
+
 ## 5. 完成判定
 
 运行时没有统一协议事件，按以下顺序判定本轮结束：
@@ -133,7 +135,7 @@ run_task
 3. 提示词已投递且输出静默达到 `idleCompleteMs`（默认 180s）：视为完成并记录 warning。
 4. 用户中断：任务取消。
 
-复杂改动不再调用 MCP 审核工具：Agent 按提示词不 commit、不评论、不更新 TAPD。`finish_task` 的 git 安全网发现本轮新的未提交文件时，把任务置为 `awaiting_approval` 并保留工作区 diff。
+复杂改动不再调用 MCP 审核工具：Agent 按提示词不 commit、不评论、不更新 TAPD。本轮结束的 `RunFinished` 带回改动事实，工作流的安全网发现本轮新的未提交文件时，把任务置为 `awaiting_approval` 并保留工作区 diff。
 
 开启 Worktree 隔离后，审核与合并成为所有改动的必经阶段：
 
@@ -145,13 +147,14 @@ run_task
 
 ## 5.1 工作流核心与启动恢复
 
-任务模型、状态机、执行单元调度、审核 / 合并策略、恢复与历史已抽到 `crates/tapd-workflow`（sans-IO，正常依赖只有 `serde`，`#![forbid(unsafe_code)]`，75 个测试）。桌面端目前只接入恢复 / 关闭 / 门禁与纯策略，完整状态机仍在 `agent.rs`：
+任务模型、状态机、执行单元调度、审核 / 合并策略、恢复与历史都在 `crates/tapd-workflow`（sans-IO，正常依赖只有 `serde`，`#![forbid(unsafe_code)]`，92 个测试）。桌面端已完整接入：`AgentCore` 只持有 `workflow: Mutex<Workflow>`，`AgentTask` 只是 UI 与持久化视图。
 
 - 桌面 `AgentTask` 与 crate `Task` 的 JSON 形状一致，`agent/workflow_bridge.rs` 用 `serde_json` 整条往返，不手写字段映射。
-- 启动 `load()` 保留持久化状态，不再把 `preparing/running` 标成失败；worker 在 `entered=false` 时等待，登录有效 + 引导完成后前端调用 `agent_enter_system` 才恢复队列。
-- 恢复规则：`queued` 保留；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多 3 次自动重试，超限失败）；`merging` → `awaiting_merge` + 「客户端重启，合并已中止」；`awaiting_approval` / `awaiting_merge` 保留。结果通过 `RecoveryReport` 返回并 emit `agent://recovery`，主界面 `RecoveryBanner` 展示数量。
-- 关闭 `shutdown` 先 `suspend`：`preparing/running → queued`、`merging → awaiting_merge`，持久化后再杀 PTY；迟到的完成 / 失败回调被 `shutting_down` 守卫忽略。
-- Worktree 开关锁、合并提示词与手动步骤直接复用 crate 的纯函数。完整的审核 / 合并状态机迁移到 crate 是下一阶段。
+- 宿主执行 Effect（worktree / PTY / 导出 / git / SQLite / UI）并以 Input 回执；approve 的 `InspectWorkspace`、merge_start 的 `CheckMergePreconditions`、verify_merge 的 `VerifyBranchMerged` 在命令路径同步执行，保证命令返回最终状态。
+- 启动 `load()` 只加载配置，不读任务、不启动队列；登录有效 + 引导完成后前端调用 `agent_enter_system` 才走 `SystemEntered → LoadSnapshot → SnapshotLoaded` 恢复任务。
+- 恢复规则：`queued` 保留（关闭「启动恢复排队」时保留但暂停队列）；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多 3 次自动重试，超限失败）；`merging` → `awaiting_merge` + 「客户端重启，合并已中止」；`awaiting_approval` / `awaiting_merge` 保留。结果通过 `RecoveryReport` 返回并 emit `agent://recovery`，主界面 `RecoveryBanner` 展示数量。
+- 关闭 `shutdown` 应用 `Suspend`：`preparing/running → queued`、`merging → awaiting_merge`，`PersistChanged` / `PersistPaused` 同步写入后才杀 PTY；未进入系统时跳过。迟到的 `RunFinished` 因任务已不是 `preparing/running` 被核心忽略。
+- 队列出队、执行单元、审核阻塞、审核 / 合并决策全部由 crate 的 `schedule()` 与状态机决定；宿主没有第二份实现。Worktree 开关锁、合并提示词与手动步骤也直接复用 crate 的纯函数。
 
 ## 6. 权限与交互
 
@@ -202,7 +205,7 @@ run_task
 - `--version` 不保证所有 CLI 都很快返回；检测有 5 秒超时，超时的条目会记录错误但仍视为已安装。
 - 默认单任务串行；开启 Worktree 隔离后按执行单元并行（1–8，默认 2），每个任务一个 worktree。非 git 仓库的任务会在创建 worktree 时明确失败。
 - Worktree 任务必须审核并合并回主仓库才算完成；合并失败不会把任务判为失败，而是保留待合并并提供手动步骤。队列有未结束任务时 Worktree 开关锁定，执行单元仍可调整。
-- `tapd-workflow` 目前只接入启动恢复、关闭停靠、进入门禁与纯策略；宿主仍有自己的队列 / 审核 / 合并状态机。两者在迁移期间可能重复记录同一规则，修改时必须同步核对。
+- 任务状态、队列、审核 / 合并与恢复只有 `tapd-workflow` 一份实现；宿主只提供 PTY、git、导出、SQLite 与 UI 适配器，不保留第二份状态机。
 
 ## 10. 与 orca 的差异
 

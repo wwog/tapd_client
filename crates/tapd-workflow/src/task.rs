@@ -84,6 +84,9 @@ pub struct TaskSpec {
     pub priority: String,
     pub repo_path: String,
     pub runtime_id: String,
+    /// Origin of the task (`manual` / `notification`), host-owned metadata.
+    #[serde(default)]
+    pub source: String,
     pub extra_prompt: String,
     pub attachments: Vec<String>,
 }
@@ -186,8 +189,6 @@ pub struct Task {
     pub error: Option<String>,
     #[serde(default)]
     pub prompt: String,
-    #[serde(default)]
-    pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,7 +227,6 @@ impl Task {
             exit_code: None,
             error: None,
             prompt: String::new(),
-            source: String::new(),
             agent_session_id: None,
             approval: None,
             merge: None,

@@ -19,6 +19,7 @@ pub fn spec(bug: &str) -> TaskSpec {
         priority: "high".to_string(),
         repo_path: "/repo".to_string(),
         runtime_id: "runtime".to_string(),
+        source: "manual".to_string(),
         extra_prompt: String::new(),
         attachments: Vec::new(),
     }

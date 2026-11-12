@@ -55,7 +55,7 @@ fn legacy_task_json_without_new_fields_deserializes() {
     assert_eq!(task.spec.attachments, vec!["/tmp/a.png"]);
     assert_eq!(task.json_path, "/data/bug.json");
     assert_eq!(task.prompt, "please fix");
-    assert_eq!(task.source, "manual");
+    assert_eq!(task.spec.source, "manual");
     assert_eq!(task.agent_session_id.as_deref(), Some("session-1"));
     assert_eq!(task.exit_code, Some(0));
     assert_eq!(task.baseline_dirty, vec!["src/untracked.rs"]);
@@ -94,7 +94,7 @@ fn legacy_task_json_missing_optional_export_fields_loads() {
     let task: Task = serde_json::from_str(json).expect("minimal legacy task loads");
     assert_eq!(task.json_path, "");
     assert_eq!(task.prompt, "");
-    assert_eq!(task.source, "");
+    assert_eq!(task.spec.source, "");
     assert_eq!(task.spec.runtime_id, "");
     assert!(task.spec.attachments.is_empty());
     assert_eq!(task.attempt, 0);
