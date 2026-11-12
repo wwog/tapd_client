@@ -15,7 +15,14 @@
 //! Pointer enter/exit are forwarded to the frontend as `island://hover`, which
 //! turns them into the Agent summary card (the peek).
 
-use std::{ffi::CStr, sync::OnceLock};
+use std::{
+    ffi::CStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::Duration,
+};
 
 use objc2::{
     define_class, msg_send,
@@ -69,7 +76,13 @@ fn non_activating_class(superclass: &'static AnyClass) -> &'static AnyClass {
 
 struct HoverIvars {
     app: AppHandle,
+    /// The capsule itself, so an exit can be checked against the real frame.
+    window: Retained<NSWindow>,
 }
+
+/// A suppressed exit schedules one delayed re-check; repeated exits while the
+/// animation runs must not queue a dozen of them.
+static EXIT_CHECK_PENDING: AtomicBool = AtomicBool::new(false);
 
 define_class!(
     /// Tracking-area owner. AppKit delivers `mouseEntered:`/`mouseExited:` to
@@ -86,7 +99,42 @@ define_class!(
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
-            self.emit(false);
+            // Resizing or moving the window rebuilds its tracking rect, and
+            // AppKit reports leaving the *old* rect even though the pointer
+            // never left the window. Trusting those made the peek flicker and
+            // could latch hover off (no new `entered` ever arrives) until the
+            // capsule was dragged. Ask where the pointer actually is instead.
+            if !pointer_inside(&self.ivars().window) {
+                self.emit(false);
+                return;
+            }
+
+            // The pointer is still on the capsule, so this exit came from our
+            // own resize. It may still be a real exit that raced the animation
+            // (leaving while the card opens); re-check once the window settles
+            // rather than dropping it, or the peek card would stay open. One
+            // pending check is enough: it reads the pointer when it runs.
+            if EXIT_CHECK_PENDING.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let app = self.ivars().app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(240)).await;
+                let app_for_check = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    EXIT_CHECK_PENDING.store(false, Ordering::SeqCst);
+                    let Some(window) = app_for_check.get_webview_window(super::WINDOW_LABEL) else {
+                        return;
+                    };
+                    let Ok(ns_window) = window.ns_window() else {
+                        return;
+                    };
+                    let ns_window = unsafe { &*(ns_window as *const NSWindow) };
+                    if !pointer_inside(ns_window) {
+                        emit_hover(&app_for_check, false);
+                    }
+                });
+            });
         }
     }
 );
@@ -98,11 +146,55 @@ impl HoverWatcher {
     /// the state here as well would only risk going stale while the capsule is
     /// hidden and no exit is delivered.
     fn emit(&self, active: bool) {
-        tracing::debug!(active, "capsule hover");
-        let _ = self
-            .ivars()
-            .app
-            .emit(HOVER_EVENT, json!({ "active": active }));
+        emit_hover(&self.ivars().app, active);
+    }
+}
+
+fn emit_hover(app: &AppHandle, active: bool) {
+    tracing::debug!(active, "capsule hover");
+    let _ = app.emit(HOVER_EVENT, json!({ "active": active }));
+}
+
+/// Whether the pointer is inside the window right now. Both AppKit's
+/// `mouseLocation` and a window frame live in screen coordinates with the
+/// origin at the bottom-left of the main screen, so they compare directly.
+fn pointer_inside(window: &NSWindow) -> bool {
+    let frame = window.frame();
+    let point = NSEvent::mouseLocation();
+    point.x >= frame.origin.x
+        && point.x < frame.origin.x + frame.size.width
+        && point.y >= frame.origin.y
+        && point.y < frame.origin.y + frame.size.height
+}
+
+/// Resizes the capsule while pinning its top edge and horizontal centre.
+///
+/// `set_size` then `set_position` are two separate window-server calls, and
+/// AppKit keeps the *bottom* edge when only the size changes. Every animation
+/// step therefore lifted the whole capsule (the pill lives at the top) and
+/// dropped it back on the next call — the shake that was visible while the peek
+/// card grew. One `setFrame:display:` moves both in the same commit.
+pub fn set_frame_keeping_top_center(window: &WebviewWindow, width: f64, height: f64) {
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    let ns_window = ns_window as usize;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let apply = move || unsafe {
+        let ns_window = &*(ns_window as *const NSWindow);
+        let mut frame = ns_window.frame();
+        let width = width / scale;
+        let height = height / scale;
+        frame.origin.x += (frame.size.width - width) / 2.0;
+        frame.origin.y += frame.size.height - height;
+        frame.size.width = width;
+        frame.size.height = height;
+        ns_window.setFrame_display(frame, true);
+    };
+    if MainThreadMarker::new().is_some() {
+        apply();
+    } else {
+        let _ = window.run_on_main_thread(apply);
     }
 }
 
@@ -138,6 +230,11 @@ unsafe fn install_now(app: AppHandle, ns_window: usize, ns_view: usize) {
         unsafe { AnyObject::set_class(window, class) };
     }
     let ns_window = unsafe { &*(ns_window as *const NSWindow) };
+    // The hover watcher needs an owned handle: it outlives this call and has to
+    // compare exits against the window's live frame.
+    let capsule_window: Retained<NSWindow> =
+        unsafe { Retained::retain(ns_window as *const NSWindow as *mut NSWindow) }
+            .expect("capsule window is alive");
     // Creating the window from a worker thread queues this call behind the
     // first `show()`; if the capsule grabbed key in between, hand it back.
     if ns_window.isKeyWindow() {
@@ -154,7 +251,10 @@ unsafe fn install_now(app: AppHandle, ns_window: usize, ns_view: usize) {
     let target = first.as_deref().unwrap_or(content);
 
     let watcher: Retained<HoverWatcher> = unsafe {
-        let this = HoverWatcher::alloc().set_ivars(HoverIvars { app });
+        let this = HoverWatcher::alloc().set_ivars(HoverIvars {
+            app,
+            window: capsule_window,
+        });
         msg_send![super(this), init]
     };
     let owner = watcher.as_ref() as *const HoverWatcher as *const AnyObject;

@@ -344,6 +344,13 @@ fn apply_island_sized(
             let Ok(start_pos) = window_for_animation.outer_position() else {
                 return;
             };
+            // Growing around the top-centre is the whole point: the pill sits at
+            // the top of the window and must not move while the card below it
+            // grows. Only when the centre itself has to move (another monitor,
+            // a fresh anchor) do we fall back to moving the window explicitly.
+            let start_center = start_pos.x + start_size.width as i32 / 2;
+            let target_center = x + w as i32 / 2;
+            let centred = (start_center - target_center).abs() <= 1;
 
             const STEPS: u32 = 11;
             for step in 1..=STEPS {
@@ -359,8 +366,7 @@ fn apply_island_sized(
                 let next_y = lerp(start_pos.y as f64, y as f64, eased).round() as i32;
                 remember_position(next_x, next_y);
                 mark_animating();
-                let _ = window_for_animation.set_size(PhysicalSize::new(next_w, next_h));
-                let _ = window_for_animation.set_position(PhysicalPosition::new(next_x, next_y));
+                apply_frame(&window_for_animation, next_x, next_y, next_w, next_h, centred);
                 tokio::time::sleep(Duration::from_millis(14)).await;
             }
         });
@@ -376,4 +382,29 @@ fn apply_island_sized(
             "mode": if UPDATE_MODE.load(Ordering::SeqCst) { "update" } else { "notifications" },
         }),
     );
+}
+
+/// One animation frame. On macOS the resize and the move must land in the same
+/// window-server commit: `set_size` alone keeps the bottom edge, so the pill at
+/// the top of the window was lifted and dropped back on every step (the shake
+/// seen while the peek card grew). `centred` says the window keeps its
+/// horizontal centre, which is when that atomic path applies.
+fn apply_frame(
+    window: &WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    centred: bool,
+) {
+    #[cfg(target_os = "macos")]
+    if centred {
+        macos::set_frame_keeping_top_center(window, width as f64, height as f64);
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = centred;
+
+    let _ = window.set_size(PhysicalSize::new(width, height));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
