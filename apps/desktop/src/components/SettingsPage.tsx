@@ -15,6 +15,7 @@ import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
+import { CompanionCard } from "./CompanionCard";
 import { DefaultAgentCard } from "./DefaultAgentCard";
 import { Dialog } from "./Dialog";
 import { NotificationSettings } from "./NotificationSettings";
@@ -82,6 +83,8 @@ export function SettingsPage(props: Props) {
       <DefaultAgentCard toast={toast} onManageAgents={onManageAgents} />
 
       <NotificationSettings toast={toast} />
+
+      <CompanionCard toast={toast} />
 
       <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">
