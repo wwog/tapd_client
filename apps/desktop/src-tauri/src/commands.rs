@@ -385,11 +385,12 @@ pub async fn bug_summary(
 ///
 /// `get_workspace_members` is the primary source; older workspaces may answer
 /// with an empty list, in which case the user chooser's full directory is used.
-#[tauri::command]
-pub async fn workspace_members(
-    app: AppHandle,
-    state: State<'_, SharedState>,
-    workspace_id: String,
+/// Shared by the Tauri command and the companion members endpoint; the result
+/// is written through to the offline snapshot both surfaces read.
+pub async fn workspace_members_core(
+    app: &AppHandle,
+    state: &SharedState,
+    workspace_id: &str,
 ) -> Result<Vec<WorkspaceMember>, String> {
     let workspace_id = workspace_id.trim();
     if workspace_id.is_empty() {
@@ -397,14 +398,14 @@ pub async fn workspace_members(
     }
 
     // Primary source; a 404/older project simply falls through to the chooser.
-    let primary = fetch_workspace_members(&app, workspace_members_url(workspace_id)).await;
+    let primary = fetch_workspace_members(app, workspace_members_url(workspace_id)).await;
     let mut members = primary
         .as_ref()
         .map(|items| items.clone())
         .unwrap_or_default();
     if members.is_empty() {
         let root = session_request_json(
-            &app,
+            app,
             "POST",
             &user_chooser_url(),
             Some(user_chooser_all_body(workspace_id)),
@@ -420,7 +421,31 @@ pub async fn workspace_members(
     Ok(members)
 }
 
-/// Appends a plain-text comment to a bug.
+#[tauri::command]
+pub async fn workspace_members(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    workspace_id: String,
+) -> Result<Vec<WorkspaceMember>, String> {
+    workspace_members_core(&app, state.inner(), &workspace_id).await
+}
+
+/// Appends a plain-text comment to a bug. Shared by the desktop command and
+/// the companion write endpoint.
+pub async fn bug_add_comment_core(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+    comment: &str,
+) -> Result<(), String> {
+    let text = comment.trim();
+    if text.is_empty() {
+        return Err("评论不能为空".to_string());
+    }
+    bug_write::add_comment(app, workspace_id.trim(), bug_id.trim(), text).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn bug_add_comment(
     app: AppHandle,
@@ -428,12 +453,7 @@ pub async fn bug_add_comment(
     bug_id: String,
     comment: String,
 ) -> Result<(), String> {
-    let text = comment.trim();
-    if text.is_empty() {
-        return Err("评论不能为空".to_string());
-    }
-    bug_write::add_comment(&app, workspace_id.trim(), bug_id.trim(), text).await?;
-    Ok(())
+    bug_add_comment_core(&app, &workspace_id, &bug_id, &comment).await
 }
 
 /// Changes the owner (`current_owner`) or developer (`de`) of a bug.
@@ -441,7 +461,41 @@ pub async fn bug_add_comment(
 /// Setting ourselves as owner ("认领" or picking our own name) is our own
 /// write: the next poll must not report it back as a transfer notification.
 /// `claim` marks the explicit claim button even when the local nickname is
-/// unavailable.
+/// unavailable. Shared by the desktop command and the companion write
+/// endpoints (`update-field`, and `claim` which passes `claim = true`).
+pub async fn bug_update_field_core(
+    app: &AppHandle,
+    state: &SharedState,
+    workspace_id: &str,
+    bug_id: &str,
+    field: &str,
+    value: &str,
+    claim: bool,
+) -> Result<(), String> {
+    let field = field.trim();
+    if !EDITABLE_USER_FIELDS.contains(&field) {
+        return Err("只支持修改处理人与开发人员".to_string());
+    }
+    let value = normalize_user_value(value);
+    if value.is_empty() {
+        return Err("请选择人员".to_string());
+    }
+
+    bug_write::update_field(app, workspace_id.trim(), bug_id.trim(), field, &value).await?;
+
+    if field == "current_owner" {
+        let mine = state
+            .config_snapshot()
+            .me
+            .map(|me| normalize_user_value(&me) == value)
+            .unwrap_or(false);
+        if claim || mine {
+            crate::notification::suppress_transfer(workspace_id.trim(), bug_id.trim());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn bug_update_field(
     app: AppHandle,
@@ -452,28 +506,16 @@ pub async fn bug_update_field(
     value: String,
     claim: Option<bool>,
 ) -> Result<(), String> {
-    let field = field.trim();
-    if !EDITABLE_USER_FIELDS.contains(&field) {
-        return Err("只支持修改处理人与开发人员".to_string());
-    }
-    let value = normalize_user_value(&value);
-    if value.is_empty() {
-        return Err("请选择人员".to_string());
-    }
-
-    bug_write::update_field(&app, workspace_id.trim(), bug_id.trim(), field, &value).await?;
-
-    if field == "current_owner" {
-        let mine = state
-            .config_snapshot()
-            .me
-            .map(|me| normalize_user_value(&me) == value)
-            .unwrap_or(false);
-        if claim.unwrap_or(false) || mine {
-            crate::notification::suppress_transfer(workspace_id.trim(), bug_id.trim());
-        }
-    }
-    Ok(())
+    bug_update_field_core(
+        &app,
+        state.inner(),
+        &workspace_id,
+        &bug_id,
+        &field,
+        &value,
+        claim.unwrap_or(false),
+    )
+    .await
 }
 
 #[derive(Serialize)]
@@ -492,13 +534,13 @@ pub struct BugTransitionInfo {
 }
 
 /// Lists the workflow transitions available from a bug's current status.
-#[tauri::command]
-pub async fn bug_transitions(
-    app: AppHandle,
-    workspace_id: String,
-    bug_id: String,
+/// Shared by the desktop command and the companion endpoint.
+pub async fn bug_transitions_core(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
 ) -> Result<BugTransitionInfo, String> {
-    let info = bug_write::load_transition_info(&app, workspace_id.trim(), bug_id.trim()).await?;
+    let info = bug_write::load_transition_info(app, workspace_id.trim(), bug_id.trim()).await?;
     let current_label = info
         .status_alias
         .get(&info.current_status)
@@ -517,6 +559,15 @@ pub async fn bug_transitions(
     })
 }
 
+#[tauri::command]
+pub async fn bug_transitions(
+    app: AppHandle,
+    workspace_id: String,
+    bug_id: String,
+) -> Result<BugTransitionInfo, String> {
+    bug_transitions_core(&app, &workspace_id, &bug_id).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BugTransitionForm {
@@ -526,16 +577,16 @@ pub struct BugTransitionForm {
     fields: Vec<bug_write::TransitionField>,
 }
 
-/// Returns the fields TAPD shows before a workflow transition.
-#[tauri::command]
-pub async fn bug_transition_form(
-    app: AppHandle,
-    workspace_id: String,
-    bug_id: String,
-    status: String,
+/// Returns the fields TAPD shows before a workflow transition. Shared by the
+/// desktop command and the companion endpoint.
+pub async fn bug_transition_form_core(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+    status: &str,
 ) -> Result<BugTransitionForm, String> {
     let (from, status, label, fields) =
-        bug_write::load_transition_form(&app, workspace_id.trim(), bug_id.trim(), status.trim())
+        bug_write::load_transition_form(app, workspace_id.trim(), bug_id.trim(), status.trim())
             .await?;
     Ok(BugTransitionForm {
         from,
@@ -543,6 +594,16 @@ pub async fn bug_transition_form(
         label,
         fields,
     })
+}
+
+#[tauri::command]
+pub async fn bug_transition_form(
+    app: AppHandle,
+    workspace_id: String,
+    bug_id: String,
+    status: String,
+) -> Result<BugTransitionForm, String> {
+    bug_transition_form_core(&app, &workspace_id, &bug_id, &status).await
 }
 
 #[derive(Serialize)]
@@ -554,18 +615,20 @@ pub struct BugTransitionResult {
     changed: bool,
 }
 
-/// Moves a bug to another workflow status.
-#[tauri::command]
-pub async fn bug_transition(
-    app: AppHandle,
-    workspace_id: String,
-    bug_id: String,
-    status: String,
+/// Moves a bug to another workflow status. `fields` carries the caller's
+/// transition-form overrides (`{"current_owner": "张三"}` or
+/// `[{"name": ..., "value": ...}]` rows); workflow defaults win for fields it
+/// does not mention. Shared by the desktop command and the companion endpoint.
+pub async fn bug_transition_core(
+    app: &AppHandle,
+    workspace_id: &str,
+    bug_id: &str,
+    status: &str,
     fields: Option<Value>,
 ) -> Result<BugTransitionResult, String> {
     let overrides = fields.unwrap_or_else(|| json!({}));
     let outcome = bug_write::perform_transition(
-        &app,
+        app,
         workspace_id.trim(),
         bug_id.trim(),
         status.trim(),
@@ -579,6 +642,17 @@ pub async fn bug_transition(
         label: outcome.label,
         changed: !outcome.steps.is_empty(),
     })
+}
+
+#[tauri::command]
+pub async fn bug_transition(
+    app: AppHandle,
+    workspace_id: String,
+    bug_id: String,
+    status: String,
+    fields: Option<Value>,
+) -> Result<BugTransitionResult, String> {
+    bug_transition_core(&app, &workspace_id, &bug_id, &status, fields).await
 }
 
 #[derive(Serialize)]

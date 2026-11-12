@@ -13,7 +13,10 @@
 //! Module layout:
 //! - `pairing` — the pair route, session auth guards and per-IP rate limiting.
 //! - `assets` — embedded SPA static file serving.
-//! - `api` — read endpoints (state / workspaces / bugs / notifications / media).
+//! - `api` — read endpoints (state / workspaces / bugs / notifications / media)
+//!   plus the members directory and the bug write endpoints (comment /
+//!   update-field / transitions / transition / claim), which run the same
+//!   desktop command cores the bug detail panel uses.
 //! - `feature` — whitelisted proxy to the desktop `feature_command` surface.
 //!
 //! Every `#[tauri::command]` stays in this module because `lib.rs` registers
@@ -42,7 +45,11 @@ use tauri::AppHandle;
 
 use crate::{server::opaque_token, state::SharedState};
 
-use api::{api_bug_detail, api_bugs, api_media, api_notifications, api_state, api_workspaces};
+use api::{
+    api_bug_claim, api_bug_comment, api_bug_detail, api_bug_transition, api_bug_transitions,
+    api_bug_update_field, api_bugs, api_media, api_members, api_notifications, api_state,
+    api_workspaces,
+};
 use assets::static_fallback;
 use feature::{api_feature, rate_limiter};
 use pairing::{pair, RateLimiter};
@@ -168,8 +175,14 @@ async fn serve(
         .route("/companion/api/pair", post(pair))
         .route("/companion/api/state", get(api_state))
         .route("/companion/api/workspaces", get(api_workspaces))
+        .route("/companion/api/members", get(api_members))
         .route("/companion/api/bugs", post(api_bugs))
         .route("/companion/api/bug", get(api_bug_detail))
+        .route("/companion/api/bug/comment", post(api_bug_comment))
+        .route("/companion/api/bug/update-field", post(api_bug_update_field))
+        .route("/companion/api/bug/transitions", get(api_bug_transitions))
+        .route("/companion/api/bug/transition", post(api_bug_transition))
+        .route("/companion/api/bug/claim", post(api_bug_claim))
         .route("/companion/api/notifications", get(api_notifications))
         .route("/companion/api/media", get(api_media))
         .route("/companion/api/feature", post(api_feature))
