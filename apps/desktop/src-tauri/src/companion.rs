@@ -9,123 +9,49 @@
 //! Route contract: every API answer is `{ ok: true, data }` or
 //! `{ ok: false, code, error }`. Static assets come from the embedded
 //! `dist-companion/` SPA (debug builds read the folder from disk).
+//!
+//! Module layout:
+//! - `pairing` — the pair route, session auth guards and per-IP rate limiting.
+//! - `assets` — embedded SPA static file serving.
+//! - `api` — read endpoints (state / workspaces / bugs / notifications / media).
+//! - `feature` — whitelisted proxy to the desktop `feature_command` surface.
+//!
+//! Every `#[tauri::command]` stays in this module because `lib.rs` registers
+//! it as `companion::<name>` and the handler macro resolves the generated
+//! wrapper through the same path (same rule as `commands.rs`).
+
+mod api;
+mod assets;
+mod feature;
+mod pairing;
 
 use std::{
-    collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 
 use axum::{
-    extract::{ConnectInfo, Query, State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use rust_embed::RustEmbed;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
-use tapd_core::config::CompanionDevice;
 use tauri::AppHandle;
 
-use crate::{
-    commands,
-    server::opaque_token,
-    state::SharedState,
-};
+use crate::{server::opaque_token, state::SharedState};
+
+use api::{api_bug_detail, api_bugs, api_media, api_notifications, api_state, api_workspaces};
+use assets::static_fallback;
+use feature::{api_feature, rate_limiter};
+use pairing::{pair, RateLimiter};
 
 /// One-time pairing codes expire after ten minutes (single use on top).
 const PAIRING_TTL_SECS: i64 = 600;
-/// Pairing rate limit: more than 10 attempts per IP per minute are rejected.
-const PAIR_MAX_ATTEMPTS: usize = 10;
-const PAIR_WINDOW: Duration = Duration::from_secs(60);
-/// Fallback device name when the phone sends none.
-const DEFAULT_DEVICE_NAME: &str = "移动设备";
-/// Device names are display text; keep them short.
-const MAX_DEVICE_NAME_CHARS: usize = 24;
 
 // ---------------------------------------------------------------------------
-// Embedded SPA
-// ---------------------------------------------------------------------------
-
-/// Static assets of the companion SPA. Built by `pnpm -C apps/companion build`
-/// into `dist-companion/`; debug builds read the folder at runtime, release
-/// builds embed it.
-#[derive(RustEmbed)]
-#[folder = "dist-companion"]
-struct CompanionAssets;
-
-/// `/` and unknown paths serve `index.html` so the SPA owns routing; a missing
-/// build shows an actionable placeholder instead of a 404.
-async fn static_fallback(uri: Uri) -> Response {
-    serve_asset(uri.path().trim_start_matches('/'))
-}
-
-fn serve_asset(name: &str) -> Response {
-    // `..` segments never resolve: only keys inside the embed folder are served.
-    let file = if name.is_empty() || name.split(['/', '\\']).any(|part| part == "..") {
-        None
-    } else {
-        CompanionAssets::get(name)
-    };
-    match file {
-        Some(file) => (
-            [(header::CONTENT_TYPE, content_type_for(name))],
-            file.data.to_vec(),
-        )
-            .into_response(),
-        None => match CompanionAssets::get("index.html") {
-            Some(file) => (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                file.data.to_vec(),
-            )
-                .into_response(),
-            None => unbuilt_placeholder(),
-        },
-    }
-}
-
-/// Minimal MIME table for the SPA's asset extensions.
-fn content_type_for(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or_default() {
-        "html" => "text/html; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "json" | "map" => "application/json",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "txt" => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
-
-/// Shown while `dist-companion/` has no build output yet.
-fn unbuilt_placeholder() -> Response {
-    let html = r#"<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TAPD 伴侣</title></head>
-<body style="font-family:-apple-system,sans-serif;padding:24px;line-height:1.6">
-<h1 style="font-size:18px">伴侣前端未构建</h1>
-<p>在仓库根目录运行 <code>pnpm -C apps/companion build</code>，然后刷新本页。</p>
-</body>
-</html>"#;
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html.as_bytes().to_vec(),
-    )
-        .into_response()
-}
-
-// ---------------------------------------------------------------------------
-// Server lifecycle
+// Server runtime state
 // ---------------------------------------------------------------------------
 
 /// One-time pairing code: generated by `companion_pairing_code`, consumed by
@@ -150,7 +76,11 @@ impl CompanionRuntime {
     /// Consumes a valid one-time pairing code. The pair route calls this under
     /// the runtime lock, so validation and invalidation share one critical
     /// section and a code can never be used twice, even by concurrent pairs.
-    fn consume_pairing_code(&mut self, code: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+    pub(super) fn consume_pairing_code(
+        &mut self,
+        code: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
         match &self.pairing {
             Some(pairing) if pairing.code == code && pairing.expires_at > now => {
                 self.pairing = None;
@@ -161,12 +91,16 @@ impl CompanionRuntime {
     }
 }
 
+/// Per-request context handed to every route handler. Private to the
+/// `companion` tree: only its own submodules build and extract it.
 #[derive(Clone)]
 struct CompanionCtx {
-    app: AppHandle,
-    state: SharedState,
+    pub(super) app: AppHandle,
+    pub(super) state: SharedState,
     /// Pairing rate limiter; one instance per server run.
-    pair_limiter: Arc<Mutex<PairRateLimiter>>,
+    pub(super) pair_limiter: Arc<Mutex<RateLimiter>>,
+    /// Feature-proxy rate limiter; one instance per server run.
+    pub(super) feature_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 /// Starts the companion LAN server, recording its port and task handle.
@@ -226,7 +160,8 @@ async fn serve(
     let ctx = CompanionCtx {
         app,
         state,
-        pair_limiter: Arc::new(Mutex::new(PairRateLimiter::default())),
+        pair_limiter: Arc::new(Mutex::new(RateLimiter::default())),
+        feature_limiter: Arc::new(Mutex::new(rate_limiter())),
     };
 
     let router = Router::new()
@@ -237,6 +172,7 @@ async fn serve(
         .route("/companion/api/bug", get(api_bug_detail))
         .route("/companion/api/notifications", get(api_notifications))
         .route("/companion/api/media", get(api_media))
+        .route("/companion/api/feature", post(api_feature))
         .fallback(static_fallback)
         .with_state(ctx);
 
@@ -249,14 +185,14 @@ async fn serve(
 }
 
 // ---------------------------------------------------------------------------
-// Response envelope & guards
+// Response envelope
 // ---------------------------------------------------------------------------
 
-fn ok_data<T: Serialize>(data: T) -> Response {
+pub(super) fn ok_data<T: Serialize>(data: T) -> Response {
     (StatusCode::OK, Json(json!({ "ok": true, "data": data }))).into_response()
 }
 
-fn err_data(status: StatusCode, code: &str, error: &str) -> Response {
+pub(super) fn err_data(status: StatusCode, code: &str, error: &str) -> Response {
     (
         status,
         Json(json!({ "ok": false, "code": code, "error": error })),
@@ -266,330 +202,12 @@ fn err_data(status: StatusCode, code: &str, error: &str) -> Response {
 
 /// A desktop-side command core failed (TAPD request, parse, …). The message is
 /// the same user-facing text the desktop UI would show.
-fn upstream_error(error: String) -> Response {
+pub(super) fn upstream_error(error: String) -> Response {
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({ "ok": false, "code": "upstream", "error": error })),
     )
         .into_response()
-}
-
-/// Session auth: `Authorization: Bearer <token>` whose SHA-256 matches a
-/// paired device. Unpairing deletes the entry, so the phone's next request
-/// fails here. `Some(response)` is the rejection to return early — including
-/// a missing/malformed header.
-fn authorize(state: &SharedState, headers: &HeaderMap) -> Option<Response> {
-    authorize_token(state, bearer_token(headers))
-}
-
-/// Same check, for callers whose token arrives outside a header. `<img>` /
-/// `<video>` requests cannot set `Authorization`, so media accepts the session
-/// token via a `t` query parameter instead.
-fn authorize_token(state: &SharedState, token: Option<String>) -> Option<Response> {
-    let unauthorized = || {
-        err_data(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "会话已失效，请重新配对",
-        )
-    };
-    let paired = token.is_some_and(|token| {
-        token_is_paired(
-            &state.config.lock().expect("config lock").companion.devices,
-            &token,
-        )
-    });
-    (!paired).then(unauthorized)
-}
-
-/// Whether the presented session token matches a paired device's stored hash.
-fn token_is_paired(devices: &[CompanionDevice], token: &str) -> bool {
-    let token_hash = sha256_hex(token);
-    devices
-        .iter()
-        .any(|device| device.token_hash == token_hash)
-}
-
-/// Business endpoints answer `not_logged_in` while the desktop has no TAPD
-/// session; the phone renders its offline state from this code.
-fn require_logged_in(state: &SharedState) -> Option<Response> {
-    let logged_in = state.config.lock().expect("config lock").logged_in;
-    (!logged_in).then(|| {
-        err_data(
-            StatusCode::FORBIDDEN,
-            "not_logged_in",
-            "桌面端尚未登录 TAPD",
-        )
-    })
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .trim();
-    value
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-}
-
-/// Lowercase hex SHA-256. The config stores only the hash; the raw token
-/// lives on the phone.
-fn sha256_hex(input: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(input.as_bytes());
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write;
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Pairing
-// ---------------------------------------------------------------------------
-
-/// Sliding one-minute window of pairing attempts per client IP.
-#[derive(Default)]
-struct PairRateLimiter {
-    attempts: HashMap<IpAddr, VecDeque<Instant>>,
-}
-
-impl PairRateLimiter {
-    /// Records an attempt and reports whether it is within the limit.
-    fn allows(&mut self, ip: IpAddr, now: Instant) -> bool {
-        let attempts = self.attempts.entry(ip).or_default();
-        while attempts
-            .front()
-            .is_some_and(|at| now.duration_since(*at) >= PAIR_WINDOW)
-        {
-            attempts.pop_front();
-        }
-        if attempts.len() >= PAIR_MAX_ATTEMPTS {
-            if attempts.is_empty() {
-                self.attempts.remove(&ip);
-            }
-            return false;
-        }
-        attempts.push_back(now);
-        true
-    }
-}
-
-#[derive(Deserialize)]
-struct PairRequest {
-    /// Absent when pairing codes are switched off (direct pairing).
-    token: Option<String>,
-    name: Option<String>,
-}
-
-/// Exchanges a one-time pairing code for a long-lived session token.
-/// Deliberately unauthenticated: the code is the secret.
-async fn pair(
-    State(ctx): State<CompanionCtx>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Json(request): Json<PairRequest>,
-) -> Response {
-    let allowed = ctx
-        .pair_limiter
-        .lock()
-        .expect("pair rate limiter lock")
-        .allows(peer.ip(), Instant::now());
-    if !allowed {
-        return err_data(
-            StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "配对请求过于频繁，请稍后再试",
-        );
-    }
-
-    // Off = test-phase direct pairing: knowing the address is the only gate.
-    if ctx.state.config_snapshot().companion.require_pairing_code {
-        let matched = {
-            let mut runtime = ctx.state.companion.lock().expect("companion lock");
-            runtime.consume_pairing_code(
-                request.token.as_deref().unwrap_or("").trim(),
-                chrono::Utc::now(),
-            )
-        };
-        if !matched {
-            return err_data(
-                StatusCode::UNAUTHORIZED,
-                "pairing_invalid",
-                "配对码无效或已过期",
-            );
-        }
-    }
-
-    let token = opaque_token();
-    let device = CompanionDevice {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: normalize_device_name(request.name.as_deref()),
-        token_hash: sha256_hex(&token),
-        paired_at: chrono::Utc::now().to_rfc3339(),
-    };
-    // Replace-by-name: one phone keeps one slot, re-pairing rotates its token.
-    let saved = ctx.state.update_config(|config| {
-        upsert_device_by_name(&mut config.companion.devices, device)
-    });
-    match saved {
-        Ok(()) => ok_data(json!({ "sessionToken": token })),
-        Err(error) => {
-            tracing::error!(%error, "failed to persist paired companion device");
-            err_data(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "save_failed",
-                "配对信息保存失败",
-            )
-        }
-    }
-}
-
-/// Display name from the phone: trimmed, capped at 24 characters, blank names
-/// fall back to a default so every device entry stays readable in settings.
-fn normalize_device_name(raw: Option<&str>) -> String {
-    let trimmed = raw.unwrap_or_default().trim();
-    if trimmed.is_empty() {
-        return DEFAULT_DEVICE_NAME.to_string();
-    }
-    trimmed.chars().take(MAX_DEVICE_NAME_CHARS).collect()
-}
-
-/// Registers a device by name: re-pairing with the same name overwrites the
-/// previous entry (token + time), a new name appends.
-fn upsert_device_by_name(devices: &mut Vec<CompanionDevice>, device: CompanionDevice) {
-    match devices.iter_mut().find(|existing| existing.name == device.name) {
-        Some(existing) => *existing = device,
-        None => devices.push(device),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// API routes
-// ---------------------------------------------------------------------------
-
-/// Login state, app version and signed-in user. Read-only config, no network:
-/// this is how the phone renders its "desktop offline" state.
-async fn api_state(State(ctx): State<CompanionCtx>, headers: HeaderMap) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
-        return response;
-    }
-    let config = ctx.state.config_snapshot();
-    ok_data(json!({
-        "loggedIn": config.logged_in,
-        "version": env!("CARGO_PKG_VERSION"),
-        "me": config.me,
-    }))
-}
-
-async fn api_workspaces(State(ctx): State<CompanionCtx>, headers: HeaderMap) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
-        return response;
-    }
-    if let Some(response) = require_logged_in(&ctx.state) {
-        return response;
-    }
-    match commands::workspace_context_core(&ctx.app, &ctx.state).await {
-        Ok(context) => ok_data(context),
-        Err(error) => upstream_error(error),
-    }
-}
-
-async fn api_bugs(
-    State(ctx): State<CompanionCtx>,
-    headers: HeaderMap,
-    // Same body the desktop command takes; the container-level serde default
-    // lets the phone send just `{ workspaceId }`.
-    Json(query): Json<tapd_core::tapd::api::BugQuery>,
-) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
-        return response;
-    }
-    if let Some(response) = require_logged_in(&ctx.state) {
-        return response;
-    }
-    match commands::bug_list_core(&ctx.app, &ctx.state, query, false).await {
-        Ok(page) => ok_data(page),
-        Err(error) => upstream_error(error),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BugDetailQuery {
-    workspace_id: String,
-    bug_id: String,
-}
-
-async fn api_bug_detail(
-    State(ctx): State<CompanionCtx>,
-    headers: HeaderMap,
-    Query(query): Query<BugDetailQuery>,
-) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
-        return response;
-    }
-    if let Some(response) = require_logged_in(&ctx.state) {
-        return response;
-    }
-    match commands::bug_detail_core(
-        &ctx.app,
-        &ctx.state,
-        &query.workspace_id,
-        &query.bug_id,
-    )
-    .await
-    {
-        Ok(detail) => ok_data(detail),
-        Err(error) => upstream_error(error),
-    }
-}
-
-/// Mirrors the desktop's current notification entries as a bare array. Read-only:
-/// the phone keeps its own read state and never writes back.
-async fn api_notifications(State(ctx): State<CompanionCtx>, headers: HeaderMap) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
-        return response;
-    }
-    if let Some(response) = require_logged_in(&ctx.state) {
-        return response;
-    }
-    ok_data(json!(crate::notification::items_snapshot()))
-}
-
-#[derive(Deserialize)]
-struct MediaQuery {
-    url: String,
-    /// Session token, for `<img>`/`<video>` requests that cannot set headers.
-    t: Option<String>,
-}
-
-/// Proxies a TAPD-hosted image/video with the desktop's webview session. The
-/// phone never sees any capability token — its own session token is the only
-/// key, and hosts outside `*.tapd.cn` are rejected by the shared fetcher.
-async fn api_media(
-    State(ctx): State<CompanionCtx>,
-    headers: HeaderMap,
-    Query(query): Query<MediaQuery>,
-) -> Response {
-    if let Some(response) = authorize_token(&ctx.state, bearer_token(&headers).or(query.t)) {
-        return response;
-    }
-    if let Some(response) = require_logged_in(&ctx.state) {
-        return response;
-    }
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    match crate::server::fetch_tapd_media(&ctx.app, &query.url, range).await {
-        Ok(fetch) => crate::server::media_response(fetch),
-        Err((status, message)) => err_data(status, "media", &message),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -766,178 +384,4 @@ pub fn companion_unpair(state: tauri::State<'_, SharedState>, device_id: String)
                 .retain(|device| device.id != device_id)
         })
         .map_err(|error| error.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tapd_core::config::CompanionConfig;
-
-    fn device(name: &str, token_hash: &str) -> CompanionDevice {
-        CompanionDevice {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_string(),
-            token_hash: token_hash.to_string(),
-            paired_at: "2026-11-13T00:00:00+00:00".to_string(),
-        }
-    }
-
-    fn runtime_with_code(expires_in_secs: i64) -> CompanionRuntime {
-        CompanionRuntime {
-            pairing: Some(PairingCode {
-                code: "pair-code".to_string(),
-                expires_at: chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs),
-            }),
-            ..CompanionRuntime::default()
-        }
-    }
-
-    #[test]
-    fn valid_pairing_code_is_consumed_exactly_once() {
-        let mut runtime = runtime_with_code(60);
-        let now = chrono::Utc::now();
-
-        assert!(runtime.consume_pairing_code("pair-code", now));
-        // 第二次提交同一个码：已作废，必须拒绝。
-        assert!(!runtime.consume_pairing_code("pair-code", now));
-    }
-
-    #[test]
-    fn expired_pairing_code_is_rejected() {
-        let mut runtime = runtime_with_code(-1);
-        assert!(!runtime.consume_pairing_code("pair-code", chrono::Utc::now()));
-    }
-
-    #[test]
-    fn unknown_pairing_code_is_rejected() {
-        let mut runtime = runtime_with_code(60);
-        assert!(!runtime.consume_pairing_code("something-else", chrono::Utc::now()));
-    }
-
-    #[test]
-    fn paired_session_token_authorizes() {
-        let token = opaque_token();
-        let devices = vec![device("手机", &sha256_hex(&token))];
-        assert!(token_is_paired(&devices, &token));
-    }
-
-    #[test]
-    fn unpaired_session_token_is_rejected() {
-        let devices = vec![device("手机", &sha256_hex("phone-A-token"))];
-        assert!(!token_is_paired(&devices, "phone-B-token"));
-    }
-
-    #[test]
-    fn sha256_hex_matches_known_vector() {
-        assert_eq!(
-            sha256_hex("abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn pairing_flood_within_a_minute_is_rate_limited() {
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let mut limiter = PairRateLimiter::default();
-        let now = Instant::now();
-
-        for _ in 0..10 {
-            assert!(limiter.allows(ip, now));
-        }
-        // 第 11 次/分钟：拒绝。
-        assert!(!limiter.allows(ip, now));
-    }
-
-    #[test]
-    fn pairing_attempts_are_forgotten_after_a_minute() {
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let mut limiter = PairRateLimiter::default();
-        let start = Instant::now();
-
-        for _ in 0..10 {
-            assert!(limiter.allows(ip, start));
-        }
-        assert!(!limiter.allows(ip, start + PAIR_WINDOW - Duration::from_secs(1)));
-        // 窗口滑出后恢复放行。
-        assert!(limiter.allows(ip, start + PAIR_WINDOW + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn rate_limit_is_counted_per_ip() {
-        let mut limiter = PairRateLimiter::default();
-        let now = Instant::now();
-        let phone = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
-        let laptop = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3));
-
-        for _ in 0..10 {
-            assert!(limiter.allows(phone, now));
-        }
-        // 另一个 IP 不受影响。
-        assert!(limiter.allows(laptop, now));
-        assert!(!limiter.allows(phone, now));
-    }
-
-    #[test]
-    fn companion_config_roundtrips_camel_case() {
-        let config = CompanionConfig {
-            enabled: true,
-            require_pairing_code: true,
-            devices: vec![device("iPhone 15", &sha256_hex("token"))],
-        };
-
-        let raw = serde_json::to_string(&config).expect("serialize companion config");
-        assert!(raw.contains("\"tokenHash\""), "wire key must be camelCase: {raw}");
-        assert!(raw.contains("\"pairedAt\""), "wire key must be camelCase: {raw}");
-
-        let parsed: CompanionConfig =
-            serde_json::from_str(&raw).expect("deserialize companion config");
-        assert_eq!(parsed, config);
-    }
-
-    #[test]
-    fn companion_config_defaults_to_disabled_and_empty() {
-        let parsed: CompanionConfig = serde_json::from_str("{}").expect("parse empty object");
-        assert!(!parsed.enabled);
-        assert!(parsed.require_pairing_code, "code gate must default on");
-        assert!(parsed.devices.is_empty());
-    }
-
-    #[test]
-    fn re_pairing_same_name_replaces_token_not_row() {
-        let mut devices = vec![device("iPhone", "old-hash")];
-        let replacement = device("iPhone", "new-hash");
-
-        upsert_device_by_name(&mut devices, replacement);
-
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].token_hash, "new-hash");
-    }
-
-    #[test]
-    fn pairing_with_new_name_appends_device() {
-        let mut devices = vec![device("iPhone", "hash-a")];
-
-        upsert_device_by_name(&mut devices, device("iPad", "hash-b"));
-
-        assert_eq!(devices.len(), 2);
-        let names: Vec<&str> = devices.iter().map(|device| device.name.as_str()).collect();
-        assert_eq!(names, vec!["iPhone", "iPad"]);
-    }
-
-    #[test]
-    fn blank_device_name_falls_back_to_default() {
-        assert_eq!(normalize_device_name(None), DEFAULT_DEVICE_NAME);
-        assert_eq!(normalize_device_name(Some("   ")), DEFAULT_DEVICE_NAME);
-    }
-
-    #[test]
-    fn device_name_is_trimmed_and_capped_at_24_chars() {
-        assert_eq!(normalize_device_name(Some("  手机 ")), "手机");
-        let long = "零一二三四五六七八九十零一二三四五六七八九十零一二三四五";
-        assert_eq!(normalize_device_name(Some(long)).chars().count(), 24);
-    }
 }
