@@ -334,6 +334,7 @@ export type CompanionDevice = {
 export type CompanionStatus = {
   enabled: boolean;
   running: boolean;
+  requirePairingCode: boolean;
   port?: number;
   lanIp?: string | null;
   devices: CompanionDevice[];
@@ -476,6 +477,8 @@ export const api = {
 /** Mobile companion server: status, enablement, pairing and unpairing. */
 export const companionApi = {
   status: () => invoke<CompanionStatus>("companion_status"),
+  setRequireCode: (require: boolean) =>
+    invoke<void>("companion_set_require_code", { require }),
   setEnabled: (enabled: boolean) =>
     invoke<void>("companion_set_enabled", { enabled }),
   pairingCode: () => invoke<PairingCode>("companion_pairing_code"),

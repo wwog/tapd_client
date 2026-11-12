@@ -60,13 +60,27 @@ pub struct AppConfig {
 /// Companion server settings: opt-in by default, with a small bounded list of
 /// paired phones. Only the SHA-256 of each phone's session token is stored;
 /// the raw token never leaves the phone.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CompanionConfig {
     /// Whether the companion LAN server starts with the app.
     pub enabled: bool,
+    /// Pairing requires a one-time scan code. Turning it off lets any device
+    /// that knows the address pair directly — a deliberate test-phase relief,
+    /// weaker by design, so the default stays on.
+    pub require_pairing_code: bool,
     /// Paired phones, one entry per device name (re-pairing overwrites).
     pub devices: Vec<CompanionDevice>,
+}
+
+impl Default for CompanionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_pairing_code: true,
+            devices: Vec::new(),
+        }
+    }
 }
 
 /// One paired phone.

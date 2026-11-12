@@ -116,6 +116,7 @@ pub fn run() {
             commands::set_open_target,
             companion::companion_status,
             companion::companion_set_enabled,
+            companion::companion_set_require_code,
             companion::companion_pairing_code,
             companion::companion_unpair,
             update::update_state,

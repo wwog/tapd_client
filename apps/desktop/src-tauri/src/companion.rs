@@ -382,7 +382,8 @@ impl PairRateLimiter {
 
 #[derive(Deserialize)]
 struct PairRequest {
-    token: String,
+    /// Absent when pairing codes are switched off (direct pairing).
+    token: Option<String>,
     name: Option<String>,
 }
 
@@ -406,16 +407,22 @@ async fn pair(
         );
     }
 
-    let matched = {
-        let mut runtime = ctx.state.companion.lock().expect("companion lock");
-        runtime.consume_pairing_code(request.token.trim(), chrono::Utc::now())
-    };
-    if !matched {
-        return err_data(
-            StatusCode::UNAUTHORIZED,
-            "pairing_invalid",
-            "配对码无效或已过期",
-        );
+    // Off = test-phase direct pairing: knowing the address is the only gate.
+    if ctx.state.config_snapshot().companion.require_pairing_code {
+        let matched = {
+            let mut runtime = ctx.state.companion.lock().expect("companion lock");
+            runtime.consume_pairing_code(
+                request.token.as_deref().unwrap_or("").trim(),
+                chrono::Utc::now(),
+            )
+        };
+        if !matched {
+            return err_data(
+                StatusCode::UNAUTHORIZED,
+                "pairing_invalid",
+                "配对码无效或已过期",
+            );
+        }
     }
 
     let token = opaque_token();
@@ -643,6 +650,7 @@ pub struct CompanionDeviceStatus {
 pub struct CompanionStatus {
     enabled: bool,
     running: bool,
+    require_pairing_code: bool,
     port: Option<u16>,
     lan_ip: Option<String>,
     devices: Vec<CompanionDeviceStatus>,
@@ -655,6 +663,7 @@ pub fn companion_status(state: tauri::State<'_, SharedState>) -> CompanionStatus
     CompanionStatus {
         enabled: config.companion.enabled,
         running: runtime.task.is_some(),
+        require_pairing_code: config.companion.require_pairing_code,
         port: runtime.port,
         lan_ip: lan_ipv4().map(|ip| ip.to_string()),
         devices: config
@@ -687,6 +696,17 @@ pub async fn companion_set_enabled(
         stop(state.inner());
         Ok(())
     }
+}
+
+/// Toggles the pairing-code requirement (test-phase direct pairing).
+#[tauri::command]
+pub fn companion_set_require_code(
+    state: tauri::State<'_, SharedState>,
+    require: bool,
+) -> Result<(), String> {
+    state
+        .update_config(|config| config.companion.require_pairing_code = require)
+        .map_err(|error| error.to_string())
 }
 
 /// One-time pairing code plus the URL encoded into the QR code.
@@ -865,6 +885,7 @@ mod tests {
     fn companion_config_roundtrips_camel_case() {
         let config = CompanionConfig {
             enabled: true,
+            require_pairing_code: true,
             devices: vec![device("iPhone 15", &sha256_hex("token"))],
         };
 
@@ -881,6 +902,7 @@ mod tests {
     fn companion_config_defaults_to_disabled_and_empty() {
         let parsed: CompanionConfig = serde_json::from_str("{}").expect("parse empty object");
         assert!(!parsed.enabled);
+        assert!(parsed.require_pairing_code, "code gate must default on");
         assert!(parsed.devices.is_empty());
     }
 

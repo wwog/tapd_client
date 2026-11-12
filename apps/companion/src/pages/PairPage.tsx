@@ -17,6 +17,10 @@ const deviceName = (): string => {
 /**
  * The only entry into the companion: consumes the one-time code from the QR
  * (`#/pair?t=<code>`) and stores the session token. No login UI by design.
+ *
+ * Without a code in the URL the pair endpoint is probed directly: when the
+ * desktop has pairing codes switched off this pairs straight away, otherwise
+ * it asks the user to scan.
  */
 export function PairPage() {
   const route = useRoute();
@@ -26,11 +30,6 @@ export function PairPage() {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!code) {
-      setPairing(false);
-      setError("缺少配对码，请在桌面端重新扫码打开");
-      return;
-    }
     let cancelled = false;
     setPairing(true);
     setError(null);
@@ -43,7 +42,11 @@ export function PairPage() {
       } catch (err) {
         if (!cancelled) {
           setPairing(false);
-          setError(asApiError(err).message);
+          setError(
+            code
+              ? asApiError(err).message
+              : "需要配对码：请在桌面端设置页扫码打开，或先关闭配对码开关",
+          );
         }
       }
     })();
@@ -60,15 +63,13 @@ export function PairPage() {
         <div className="w-full max-w-sm text-center">
           <h1 className="text-ui-lg text-slate-900">TAPD 伴侣</h1>
           <p className="mt-3 text-ui-caption text-rose-600">{error}</p>
-          {code ? (
-            <button
-              type="button"
-              onClick={() => setAttempt((value) => value + 1)}
+          <button
+            type="button"
+            onClick={() => setAttempt((value) => value + 1)}
               className="mt-5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
             >
               重新配对
             </button>
-          ) : null}
         </div>
       )}
     </div>

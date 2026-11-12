@@ -38,6 +38,7 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [buildingTunnel, setBuildingTunnel] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [switchingCode, setSwitchingCode] = useState(false);
   const copiedTimer = useRef<number | null>(null);
 
   const enabled = status?.enabled ?? false;
@@ -116,6 +117,18 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
       toast("error", String(error));
     } finally {
       setSwitching(false);
+    }
+  };
+
+  const toggleRequireCode = async (value: boolean) => {
+    setSwitchingCode(true);
+    try {
+      await companionApi.setRequireCode(value);
+      await loadStatus(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setSwitchingCode(false);
     }
   };
 
@@ -209,6 +222,21 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
                 { value: "tunnel", label: "外网隧道" },
               ]}
               onChange={setMode}
+            />
+          </div>
+
+          <div className="mt-3 flex items-center justify-between">
+            <span
+              className="text-ui-sm text-slate-700"
+              title="关闭后，手机打开伴侣地址即可直接配对，无需扫码；仅建议测试阶段使用。开启后需扫码，配对码 10 分钟内有效、首个扫码设备独占。"
+            >
+              配对码
+            </span>
+            <Switch
+              checked={status.requirePairingCode}
+              onChange={(value) => void toggleRequireCode(value)}
+              disabled={switchingCode}
+              label="要求配对码"
             />
           </div>
 
