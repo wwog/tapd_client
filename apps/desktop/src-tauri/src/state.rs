@@ -15,6 +15,8 @@ pub struct AppState {
     pub config_store: ConfigStore,
     pub config: Mutex<AppConfig>,
     pub runtime: Mutex<Option<RuntimeInfo>>,
+    /// Runtime state of the companion LAN server (port, task, one-time code).
+    pub companion: Mutex<crate::companion::CompanionRuntime>,
     /// Offline snapshot cache (projects/bugs). Disabled if SQLite failed to open.
     pub cache: Arc<Cache>,
     /// Bounded MCP call audit log.
@@ -30,6 +32,7 @@ impl AppState {
             config_store,
             config: Mutex::new(config),
             runtime: Mutex::new(None),
+            companion: Mutex::new(crate::companion::CompanionRuntime::default()),
             cache,
             mcp_audit,
         }

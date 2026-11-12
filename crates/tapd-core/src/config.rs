@@ -53,6 +53,34 @@ pub struct AppConfig {
     /// clears all WebView browsing data. The schema belongs to the frontend;
     /// the backend only stores the blob.
     pub ui_prefs: serde_json::Value,
+    /// Mobile companion (LAN terminal) settings and paired phones.
+    pub companion: CompanionConfig,
+}
+
+/// Companion server settings: opt-in by default, with a small bounded list of
+/// paired phones. Only the SHA-256 of each phone's session token is stored;
+/// the raw token never leaves the phone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CompanionConfig {
+    /// Whether the companion LAN server starts with the app.
+    pub enabled: bool,
+    /// Paired phones, one entry per device name (re-pairing overwrites).
+    pub devices: Vec<CompanionDevice>,
+}
+
+/// One paired phone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CompanionDevice {
+    /// Stable id the unpair action targets.
+    pub id: String,
+    /// Display name from pairing; blank names fall back to 移动设备.
+    pub name: String,
+    /// Lowercase hex SHA-256 of the phone's session token.
+    pub token_hash: String,
+    /// RFC 3339 time of the latest pairing with this name.
+    pub paired_at: String,
 }
 
 /// A release the client must install before it can keep being used.
@@ -160,6 +188,7 @@ impl Default for AppConfig {
             last_update_check_at: None,
             forced_update: None,
             ui_prefs: serde_json::Value::Null,
+            companion: CompanionConfig::default(),
         }
     }
 }

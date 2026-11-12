@@ -356,6 +356,16 @@ pub fn suppress_transfer(workspace_id: &str, bug_id: &str) {
         .insert(bug_key(workspace_id, bug_id), Local::now().timestamp());
 }
 
+/// Read-only mirror of the current notification entries (newest first) for the
+/// companion server. Items carry the exact serde shape of the
+/// `notification://show` payload; the phone keeps its own read state and this
+/// snapshot never touches the desktop's judgment / dedupe / quiet-hours logic.
+pub fn items_snapshot() -> Vec<NotificationItem> {
+    service()
+        .map(|service| service.recent_items(MAX_ITEMS))
+        .unwrap_or_default()
+}
+
 /// Redacted settings snapshot for the diagnostics bundle. Falls back to the
 /// database row when the notification service is not initialized (tests).
 pub fn settings_for_diagnostics(state: &SharedState) -> Value {

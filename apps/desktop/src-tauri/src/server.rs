@@ -27,6 +27,7 @@ use tapd_core::runtime::RuntimeInfo;
 use crate::state::SharedState;
 
 use auth::{authorized, unauthorized};
+pub(crate) use proxy::{fetch_tapd_media, media_response};
 
 #[derive(Clone)]
 struct ApiState {
@@ -212,7 +213,7 @@ fn decode_form(value: &str) -> String {
 }
 
 /// Two concatenated v4 UUIDs: 64 hex characters of unpredictable token.
-fn opaque_token() -> String {
+pub(crate) fn opaque_token() -> String {
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),

@@ -7,3 +7,5 @@ apps/desktop/src-tauri/gen/schemas/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/binaries/
 .zcode/
+# Companion SPA build output (created by pnpm build:companion before cargo).
+apps/desktop/src-tauri/dist-companion/
