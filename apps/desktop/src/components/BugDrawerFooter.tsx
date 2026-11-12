@@ -45,7 +45,7 @@ export function BugDrawerFooter(props: Props) {
     onOpenAgentTask,
     onExport,
   } = props;
-  /** Runtime the 修复 button will launch, from Settings → Agent 管理. */
+  /** Runtime the 修复 button will launch, from Agent 页 →「配置」. */
   const currentAgent = useCurrentAgent();
 
   return (

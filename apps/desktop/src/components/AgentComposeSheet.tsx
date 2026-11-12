@@ -48,7 +48,7 @@ export function AgentComposeSheet(props: Props) {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
-  /** Runtime the queue will use; it comes from Settings → Agent 管理. */
+  /** Runtime the queue will use; it comes from Agent 页 →「配置」. */
   const currentAgent = useCurrentAgent(open);
 
   // Every opening starts clean; the bug id is part of the panel key upstream,
@@ -257,7 +257,7 @@ export function AgentComposeSheet(props: Props) {
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
           <span
             className="min-w-0 truncate text-ui-xs text-slate-400"
-            title="当前 Agent 来自 设置 → Agent 管理；图片、视频只把本地路径交给它"
+            title="当前 Agent 来自 Agent 页「配置」；图片、视频只把本地路径交给它"
           >
             {currentAgent
               ? `将使用 ${currentAgent.name} · ${currentAgent.binary}`

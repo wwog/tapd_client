@@ -14,6 +14,7 @@ import {
 } from "../lib/agentStore";
 import { openTaskExportDir } from "../lib/desktop";
 import { AgentApproval } from "./AgentApproval";
+import { AgentConfigPane } from "./AgentConfigPane";
 import { AgentHistory } from "./AgentHistory";
 import { AgentQueuePane } from "./AgentQueuePane";
 import { AgentQueuedDetail } from "./AgentQueuedDetail";
@@ -267,7 +268,9 @@ export function AgentPage({
         </div>
       ) : null}
 
-      {tab === "history" ? (
+      {tab === "config" ? (
+        <AgentConfigPane toast={toast} />
+      ) : tab === "history" ? (
         <AgentHistory
           revision={`${counts.active}:${counts.queued}:${counts.awaiting}`}
           focusTaskId={focusTaskId}

@@ -474,7 +474,7 @@ mod tests {
 
         let seen = SeenBug {
             status: "open".to_string(),
-            owner: "何帅".to_string(),
+            owner: "李四".to_string(),
             created: "2026-11-01 09:00:00".to_string(),
             assigned_time: String::new(),
             kinds: Vec::new(),
@@ -483,7 +483,7 @@ mod tests {
         write_seen(&cache, &[("1:2".to_string(), seen)]);
 
         let loaded = load(&cache).expect("store round-trip");
-        assert_eq!(loaded.seen["1:2"].owner, "何帅");
+        assert_eq!(loaded.seen["1:2"].owner, "李四");
         // Observing a rendered list is not a poll: no cards, no cursor move.
         assert!(loaded.items.is_empty());
         assert!(loaded.cursors.is_empty());
@@ -508,8 +508,8 @@ mod tests {
             bug_id: "2".to_string(),
             title: "标题".to_string(),
             kind: NotificationKind::New,
-            owner: "何帅".to_string(),
-            creator: "郭俊宏".to_string(),
+            owner: "李四".to_string(),
+            creator: "张三".to_string(),
             severity: "严重".to_string(),
             priority: "高".to_string(),
             created: "2026-11-10 11:00:00".to_string(),
@@ -520,7 +520,7 @@ mod tests {
         };
         let seen = SeenBug {
             status: "new".to_string(),
-            owner: "何帅".to_string(),
+            owner: "李四".to_string(),
             created: "2026-11-10 11:00:00".to_string(),
             assigned_time: String::new(),
             kinds: vec!["new".to_string()],

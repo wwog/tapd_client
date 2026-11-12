@@ -26,7 +26,7 @@ type Props = {
 };
 
 /**
- * Runtime configuration form. Owned by the Agent management dialog: it edits
+ * Runtime configuration form. Owned by the Agent page's 配置 pane: it edits
  * the selected runtime (binary path, prompt template, timing) and auto-saves
  * on blur.
  */

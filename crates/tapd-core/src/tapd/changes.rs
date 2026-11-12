@@ -235,24 +235,24 @@ mod tests {
     <tr title_username class="">
       <td >1</td>
       <td width = '130'>2026-11-09 17:03:16</td>
-      <td width = 'auto' style='white-space: nowrap;' title="郭俊宏">
-        郭俊宏        </td>
+      <td width = 'auto' style='white-space: nowrap;' title="张三">
+        张三        </td>
       <td width = '110' title=手动变更>手动变更</td>
       <td colspan="3">
         <table>
-          <tr title_username><td width = '33%'>处理人</td><td title='范艺;' width = '33%'>范艺;</td><td title='郭俊宏' width = '34%'>郭俊宏</td></tr>
+          <tr title_username><td width = '33%'>处理人</td><td title='赵六;' width = '33%'>赵六;</td><td title='张三' width = '34%'>张三</td></tr>
         </table>
       </td>
     </tr>
     <tr title_username class="ie-tr-striped">
       <td >2</td>
       <td width = '130'>2026-11-09 17:03:05</td>
-      <td width = 'auto' title="郭俊宏">郭俊宏</td>
+      <td width = 'auto' title="张三">张三</td>
       <td width = '110' title=手动变更>手动变更</td>
       <td colspan="3">
         <table>
           <tr title_username><td width = '33%'>状态</td><td width = '33%'>接受/处理</td><td width = '34%'>已解决</td></tr>
-          <tr title_username><td width = '33%'>修复人</td><td width = '33%'>--</td><td width = '34%'>郭俊宏</td></tr>
+          <tr title_username><td width = '33%'>修复人</td><td width = '33%'>--</td><td width = '34%'>张三</td></tr>
           <tr title_username><td width = '33%'>附件</td><td width = '33%'>--</td><td width = '34%'><img src="/x.png"></td></tr>
         </table>
       </td>
@@ -270,12 +270,12 @@ mod tests {
         let first = &history.changes[0];
         assert_eq!(first.seq, 1);
         assert_eq!(first.time, "2026-11-09 17:03:16");
-        assert_eq!(first.author, "郭俊宏");
+        assert_eq!(first.author, "张三");
         assert_eq!(first.kind, "手动变更");
         assert_eq!(first.fields.len(), 1);
         assert_eq!(first.fields[0].field, "处理人");
-        assert_eq!(first.fields[0].before, "范艺;");
-        assert_eq!(first.fields[0].after, "郭俊宏");
+        assert_eq!(first.fields[0].before, "赵六;");
+        assert_eq!(first.fields[0].after, "张三");
 
         let second = &history.changes[1];
         assert_eq!(second.fields.len(), 3);

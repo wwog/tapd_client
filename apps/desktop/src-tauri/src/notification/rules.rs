@@ -262,11 +262,11 @@ mod tests {
     fn fresh_created_bug_is_new() {
         let kind = classify_bug(
             "new",
-            "何帅",
+            "李四",
             "2026-11-10 11:58:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -277,11 +277,11 @@ mod tests {
     fn old_bug_first_seen_for_me_is_transferred() {
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -293,18 +293,18 @@ mod tests {
         // A list refresh writes the same seen row a poll would. Once the user
         // has the bug on screen, neither a fresh creation nor a first-sighting
         // assignment may arrive later as a card.
-        let previous = seen("in_progress", "何帅", &[]);
+        let previous = seen("in_progress", "李四", &[]);
         for (status, created) in [
             ("in_progress", "2026-11-01 09:00:00"),
             ("new", "2026-11-10 11:58:00"),
         ] {
             let kind = classify_bug(
                 status,
-                "何帅",
+                "李四",
                 created,
                 "",
                 Some(&previous),
-                "何帅",
+                "李四",
                 at(12, 0),
                 true,
             );
@@ -319,11 +319,11 @@ mod tests {
     fn recent_assignment_wins_over_creation_time() {
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "2026-11-10 11:57:00",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             false,
         );
@@ -334,11 +334,11 @@ mod tests {
     fn project_scope_needs_evidence_for_transfer() {
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             false,
         );
@@ -347,14 +347,14 @@ mod tests {
 
     #[test]
     fn owner_change_on_known_bug_is_transferred() {
-        let previous = seen("in_progress", "郭俊宏", &["new"]);
+        let previous = seen("in_progress", "张三", &["new"]);
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-09 09:00:00",
             "",
             Some(&previous),
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -363,14 +363,14 @@ mod tests {
 
     #[test]
     fn comment_only_change_is_not_a_notification() {
-        let previous = seen("in_progress", "何帅", &["new"]);
+        let previous = seen("in_progress", "李四", &["new"]);
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-09 09:00:00",
             "",
             Some(&previous),
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -379,14 +379,14 @@ mod tests {
 
     #[test]
     fn reopened_status_wins_over_everything() {
-        let previous = seen("resolved", "何帅", &["new"]);
+        let previous = seen("resolved", "李四", &["new"]);
         let kind = classify_bug(
             "reopened",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "",
             Some(&previous),
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -397,11 +397,11 @@ mod tests {
     fn first_sighting_of_reopened_bug_is_reopened() {
         let kind = classify_bug(
             "reopened",
-            "郭俊宏",
+            "张三",
             "2026-11-01 09:00:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -413,11 +413,11 @@ mod tests {
         // A fresh `open` bug is a new notification.
         let fresh = classify_bug(
             "open",
-            "何帅",
+            "李四",
             "2026-11-10 11:58:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -426,11 +426,11 @@ mod tests {
         // An old `open` bug that just appeared for me is a transfer.
         let transferred = classify_bug(
             "open",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -439,11 +439,11 @@ mod tests {
         // Someone else's old `open` bug is not mine to notify in mine scope.
         let not_mine = classify_bug(
             "open",
-            "郭俊宏",
+            "张三",
             "2026-11-01 09:00:00",
             "",
             None,
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -467,9 +467,9 @@ mod tests {
 
     #[test]
     fn scope_filter_matches_owner() {
-        assert!(scope_allows(NotificationScope::Mine, "何帅", "何帅"));
-        assert!(!scope_allows(NotificationScope::Mine, "郭俊宏", "何帅"));
-        assert!(scope_allows(NotificationScope::Project, "郭俊宏", "何帅"));
+        assert!(scope_allows(NotificationScope::Mine, "李四", "李四"));
+        assert!(!scope_allows(NotificationScope::Mine, "张三", "李四"));
+        assert!(scope_allows(NotificationScope::Project, "张三", "李四"));
     }
 
     #[test]
@@ -571,18 +571,18 @@ mod tests {
 
     #[test]
     fn transfer_back_is_detected_from_a_new_assigned_time() {
-        let mut previous = seen("in_progress", "何帅", &["new"]);
+        let mut previous = seen("in_progress", "李四", &["new"]);
         previous.assigned_time = "2026-11-01 09:00:00".to_string();
 
         // "Mine" never saw the bug while it was assigned to someone else, so
         // the new assigned_time is the only transfer evidence.
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "2026-11-10 11:58:00",
             Some(&previous),
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );
@@ -593,11 +593,11 @@ mod tests {
         observed.assigned_time = "2026-11-10 11:58:00".to_string();
         let kind = classify_bug(
             "in_progress",
-            "何帅",
+            "李四",
             "2026-11-01 09:00:00",
             "2026-11-10 11:58:00",
             Some(&observed),
-            "何帅",
+            "李四",
             at(12, 0),
             true,
         );

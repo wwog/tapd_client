@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Segmented } from "./Segmented";
 import { Button } from "./ui";
 
-export type AgentTab = "run" | "approval" | "history";
+export type AgentTab = "run" | "approval" | "history" | "config";
 
 export type AgentCounts = {
   queued: number;
@@ -50,6 +50,7 @@ export function AgentRunToolbar(props: Props) {
             ),
           },
           { value: "history", label: "历史" },
+          { value: "config", label: "配置" },
         ]}
       />
 

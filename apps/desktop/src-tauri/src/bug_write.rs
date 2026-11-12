@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn normalizes_user_values() {
-        assert_eq!(normalize_user_value(" 夏遵阳 "), "夏遵阳");
+        assert_eq!(normalize_user_value(" 王小明 "), "王小明");
         assert_eq!(normalize_user_value("张三;李四;"), "张三;李四");
         assert_eq!(normalize_user_value("张三，李四"), "张三;李四");
         assert_eq!(normalize_user_value("  "), "");

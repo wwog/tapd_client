@@ -463,7 +463,7 @@ fn parse_custom_fields(bug: &Value) -> BTreeMap<String, String> {
     fields
 }
 
-/// Trims TAPD's trailing `;` from people fields (`"郭俊宏;"` -> `"郭俊宏"`).
+/// Trims TAPD's trailing `;` from people fields (`"张三;"` -> `"张三"`).
 fn clean_people(value: String) -> String {
     value.trim().trim_end_matches(';').trim().to_string()
 }

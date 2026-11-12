@@ -41,7 +41,7 @@ mod tests {
     fn single_owner_filter_is_a_string() {
         let query = BugQuery {
             workspace_id: "45336192".to_string(),
-            owners: vec!["郭俊宏".to_string()],
+            owners: vec!["张三".to_string()],
             statuses: vec!["new".to_string()],
             ..BugQuery::default()
         };
@@ -52,7 +52,7 @@ mod tests {
             .expect("filters");
         assert_eq!(filters.len(), 2);
         assert_eq!(filters[0]["fieldSystemName"], "current_owner");
-        assert_eq!(filters[0]["value"], "郭俊宏");
+        assert_eq!(filters[0]["value"], "张三");
         assert_eq!(filters[0]["fieldOption"], "equal");
         assert_eq!(filters[1]["fieldSystemName"], "status");
         assert_eq!(filters[1]["value"], json!(["new"]));
@@ -63,9 +63,9 @@ mod tests {
         let query = BugQuery {
             workspace_id: "45336192".to_string(),
             owners: vec![
-                "郭俊宏".to_string(),
+                "张三".to_string(),
                 "  ".to_string(),
-                "张芳兰".to_string(),
+                "王五".to_string(),
             ],
             ..BugQuery::default()
         };
@@ -78,14 +78,14 @@ mod tests {
         assert_eq!(filters[0]["fieldSystemName"], "current_owner");
         assert_eq!(filters[0]["fieldType"], "user_chooser");
         assert_eq!(filters[0]["fieldOption"], "in");
-        assert_eq!(filters[0]["value"], json!(["郭俊宏", "张芳兰"]));
+        assert_eq!(filters[0]["value"], json!(["张三", "王五"]));
     }
 
     #[test]
     fn creator_filter_targets_reporter() {
         let query = BugQuery {
             workspace_id: "45336192".to_string(),
-            creator: Some("张芳兰".to_string()),
+            creator: Some("王五".to_string()),
             ..BugQuery::default()
         };
         let body = query.body();
@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0]["fieldSystemName"], "reporter");
         assert_eq!(filters[0]["fieldType"], "user_chooser");
-        assert_eq!(filters[0]["value"], "张芳兰");
+        assert_eq!(filters[0]["value"], "王五");
     }
 
     #[test]
@@ -121,12 +121,12 @@ mod tests {
         let root = json!({
             "data": {
                 "users": [
-                    {"id": "u1", "nick": "郭俊宏", "name": "郭俊宏", "avatar": "https://a/1.png"},
-                    {"id": "u2", "nick": "何帅"}
+                    {"id": "u1", "nick": "张三", "name": "张三", "avatar": "https://a/1.png"},
+                    {"id": "u2", "nick": "李四"}
                 ],
                 "departments": [{
                     "name": "测试组",
-                    "members": [{"user_id": "u3", "nick": "张芳兰", "user_name": "张芳兰"}]
+                    "members": [{"user_id": "u3", "nick": "王五", "user_name": "王五"}]
                 }]
             },
             "meta": {"code": 0, "message": "success"}
@@ -134,13 +134,13 @@ mod tests {
         let members = parse_workspace_members(&root);
         let mut nicks: Vec<&str> = members.iter().map(|member| member.nick.as_str()).collect();
         nicks.sort_unstable();
-        assert_eq!(nicks, vec!["何帅", "张芳兰", "郭俊宏"]);
-        let guo = members.iter().find(|member| member.nick == "郭俊宏").expect("郭俊宏");
-        let zhang = members.iter().find(|member| member.nick == "张芳兰").expect("张芳兰");
-        assert_eq!(guo.user_id, "u1");
-        assert_eq!(guo.avatar, "https://a/1.png");
-        assert_eq!(zhang.user_id, "u3");
-        assert_eq!(zhang.name, "张芳兰");
+        assert_eq!(nicks, vec!["张三", "李四", "王五"]);
+        let zhangsan = members.iter().find(|member| member.nick == "张三").expect("张三");
+        let wangwu = members.iter().find(|member| member.nick == "王五").expect("王五");
+        assert_eq!(zhangsan.user_id, "u1");
+        assert_eq!(zhangsan.avatar, "https://a/1.png");
+        assert_eq!(wangwu.user_id, "u3");
+        assert_eq!(wangwu.name, "王五");
     }
 
     #[test]
@@ -150,17 +150,17 @@ mod tests {
         let root = json!({
             "data": {
                 "members": [
-                    {"user": "范艺"},
-                    {"user": "郭俊宏"},
-                    {"user": "张芳兰"},
-                    {"user": "郭俊宏"}
+                    {"user": "赵六"},
+                    {"user": "张三"},
+                    {"user": "王五"},
+                    {"user": "张三"}
                 ]
             },
             "meta": {"code": "0", "message": "success"}
         });
         let members = parse_workspace_members(&root);
         let nicks: Vec<&str> = members.iter().map(|member| member.nick.as_str()).collect();
-        assert_eq!(nicks, vec!["范艺", "郭俊宏", "张芳兰"]);
+        assert_eq!(nicks, vec!["赵六", "张三", "王五"]);
     }
 
     #[test]
@@ -197,8 +197,8 @@ mod tests {
                                 "status": "new",
                                 "priority": "high",
                                 "severity": "normal",
-                                "current_owner": "何帅",
-                                "reporter": "张芳兰",
+                                "current_owner": "李四",
+                                "reporter": "王五",
                                 "created": "2026-11-09 19:57:06",
                                 "modified": "2026-11-09 20:13:37",
                                 "project_id": "45336192"
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.bugs[0].status_label, "新");
         assert_eq!(page.bugs[0].priority_label, "高");
-        assert_eq!(page.bugs[0].owner, "何帅");
+        assert_eq!(page.bugs[0].owner, "李四");
         assert_eq!(page.bugs[0].workspace_id, "45336192");
         // Workflow order, not the alphabetical BTreeMap order, and without the
         // synthetic start/end keys.
@@ -235,8 +235,8 @@ mod tests {
                             "status": "new",
                             "priority": "high",
                             "severity": "normal",
-                            "current_owner": "何帅",
-                            "reporter": "张芳兰",
+                            "current_owner": "李四",
+                            "reporter": "王五",
                             "project_id": "45336192",
                             "description": "<p>hello <b>world</b></p><img src=\"https://file.tapd.cn/x\">",
                             "custom_field_one": "value",
@@ -245,7 +245,7 @@ mod tests {
                         "comment_list": {
                             "comments": [{
                                 "id": "1",
-                                "author": "张芳兰",
+                                "author": "王五",
                                 "created": "2026-11-09 20:00:00",
                                 "description": "<p>comment</p>",
                                 "is_delete": "0",

@@ -29,7 +29,7 @@ export type AgentConfig = {
   idleCompleteMs: number;
 };
 
-/** A stage every runtime declares in the Agent management dialog. */
+/** A stage every runtime declares in its catalog entry. */
 export type AgentLifecycleStage = {
   key: string;
   label: string;

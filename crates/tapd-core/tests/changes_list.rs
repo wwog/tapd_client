@@ -14,12 +14,12 @@ fn parses_real_tapd_change_history() {
     let newest = &history.changes[0];
     assert_eq!(newest.seq, 1);
     assert_eq!(newest.time, "2026-11-09 17:03:16");
-    assert_eq!(newest.author, "郭俊宏");
+    assert_eq!(newest.author, "张三");
     assert_eq!(newest.kind, "手动变更");
     assert_eq!(newest.fields.len(), 1);
     assert_eq!(newest.fields[0].field, "处理人");
-    assert_eq!(newest.fields[0].before, "范艺;");
-    assert_eq!(newest.fields[0].after, "郭俊宏");
+    assert_eq!(newest.fields[0].before, "赵六;");
+    assert_eq!(newest.fields[0].after, "张三");
 
     let status_change = &history.changes[1];
     assert_eq!(status_change.fields.len(), 5);

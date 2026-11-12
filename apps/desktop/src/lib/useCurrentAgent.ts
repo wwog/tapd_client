@@ -9,10 +9,10 @@ export type CurrentAgent = {
 };
 
 /**
- * Reads the default runtime from Settings → Agent 管理.
+ * Reads the default runtime from Agent 页 →「配置」.
  *
  * `reloadKey` lets a dialog refresh the label when it opens; the setting itself
- * is persisted by the management page, not here.
+ * is persisted by the config pane, not here.
  */
 export function useCurrentAgent(reloadKey?: unknown): CurrentAgent | null {
   const [current, setCurrent] = useState<CurrentAgent | null>(null);

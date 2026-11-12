@@ -33,7 +33,7 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、构建 deb
 2. 扫码成功后隐藏 WebView 保留会话，客户端进入首启引导（可跳过）。
 3. 选择左侧项目，默认展示「我负责的」缺陷；可切换「全部」。
 4. 点击缺陷行打开详情；点击「导出 MD」生成可交给 AI 的缺陷包。
-5. 设置 → Agent：填写 opencode 路径与当前项目仓库路径。
+5. Agent 页 →「配置」：填写 opencode 路径与当前项目仓库路径。
 6. 设置 → 新缺陷通知：选择范围（我的 / 项目）与是否包含转移、重新打开。
 7. 打开 MCP tab →「接入 AI 客户端」，选择要用的客户端一键导入（opencode / ZCode / Claude Code / Cursor / Codex），并按需调整策略与审计开关；后续启动 Agent 会自动确保注入 opencode。
 8. Agent tab：运行栏查看当前任务；「待审核」时在 tab 或胶囊里批准 / 拒绝；历史子页查看执行记录、日志，或在 Terminal 恢复会话。

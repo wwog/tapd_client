@@ -12,7 +12,6 @@ import {
 
 import { api, type AppInfo } from "../lib/api";
 import type { SettingsSectionProps } from "../lib/feature";
-import { AgentManagement } from "./AgentManagement";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { Dialog } from "./Dialog";
@@ -77,8 +76,6 @@ export function SettingsPage(props: Props) {
       <AppearanceCard />
 
       <NotificationSettings toast={toast} />
-
-      <AgentManagement toast={toast} />
 
       <section className={cardClass}>
         <div className="flex items-center justify-between gap-3">

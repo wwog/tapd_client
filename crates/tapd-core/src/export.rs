@@ -38,8 +38,8 @@ mod tests {
                 priority_label: "高".to_string(),
                 severity: "normal".to_string(),
                 severity_label: "一般".to_string(),
-                owner: "何帅".to_string(),
-                creator: "张芳兰".to_string(),
+                owner: "李四".to_string(),
+                creator: "王五".to_string(),
                 created: "2026-11-09 19:57:06".to_string(),
                 modified: "2026-11-09 20:13:37".to_string(),
                 bug_url: "https://www.tapd.cn/tapd_fe/45336192/bug/detail/1010606".to_string(),
@@ -48,7 +48,7 @@ mod tests {
             description_html: "<p>复现步骤</p><p><img src=\"https://file.tapd.cn/1/attachments/preview_attachments/2/a.png\"></p><video src=\"https://file.tapd.cn/1/attachments/preview_attachments/3/b.mp4\"></video>".to_string(),
             comments: vec![Comment {
                 id: "c1".to_string(),
-                author: "张芳兰".to_string(),
+                author: "王五".to_string(),
                 created: "2026-11-09 20:00:00".to_string(),
                 description_html: "<p>补充说明</p>".to_string(),
                 plain_text: "补充说明".to_string(),
@@ -114,7 +114,7 @@ mod tests {
         assert!(markdown.contains("assets/media-1-a.png"));
         assert!(markdown.contains("▶ 视频附件"));
         assert!(markdown.contains("assets/media-2-b.mp4"));
-        assert!(markdown.contains("### 1. 张芳兰"));
+        assert!(markdown.contains("### 1. 王五"));
         assert!(markdown.contains("att-9-log.ips"));
     }
 
@@ -135,12 +135,12 @@ mod tests {
             changes: vec![crate::tapd::model::ChangeEntry {
                 seq: 1,
                 time: "2026-11-09 17:03:16".to_string(),
-                author: "郭俊宏".to_string(),
+                author: "张三".to_string(),
                 kind: "手动变更".to_string(),
                 fields: vec![crate::tapd::model::ChangeField {
                     field: "处理人".to_string(),
-                    before: "范艺;".to_string(),
-                    after: "郭俊宏".to_string(),
+                    before: "赵六;".to_string(),
+                    after: "张三".to_string(),
                 }],
             }],
             error: None,
@@ -149,8 +149,8 @@ mod tests {
         let markdown = render_markdown(&detail, &[], "UU");
         assert!(markdown.contains("## 变更记录"));
         assert!(markdown.contains("共 5 条，以下为最近 1 条"));
-        assert!(markdown.contains("### 1. 2026-11-09 17:03:16 · 郭俊宏 · 手动变更"));
-        assert!(markdown.contains("| 处理人 | 范艺; | 郭俊宏 |"));
+        assert!(markdown.contains("### 1. 2026-11-09 17:03:16 · 张三 · 手动变更"));
+        assert!(markdown.contains("| 处理人 | 赵六; | 张三 |"));
     }
 
     #[test]

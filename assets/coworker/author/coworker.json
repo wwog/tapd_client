@@ -1,0 +1,11 @@
+{
+  "name": "Author",
+  "description": "我可能不是你的同事，但此刻我正在和你一起工作。",
+  "avatar": "./author.png",
+  "skills": [
+    {
+      "name": "wwog-engineering",
+      "path": "./SKILL.md"
+    }
+  ]
+}
