@@ -65,7 +65,7 @@ opencode mcp list
 
 ## 4. 工具
 
-共 15 个工具：6 个查询/导出（导出即含修复提示词）+ 2 个修复后回写（评论、状态）+ 2 个外部 AI 占用（登记、释放）+ 2 个桌面胶囊通知（唤起、等待回执）+ 2 个 Agent 改动审核/任务回报 + 1 个接入前自检（whoami）。
+共 10 个工具：1 个自检（whoami）+ 2 个项目/缺陷查询 + 1 个我的缺陷 + 1 个详情导出（含修复提示词）+ 1 个状态查询 + 2 个修复后回写（评论、状态）+ 2 个桌面胶囊通知（唤起、等待回执）。
 
 客户端的 **MCP tab →「MCP 服务」** 会列出全部工具名；点任一工具打开「MCP 接口文档」，左侧接口列表定位到该工具，右侧显示描述、参数类型、必填项与默认值，并可直接复制 `inputSchema`。
 
@@ -75,17 +75,12 @@ opencode mcp list
 | `tapd_list_projects` | 可访问项目列表 | — |
 | `tapd_list_bugs` | 查询缺陷 | `workspace_id`、`owner`、`statuses`、`priorities`、`severities`、`keyword`、`only_unresolved`、`limit`、`page` |
 | `tapd_list_my_bugs` | 我的未解决缺陷 | `workspace_id`、`statuses`、`priorities`、`severities`、`keyword`、`only_unresolved`、`limit`、`page`、`modified_after`、`created_after` |
-| `tapd_get_bug` | 完整详情（含 `embeddedMedia` 内嵌图片/视频、`changes` 变更记录；启用同事时附带 `coworkerSkills` 技能包路径） | `bug_id`（必填）、`workspace_id` |
-| `tapd_export_bug_md` | 导出 MD 包并返回修复提示词 `prompt`（同时写入 `prompt.md`；启用同事时连同技能包复制到 `skills/`） | `bug_id`（必填）、`workspace_id`、`workspace_name`、`root`、`instructions` |
-| `tapd_get_bug_transitions` | 当前状态与允许的下一步 | `bug_id`（必填）、`workspace_id` |
-| `tapd_add_bug_comment` | 追加评论（纯文本自动转富文本） | `bug_id`、`comment`（必填） |
-| `tapd_update_bug_status` | 更新状态，可同时评论 | `bug_id`、`status`（key 或中文名）、`comment`、`fields` |
-| `tapd_claim_bug` | 登记外部 AI 占用（列表显示处理方与用时，阻止本地 Agent 重复入队） | `bug_id`（必填）、`workspace_id`、`root`、`model`、`status`、`title`、`note` |
-| `tapd_release_bug` | 释放自己的外部占用 | `bug_id`（必填）、`workspace_id`、`root` |
+| `tapd_get_bug` | 导出缺陷修复包（`bug.json` + `assets/`）并返回修复提示词；同时返回 `skills`、`projectRule`、`warnings`、`downloadedBytes`、`assetCount`、`bugJson`、`prompt` | `bug_id`（必填）、`workspace_id`、`root`、`workspace_name` |
+| `tapd_get_bug_transitions` | 当前状态与允许的下一步 | `bug_id`（必填）、`workspace_id`、`root` |
+| `tapd_add_bug_comment` | 追加评论（纯文本自动转富文本） | `bug_id`、`comment`（必填）、`workspace_id`、`root` |
+| `tapd_update_bug_status` | 更新状态，可同时评论 | `bug_id`、`status`（key 或中文名）、`comment`、`fields`、`workspace_id`、`root` |
 | `tapd_notify_user` | 在顶部胶囊唤起通知，并等待用户点击后回传结果 | `title`（必填）、`tone`、`body`、`fields`、`progress`、`blocks`、`actions`、`tag`、`waitSeconds` |
 | `tapd_wait_notification` | 继续等待之前通知的用户决定 | `id`（必填）、`waitSeconds` |
-| `tapd_request_review` | 复杂改动暂停，等待用户审核后再提交（仅 Agent 任务） | `taskId`（必填）、`summary`（必填）、`files`、`risk` |
-| `agent_task_report` | 通用 TUI 运行时的任务生命周期回报（仅 Agent 任务） | `taskId`、`status`（均必填）、`message`、`files`、`risk` |
 
 约定：
 
@@ -95,7 +90,8 @@ opencode mcp list
 - `workspace_id` 省略时使用客户端上次选择的项目。
 - `root` 是本地仓库/工作目录绝对路径：客户端会用项目设置里的「本地文件夹」做匹配（完全相同 > 根目录在仓库内 > 仓库在根目录内），命中后等同于传了 `workspace_id`。sidecar 默认把自身进程 cwd 作为软提示填入；显式传 `root` 但匹配不到时会直接报错，cwd 提示匹配不到则回退到上次选择的项目。可用 `tapd_whoami` 查看 `localProjects` 与 `matchedWorkspaceId`。
 - 时间参数格式：`YYYY-MM-DD HH:MM:SS`。
-- 同事技能包：在「同事」页启用同事后，`tapd_get_bug` 会额外返回 `coworkerSkills`（`instruction` + `skills[]`，每项含 `path` 绝对路径），`tapd_export_bug_md` 会把技能包复制到导出目录的 `skills/`、在 `bug.md` 末尾列出，并在返回的 `prompt` 里带上技能包路径。未启用同事时 `coworkerSkills` 不出现、`skills` 为空数组。
+- 技能包：`tapd_get_bug` 的 `skills` 是 `name → SkillRef` 的 map，未启用同事或没有技能时是 `{}`。value 含 `coworkerId`、`coworkerName`、`role`、`name`、`description` 与 `path`；`path` 是技能包 `SKILL.md` 的绝对路径，可直接读取。技能重名时先用 `<coworkerId>/<name>` 作 key，仍重名再追加 `-2`、`-3` 序号。
+- 项目规则：`projectRule` 独立返回，不参与 `prompt` 渲染。`skills` 非空时以 `技能规则：按需使用 skills 对象。` 开头；项目规则非空时追加 `项目规则：\n<rule>`；两段用空行连接，都为空时返回 `""`。
 
 示例调用（MCP 客户端内部）：
 
@@ -103,12 +99,10 @@ opencode mcp list
 {"tool": "tapd_list_bugs", "arguments": {"workspace_id": "45336192", "owner": "me", "limit": 10}}
 {"tool": "tapd_list_bugs", "arguments": {"root": "/Users/you/code/app", "owner": "me", "limit": 10}}
 {"tool": "tapd_get_bug", "arguments": {"workspace_id": "45336192", "bug_id": "1145336192001010606"}}
-{"tool": "tapd_export_bug_md", "arguments": {"workspace_id": "45336192", "bug_id": "1145336192001010582"}}
+{"tool": "tapd_get_bug", "arguments": {"root": "/Users/you/code/app", "bug_id": "1145336192001010606", "workspace_name": "示例项目"}}
 {"tool": "tapd_get_bug_transitions", "arguments": {"bug_id": "1145336192001010582"}}
 {"tool": "tapd_add_bug_comment", "arguments": {"bug_id": "1145336192001010582", "comment": "根因：草稿状态未写入 store。\n方案：补持久化并加回归测试。\n影响范围：会话详情草稿。"}}
 {"tool": "tapd_update_bug_status", "arguments": {"bug_id": "1145336192001010582", "status": "已解决", "comment": "已修复并验证。"}}
-{"tool": "tapd_claim_bug", "arguments": {"bug_id": "1145336192001010582", "model": "Deepseek", "title": "登录页按钮错位"}}
-{"tool": "tapd_release_bug", "arguments": {"bug_id": "1145336192001010582"}}
 {"tool": "tapd_notify_user", "arguments": {"title": "修复完成", "tone": "success", "body": "3 个缺陷已更新并推送。", "fields": [{"label": "耗时", "value": "2m 18s"}], "actions": [{"id": "open", "label": "查看", "style": "primary"}]}}
 {"tool": "tapd_wait_notification", "arguments": {"id": "0b6f…", "waitSeconds": 30}}
 ```
@@ -139,99 +133,60 @@ opencode mcp list
 
 AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设置 → 通知里可以关闭「允许 AI / MCP 唤起通知」，或用调试面板发一条自定义卡片验证效果。
 
-### 4.2 Agent 改动审核（tapd_request_review）
+### 4.2 简单任务与复杂任务
 
-只有客户端 Agent 修复流程会用到：
+`tapd_get_bug` 的提示词要求模型按改动复杂度分流：
 
-- 简单改动按默认提示词直接 `git commit`，提交成功后再回写 TAPD。
-- 复杂改动调用 `tapd_request_review`，参数 `taskId` 来自提示词中的 `{{task_id}}`；`summary` 写根因/方案/影响，`files` 列出改动文件，`risk` 说明风险点。
-- 调用后任务进入 `awaiting_approval`，Agent 本轮被中止，工作区保留未提交的 diff，队列停住。
-- 「待审核」页选择：
-  - **通过并提交**：任务重新入队，使用「审核已通过」提示词，只做核对、提交与 TAPD 回写。
-  - **停止并储藏**：把本次涉及的文件 `git stash`（含未跟踪），任务取消并暂停队列。
-- 如果模型忘记调用该工具，本轮结束时新出现的未提交文件也会自动进入待审核，避免代码被遗忘。
-- 客户端会拒绝未提交时的 TAPD 写操作：任务仍有本轮新产生的未提交文件时，`tapd_add_bug_comment` / `tapd_update_bug_status` 返回“请先 git commit”。
+- 简单任务（单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过）：直接 `git commit`（不要 push），然后用 `tapd_add_bug_comment` 说明原因、方案与影响范围，再用 `tapd_update_bug_status` 更新状态；可先调用 `tapd_get_bug_transitions` 查看允许的下一步。
+- 复杂任务（多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败）：不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，交给用户复核和测试。
+- 任何情况下都不要在提交成功前评论或更新 TAPD 状态。
+
+外部 AI 没有客户端待审核入口，也不再有占用登记、审核暂停或任务回报工具。桌面 Agent 的复杂任务由客户端在任务结束时检查未提交改动，自动进入待审核。
 
 写回规则：
 
-- `tapd_get_bug` 额外返回 `tapdIntegration`，它是对外交付流程的唯一说明（不强制调用，客户端可直接展示或忽略）：`claim` 认领与续约；`simple` / `complex` 两种改动的复核条件——简单改动直接 commit 并回写，复杂改动先请用户复核测试、确认后再 commit 与回写（判断不了按复杂处理）；`writeBack` 固定「先 commit，再评论，最后改状态」。流程不再塞进提示词，避免模型跳过。
 - `status` 可传 key（`resolved`）或中文名（`已解决`）；中文会按项目状态别名映射。
 - 若目标不能直接到达（例如 `new → 已解决`），客户端会自动先流转到处理中，再执行目标状态。
 - `tapd_update_bug_status` 的 `comment` 会先追加评论，再进行状态流转；状态流转失败时评论仍保留，便于追溯。
 - 状态流转会按 TAPD 工作流配置自动带出处理人/开发人员/测试人员等字段默认值（与网页端流转弹窗一致）。
 - 需要覆盖默认值时传 `fields` 对象，例如 `{"current_owner":"张三","resolution":"fixed"}`；也支持 `[{"name":"current_owner","value":"张三"}]` 行数组。未提供的字段沿用工作流配置。
+- 桌面 Agent 任务仍有本轮未提交文件时，客户端会拒绝 `tapd_add_bug_comment` / `tapd_update_bug_status` 并提示先 `git commit`。外部 AI 没有本地任务记录，不受这条保护，必须自己遵守「先 commit，再回写」。
 
-### 4.3 修复提示词（随 tapd_export_bug_md 返回）
+### 4.3 修复提示词（tapd_get_bug 的 prompt）
 
-`tapd_export_bug_md` 在导出包的同时生成修复提示词：写到包内 `prompt.md`，并把同一份文本放进返回值的 `prompt`，因此「导出 + 取提示词」只要一次调用，不再单独提供提示词工具。
+`tapd_get_bug` 在导出修复包的同时返回渲染好的 `prompt`，一次调用即可拿到「bug.json 路径 + 本地仓库 + 修复要求」，不再单独提供提示词工具。返回值只有 `warnings`、`downloadedBytes`、`bugJson`、`assetCount`、`skills`、`projectRule`、`prompt` 七个字段；缺陷详情不再内联，旧的交付流程说明、同事技能数组与占用字段均已移除。
 
-提示词只描述任务本身（读取 bug.md / assets、最小必要修改、跑测试），结构对齐桌面端 Agent 收到的那份，但去掉了只属于桌面 Agent 的 `tapd_request_review` 审核队列；认领、复核与回写这些流程统一放在 `tapd_get_bug` 的 `tapdIntegration`，提示词末尾只留一句指路：
+提示词只包含任务本身的变量（`title`、`json_path`、`repo_path`、`workspace_name`、`severity`、`priority`），并要求先阅读 `bug.json` 与 `assets/`、定位根因做最小必要修改、遵循团队代码规范：
 
-- 项目规则：该项目的「项目规则」；`repo_path` 取项目「本地文件夹」，否则用调用方 `root`，都没有时写「（当前工作目录）」。
-- 同事：复用「同事」页启用的同事，角色与技能包 `SKILL.md` 绝对路径会写入提示词（模板中的 `{{coworker}}` 位置），与包内 `skills/` 副本一致。
-- `instructions`：补充说明，追加到提示词末尾作为本轮额外要求。
-- 外部客户端没有活动 Agent 任务，不提供 `task_id` / `tapd_request_review` / `agent_task_report`。
+- `repo_path` 取项目「本地文件夹」；没有配置时用调用方 `root`；两者都没有时写「（当前工作目录）」。
+- 项目规则不再作为模板变量。它通过独立的 `projectRule` 字段返回，由 AI 按需遵守；`prompt` 里不包含项目规则、同事技能段或 `tapdIntegration` 字段，简单/复杂任务分流与回写步骤已经内联在提示词里。
+- 同事技能通过独立的 `skills` map 返回，不再写入提示词，也不会复制到导出目录。
+- 外部客户端没有活动 Agent 任务，不提供 `task_id`，也不要求调用审核或任务回报工具。
 
-返回（只列与提示词相关的字段，其余见「导出产物」）：
+返回（只列与提示词相关的字段，导出目录见「导出产物」）：
 
 ```json
 {
-  "prompt": "请修复 TAPD 缺陷：…\n缺陷详情文件：/…/bug.md\n…",
-  "promptPath": "/Users/you/Documents/TAPDClient/exports/UU-45336192/…/prompt.md",
-  "dir": "/Users/you/Documents/TAPDClient/exports/UU-45336192/…",
-  "markdownPath": "/Users/you/Documents/TAPDClient/exports/UU-45336192/…/bug.md",
-  "skills": [
-    {
+  "bugJson": "/Users/you/Documents/TAPDClient/exports/UU-45336192/…/bug.json",
+  "assetCount": 1,
+  "downloadedBytes": 2420002,
+  "skills": {
+    "wwog-engineering": {
       "coworkerId": "author",
       "coworkerName": "Author",
       "role": "程序员",
       "name": "wwog-engineering",
       "description": "wwog 的个人工程规范…",
-      "path": "/Applications/TAPD Client.app/Contents/Resources/coworker/author/skills/wwog-engineering/SKILL.md",
-      "relativePath": "skills/author/wwog-engineering/SKILL.md"
+      "path": "/Applications/TAPD Client.app/Contents/Resources/coworker/author/skills/wwog-engineering/SKILL.md"
     }
-  ],
+  },
+  "projectRule": "技能规则：按需使用 skills 对象。\n\n项目规则：\n<项目规则>",
+  "prompt": "请修复 TAPD 缺陷：…\n缺陷详情：/…/bug.json\n…",
   "warnings": []
 }
 ```
 
-典型用法：AI 在自己的仓库里先用 `tapd_list_bugs`（按 cwd 自动匹配项目）找到缺陷，再调用 `tapd_export_bug_md`，把返回的 `prompt` 当作本轮任务说明。
-
-### 4.4 外部 AI 占用（tapd_claim_bug / tapd_release_bug）
-
-外部 AI 开始处理缺陷前先登记占用，桌面端列表会显示「“Zcode”正在使用“Deepseek”进行处理」、创建时间与滚动用时，并禁止本地 Agent 重复入队。
-
-```json
-{"tool": "tapd_claim_bug", "arguments": {"bug_id": "1145336192001010582", "model": "Deepseek", "status": "running"}}
-```
-
-- 客户端名取自 MCP 握手的 `clientInfo.name`；`model` 由调用方传入，缺省时列表只显示客户端名。
-- 占用 15 分钟无心跳自动失效；处理期间请每隔几分钟再次调用 `tapd_claim_bug` 续约（保留首次 `claimedAt`），完成后调用 `tapd_release_bug`。
-- 与本地 Agent 队列互斥：
-  - 本地 Agent 正在运行 / 等权限 / 待审核 → 返回 `claimed: false`，`conflict.kind = "desktop_agent"`，请勿修改该缺陷。
-  - 本地 Agent 只是排队 → 客户端取消该排队任务并在胶囊通知用户「“Zcode”接管了「标题」，队列中的 Agent 任务已取消」，占用登记成功。
-  - 另一个外部客户端已占用 → 返回 `conflict.kind = "external"`。
-- 列表里该缺陷只保留「查看（点行）」与「取消（释放占用）」；取消后外部 AI 下次心跳会收到冲突。
-- `tapd_get_bug` 返回 `externalClaim`，`tapd_list_bugs` 返回当前项目的 `externalClaims`，AI 可据此跳过已被占用的缺陷。
-
-返回示例：
-
-```json
-{
-  "claimed": true,
-  "claim": {
-    "workspaceId": "45336192",
-    "bugId": "1145336192001010582",
-    "client": "Zcode",
-    "model": "Deepseek",
-    "status": "running",
-    "claimedAt": "2026-11-11T08:12:00Z",
-    "lastSeenAt": "2026-11-11T08:12:00Z"
-  },
-  "conflict": null,
-  "message": "已登记占用；请每 15 分钟内再次调用 tapd_claim_bug 续约，完成后调用 tapd_release_bug"
-}
-```
+典型用法：AI 在自己的仓库里先用 `tapd_list_bugs`（按 cwd 自动匹配项目）找到缺陷，再调用 `tapd_get_bug`，把返回的 `prompt` 当作本轮任务说明，按需读取 `skills` 与 `projectRule`。
 
 ## 5. 策略与审计
 
@@ -257,27 +212,14 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 
 ## 6. 导出产物
 
-`tapd_export_bug_md` 返回：
+桌面端「导出」返回完整结果（含 `dir`）；`tapd_get_bug` 返回同一导出结果的 `bugJson`、`assetCount`、`downloadedBytes` 与 `warnings`。
 
 ```json
 {
   "dir": "/Users/<you>/Documents/TAPDClient/exports/UU-45336192/<short-id>-<ascii-slug>",
-  "markdownPath": ".../bug.md",
+  "bugJson": ".../bug.json",
   "assetCount": 1,
   "downloadedBytes": 2420002,
-  "prompt": "请修复 TAPD 缺陷：…",
-  "promptPath": ".../prompt.md",
-  "skills": [
-    {
-      "coworkerId": "author",
-      "coworkerName": "Author",
-      "role": "程序员",
-      "name": "wwog-engineering",
-      "description": "wwog 的个人工程规范…",
-      "path": "/…/coworker/author/skills/wwog-engineering/SKILL.md",
-      "relativePath": "skills/author/wwog-engineering/SKILL.md"
-    }
-  ],
   "warnings": []
 }
 ```
@@ -286,16 +228,15 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 
 ```
 <bug-id>-<slug>/
-├── bug.md        # 标题、基本信息、描述、资源（附件 + 内嵌）、变更记录、评论、自定义字段、协作同事技能包
-├── bug.json      # 结构化数据
-├── prompt.md     # 修复提示词（与返回的 prompt 相同）
-├── skills/       # 启用的同事技能包（按同事 id / 技能目录复制，未启用时不创建）
+├── bug.json      # BugDetail 的 camelCase JSON，顶层 assets 为已成功下载的 MediaAsset
 └── assets/       # 图片、视频、日志等原件
 ```
 
-`skills/` 由「同事」页启用的同事决定：每个技能包整目录复制（跳过符号链接，单包上限 400 个文件 / 4MB），`bug.md` 末尾的「协作同事技能包」章节列出包内相对路径，重复导出会替换该章节而不是叠加。应用内 Agent 任务导出时只写 `bug.md` / `bug.json` / `skills/`，不写 `prompt.md`（任务提示词由 Agent 自己组装）。
-
-图片以内联 Markdown 引用，视频以链接引用；下载失败时保留 TAPD 原始 URL 并在 `warnings` 中说明。
+- 导出目录只保留 `bug.json` 与 `assets/`；不再生成 Markdown 文件、提示词文件或技能包副本。
+- `bug.json` 在资源下载完成后写入，`assets` 只列出成功落盘的资源。
+- `assetCount` 是成功写入的资源数；`downloadedBytes` 只统计成功下载的字节。下载失败或超过总大小上限时写入 `warnings`，不影响其余资源。
+- 目录命名：`<exports>/<workspace-slug>-<workspace_id>/<bug_ref>[-<title-slug>]`，目录名不含中文。
+- 应用内 Agent 任务复用同一导出结果；任务提示词由客户端组装，不写入导出目录。
 
 ## 7. 安全与边界
 
@@ -303,7 +244,7 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 - Cookie 不写入文件、不返回给 AI；资源下载在客户端进程内完成。
 - 写回仅开放「追加评论」和「更新状态」，不提供删除、改处理人、批量操作等工具。
 - `tapd_notify_user` / `tapd_wait_notification` 只操作本地胶囊窗口，不读写 TAPD；「允许 AI / MCP 唤起通知」关闭时调用会直接失败。
-- `tapd_request_review` 只接受当前正在运行的 Agent 任务 id；外部 AI 没有活动任务时会被拒绝，不能暂停桌面队列。
+- MCP 只提供查询、导出、评论、状态更新与通知工具；任务完成由客户端按进程退出、会话 hook 或输出静默判定，不依赖 MCP 回报。
 - 写操作使用当前 TAPD 会话 Cookie + `dsc-token`，受 TAPD 工作流与权限约束；非法流转会被拒绝并把允许的下一步返回给 AI。
 - 所有工具调用（含写操作）记录在客户端日志（数据目录 `logs/`）与 MCP 审计（`cache.sqlite3` 的 `mcp_audit` 表）；审计包含工具名、客户端、策略决策、耗时、项目/缺陷与错误摘要，不保存评论正文。
 

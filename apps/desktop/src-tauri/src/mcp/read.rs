@@ -1,21 +1,16 @@
-//! Read-only TAPD tools: identity, project list, bug lists and bug detail.
+//! Read-only TAPD tools: identity, project list, bug lists, and the bug detail
+//! export that also renders the fix prompt.
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use serde_json::{json, Value};
-use tapd_core::{
-    tapd::{
-        api::{bug_list_url, parse_bug_list, BugQuery},
-        BugListPage,
-    },
+use tapd_core::tapd::{
+    api::{bug_list_url, parse_bug_list, BugQuery},
+    BugListPage,
 };
 use tauri::AppHandle;
 
-use crate::{
-    agent::{self, ExternalClaim},
-    commands::auth::session_request_json,
-    state::SharedState,
-};
+use crate::{agent, commands::auth::session_request_json, state::SharedState};
 
 use super::{
     args::{root_hint, string_arg, string_array},
@@ -61,10 +56,7 @@ pub(super) async fn whoami(
     }))
 }
 
-pub(super) async fn list_projects(
-    app: &AppHandle,
-    state: &SharedState,
-) -> Result<Value, String> {
+pub(super) async fn list_projects(app: &AppHandle, state: &SharedState) -> Result<Value, String> {
     let (_, workspaces) = load_context(app).await?;
     let policy = state.config_snapshot().mcp_policy;
     let allowed = allowed_workspaces(&policy, workspaces);
@@ -98,60 +90,13 @@ async fn bug_page(
     let (workspace_id, _) = resolve_call_workspace(app, state, arguments).await?;
     let page = query_bugs(app, state, &workspace_id, arguments, force_me).await?;
 
-    Ok(page_json(page, &workspace_id, &agent::external_claims(app)))
+    Ok(page_json(page, &workspace_id))
 }
 
-/// The delivery workflow external clients follow. This is the single source of
-/// truth for claim / review / write-back order: the prompt only carries the
-/// task, because flow control buried in prose is skipped. Nothing is enforced;
-/// the caller decides based on the simple/complex conditions.
-fn tapd_integration() -> Value {
-    json!({
-        "claim": "开始处理前调用 tapd_claim_bug 登记占用（model 传你使用的模型名），处理期间每 15 分钟续约一次，完成后调用 tapd_release_bug；返回 conflict 表示桌面 Agent 正在处理，请停止并告知用户。",
-        "simple": "单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过：直接 git commit（不要 push）并回写 TAPD，不必等用户复核。",
-        "complex": "多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败：先向用户说明根因、方案、影响范围与风险，请用户复核并测试，明确告诉用户「改完了，等你复核和测试」；用户确认后再 commit 与回写，确认前不要 commit、不要更新 TAPD 状态；判断不了算简单还是复杂时，按复杂处理。",
-        "writeBack": "回写顺序固定：先 git commit（不要 push），提交成功后再用 tapd_add_bug_comment 写原因/方案/影响，最后用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。任何情况下都不要在提交成功前评论或更新状态。",
-        "prompt": "开始修复时调用 tapd_export_bug_md：它返回 prompt（项目规则 + 同事技能包 + 仓库路径），可直接作为本轮任务说明。",
-    })
-}
-
-/// Pointers to the enabled coworkers' skill packages, shipped with bug detail
-/// so an external AI reads them even when it never asks for the full prompt.
-/// `Null` when no coworker is enabled.
-fn coworker_skills(app: &AppHandle) -> Value {
-    let config = agent::mcp_agent_config(app);
-    let skills = crate::coworker::skill_refs(app, &config.coworker_ids);
-    if skills.is_empty() {
-        return Value::Null;
-    }
-    json!({
-        "instruction": "动手改代码前先完整读取这些技能包（SKILL.md），按其中的规范实现与交付。",
-        "skills": skills,
-    })
-}
-
+/// Exports the bug package and returns everything a fixing agent needs: the
+/// package paths, the coworker skills it may follow, the project rule and the
+/// rendered prompt.
 pub(super) async fn get_bug(
-    app: &AppHandle,
-    state: &SharedState,
-    arguments: &Value,
-) -> Result<Value, String> {
-    let bug_id = string_arg(arguments, "bug_id").ok_or_else(|| "bug_id is required".to_string())?;
-    let (workspace_id, _) = resolve_call_workspace(app, state, arguments).await?;
-
-    let detail = crate::commands::bugs::fetch_bug_detail(app, &workspace_id, &bug_id).await?;
-    let mut value = serde_json::to_value(detail).map_err(|error| error.to_string())?;
-    if let Some(claim) = agent::external_claim_for_bug(app, &workspace_id, &bug_id) {
-        value["externalClaim"] = serde_json::to_value(claim).unwrap_or(Value::Null);
-    }
-    let skills = coworker_skills(app);
-    if !skills.is_null() {
-        value["coworkerSkills"] = skills;
-    }
-    value["tapdIntegration"] = tapd_integration();
-    Ok(value)
-}
-
-pub(super) async fn export_bug_md(
     app: &AppHandle,
     state: &SharedState,
     arguments: &Value,
@@ -165,22 +110,59 @@ pub(super) async fn export_bug_md(
             .map(|workspace| workspace.name.clone())
     });
 
-    // The package carries `prompt.md` and the rendered prompt comes back in the
-    // result, so starting a fix needs no second tool call.
-    let result = crate::export::run_export(
-        app,
-        &state.paths,
-        &workspace_id,
-        &bug_id,
-        workspace_name,
-        Some(crate::export::PromptOptions {
-            root_hint: root_hint(arguments),
-            instructions: string_arg(arguments, "instructions").unwrap_or_default(),
-        }),
-    )
-    .await?;
+    // The detail is needed for both the export and the prompt, so it is fetched
+    // once and handed to the export instead of letting it fetch again.
+    let detail = crate::commands::bugs::fetch_bug_detail(app, &workspace_id, &bug_id).await?;
+    let agent_config = agent::mcp_agent_config(app);
+    let skills = crate::coworker::skill_map(app, &agent_config.coworker_ids);
+    let rule = agent_config
+        .projects
+        .get(&workspace_id)
+        .map(|project| project.rule.as_str())
+        .unwrap_or_default();
+    let project_rule = project_rule_text(!skills.is_empty(), rule);
 
-    serde_json::to_value(result).map_err(|error| error.to_string())
+    let label =
+        crate::export::paths::workspace_label(workspace_name.clone(), &detail, &workspace_id);
+    let export =
+        crate::export::export_detail(app, &state.paths, &workspace_id, workspace_name, &detail)
+            .await?;
+
+    let root = root_hint(arguments);
+    let prompt = crate::export::prompt::render(
+        app,
+        crate::export::prompt::PromptContext {
+            workspace_id: &workspace_id,
+            workspace_name: &label,
+            root_hint: root.as_deref(),
+            json_path: Path::new(&export.bug_json),
+            detail: &detail,
+        },
+    );
+
+    Ok(json!({
+        "warnings": export.warnings,
+        "downloadedBytes": export.downloaded_bytes,
+        "bugJson": export.bug_json,
+        "assetCount": export.asset_count,
+        "skills": skills,
+        "projectRule": project_rule,
+        "prompt": prompt,
+    }))
+}
+
+/// `projectRule` payload: the skill hint first, then the configured rule.
+/// Empty when the project has neither skills nor a rule.
+fn project_rule_text(has_skills: bool, rule: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if has_skills {
+        parts.push("技能规则：按需使用 skills 对象。".to_string());
+    }
+    let rule = rule.trim();
+    if !rule.is_empty() {
+        parts.push(format!("项目规则：\n{rule}"));
+    }
+    parts.join("\n\n")
 }
 
 async fn query_bugs(
@@ -251,11 +233,7 @@ async fn query_bugs(
     Ok(page)
 }
 
-fn page_json(page: BugListPage, workspace_id: &str, external: &[ExternalClaim]) -> Value {
-    let claims: Vec<&ExternalClaim> = external
-        .iter()
-        .filter(|claim| claim.workspace_id == workspace_id)
-        .collect();
+fn page_json(page: BugListPage, workspace_id: &str) -> Value {
     json!({
         "workspaceId": workspace_id,
         "total": page.total,
@@ -264,38 +242,27 @@ fn page_json(page: BugListPage, workspace_id: &str, external: &[ExternalClaim]) 
         "returned": page.bugs.len(),
         "statusMap": page.status_map,
         "bugs": page.bugs,
-        "externalClaims": claims,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::tapd_integration;
+    use super::project_rule_text;
 
     #[test]
-    fn integration_hint_carries_the_workflow() {
-        let hint = tapd_integration();
-        for key in ["writeBack", "claim", "prompt"] {
-            let text = hint[key].as_str().unwrap_or_default();
-            assert!(!text.is_empty(), "{key} should not be empty");
-            assert!(
-                text.contains("tapd_"),
-                "{key} should point at a tool so external clients find it"
-            );
-        }
-
-        // The review gate lives here, not in the prompt: a caller must be able
-        // to decide whether to stop for user review before committing.
-        let simple = hint["simple"].as_str().unwrap_or_default();
-        assert!(simple.contains("commit"), "simple path commits directly");
-        let complex = hint["complex"].as_str().unwrap_or_default();
-        assert!(complex.contains("复核") && complex.contains("commit"));
-        assert!(
-            complex.contains("不要 commit"),
-            "complex path must stop before committing until the user confirms"
+    fn project_rule_combines_skill_hint_and_rule() {
+        assert_eq!(
+            project_rule_text(true, "先跑 cargo test"),
+            "技能规则：按需使用 skills 对象。\n\n项目规则：\n先跑 cargo test"
         );
-        let write_back = hint["writeBack"].as_str().unwrap_or_default();
-        assert!(write_back.contains("tapd_add_bug_comment"));
-        assert!(write_back.contains("tapd_update_bug_status"));
+        assert_eq!(
+            project_rule_text(true, "  "),
+            "技能规则：按需使用 skills 对象。"
+        );
+        assert_eq!(
+            project_rule_text(false, "先跑 cargo test"),
+            "项目规则：\n先跑 cargo test"
+        );
+        assert_eq!(project_rule_text(false, ""), "");
     }
 }

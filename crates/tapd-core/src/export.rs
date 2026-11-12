@@ -1,17 +1,15 @@
-//! Markdown export for handing a TAPD bug to a human or an AI agent.
+//! Export data for handing a TAPD bug to a human or an AI agent.
 //!
-//! The document rendering (`markdown`) and the on-disk naming (`naming`)
-//! are separate concerns; both operate on the pure data types, never on the
-//! filesystem or the network. Resource collection lives in `tapd::api` so the
-//! parser can reuse it without depending on the exporter.
+//! Media collection and the on-disk naming (`naming`) are separate concerns;
+//! both operate on the pure data types, never on the filesystem or the network.
+//! Resource collection lives in `tapd::api` so the parser can reuse it without
+//! depending on the exporter.
 
-mod markdown;
 mod media;
 mod naming;
 
 pub use crate::tapd::api::{collect_embedded_media, collect_media, scan_html_media};
 pub use crate::tapd::model::{MediaKind, MediaRef};
-pub use markdown::{markdown_from_html, render_markdown};
 pub use media::MediaAsset;
 pub use naming::ascii_slug;
 
@@ -78,47 +76,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_frontmatter_description_assets_and_comments() {
-        let detail = sample_detail();
-        let assets = vec![
-            MediaAsset {
-                url: "https://file.tapd.cn/1/attachments/preview_attachments/2/a.png".to_string(),
-                relative_path: "assets/media-1-a.png".to_string(),
-                filename: "media-1-a.png".to_string(),
-                kind: MediaKind::Image,
-                size: 100,
-                content_type: "image/png".to_string(),
-            },
-            MediaAsset {
-                url: "https://file.tapd.cn/1/attachments/preview_attachments/3/b.mp4".to_string(),
-                relative_path: "assets/media-2-b.mp4".to_string(),
-                filename: "media-2-b.mp4".to_string(),
-                kind: MediaKind::Video,
-                size: 200,
-                content_type: "video/mp4".to_string(),
-            },
-            MediaAsset {
-                url: "https://file.tapd.cn/1/attachments/download/9/log.ips".to_string(),
-                relative_path: "assets/att-9-log.ips".to_string(),
-                filename: "att-9-log.ips".to_string(),
-                kind: MediaKind::File,
-                size: 1024,
-                content_type: "text/x-c".to_string(),
-            },
-        ];
-
-        let markdown = render_markdown(&detail, &assets, "UU");
-        assert!(markdown.contains("workspace: \"UU\""));
-        assert!(markdown.contains("# 示例缺陷"));
-        assert!(markdown.contains("!["));
-        assert!(markdown.contains("assets/media-1-a.png"));
-        assert!(markdown.contains("▶ 视频附件"));
-        assert!(markdown.contains("assets/media-2-b.mp4"));
-        assert!(markdown.contains("### 1. 王五"));
-        assert!(markdown.contains("att-9-log.ips"));
-    }
-
-    #[test]
     fn collects_embedded_media_separately_from_attachments() {
         let detail = sample_detail();
         let embedded = collect_embedded_media(&detail);
@@ -128,46 +85,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_changes_with_before_and_after() {
-        let mut detail = sample_detail();
-        detail.changes = crate::tapd::model::ChangeHistory {
-            total: 5,
-            changes: vec![crate::tapd::model::ChangeEntry {
-                seq: 1,
-                time: "2026-11-09 17:03:16".to_string(),
-                author: "张三".to_string(),
-                kind: "手动变更".to_string(),
-                fields: vec![crate::tapd::model::ChangeField {
-                    field: "处理人".to_string(),
-                    before: "赵六;".to_string(),
-                    after: "张三".to_string(),
-                }],
-            }],
-            error: None,
-        };
-
-        let markdown = render_markdown(&detail, &[], "UU");
-        assert!(markdown.contains("## 变更记录"));
-        assert!(markdown.contains("共 5 条，以下为最近 1 条"));
-        assert!(markdown.contains("### 1. 2026-11-09 17:03:16 · 张三 · 手动变更"));
-        assert!(markdown.contains("| 处理人 | 赵六; | 张三 |"));
-    }
-
-    #[test]
-    fn renders_change_error_instead_of_failing() {
-        let mut detail = sample_detail();
-        detail.changes = crate::tapd::model::ChangeHistory {
-            error: Some("HTTP 403".to_string()),
-            ..Default::default()
-        };
-
-        let markdown = render_markdown(&detail, &[], "UU");
-        assert!(markdown.contains("_变更记录获取失败：HTTP 403_"));
-    }
-
-    #[test]
     fn ascii_slug_drops_non_ascii() {
-        assert_eq!(ascii_slug("【rust-会话详情】Upload Crash"), "rust-Upload-Crash");
+        assert_eq!(
+            ascii_slug("【rust-会话详情】Upload Crash"),
+            "rust-Upload-Crash"
+        );
         assert_eq!(ascii_slug("通话记录清空"), "");
         assert_eq!(ascii_slug("???"), "");
         assert_eq!(ascii_slug("BUG-1234"), "BUG-1234");

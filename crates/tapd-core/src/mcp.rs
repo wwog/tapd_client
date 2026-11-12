@@ -23,22 +23,21 @@ pub struct ToolSpec {
 }
 
 /// Every MCP tool the product exposes, in `tools/list` order.
+///
+/// External agents only read and write TAPD; ownership registration, review
+/// gating and lifecycle reporting are desktop-only concerns and no longer
+/// appear here.
 pub const TOOLS: &[ToolSpec] = &[
     query::TAPD_WHOAMI,
     query::TAPD_LIST_PROJECTS,
     query::TAPD_LIST_BUGS,
     query::TAPD_LIST_MY_BUGS,
     bug::TAPD_GET_BUG,
-    bug::TAPD_EXPORT_BUG_MD,
     bug::TAPD_GET_BUG_TRANSITIONS,
     bug::TAPD_ADD_BUG_COMMENT,
     bug::TAPD_UPDATE_BUG_STATUS,
-    workflow::TAPD_CLAIM_BUG,
-    workflow::TAPD_RELEASE_BUG,
     workflow::TAPD_NOTIFY_USER,
     workflow::TAPD_WAIT_NOTIFICATION,
-    workflow::TAPD_REQUEST_REVIEW,
-    workflow::AGENT_TASK_REPORT,
 ];
 
 /// Looks up a tool by its external name.
@@ -56,8 +55,8 @@ mod tests {
     use super::{names, tool, TOOLS};
 
     #[test]
-    fn manifest_exposes_fifteen_unique_tool_names() {
-        assert_eq!(TOOLS.len(), 15);
+    fn manifest_exposes_ten_unique_tool_names() {
+        assert_eq!(TOOLS.len(), 10);
 
         let mut seen = std::collections::HashSet::new();
         for name in names() {

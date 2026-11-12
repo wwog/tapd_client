@@ -76,12 +76,21 @@ export function AgentTaskHeader(props: Props) {
               {task.workspaceName || task.workspaceId} · #
               {task.bugId.slice(-7)}
             </span>
-            <span
-              className="min-w-0 max-w-full truncate font-mono"
-              title={task.repoPath}
-            >
-              {task.repoPath || "未配置仓库"}
-            </span>
+            {task.worktreeBranch ? (
+              <span
+                className="min-w-0 max-w-full truncate font-mono text-sky-700"
+                title={task.worktreePath ?? task.worktreeBranch}
+              >
+                ⎇ {task.worktreeBranch}
+              </span>
+            ) : (
+              <span
+                className="min-w-0 max-w-full truncate font-mono"
+                title={task.repoPath}
+              >
+                {task.repoPath || "未配置仓库"}
+              </span>
+            )}
             {task.startedAt ? (
               <span className="shrink-0">
                 开始于 {relativeTime(task.startedAt)}
@@ -147,7 +156,7 @@ export function AgentTaskHeader(props: Props) {
             size="sm"
             variant="secondary"
             icon={<FolderOpen size={11} />}
-            disabled={!task.mdPath}
+            disabled={!task.jsonPath}
             onClick={onOpenExportDir}
           >
             打开导出目录

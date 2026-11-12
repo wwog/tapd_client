@@ -1,11 +1,10 @@
-//! Bug tools: detail, Markdown export, prompt rendering, transitions,
-//! comments and status changes.
+//! Bug tools: detail export, transitions, comments and status changes.
 
 use super::ToolSpec;
 
 pub(super) const TAPD_GET_BUG: ToolSpec = ToolSpec {
     name: r#"tapd_get_bug"#,
-    description: r#"获取缺陷完整详情：描述（含内联图片/视频链接）、评论、附件、元数据与自定义字段。返回的 tapdIntegration 是交付流程的唯一说明：认领、简单/复杂改动是否先由用户复核测试、commit 与回写顺序；客户端启用了同事时还会返回 coworkerSkills（技能包 SKILL.md 路径），动手前先完整读取。要开始修复时调用 tapd_export_bug_md，它会返回完整的修复提示词 prompt。"#,
+    description: r#"获取缺陷详情并导出修复包：写入 bug.json（缺陷详情 + 已成功下载的 assets 列表）与 assets/ 下的截图、视频、附件，一次调用返回 bugJson（绝对路径）、assetCount、downloadedBytes、warnings，以及渲染好的修复提示词 prompt（可直接作为本轮任务说明）。返回的 skills 是已启用同事的技能包（name 为键，path 为 SKILL.md 绝对路径），动手前先完整读取；没有可用技能时为 {}。projectRule 是需要遵守的项目规则（可能为空字符串），随 prompt 之外的字段单独返回。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -20,40 +19,10 @@ pub(super) const TAPD_GET_BUG: ToolSpec = ToolSpec {
     "bug_id": {
       "type": "string",
       "description": "缺陷长 ID（列表返回的 id）"
-    }
-  },
-  "required": [
-    "bug_id"
-  ],
-  "additionalProperties": false
-}"#,
-};
-
-pub(super) const TAPD_EXPORT_BUG_MD: ToolSpec = ToolSpec {
-    name: r#"tapd_export_bug_md"#,
-    description: r#"导出缺陷为可直接交给 AI 的 Markdown 包：bug.md + assets/ + bug.json + prompt.md，并直接返回 prompt（项目规则、本地仓库、同事技能包组成的修复提示词，可直接作为本轮任务说明）。客户端启用了同事时，技能包会一并复制到 skills/，bug.md 末尾列出这些 SKILL.md。返回本地绝对路径与 prompt / promptPath。"#,
-    schema: r#"{
-  "type": "object",
-  "properties": {
-    "workspace_id": {
-      "type": "string",
-      "description": "项目 ID；省略时使用上次选择的项目"
-    },
-    "root": {
-      "type": "string",
-      "description": "本地仓库/工作目录绝对路径；用于按项目设置里的「本地文件夹」自动匹配 TAPD 项目。省略时由客户端 cwd 自动填入"
-    },
-    "bug_id": {
-      "type": "string",
-      "description": "缺陷长 ID"
     },
     "workspace_name": {
       "type": "string",
-      "description": "项目名称，仅用于目录命名"
-    },
-    "instructions": {
-      "type": "string",
-      "description": "可选；补充说明，渲染到返回 prompt 的末尾，作为本轮额外要求"
+      "description": "项目名称，仅用于导出目录命名与提示词展示"
     }
   },
   "required": [

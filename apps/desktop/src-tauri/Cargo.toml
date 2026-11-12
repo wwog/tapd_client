@@ -33,6 +33,7 @@ semver = "1"
 sha2 = "0.10"
 toml_edit = "0.22"
 tapd-core = { path = "../../../crates/tapd-core" }
+tapd-workflow = { path = "../../../crates/tapd-workflow" }
 tauri-plugin-dialog = "2"
 
 # The capsule needs AppKit itself: it must never become the key window, and its

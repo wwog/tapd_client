@@ -349,13 +349,9 @@ export type OpenTargetSet = {
 
 export type ExportResult = {
   dir: string;
-  markdownPath: string;
+  bugJson: string;
   assetCount: number;
   downloadedBytes: number;
-  /** Fix prompt for an external AI; null when prompt.md was skipped. */
-  prompt: string | null;
-  promptPath: string | null;
-  skills: { coworkerId: string; coworkerName: string; name: string; path: string; relativePath?: string }[];
   warnings: string[];
 };
 
@@ -422,8 +418,8 @@ export const api = {
       status,
       fields: fields ?? null,
     }),
-  exportBugMd: (workspaceId: string, bugId: string, workspaceName: string | null) =>
-    invoke<ExportResult>("export_bug_md", { workspaceId, bugId, workspaceName }),
+  exportBug: (workspaceId: string, bugId: string, workspaceName: string | null) =>
+    invoke<ExportResult>("export_bug", { workspaceId, bugId, workspaceName }),
   setCurrentUser: (nick: string) =>
     invoke<void>("set_current_user", { nick }),
   /** Grows the window to `minWidth` (leftwards) if the detail panel needs room. */

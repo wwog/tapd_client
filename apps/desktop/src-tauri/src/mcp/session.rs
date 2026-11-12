@@ -61,10 +61,7 @@ pub(super) async fn resolve_call_workspace(
 }
 
 /// Workspaces the MCP policy allows, keeping the TAPD order.
-pub(super) fn allowed_workspaces(
-    policy: &McpPolicy,
-    workspaces: Vec<Workspace>,
-) -> Vec<Workspace> {
+pub(super) fn allowed_workspaces(policy: &McpPolicy, workspaces: Vec<Workspace>) -> Vec<Workspace> {
     workspaces
         .into_iter()
         .filter(|workspace| policy.allows_workspace(&workspace.id))

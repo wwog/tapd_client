@@ -168,12 +168,11 @@ export const notificationApi = {
     actions?: AiAction[];
     tag?: string;
   }) => featureCommand<{ ok: boolean; item: NotificationItem }>("notification_ai_debug", payload),
-  /** Expands the island into cards (or collapses it back to the capsule).
-   *  `extra` counts live cards fed by other stores (external AI claims). */
-  expandIsland: (expanded: boolean, extra = 0) =>
+  /** Expands the island into cards (or collapses it back to the capsule). */
+  expandIsland: (expanded: boolean) =>
     featureCommand<{ ok: boolean; expanded: boolean; count: number }>(
       "notification_island_expand",
-      { expanded, extra },
+      { expanded },
     ),
   /** Shows/hides the collapsed capsule. The idle capsule is not a permanent
    *  indicator, so the frontend hides it once nothing needs attention. */

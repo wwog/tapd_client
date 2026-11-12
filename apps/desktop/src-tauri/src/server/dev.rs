@@ -51,7 +51,8 @@ pub(super) async fn dev_feature(
         return unauthorized();
     }
 
-    match crate::feature_router::dispatch(&ctx.app, &ctx.state, &request.name, request.payload).await
+    match crate::feature_router::dispatch(&ctx.app, &ctx.state, &request.name, request.payload)
+        .await
     {
         Ok(value) => (StatusCode::OK, Json(json!({ "ok": true, "data": value }))),
         Err(error) => (
@@ -78,7 +79,6 @@ pub(super) async fn dev_export(
         &request.workspace_id,
         &request.bug_id,
         request.workspace_name,
-        Some(crate::export::PromptOptions::default()),
     )
     .await
     {

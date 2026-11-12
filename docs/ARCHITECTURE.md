@@ -9,7 +9,8 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 
 - **前端**：React + TypeScript + Vite，主窗口与通知胶囊两个入口。
 - **后端**：Rust，负责窗口、命令、会话桥、缓存、轮询、Agent 与本地 HTTP。
-- **`tapd-core`**：与 Tauri 无关的模型、过滤器、响应解析、Markdown 导出与配置存储。
+- **`tapd-core`**：与 Tauri 无关的模型、过滤器、响应解析、媒体收集与配置存储。
+- **`tapd-workflow`**：sans-IO 的任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，宿主通过 `Input` / `Effect` 驱动。
 - **`tapd-mcp`**：stdio MCP sidecar，随 App 打包，供外部 AI 客户端调用。
 
 ```
@@ -30,7 +31,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 │         └── cache.sqlite3 ◄── 缓存 / 轮询         │                     │
 │                                       外部 AI 客户端（opencode 等）     │
 │                                                                         │
-│   Agent Queue ── 通用 TUI（PTY）── 终端接管 / MCP 回报                │
+│   Agent Queue ── 通用 TUI（PTY）── 终端接管 / 会话 hook / 静默兜底      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -43,7 +44,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 | 通知胶囊 | 随 App | 自绘通知与更新进度，可拖动 |
 | 本地 HTTP | 随 App | 仅监听 `127.0.0.1`，随机端口，每次启动轮换 token |
 | `tapd-mcp` | 由 AI 客户端启动 | stdio MCP，反向调用本地 HTTP |
-| Agent TUI | 每个任务 | 在 PTY 中运行，输出进内嵌终端，完成由 MCP 回报 / 会话 hook / 静默兜底 |
+| Agent TUI | 每个任务 | 在 PTY 中运行，输出进内嵌终端，完成由进程退出 / 会话 hook / 静默兜底 |
 
 登录页不是独立窗口：主窗口直接镜像隐藏 WebView 里的企业微信二维码，扫码完成后隐藏 WebView 保留会话。
 
@@ -80,14 +81,18 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 
 ### 3.4 修复队列与 Agent
 
-1. 从缺陷生成 Markdown 包（`bug.md` + `assets/` + `bug.json`）。
-2. 队列固定并发 1，所有运行时都在 PTY 中启动自己的 TUI。
-3. 完成由 MCP `agent_task_report`、会话 hook 事件、进程退出或输出静默判定；任务结束自动回收进程并继续队列。
+1. 从缺陷导出修复包（`bug.json` + `assets/`）。
+2. 队列默认串行；开启「Agent 执行 → Worktree 隔离」后按执行单元（1–8，默认 2）并行，每个任务在自己的 git worktree 中运行。
+3. 完成由进程退出、会话 hook 事件或输出静默判定；任务结束自动回收进程并继续队列。
 4. 权限确认在右侧内嵌终端里完成，桌面不代为回执。
-5. 复杂改动：prompt 要求调用 `tapd_request_review`，任务进入 `awaiting_approval` 并中止本轮；工作区保留 diff，队列停住。未调用时，本轮结束若出现新的未提交文件也会自动进入待审核。
-6. 待审核页「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
-7. 客户端在 MCP 层拒绝未提交时的 TAPD 写操作，保证 commit 先于评论/状态更新。
-8. 输出不落盘，实时渲染到右侧内嵌终端；任务结束后可在历史里用系统终端续接该会话。
+5. Worktree 关闭时的复杂改动：prompt 要求不 commit、不评论、不更新 TAPD；本轮结束后若出现新的未提交文件，`finish_task` 的安全网自动把任务置为 `awaiting_approval`，工作区保留 diff，单队列停止启动新任务。
+6. 待处理页：非 Worktree 任务「通过并提交」→ 回到 `queued`，用提交专用 prompt 重新执行；Worktree 任务「通过并进入合并」→ 必要时先跑只 commit 的提交轮，随后进入 `awaiting_merge`。「停止并储藏」→ 按审核文件列表 `git stash`、任务取消并持久化 `queue_paused`，用户可手动继续队列。
+7. Worktree 开启时，任务只要产生改动（简单任务已 commit，复杂任务保留未提交改动）都进入 `awaiting_approval`；审核通过后（必要时先跑只 commit 的提交轮）进入 `awaiting_merge`，用户确认后由原 Agent 在主仓库合并分支并统一回写 TAPD。校验 `git merge-base --is-ancestor <branch> HEAD` 通过后才 `succeeded`。
+8. 合并不可用（原 Agent 不可用、主仓有未提交改动、同仓库已有合并）时不判失败，保持 `awaiting_merge`，写 `merge.error` 与手动步骤；手动合并后点「我已手动合并」按同一祖先关系校验。
+9. 客户端在 MCP 层拒绝未提交时的 TAPD 写操作，保证 commit 先于评论/状态更新；Worktree 任务在合并完成前同样拒绝写回。
+10. 输出不落盘，实时渲染到右侧内嵌终端；任务结束后可在历史里用系统终端续接该会话。
+11. 进入门禁与恢复：`load()` 保留 SQLite 里的原状态，worker 在 `entered=false` 时等待。登录有效 + 引导完成后前端调用 `agent_enter_system`，后端通过 `tapd-workflow` 的恢复规则改写任务：`queued` 保留；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多自动重试 3 次）；`merging` → `awaiting_merge` + 手动步骤；`awaiting_approval/awaiting_merge` 保留。恢复报告经命令返回并 emit `agent://recovery`，主界面 header 下方 `RecoveryBanner` 展示数量。
+12. 关闭：`shutdown` 先 `suspend`（`preparing/running → queued`、`merging → awaiting_merge`），持久化后再杀 PTY；`shutting_down` 守卫阻止迟到的完成 / 失败回调覆盖已停靠状态。
 
 ### 3.5 MCP 调用
 
@@ -97,9 +102,9 @@ AI 客户端 → tapd-mcp (stdio) → POST /mcp/call → mcp.rs
           → 会话桥读取或写回 TAPD → mcp_audit.rs 记录
 ```
 
-- 工具共 15 个：whoami、项目、查询、我的缺陷、详情、导出、状态查询、评论、状态更新、外部占用登记、外部占用释放、唤起胶囊通知、等待通知回执、Agent 改动审核、Agent 任务回报。
+- 工具共 10 个：whoami、项目列表、缺陷查询、我的缺陷、详情导出（含修复提示词）、状态查询、评论、状态更新、唤起胶囊通知、等待通知回执。
 - 除显式 `workspace_id` 外，工具还接受 `root`（本地仓库目录）：按项目设置里的「本地文件夹」匹配项目，sidecar 默认注入自身 cwd 作为软提示。
-- 外部占用存在 `AgentCore.external`（内存 + `snapshots` 表持久化，15 分钟无心跳失效）；本地排队任务让位，运行中的任务拒绝外部，列表行只保留「查看任务」（本地任务）与图标化的「取消」。
+- `tapd_get_bug` 是详情与提示词的唯一入口：导出目录只有 `bug.json` + `assets/`，返回值含 `skills`（name→SkillRef）、`projectRule`、`prompt` 与下载统计。工具集只覆盖查询、导出、评论、状态更新与通知。
 - 写操作可整体关闭；审计只记录工具、客户端、结果、耗时与项目 / 缺陷 / 目录，不保存评论正文和 Cookie。
 - 「接入 AI 客户端」把 sidecar 路径幂等写入 opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code 的用户级配置，并自动备份。
 
@@ -122,13 +127,13 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - 隐藏 WebView 持有 tapd.cn 会话；登录页把企业微信二维码原样镜像进主窗口，不弹出独立登录窗口。会话失效自动回到扫码页；退出登录逐条删除 TAPD Cookie 并清空 WebView 数据。
 - 项目切换（默认上次项目）、我的 / 全部缺陷、状态 / 优先级 / 严重程度 / 关键词筛选、分页。状态筛选按项目工作流配置的顺序展示（取自列表响应的 `workspace_configs.workflow_infos.bug.status_map` 键顺序）；表头支持按状态 / 创建时间排序（点击循环「升序 → 降序 → 取消」，取消后回到 TAPD 默认排序），排序交给 TAPD 服务端以保证跨页顺序正确。
 - 项目 tab：独立管理项目显示、本地文件夹与 Agent 规则；文件夹支持拖入，改动自动保存。
-- 缺陷表格：各列有最小宽度，窗口变窄时横向滚动；「操作」列固定在右侧（查看详情 / 在 TAPD 打开 / 复制链接 / Agent 修复）；处理人不是自己的缺陷只显示「认领」。顶部范围切换为「我负责的 / 全部」，本项目存在内部 Agent 任务或外部 AI 占用时追加「处理中」：只列出这些缺陷（详情缓存优先 + 实时详情补齐），关键词、筛选与排序在本地应用。
+- 缺陷表格：各列有最小宽度，窗口变窄时横向滚动；「操作」列固定在右侧（查看详情 / 在 TAPD 打开 / 复制链接 / Agent 修复）；处理人不是自己的缺陷只显示「认领」。顶部范围切换为「我负责的 / 全部」，本项目存在内部 Agent 任务时追加「处理中」：只列出这些缺陷（详情缓存优先 + 实时详情补齐），关键词、筛选与排序在本地应用。
 - 主窗口外壳：无系统标题栏（macOS Overlay），左侧图标栏 + 可拖拽项目栏 + 浮起的白色内容面板；项目栏拖到最小宽度以下或窗口过窄时自动收起；右键可本地隐藏项目，只剩一个项目时自动隐藏整个项目栏。
 - 缺陷详情右侧面板：Codex 风格的第三列，从右侧滑入并与内容区并排，左缘可拖动调宽；窗口过窄时先收起项目列表，仍不够再向左扩张。打开详情只刷新这一条缺陷，不触发列表刷新；面板打开期间列表中对应的行保持高亮（面板与列表不同项目或该缺陷不在当前页时不显示）。内容含基本信息、描述、资源、变更记录、评论、自定义字段。顶部的缺陷 ID 可点击复制（就地显示对勾）。处理人 / 开发人员用项目成员下拉直接修改，底部可发表纯文本评论并按工作流流转状态；评论不受认领限制，处理人不是自己时列表操作列与面板底部只显示「认领」，认领后才开放改人与状态流转。成员目录缓存两小时。
 - 资源查看：资源行有独立「预览」按钮（缩放 / 左右切换 / 缩略图条 / Esc 关闭，支持图片与视频），「打开」按默认应用打开，下拉只负责切换默认应用。
-- 顶部状态胶囊：常驻展示通知状态；Agent 运行时切换为「Agent 运行中」，等待改动审核时变为「Agent 待审核」；外部 AI 占用缺陷时显示「客户端 · 模型」。可拖动并记住位置，单击展开通知 / 打开 Agent 任务，双击打开主窗口。悬停胶囊时向下展开摘要卡（项目、缺陷 ID、标题与状态，外部 AI 另含客户端与模型），窗口尺寸由 Rust 侧 `set_peek` 调整，展开的通知卡片优先；外部 AI 卡片与缺陷卡都带「查看缺陷」。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达），悬停也由那里的 `NSTrackingArea` 原生监听后推 `island://hover`，因为 WebKit 与 tao 默认的 tracking rect 都只给 key window 报悬停。
+- 顶部状态胶囊：常驻展示通知状态；Agent 运行时切换为「Agent 运行中」，等待改动审核时变为「Agent 待审核」，等待合并时变为「Agent 待合并」，合并中显示「Agent 合并中」。可拖动并记住位置，单击展开通知 / 打开 Agent 任务，双击打开主窗口。悬停胶囊时向下展开摘要卡（项目、缺陷 ID、标题与状态），窗口尺寸由 Rust 侧 `set_peek` 调整，展开的通知卡片优先；卡片带「查看缺陷」。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达），悬停也由那里的 `NSTrackingArea` 原生监听后推 `island://hover`，因为 WebKit 与 tao 默认的 tracking rect 都只给 key window 报悬停。
 - 请求历史：设置底部「接口历史」自动记录网页内部接口，支持查看与导出 JSON。
-- MD 导出：`bug.md` + `assets/` + `bug.json`，含 frontmatter、描述、资源、变更记录、评论；视频 / 图片 / 日志按需下载。
+- 缺陷导出：`bug.json` + `assets/`；`bug.json` 是 `BugDetail` 的 camelCase JSON，顶层 `assets` 只列成功下载的资源，视频 / 图片 / 日志按需下载。
 - 账户与会话：从设置中拆成独立视图，入口是项目栏底部的用户按钮；项目栏收起时头像缓动到左侧图标栏。
 
 ### 数据与通知
@@ -140,18 +145,21 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 
 ### Agent
 
-- Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。三个列表子页的左侧列表都可收起：工具栏左侧按钮按 tab 显示对应名称，测量的分栏宽度低于「列表宽 + 详情最小宽」（运行 560 / 待审核与历史 480）时自动收起且窗口变宽不弹回，收起状态按 tab 各自记忆。
-- Agent 改动审核：待审核卡片展示摘要、文件与风险，通过后重新入队提交，停止则按文件 `git stash` 并暂停队列；主窗口标题栏与顶部胶囊都会提示待审核数量。
-- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent tab：子页为运行 / 待处理 / 历史；运行栏只显示排队 / 准备 / 运行 / 合并中，待处理显示待审核与待合并，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。三个列表子页的左侧列表都可收起：工具栏左侧按钮按 tab 显示对应名称，测量的分栏宽度低于「列表宽 + 详情最小宽」（运行 560 / 待处理与历史 480）时自动收起且窗口变宽不弹回，收起状态按 tab 各自记忆。
+- Agent 改动审核：待处理卡片展示摘要、文件与风险。Worktree 关闭时通过后重新入队提交、停止则按文件 `git stash` 并暂停队列；Worktree 开启时通过后进入待合并，确认后用原 Agent 合并回主仓库，合并失败保持待合并并展示手动步骤。主窗口标题栏与顶部胶囊都会提示待审核 / 待合并数量。
+- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 执行：默认串行；设置 →「Agent 执行」可开启 Worktree 隔离并把执行单元调到 1–8（默认 2）。开启后每个任务在独立 worktree 中运行，合并成功后删除目录保留分支，失败 / 取消 / 待审核 / 待合并保留目录，删除任务记录时清理，重试新建。队列存在非终态任务时 Worktree 开关锁定，执行单元仍可调。
+- Agent 启动恢复：登录有效 + 引导完成前不启动队列，此后由 `agent_enter_system` 应用 `tapd-workflow` 的恢复规则（中断的运行任务重新排队、合并中回到待合并、待审核 / 待合并保留）；主界面 header 下方的 `RecoveryBanner` 展示恢复数量，可查看任务或关闭。关闭客户端时先停靠队列再杀 PTY，重启后沿用持久化状态。
+- Agent 任务字段：`jsonPath` 指向 `bug.json`；`worktreePath` / `worktreeBranch` 只在开启隔离时出现。旧 `mdPath` 不做迁移，读作空。
 - Agent 运行时状态：hook 事件归一化为 `idle / working / waiting_permission / waiting_question / error`，记录当前工具、最后消息、模型与子 Agent 数量；只存内存并通过 `agent://runtime` 推送，任务头显示，任务结束清空。
 - Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；设置页「默认 Agent」下拉框可查看版本、切换默认、手动刷新，「管理全部运行时」跳到 Agent 页「配置」。缺陷详情的提交面板可以只为本次任务指定运行时。
 - 终端输出：后端按显示帧节拍（16ms，单次上限 32KB）合批推送，**不能**用「输出静默 N ms 才发」——TUI 的 spinner 每 ~17ms 重绘一次，静默判断永远不触发，会把几秒的输出攒在内存里，表现为输入无回显；前端 xterm 走 WebGL 渲染器（DOM 渲染器跟不上 60fps 全屏重绘），无上下文时自动回退。
 - 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude/OMP/Kimi/Qwen `--continue`、codex `resume`、gemini `--resume latest`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。
-- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 参数集中在 Agent 页「配置」，默认提示词模板自带 `{{project_rule}}` 段落；未配置目录时点 Agent 修复会先要求选择目录。
+- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 参数集中在 Agent 页「配置」，执行方式在设置 →「Agent 执行」。内置默认模板不再注入项目规则，项目规则通过 `tapd_get_bug` 的 `projectRule` 返回；未配置目录时点 Agent 修复会先要求选择目录。
 
 ### MCP 与运维
 
-- MCP tab：15 个工具（whoami / 项目 / 查询 / 我的缺陷 / 详情 / 导出（含修复提示词与同事技能包）/ 状态查询 / 评论 / 状态更新 / 外部占用登记 / 外部占用释放 / 胶囊通知 / 等待回执 / Agent 审核 / 任务回报）；「接入 AI 客户端」按客户端一行，一键写入 opencode / ZCode / Claude Code / Cursor 的用户级配置（自动备份、幂等）；Codex 的一键导入入口暂时隐藏（后端 spec 保留，启动 Codex Agent 时仍会幂等注入）。启动受支持的 Agent 运行时也会幂等确保注入。
+- MCP tab：10 个工具（whoami / 项目 / 查询 / 我的缺陷 / 详情导出（含修复提示词与 skills）/ 状态查询 / 评论 / 状态更新 / 胶囊通知 / 等待回执）；「接入 AI 客户端」按客户端一行，一键写入 opencode / ZCode / Claude Code / Cursor 的用户级配置（自动备份、幂等）；Codex 的一键导入入口暂时隐藏（后端 spec 保留，启动 Codex Agent 时仍会幂等注入）。启动受支持的 Agent 运行时也会幂等确保注入。
 - MCP 策略与审计：可关闭写操作、限制可访问项目、限制目标状态白名单；每次调用记录工具、客户端、允许 / 拒绝 / 失败、耗时与项目 / 缺陷（不保存评论正文和 Cookie），支持筛选、导出与清空。
 - 首启引导：首次登录后展示三步引导（登录与离线缓存 / MCP 与 Agent / 通知与胶囊），可跳过，完成状态写入 `config.json`。
 - 自动更新：启动时立即检查 GitHub Releases，之后每 30 分钟查询一次并记录检查时间；标题栏更新图标在有新版本时变绿，hover 展示更新日志。更新期间主窗口隐藏，胶囊放大 3 倍显示下载 / 解包安装进度；失败时可手动下载或取消。发布说明带 `<!-- force-update -->` 标记时为强制更新：要求写入 `config.json` 的 `forcedUpdate`，登录页与主界面都显示不可关闭的升级模态框，直到当前版本不低于目标版本。
@@ -177,17 +185,22 @@ apps/desktop/
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
-    agent.rs                 Agent 队列、运行时目录、PTY、任务持久化
-    coworker.rs              同事包注册表、技能 frontmatter、提示词注入与技能包复制
+    agent.rs                 Agent 队列、运行时目录、PTY、任务持久化、审核与合并阶段
+    agent/workflow_bridge.rs 桌面 AgentTask 与 tapd-workflow Task 的 JSON 往返、恢复 / 停靠接入
+    agent/git.rs             git 辅助（未提交文件、分支差异、分支是否已并入 HEAD）
+    agent/pty.rs             任务收尾、安全网与 worktree 清理
+    agent/worktree.rs        每任务 git worktree 的创建与清理
+    coworker.rs              同事包注册表、技能 frontmatter、提示词注入与 skill map
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入
-    export.rs                MD 导出、资源下载与技能包同步
+    export.rs                bug.json 导出、资源下载与提示词渲染
     diagnostics.rs           脱敏诊断包
     server.rs                本地 HTTP（/healthz、/mcp/call、调试端点）
     update.rs                GitHub Releases 检查与更新状态
     reset.rs / open_with.rs  本地数据清理 / 按默认应用打开资源
-crates/tapd-core/            模型、过滤器、响应解析、Markdown、配置与存储
+crates/tapd-core/            模型、过滤器、响应解析、媒体收集、配置与存储
+crates/tapd-workflow/        sans-IO 工作流核心（状态机 / 调度 / 审核合并 / 恢复 / 历史，仅依赖 serde）
 crates/tapd-mcp/             MCP stdio sidecar
 docs/                        架构、开发、计划、接口、通知、Agent、MCP、发版
 fixtures/                    假 agent 等测试辅助
@@ -198,8 +211,9 @@ scripts/                     图标、sidecar、发版等构建工具
 
 - **复用网页会话，不走 Open API**：保持与公司账号 / SSO 一致，代价是依赖未公开的内部接口，改版时需要更新 `tapd-core` 适配层。
 - **缓存是快照**：优先保证打开即见，不做全量后台同步与离线搜索。
-- **Agent 并发固定 1**：同一时间只有一个任务占用仓库，避免互相踩踏。
+- **Agent 默认串行，Worktree 开启后并行**：默认关闭 Worktree，同一时间只有一个任务使用主仓库；开启后每个任务在独立 worktree 中运行，执行单元可调到 1–8，避免互相踩踏。改动先审核、合并回主仓后才算完成，TAPD 回写集中在合并阶段，避免分支旁的中间状态污染缺陷。
 - **通知自绘**：不使用系统通知，才能承载处理 / 查看 / 忽略三个动作与更新进度。
+- **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行，便于穷举并发、审核、合并与恢复场景；当前只接入了恢复 / 关闭 / 门禁与纯策略，完整状态机迁移仍在下一阶段。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
@@ -218,6 +232,7 @@ scripts/                     图标、sidecar、发版等构建工具
 1. 完整的跨项目缓存同步与离线搜索。
 2. 如确有需要，再扩展「项目」范围的多项目轮询与更细的游标策略。
 3. 签名 / 公证发布，以及 MCP 调用限流与按 `clientInfo.name` 的独立策略档案。
-4. 多 Agent / 并发队列（当前固定并发 1，是刻意约束）。
+4. 更细的并发调度与资源限制（当前按执行单元限制并行数，Worktree 关闭时固定 1）。
+5. 把 `AgentCore` 的完整队列 / 审核 / 合并状态机迁移到 `tapd-workflow`，宿主只保留 PTY、git、SQLite 等适配器。
 
 更完整的阶段计划与验收记录见 [PLAN.md](PLAN.md)，接口验证见 [spike.md](spike.md)。

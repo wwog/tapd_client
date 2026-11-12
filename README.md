@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-macOS%20arm64-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="下载 macOS arm64 版" />
   </a>
   <a href="docs/MCP.md">
-    <img src="https://img.shields.io/badge/MCP-15%20tools-34C759?style=for-the-badge" alt="MCP 15 tools" />
+    <img src="https://img.shields.io/badge/MCP-10%20tools-34C759?style=for-the-badge" alt="MCP 10 tools" />
   </a>
   <a href="CHANGELOG.md">
     <img src="https://img.shields.io/github/v/release/wwog/tapd_client?style=for-the-badge&label=version&color=1F2937" alt="版本" />

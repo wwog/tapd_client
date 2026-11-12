@@ -211,8 +211,10 @@ mod tests {
             title: "bug title".to_string(),
             severity: "严重".to_string(),
             priority: "高".to_string(),
-            md_path: "/tmp/bug.md".to_string(),
+            json_path: "/tmp/bug.json".to_string(),
             repo_path: "/tmp/repo".to_string(),
+            worktree_path: None,
+            worktree_branch: None,
             status: crate::agent::TaskStatus::Succeeded,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             started_at: None,
@@ -224,11 +226,15 @@ mod tests {
             runtime_id: "opencode".to_string(),
             agent_session_id: None,
             approval: None,
+            merge: None,
             commit_only: false,
             extra_prompt: String::new(),
             attachments: Vec::new(),
             baseline_dirty: Vec::new(),
             baseline_head: None,
+            attempt: 0,
+            interrupted: false,
+            changes: None,
         };
         assert!(cache.save_agent_tasks(std::slice::from_ref(&task), true, &[]));
 
@@ -312,7 +318,10 @@ mod tests {
         let tasks: i64 = conn
             .query_row("SELECT COUNT(*) FROM agent_tasks", [], |row| row.get(0))
             .expect("tasks");
-        assert_eq!(tasks, 0, "pre-1.0 task rows have no payload and are dropped");
+        assert_eq!(
+            tasks, 0,
+            "pre-1.0 task rows have no payload and are dropped"
+        );
     }
 
     #[test]

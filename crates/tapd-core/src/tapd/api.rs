@@ -30,7 +30,7 @@ pub use labels::{priority_label, severity_label, status_label};
 pub use media::{collect_embedded_media, collect_media};
 pub use parse::{parse_bug_detail, parse_bug_list, parse_workspace_members, parse_workspaces};
 
-pub(crate) use html::{attribute_value, collapse_whitespace, normalize_media_url};
+pub(crate) use html::collapse_whitespace;
 
 #[cfg(test)]
 mod tests {

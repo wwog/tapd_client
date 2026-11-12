@@ -4,7 +4,7 @@ import { ArrowUpCircle, ShieldAlert } from "lucide-react";
 import { getUpdateSnapshot, subscribeUpdate } from "../lib/update";
 
 type Props = {
-  /** Pending commit reviews; the badge opens the Agent approval queue. */
+  /** Tasks waiting for a review or merge decision; opens the 待处理 queue. */
   pendingReviews: number;
   onOpenReviews: () => void;
   onOpenAccount: () => void;
@@ -30,12 +30,12 @@ export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props
     >
       <span className="ml-[62px] h-full flex-1" data-tauri-drag-region />
 
-      {/* Pending commit reviews stay visible until the user decides them. */}
+      {/* Pending reviews and merges stay visible until the user decides them. */}
       {pendingReviews > 0 ? (
         <button
           type="button"
           onClick={onOpenReviews}
-          title={`${pendingReviews} 个 Agent 改动待审核`}
+          title={`${pendingReviews} 个 Agent 任务待处理`}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-amber-600 transition hover:bg-amber-50"
         >
           <span className="relative">

@@ -4,6 +4,14 @@
 
 ## 新增
 
+- 新增 `crates/tapd-workflow`：sans-IO 的工作流核心，包含任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，启用 `#![forbid(unsafe_code)]`，当前有 75 个测试。桌面端本阶段只接入启动恢复、关闭停靠、进入门禁与纯策略复用，完整审核 / 合并状态机迁移仍是下一阶段。
+- 启动恢复：登录有效且引导完成后，前端调用 `agent_enter_system`，后端对持久化队列应用恢复规则——`queued` 保留；`preparing/running` 重新排队并标记中断，`attempt + 1`，默认最多自动重试 3 次；`merging` 回到 `awaiting_merge` 并写入「客户端重启，合并已中止」与手动步骤；`awaiting_approval/awaiting_merge` 保留。
+- 登录后恢复提示：主界面 header 下方新增 `RecoveryBanner`，展示已重新排队 / 待审核 / 待合并 / 失败数量，可「查看任务」或「知道了」；空报告不展示。
+- 进入系统门禁：登录有效 + 引导完成前不初始化工作流，worker 在 `entered=false` 时等待；此阶段队列命令返回「工作流尚未初始化，请先进入系统」，避免在登录页后启动持久化任务。
+- 设置页新增「Agent 执行」卡片：Worktree 隔离开关与执行单元。默认关闭且固定单任务；开启后执行单元可调 1–8、默认 2，每个任务在独立 git worktree 中运行。
+- Worktree 任务新增「待合并 / 合并中」阶段：审核通过后进入待合并，用户确认后用原 Agent 把任务分支合并回主仓库，并统一回写 TAPD；校验分支已并入当前 HEAD 后才算完成。
+- 合并失败提供手动回退：原 Agent 不可用、主仓有未提交改动或同仓库已有合并时，任务保持待合并，展示 `merge.error` 与手动步骤（cd、git status、git merge、冲突解决、测试、TAPD 回写），手动合并后可点「我已手动合并」校验。
+- Agent 任务记录新增 `worktreePath` / `worktreeBranch`：合并成功后删除 worktree 目录、保留分支；失败 / 取消 / 待审核 / 待合并保留目录；删除任务记录时清理，重试时新建。
 - 缺陷列表右键菜单新增「复制长 ID」：短 ID 用于搜索和展示，长 ID 用于接口、日志等需要完整标识的场景，两者都能直接复制。
 - 自动检测本机已安装的 Agent 与版本：启动时每天最多扫描一次，设置页可手动「刷新检测」，结果缓存在 `agent-scan.json`。
 - 运行时目录对齐 orca：新增 Grok、Hermes、Kiro、Qoder、OpenCode 2、Droid、Jcode、DeepSeek Harness 等 30+ 个 TUI Agent，并支持检测别名与 argv `--` 终止符。
@@ -13,6 +21,17 @@
 
 ## 修改
 
+- 关闭语义改为「先停靠、再持久化、最后杀 PTY」：`shutdown` 调用 `suspend_tasks` 把 `preparing/running` 停靠为 `queued`（`interrupted=true`）、`merging` 停靠为 `awaiting_merge`，同步写入 SQLite 后才回收进程；`shutting_down` 守卫阻止迟到的完成 / 失败回调覆盖已停靠状态。
+- 启动加载不再把遗留的 `preparing/running` 直接标记为 `failed`，持久化状态原样保留到进入系统后再按恢复规则处理。
+- MCP 工具收敛到 10 个：删除 `tapd_export_bug_md`、`tapd_claim_bug`、`tapd_release_bug`、`tapd_request_review` 与 `agent_task_report`；导出并入 `tapd_get_bug`，外部占用与任务回报不再存在。
+- `tapd_get_bug` 现在只写 `bug.json` + `assets/`，返回 `warnings` / `downloadedBytes` / `bugJson` / `assetCount` / `skills` / `projectRule` / `prompt`；不再返回缺陷详情内联、`tapdIntegration`、`coworkerSkills`、`externalClaim`，也不再写 `bug.md` / `prompt.md` / `skills/`。
+- `skills` 改为 name→SkillRef 的 map：value 的 `path` 是 `SKILL.md` 绝对路径；重名先用 `<coworkerId>/<name>`，仍重名追加序号。`projectRule` 独立返回，不再作为提示词模板变量。
+- 修复提示词按复杂度分流：简单任务提交后用 `tapd_add_bug_comment` 评论并用 `tapd_update_bug_status` 更新状态；复杂任务不 commit、不评论、不改 TAPD。内置 Agent 的复杂任务由未提交改动安全网自动进入待审核，审核通过后按提交模板继续。
+- Worktree 开启时改为审核 → 合并闭环：所有产生改动的任务（简单或复杂）都进 `awaiting_approval`；简单任务在分支上只 commit，复杂任务保留未提交改动；审核通过后进入 `awaiting_merge`。TAPD 回写统一移到合并成功后由合并 Agent 完成，手动合并步骤也包含回写。
+- 队列中存在任何非终态任务时锁定 Worktree 开关；执行单元仍可调整。Worktree 任务的待审核 / 待合并 / 合并中不阻塞新任务，非 Worktree 的待审核仍阻塞单队列。
+- 非 Worktree 任务保持单执行队列与原有语义，不出现合并阶段；执行单元固定为 1。
+- 删除外部 AI 占用及其在胶囊、缺陷列表、通知里的展示；Agent 完成判定改为进程退出 / 会话 hook / 输出静默兜底，不再依赖 MCP 回报。
+- Agent 任务字段 `mdPath` 改为 `jsonPath`，导出目录定位同步调整；旧记录不做迁移。
 - Agent 页「配置」重做为单列页面：默认 Agent 改为带检测状态与版本的下拉选择器，运行时参数、生命周期、能力与互通限制按卡片排列，不再使用窄栏长列表。
 - Codex、OMP、OpenCode、Claude、Cursor、Gemini、Qwen、OpenClaude、Qoder、Qoder CN、CodeBuddy、Kimi、ZCode 启动时自动安装/刷新会话 hook：Claude 系安装完整的会话、提示词、工具、权限、子 Agent 与结束事件；Codex 同时写入 `hooks.json` 与 `config.toml` 信任哈希；OpenCode 插件上报工具/权限/提问；OMP 使用 `agent_settled` 作为真正的回合结束信号。事件 POST 到桌面端 loopback `/agent/hook`，并把 `sessionId` 写回任务记录。
 - Agent 任务头新增运行时状态条：显示当前工具、等待权限/回答、最后消息、模型与子 Agent 数量；状态只存内存，通过 `agent://runtime` 实时推送，任务结束后清空。
@@ -20,6 +39,10 @@
 
 ## 修复
 
+- 复杂改动不再依赖模型主动调用审核工具：任务结束时有本轮新产生的未提交文件就自动进入待审核，忘记调用也不会把改动留在工作区。
+- 合并完成判定改为校验分支是否已并入主仓库当前 HEAD（`git merge-base --is-ancestor`），不再以合并进程退出码为准；合并 Agent 退出但分支未并入时保持待合并，不误判成功。
+- 合并失败、用户取消合并或客户端重启打断合并时，任务回到待合并并保留 worktree 与分支，不再直接判失败；重启后的合并中任务会带「客户端重启，合并已中止」错误恢复。
+- Worktree 创建失败（非 git 仓库、无 HEAD、目录已存在）会明确把任务标为失败并带上 git 错误，不再继续执行。
 - 项目管理页的项目卡片不再被挤坏：此前按窗口宽度排两列，详情面板一开、内容区变窄也还是两列，卡片里的「规则」被切掉。现在按内容区自身的宽度切换列数，窄了就排一列，卡片头部始终完整。
 - 缺陷详情顶部显示的短 ID 与点击复制的结果一致了：TAPD 的详情接口不返回 `short_id`（只有列表接口返回），此前标题显示长 ID 末 7 位、复制却给完整 19 位。现在解析详情时用长 ID 末 7 位补齐，前端显示与复制也共用同一个取值。
 - 顶部胶囊的悬停摘要卡不再时灵时不灵：窗口改尺寸时 AppKit 会重建跟踪区域并误报「指针离开」，摘要卡因此闪烁，甚至一直不再弹出（拖动一下胶囊才恢复）。现在按指针真实位置判断，只有真的移出窗口才收起，并补一次延迟复核，避免漏掉与动画同时发生的真实移出。

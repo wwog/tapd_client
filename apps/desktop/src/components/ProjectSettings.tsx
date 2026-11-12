@@ -293,7 +293,7 @@ export function ProjectSettings(props: {
                     onChange={(event) => edit(workspace.id, { rule: event.target.value })}
                     onBlur={save}
                     rows={4}
-                    title="默认提示词模板里的 {{project_rule}} 会引入这段规则。"
+                    title="项目规则会作为 tapd_get_bug 的 projectRule 返回。"
                     placeholder={"例如：\n- 只改 Rust 层，UI 交给同事\n- 提交前必须跑 cargo test"}
                     className={`${inputClass} mt-1 resize-y leading-5`}
                   />

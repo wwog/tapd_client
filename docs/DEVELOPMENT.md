@@ -32,11 +32,11 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、构建 deb
 1. 启动后主窗口直接显示企业微信扫码登录页，不弹出独立登录窗口。
 2. 扫码成功后隐藏 WebView 保留会话，客户端进入首启引导（可跳过）。
 3. 选择左侧项目，默认展示「我负责的」缺陷；可切换「全部」。
-4. 点击缺陷行打开详情；点击「导出 MD」生成可交给 AI 的缺陷包。
+4. 点击缺陷行打开详情；点击「导出」生成可交给 AI 的缺陷包（`bug.json` + `assets/`）。
 5. 设置 →「默认 Agent」选择运行时；点「管理全部运行时」进入 Agent 页 →「配置」填写可执行路径与当前项目仓库路径。
 6. 设置 → 新缺陷通知：选择范围（我的 / 项目）与是否包含转移、重新打开。
 7. 打开 MCP tab →「接入 AI 客户端」，选择要用的客户端一键导入（opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code），并按需调整策略与审计开关；后续启动 Agent 会自动确保注入。
-8. Agent tab：运行栏查看当前任务；「待审核」时在 tab 或胶囊里批准 / 拒绝；历史子页查看执行记录、日志，或在 Terminal 恢复会话。
+8. Agent tab：运行栏查看当前任务；「待审核」时在 tab 或胶囊里批准 / 拒绝；历史子页查看执行记录、prompt 与退出码，或在 Terminal 恢复会话。
 9. 遇到问题时，设置 → 运行信息 →「导出诊断包」，把生成的 zip 提供给排查者。
 
 ## 4. MCP 联调
@@ -74,8 +74,9 @@ opencode mcp list     # ✓ tapd connected
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
 - 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
 - Agent 配置 / 任务：`agent.json`、`cache.sqlite3` 的 `agent_tasks` / `agent_queue_state`（终端输出不落盘；旧版本遗留的 `agent-logs/`、`agent-events/` 在启动时删除）
+- Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<ascii(workspace_id)>/<taskId>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`
-- 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.md` 里）
+- 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.json` 里）
 - `runtime.json`：本地 API 端口与 token（0600）
 
 清理缓存：设置 → 本地数据 →「清理缓存」，删除上述数据目录下的全部内容并重启应用。`exports/` 与 WebView Cookie 不在数据目录内，会被保留。

@@ -1,40 +1,46 @@
-//! The fix prompt that ships with an export.
+//! The fix prompt that ships with `tapd_get_bug`.
 //!
-//! `tapd_export_bug_md` writes it next to `bug.md` and also returns the text, so
-//! an external AI gets the project rules, the repo path and the coworker skills
-//! in the same call that exports the package — no separate prompt tool needed.
+//! The prompt is rendered, not written: the package holds only `bug.json` and
+//! `assets/`, and the MCP result carries the text so an external AI can start
+//! from it directly. Project rules and coworker skills stay out of the template
+//! — `tapd_get_bug` returns them as separate fields.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use tauri::AppHandle;
 use tapd_core::tapd::BugDetail;
+use tauri::AppHandle;
 
 use crate::agent::{self, PromptVars};
 
-/// The task prompt for an external AI. Flow control (claim, review gate,
-/// commit-then-write-back order) deliberately stays out of here: it lives in
-/// the `tapdIntegration` block of `tapd_get_bug`, where models actually read it.
-const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n\n交付流程（认领、简单/复杂改动的复核条件、commit 与回写顺序）见 tapd_get_bug 返回的 tapdIntegration，按它执行。";
+const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}
+缺陷详情：{{json_path}}
+本地仓库：{{repo_path}}
+项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}
+
+要求：
+1. 先完整阅读缺陷详情（bug.json）和 assets/ 下的截图、视频。
+2. 定位根因，做最小必要修改。
+3. 修复时请遵循团队代码规范，确保代码可读、可维护。
+4. 判断改动复杂度：
+   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。
+   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，交给用户复核和测试。
+5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
 
 pub struct PromptContext<'a> {
+    /// Project the bug belongs to; also how the local folder is found.
     pub workspace_id: &'a str,
     /// Display name used in `{{workspace_name}}` (workspace name, else id).
     pub workspace_name: &'a str,
     /// Caller's working directory (`root`); used when the project has no
     /// configured local folder.
     pub root_hint: Option<&'a str>,
-    /// Extra instructions from the MCP caller, appended to the prompt.
-    pub instructions: String,
+    /// Absolute `bug.json` path written by the export.
+    pub json_path: &'a Path,
     pub detail: &'a BugDetail,
 }
 
-/// Renders the prompt and writes it to `<export_dir>/prompt.md`.
-pub fn write(
-    app: &AppHandle,
-    export_dir: &Path,
-    md_path: &Path,
-    ctx: PromptContext<'_>,
-) -> Result<(String, PathBuf), String> {
+/// Renders the task prompt for an external AI.
+pub fn render(app: &AppHandle, ctx: PromptContext<'_>) -> String {
     let agent_config = agent::mcp_agent_config(app);
     let project = agent_config.projects.get(ctx.workspace_id);
     let repo_path = project
@@ -42,14 +48,11 @@ pub fn write(
         .filter(|path| !path.is_empty())
         .or_else(|| ctx.root_hint.map(str::to_string))
         .unwrap_or_else(|| "（当前工作目录）".to_string());
-    let project_rule = project
-        .map(|project| project.rule.trim().to_string())
-        .unwrap_or_default();
 
     let vars = PromptVars {
         task_id: String::new(),
         title: ctx.detail.summary.title.clone(),
-        md_path: md_path.to_string_lossy().to_string(),
+        json_path: ctx.json_path.to_string_lossy().to_string(),
         repo_path,
         workspace_name: ctx.workspace_name.to_string(),
         bug_id: ctx.detail.summary.id.clone(),
@@ -61,16 +64,12 @@ pub fn write(
             &ctx.detail.summary.priority_label,
             &ctx.detail.summary.priority,
         ),
-        project_rule,
-        user_prompt: ctx.instructions,
+        user_prompt: String::new(),
         attachments: Vec::new(),
-        coworker: crate::coworker::prompt_section(app, &agent_config.coworker_ids),
+        coworker: String::new(),
     };
 
-    let prompt = agent::render_prompt(MCP_PROMPT_TEMPLATE, &vars);
-    let path = export_dir.join("prompt.md");
-    std::fs::write(&path, &prompt).map_err(|error| format!("写入 prompt.md 失败：{error}"))?;
-    Ok((prompt, path))
+    agent::render_prompt(MCP_PROMPT_TEMPLATE, &vars)
 }
 
 /// Human label when TAPD sent one, otherwise the raw key.
@@ -88,6 +87,22 @@ mod tests {
     use super::{label_or_raw, MCP_PROMPT_TEMPLATE};
     use crate::agent::{render_prompt, PromptVars};
 
+    fn vars() -> PromptVars {
+        PromptVars {
+            task_id: String::new(),
+            title: "按钮错位".to_string(),
+            json_path: "/exports/UU/bug.json".to_string(),
+            repo_path: "/repo".to_string(),
+            workspace_name: "UU".to_string(),
+            bug_id: "42".to_string(),
+            severity: "严重".to_string(),
+            priority: "高".to_string(),
+            user_prompt: String::new(),
+            attachments: Vec::new(),
+            coworker: String::new(),
+        }
+    }
+
     #[test]
     fn labels_prefer_the_human_readable_value() {
         assert_eq!(label_or_raw("严重", "serious"), "严重");
@@ -96,32 +111,21 @@ mod tests {
     }
 
     #[test]
-    fn mcp_prompt_template_carries_paths_and_rule() {
-        let vars = PromptVars {
-            task_id: String::new(),
-            title: "按钮错位".to_string(),
-            md_path: "/exports/bug.md".to_string(),
-            repo_path: "/repo".to_string(),
-            workspace_name: "UU".to_string(),
-            bug_id: "42".to_string(),
-            severity: "严重".to_string(),
-            priority: "高".to_string(),
-            project_rule: "先跑 pnpm test".to_string(),
-            user_prompt: String::new(),
-            attachments: Vec::new(),
-            coworker: "协作同事：\n- 程序员｜Author：一起写".to_string(),
-        };
-        let prompt = render_prompt(MCP_PROMPT_TEMPLATE, &vars);
+    fn mcp_prompt_template_carries_paths_and_flow() {
+        let prompt = render_prompt(MCP_PROMPT_TEMPLATE, &vars());
         assert!(prompt.contains("按钮错位"));
-        assert!(prompt.contains("/exports/bug.md"));
+        assert!(prompt.contains("/exports/UU/bug.json"));
         assert!(prompt.contains("/repo"));
-        assert!(prompt.contains("先跑 pnpm test"));
-        assert!(prompt.contains("程序员｜Author"));
-        assert!(!prompt.contains("{{"));
-        // External clients cannot pause the desktop review queue.
+        assert!(!prompt.contains("{{"), "every placeholder is replaced");
+        // Flow control now lives in the prompt itself, not in a MCP field.
+        assert!(prompt.contains("tapd_add_bug_comment"));
+        assert!(prompt.contains("tapd_update_bug_status"));
+        assert!(prompt.contains("不要 commit"));
+        assert!(!prompt.contains("tapdIntegration"));
+        // Removed tools must not be referenced any more.
         assert!(!prompt.contains("tapd_request_review"));
-        // Flow control lives in `tapdIntegration`, not in the task prompt.
+        assert!(!prompt.contains("agent_task_report"));
         assert!(!prompt.contains("tapd_claim_bug"));
-        assert!(prompt.contains("tapdIntegration"));
+        assert!(!prompt.contains("项目规则"));
     }
 }

@@ -1,6 +1,16 @@
 import { useEffect, useState, type Ref } from "react";
 import clsx from "clsx";
-import { Archive, Bug, Check, Eye, FolderOpen, Loader2, ShieldAlert } from "lucide-react";
+import {
+  Archive,
+  Bug,
+  Check,
+  Eye,
+  FolderOpen,
+  GitMerge,
+  Loader2,
+  ShieldAlert,
+  X,
+} from "lucide-react";
 
 import { agentApi, type AgentTask } from "../lib/agent";
 import { relativeTime } from "../lib/api";
@@ -8,15 +18,26 @@ import { bugTitle } from "../lib/bug";
 import { formatDateTime } from "../lib/format";
 import { Badge, Button } from "./ui";
 
+/** Manual merge steps returned by `mergeStart` when the agent cannot merge. */
+export type ManualMerge = { taskId: string; instructions: string };
+
 type Props = {
   tasks: AgentTask[];
   busy: string | null;
   queuePaused: boolean;
+  /** Steps returned by 用原 Agent 合并 when it fell back to manual. */
+  manualMerge?: ManualMerge | null;
   onApprove: (task: AgentTask) => void;
   onStop: (task: AgentTask) => void;
+  onMergeStart: (task: AgentTask) => void;
+  onMergeVerify: (task: AgentTask) => void;
+  onCancelMerge: (task: AgentTask) => void;
   onResumeQueue: () => void;
   onOpenBug: (workspaceId: string, bugId: string) => void;
   onOpenExportDir: (task: AgentTask) => void;
+  /** One-shot task selection, e.g. a task that just entered AwaitingMerge. */
+  focusTaskId?: string | null;
+  onFocusConsumed?: () => void;
   /** Split container, measured by the page to auto-collapse the list. */
   areaRef?: Ref<HTMLDivElement>;
   /** Leave the width to the review card. */
@@ -24,10 +45,12 @@ type Props = {
 };
 
 /**
- * 待审核：Agent 判断改动复杂时暂停在这里，工作区保留未提交的 diff。
- * 通过后任务重新入队并收到「审核已通过」的提交提示词；停止会储藏改动并暂停队列。
+ * 待处理：Agent 完成修改后暂停在这里，等待用户的下一步决定。
  *
- * 左侧是待审核队列，右侧是选中任务的改动摘要与操作。
+ * - 待审核：改动还在工作区，通过后重新入队提交（Worktree 任务随后进入合并）。
+ * - 待合并：Worktree 分支已提交，确认后用原 Agent 合并回主仓库，或按步骤手动合并。
+ *
+ * 左侧是待处理队列，右侧是选中任务的操作。
  */
 export function AgentApproval(props: Props) {
   const { tasks, queuePaused } = props;
@@ -48,6 +71,13 @@ export function AgentApproval(props: Props) {
     );
   }, [tasks]);
 
+  useEffect(() => {
+    if (!props.focusTaskId) return;
+    if (!ordered.some((task) => task.id === props.focusTaskId)) return;
+    setSelectedId(props.focusTaskId);
+    props.onFocusConsumed?.();
+  }, [props.focusTaskId, tasks, props.onFocusConsumed]);
+
   const selected = ordered.find((task) => task.id === selectedId) ?? null;
 
   return (
@@ -55,7 +85,7 @@ export function AgentApproval(props: Props) {
       {tasks.length > 0 && !queuePaused ? (
         <div className="flex shrink-0 items-center gap-2 rounded-xl border border-border bg-slate-50 px-3 py-2 text-ui-sm text-slate-600">
           <ShieldAlert size={14} className="shrink-0 text-amber-500" />
-          有待审核任务，队列已暂停；通过或停止后才会继续下一个任务。未决定前关闭客户端不会丢改动。
+          有待处理任务。Worktree 任务不会阻塞新任务；停止审核会储藏改动并暂停队列。
         </div>
       ) : null}
       {queuePaused ? (
@@ -81,7 +111,7 @@ export function AgentApproval(props: Props) {
           <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface ">
             <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
               <ShieldAlert size={13} className="text-amber-500" />
-              <span className="text-ui-sm font-normal text-slate-500">待审核改动</span>
+              <span className="text-ui-sm font-normal text-slate-500">待处理任务</span>
               <span className="ml-auto text-ui-xs tabular-nums text-slate-400">
                 {tasks.length} 个
               </span>
@@ -89,51 +119,60 @@ export function AgentApproval(props: Props) {
             <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
               {ordered.length === 0 ? (
                 <div className="px-3 py-8 text-center text-ui-caption leading-5 text-slate-400">
-                  没有待审核的改动
+                  没有待处理的任务
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {ordered.map((task) => (
-                    <button
-                      key={task.id}
-                      type="button"
-                      onClick={() => setSelectedId(task.id)}
-                      className={clsx(
-                        "w-full rounded-lg px-2.5 py-2 text-left transition",
-                        task.id === selectedId
-                          ? "bg-amber-50 border border-amber-200"
-                          : "hover:bg-slate-50",
-                      )}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <Badge tone="amber" dot>
-                          待审核
-                        </Badge>
-                        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
-                          {relativeTime(
-                            task.approval?.requestedAt ?? task.createdAt,
-                          )}
-                        </span>
-                      </div>
-                      <div
-                        className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
-                        title={bugTitle(task.title)}
+                  {ordered.map((task) => {
+                    const awaitingMerge = task.status === "awaiting_merge";
+                    return (
+                      <button
+                        key={task.id}
+                        type="button"
+                        onClick={() => setSelectedId(task.id)}
+                        className={clsx(
+                          "w-full rounded-lg px-2.5 py-2 text-left transition",
+                          task.id === selectedId
+                            ? awaitingMerge
+                              ? "bg-cyan-50 border border-cyan-200"
+                              : "bg-amber-50 border border-amber-200"
+                            : "hover:bg-slate-50",
+                        )}
                       >
-                        {bugTitle(task.title) || "（无标题）"}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
-                        <span className="min-w-0 truncate">
-                          {task.workspaceName || task.workspaceId} · #
-                          {task.bugId.slice(-7)}
-                        </span>
-                        {task.approval?.files?.length ? (
-                          <span className="shrink-0">
-                            {task.approval.files.length} 个文件
+                        <div className="flex items-center gap-1.5">
+                          <Badge tone={awaitingMerge ? "cyan" : "amber"} dot>
+                            {awaitingMerge ? "待合并" : "待审核"}
+                          </Badge>
+                          <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+                            {relativeTime(
+                              task.approval?.requestedAt ?? task.createdAt,
+                            )}
                           </span>
-                        ) : null}
-                      </div>
-                    </button>
-                  ))}
+                        </div>
+                        <div
+                          className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
+                          title={bugTitle(task.title)}
+                        >
+                          {bugTitle(task.title) || "（无标题）"}
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
+                          <span className="min-w-0 truncate">
+                            {task.workspaceName || task.workspaceId} · #
+                            {task.bugId.slice(-7)}
+                          </span>
+                          {task.approval?.files?.length ? (
+                            <span className="shrink-0">
+                              {task.approval.files.length} 个文件
+                            </span>
+                          ) : task.worktreeBranch ? (
+                            <span className="min-w-0 truncate font-mono">
+                              {task.worktreeBranch}
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -141,7 +180,11 @@ export function AgentApproval(props: Props) {
         )}
         <section className="min-w-0 flex-1 overflow-y-auto rounded-xl border border-border bg-surface p-4 ">
           {selected ? (
-            <ReviewCard key={selected.id} task={selected} {...props} />
+            selected.status === "awaiting_merge" ? (
+              <MergeCard key={selected.id} task={selected} {...props} />
+            ) : (
+              <ReviewCard key={selected.id} task={selected} {...props} />
+            )
           ) : (
             <div className="grid h-full place-items-center px-6 py-10 text-center">
               <div className="max-w-md">
@@ -150,9 +193,9 @@ export function AgentApproval(props: Props) {
                 </div>
                 <h3
                   className="mt-3 text-ui-base text-slate-800"
-                  title="复杂改动会在这里暂停。通过后重新入队提交；停止会把本次涉及的文件储藏到 git stash 并暂停队列，代码不会丢。"
+                  title="Worktree 任务的改动会在这里等待审核，通过后再确认合并；停止会把本次涉及的文件储藏到 git stash 并暂停队列，代码不会丢。"
                 >
-                  没有待审核的改动
+                  没有待处理的任务
                 </h3>
               </div>
             </div>
@@ -172,6 +215,7 @@ function ReviewCard({
   onOpenExportDir,
 }: Props & { task: AgentTask }) {
   const approval = task.approval;
+  const worktree = Boolean(task.worktreeBranch);
   const approveBusy = busy === `approve:${task.id}`;
   const stopBusy = busy === `stop:${task.id}`;
   const files = approval?.files ?? [];
@@ -219,12 +263,21 @@ function ReviewCard({
             <span className="shrink-0">
               {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
             </span>
-            <span
-              className="min-w-0 max-w-full truncate font-mono"
-              title={task.repoPath}
-            >
-              {task.repoPath || "未配置仓库"}
-            </span>
+            {task.worktreeBranch ? (
+              <span
+                className="min-w-0 max-w-full truncate font-mono text-sky-700"
+                title={task.worktreePath ?? task.worktreeBranch}
+              >
+                ⎇ {task.worktreeBranch}
+              </span>
+            ) : (
+              <span
+                className="min-w-0 max-w-full truncate font-mono"
+                title={task.repoPath}
+              >
+                {task.repoPath || "未配置仓库"}
+              </span>
+            )}
             {approval?.requestedAt ? (
               <span className="shrink-0">
                 {formatDateTime(approval.requestedAt, {
@@ -261,7 +314,7 @@ function ReviewCard({
             size="sm"
             variant="ghost"
             icon={<FolderOpen size={11} />}
-            disabled={busy !== null || !task.mdPath}
+            disabled={busy !== null || !task.jsonPath}
             onClick={() => onOpenExportDir(task)}
           >
             导出目录
@@ -270,7 +323,10 @@ function ReviewCard({
       </div>
 
       <div className="select-text mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-3 py-2.5 text-ui-caption leading-5 text-slate-600">
-        {approval?.summary || "Agent 已暂停，等待确认后提交。"}
+        {approval?.summary ||
+          (worktree
+            ? "Agent 已完成修改，等待审核后合并。"
+            : "Agent 已暂停，等待确认后提交。")}
       </div>
 
       {files.length > 0 ? (
@@ -306,7 +362,7 @@ function ReviewCard({
       {diffOpen ? (
         <div className="mt-2 rounded-lg bg-zinc-950 p-2.5">
           <div className="mb-1.5 flex items-center gap-2 text-ui-xs text-zinc-400">
-            <span className="font-mono">git diff HEAD</span>
+            <span className="font-mono">相对任务起点的差异</span>
             <span className="ml-auto">只包含已跟踪文件；未跟踪文件见上方列表</span>
           </div>
           {diffBusy ? (
@@ -326,7 +382,11 @@ function ReviewCard({
 
       <div
         className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3"
-        title="通过会重新入队，Agent 只做核对、提交与 TAPD 回写；停止会把本次涉及的文件储藏到 git stash 并暂停队列。"
+        title={
+          worktree
+            ? "通过后进入合并确认，再用原 Agent 合并回主仓库；停止会取消任务，未提交改动存入 git stash，已提交分支保留。"
+            : "通过会重新入队，Agent 只做核对、提交与 TAPD 回写；停止会把本次涉及的文件储藏到 git stash 并暂停队列。"
+        }
       >
         <Button
           size="sm"
@@ -336,7 +396,7 @@ function ReviewCard({
           icon={<Check size={12} />}
           onClick={() => onApprove(task)}
         >
-          通过并提交
+          {worktree ? "通过并进入合并" : "通过并提交"}
         </Button>
         <Button
           size="sm"
@@ -346,7 +406,144 @@ function ReviewCard({
           icon={<Archive size={12} />}
           onClick={() => onStop(task)}
         >
-          停止并储藏
+          {worktree ? "停止任务" : "停止并储藏"}
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+/** 待合并：分支已提交，确认后用原 Agent 合并，或按步骤手动合并。 */
+function MergeCard({
+  task,
+  busy,
+  manualMerge,
+  onMergeStart,
+  onMergeVerify,
+  onCancelMerge,
+  onOpenBug,
+  onOpenExportDir,
+}: Props & { task: AgentTask }) {
+  const merge = task.merge;
+  const mergeBusy = busy === `merge:${task.id}`;
+  const verifyBusy = busy === `verify:${task.id}`;
+  const cancelBusy = busy === `merge-cancel:${task.id}`;
+  // Steps returned by this exact click win over the persisted fallback.
+  const instructions =
+    manualMerge && manualMerge.taskId === task.id
+      ? manualMerge.instructions
+      : merge?.instructions;
+
+  return (
+    <article className="min-w-0">
+      <div className="flex flex-wrap items-start gap-2">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-cyan-50 text-cyan-600">
+          <GitMerge size={14} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h3
+              className="min-w-0 truncate text-ui-base font-normal text-slate-900"
+              title={bugTitle(task.title)}
+            >
+              {bugTitle(task.title) || "（无标题）"}
+            </h3>
+            <Badge tone="cyan">待合并</Badge>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
+            <span className="shrink-0">
+              {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+            </span>
+            {task.worktreeBranch ? (
+              <span
+                className="min-w-0 max-w-full truncate font-mono text-sky-700"
+                title={task.worktreePath ?? task.worktreeBranch}
+              >
+                ⎇ {task.worktreeBranch}
+              </span>
+            ) : null}
+            <span
+              className="min-w-0 max-w-full truncate font-mono"
+              title={task.repoPath}
+            >
+              {task.repoPath || "未配置仓库"}
+            </span>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<Bug size={11} />}
+            disabled={busy !== null}
+            onClick={() => onOpenBug(task.workspaceId, task.bugId)}
+          >
+            打开缺陷
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<FolderOpen size={11} />}
+            disabled={busy !== null || !task.jsonPath}
+            onClick={() => onOpenExportDir(task)}
+          >
+            导出目录
+          </Button>
+        </div>
+      </div>
+
+      <p className="select-text mt-3 text-ui-caption leading-5 text-slate-600">
+        审核已通过。确认后会使用原 Agent 把分支合并到主仓库；合并成功才算完成。
+      </p>
+
+      {merge?.error ? (
+        <div className="select-text mt-2 break-words rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-1.5 text-ui-sm leading-5 text-rose-700">
+          {merge.error}
+        </div>
+      ) : null}
+
+      {instructions ? (
+        <div className="mt-2 max-w-2xl">
+          <div className="text-ui-xs font-normal text-slate-400">手动合并步骤</div>
+          <pre className="select-text mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 px-3 py-2.5 font-mono text-ui-caption leading-5 text-slate-600">
+            {instructions}
+          </pre>
+        </div>
+      ) : null}
+
+      <div
+        className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3"
+        title="合并由原 Agent 在主仓库执行；分支尚未合并时可用「我已手动合并」校验。"
+      >
+        <Button
+          size="sm"
+          variant="primary"
+          loading={mergeBusy}
+          disabled={busy !== null && !mergeBusy}
+          icon={<GitMerge size={12} />}
+          onClick={() => onMergeStart(task)}
+        >
+          用原 Agent 合并
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={verifyBusy}
+          disabled={busy !== null && !verifyBusy}
+          icon={<Check size={12} />}
+          onClick={() => onMergeVerify(task)}
+        >
+          我已手动合并
+        </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          loading={cancelBusy}
+          disabled={busy !== null && !cancelBusy}
+          icon={<X size={12} />}
+          onClick={() => onCancelMerge(task)}
+        >
+          取消任务
         </Button>
       </div>
     </article>

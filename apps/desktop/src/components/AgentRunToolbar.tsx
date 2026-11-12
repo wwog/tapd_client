@@ -9,7 +9,7 @@ export type AgentTab = "run" | "approval" | "history" | "config";
 /** Left list column names, used by the collapse toggle. */
 const LIST_LABELS: Record<Exclude<AgentTab, "config">, { list: string; detail: string }> = {
   run: { list: "执行队列", detail: "终端" },
-  approval: { list: "待审核列表", detail: "审核详情" },
+  approval: { list: "待处理列表", detail: "处理详情" },
   history: { list: "执行记录列表", detail: "记录详情" },
 };
 
@@ -76,7 +76,7 @@ export function AgentRunToolbar(props: Props) {
             value: "approval",
             label: (
               <span className="inline-flex items-center gap-1.5">
-                待审核
+                待处理
                 {counts.awaiting > 0 ? (
                   <span className="inline-flex min-w-[2ch] justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-ui-2xs font-normal leading-none tabular-nums text-white">
                     {counts.awaiting}
@@ -91,7 +91,7 @@ export function AgentRunToolbar(props: Props) {
       />
 
       <span className="text-ui-sm text-slate-400">
-        {counts.active} 运行 · {counts.queued} 排队 · {counts.awaiting} 待审核
+        {counts.active} 运行 · {counts.queued} 排队 · {counts.awaiting} 待处理
         {counts.paused ? " · 队列已暂停" : ""}
       </span>
 

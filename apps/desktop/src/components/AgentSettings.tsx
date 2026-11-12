@@ -7,14 +7,13 @@ import { Badge, Button, inputClass } from "./ui";
 
 const PROMPT_VARIABLES = [
   "{{title}}",
-  "{{md_path}}",
+  "{{json_path}}",
   "{{repo_path}}",
   "{{workspace_name}}",
   "{{bug_id}}",
   "{{task_id}}",
   "{{severity}}",
   "{{priority}}",
-  "{{project_rule}}",
   "{{coworker}}",
 ];
 
@@ -105,7 +104,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span
               className="text-ui-sm text-slate-600"
-              title="变量会替换为缺陷信息；{{project_rule}} 来自项目设置，{{coworker}} 来自同事页启用的同事（没有插槽时自动追加）。"
+              title="变量会替换为缺陷信息；{{coworker}} 来自同事页启用的同事（没有插槽时自动追加）。"
             >
               提示词模板
             </span>
@@ -157,7 +156,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
             />
             <NumberField
               label="静默完成（ms）"
-              hint="通用 TUI 未调用 agent_task_report 时，输出静默多久视为本轮结束；0 表示关闭"
+              hint="TUI 运行时输出静默多久视为本轮结束；0 表示关闭"
               value={config.idleCompleteMs}
               onChange={(value) => onChange({ idleCompleteMs: value })}
               onCommit={() => onCommit()}

@@ -11,9 +11,9 @@
 - ACP 只覆盖少数提供适配器的 Agent，适配器本身还需要 Node、登录态和版本对齐，覆盖面远小于"能在终端跑的 CLI"。
 - ACP 模式没有交互式 TUI，用户无法接管 Agent 的权限菜单和会话。
 - 本项目已经有 PTY、xterm 内嵌终端、提示词注入、日志与进程组回收，通用 TUI 是成本最低的扩展方式。
-- 任务生命周期已经由 MCP 工具 `agent_task_report` 承接，不依赖协议层。
+- 任务生命周期由进程退出、会话 hook 与输出静默判定，不依赖 MCP 回报或协议层。
 
-orca 的通用做法是一张运行时适配表：`detectCmd` + `launchCmd` + `promptInjectionMode` + 就绪/提交信号。本项目采用同样的结构，但把"完成判定"收敛到 MCP 回报，避免维护各 Agent 的屏幕标记。
+orca 的通用做法是一张运行时适配表：`detectCmd` + `launchCmd` + `promptInjectionMode` + 就绪/提交信号。本项目采用同样的结构，但把"完成判定"收敛到进程退出、会话 hook 与输出静默兜底，避免维护各 Agent 的屏幕标记。
 
 ## 2. 运行时适配表
 
@@ -91,31 +91,35 @@ struct AgentRuntimeDescriptor {
 
 任务入队时固化 `runtime_id`，之后修改设置不影响已排队任务。缺陷详情的提交面板可以只给本次任务指定 `runtimeId`；未指定时使用设置里的默认 Agent。
 
+`AgentTask` 的详情文件字段是 `jsonPath`（`bug.json` 绝对路径）。开启 Worktree 隔离时另有 `worktreePath` / `worktreeBranch`；`repoPath` 仍是项目主仓库，所有运行时工作目录取 `work_dir()`（优先 worktree）。旧记录的 `mdPath` 不迁移，读为空。
+
+`crates/tapd-workflow` 的 `Task` 与这份 JSON 形状对齐：camelCase、`TaskSpec` 平铺、`TaskId` 为 transparent 字符串 newtype、时间戳为字符串；`agent/workflow_bridge.rs` 直接做 serde JSON 往返。
+
 配置只有一个 `binaryPath`（默认运行时的命令）与全局提示词模板；切换默认运行时时自动回填该运行时的默认命令。任务运行时不是默认运行时，优先用检测到的绝对路径，其次用描述符里的默认命令。
 
 ## 4. 启动链路
 
 ```
 run_task
-  ├─ 导出 bug.md / assets
-  ├─ 校验 repo_path
+  ├─ 导出 bug.json / assets
+  ├─ 校验主仓库
+  ├─ 按需创建 / 复用 worktree，确定 work_dir
   ├─ 解析命令并确保 tapd MCP 已写入客户端配置
   ├─ 安装/刷新会话 hook，下发任务级 hook token
-  ├─ 渲染提示词（task_id / project_rule / ...）
-  └─ 通用 PTY
+  ├─ 渲染提示词（task_id / json_path / coworker / ...）
+  └─ 通用 PTY（cwd = work_dir）
         ├─ argv/flag：提示词随启动命令传入
         ├─ stdin：就绪后括号粘贴 + 回车
-        ├─ 等待 agent_task_report / 进程退出 / 输出静默
-        └─ kill 进程组，进入完成或待审核
+        ├─ 等待进程退出 / 会话 hook / 输出静默
+        └─ kill 进程组，进入完成、待审核或待合并
 ```
 
 ## 5. 完成判定
 
-运行时没有协议事件，按以下顺序判定本轮结束：
+运行时没有统一协议事件，按以下顺序判定本轮结束：
 
-1. Agent 调用 `agent_task_report(status=completed|failed|needs_review)`：主路径。
-2. 进程以 0 退出：视为完成。
-3. 会话 hook：启动时给运行时挂原生 hook，事件 POST 到桌面端 loopback `/agent/hook`。
+1. 进程退出：主信号。
+2. 会话 hook：启动时给运行时挂原生 hook，事件 POST 到桌面端 loopback `/agent/hook`。
    - OMP：`--extension` 临时扩展，上报会话、提示词、工具、回合与 `agent_settled`。
    - OpenCode：全局 `plugins/tapd-session-monitor.js`，上报会话、提示词、工具、权限、提问、错误与 `session.idle`。
    - Codex：`~/.codex/hooks.json` + `config.toml` 信任哈希，上报会话、提示词、工具、权限、子 Agent 与 `Stop` / `Interrupt`。
@@ -126,10 +130,28 @@ run_task
    - Kimi Code：`~/.kimi-code/config.toml` 的会话、提示词、工具、权限与 Stop 事件。
    - ZCode：`~/.zcode/cli/config.json` 的 `hooks.events`，会话、提示词、工具、权限与 Stop。
    桌面端在 `agent_end` 且没有后续工作时结束本轮，同时把 hook 捕获的 `sessionId` 持久化到任务里，供「打开系统终端」精确 `--resume <id>`（TUI 持续重绘时静默判断不会触发）。
-4. 提示词已投递且输出静默达到 `idleCompleteMs`（默认 180s）：视为完成并记录 warning。
-5. 用户中断：任务取消。
+3. 提示词已投递且输出静默达到 `idleCompleteMs`（默认 180s）：视为完成并记录 warning。
+4. 用户中断：任务取消。
 
-复杂改动仍走 `tapd_request_review`：桌面收到 MCP 调用后把任务切到 `awaiting_approval` 并 kill TUI，工作区保留 diff。即使 Agent 忘记调用，`finish_task` 的 git 安全网也会在发现新的未提交文件时进入待审核。
+复杂改动不再调用 MCP 审核工具：Agent 按提示词不 commit、不评论、不更新 TAPD。`finish_task` 的 git 安全网发现本轮新的未提交文件时，把任务置为 `awaiting_approval` 并保留工作区 diff。
+
+开启 Worktree 隔离后，审核与合并成为所有改动的必经阶段：
+
+- 简单任务在任务分支上 commit，复杂任务保留未提交改动；只要产生改动就进入 `awaiting_approval`，无改动直接成功。
+- 审核通过时若仍有未提交改动，先回 `queued` 跑只 commit 的提交轮（不写 TAPD）；否则直接进入 `awaiting_merge`。
+- 用户确认后，用原 Agent（同一 `runtime_id`）在主仓库执行合并，并统一回写 TAPD。校验以 `git merge-base --is-ancestor <branch> HEAD` 为准，不以合并进程退出码为准。
+- 原 Agent 不可用、主仓有未提交改动、同仓库已有合并或合并未通过校验时，任务保持 `awaiting_merge`，写入 `merge.error` 与手动步骤；用户手动合并后点「我已手动合并」走同一校验。
+- Worktree 任务在 `awaiting_approval` / `awaiting_merge` / `merging` 期间不阻塞新任务；非 Worktree 的 `awaiting_approval` 仍阻塞单队列。
+
+## 5.1 工作流核心与启动恢复
+
+任务模型、状态机、执行单元调度、审核 / 合并策略、恢复与历史已抽到 `crates/tapd-workflow`（sans-IO，正常依赖只有 `serde`，`#![forbid(unsafe_code)]`，75 个测试）。桌面端目前只接入恢复 / 关闭 / 门禁与纯策略，完整状态机仍在 `agent.rs`：
+
+- 桌面 `AgentTask` 与 crate `Task` 的 JSON 形状一致，`agent/workflow_bridge.rs` 用 `serde_json` 整条往返，不手写字段映射。
+- 启动 `load()` 保留持久化状态，不再把 `preparing/running` 标成失败；worker 在 `entered=false` 时等待，登录有效 + 引导完成后前端调用 `agent_enter_system` 才恢复队列。
+- 恢复规则：`queued` 保留；`preparing/running` → `queued` + `interrupted` + `attempt+1`（默认最多 3 次自动重试，超限失败）；`merging` → `awaiting_merge` + 「客户端重启，合并已中止」；`awaiting_approval` / `awaiting_merge` 保留。结果通过 `RecoveryReport` 返回并 emit `agent://recovery`，主界面 `RecoveryBanner` 展示数量。
+- 关闭 `shutdown` 先 `suspend`：`preparing/running → queued`、`merging → awaiting_merge`，持久化后再杀 PTY；迟到的完成 / 失败回调被 `shutting_down` 守卫忽略。
+- Worktree 开关锁、合并提示词与手动步骤直接复用 crate 的纯函数。完整的审核 / 合并状态机迁移到 crate 是下一阶段。
 
 ## 6. 权限与交互
 
@@ -140,7 +162,7 @@ run_task
 
 - 支持自动注入：opencode / zcode / claude / cursor / codex / OMP / Kimi Code / Gemini CLI / Qwen Code，复用 `mcp_import`。
 - 其他运行时：启动时跳过注入，管理页的能力/限制中明确提示"需手动配置 tapd MCP"。
-- 未注入 MCP 时，Agent 仍可改代码并提交，但无法回写 TAPD，也无法调用 `agent_task_report`（依赖静默完成兜底）。
+- 未注入 MCP 时，Agent 仍可改代码并提交，但无法回写 TAPD；任务完成仍由进程退出、hook 或输出静默判定。
 
 会话 hook 走桌面端 loopback，和 MCP 共用同一个 HTTP 服务：
 
@@ -152,7 +174,7 @@ run_task
 - Agent 页任务头部的状态条是临时状态，不写入 SQLite；任务结束后清空。
 - hook 在非本应用启动的会话里没有这些环境变量，脚本直接空操作；配置只写一次，后续启动按内容判断是否更新。
 - 写入客户端配置前会先备份为 `*.bak-tapd-*`，解析失败的原文件不会被覆盖。
-- Codex 会在 `config.toml` 写入 `[hooks.state."<hooks.json>:<event>:<group>:0"]` 信任哈希，和 `hooks.json` 一起幂等更新；版本过旧、不识别 hook 时退回 `agent_task_report` / 静默兜底。
+- Codex 会在 `config.toml` 写入 `[hooks.state."<hooks.json>:<event>:<group>:0"]` 信任哈希，和 `hooks.json` 一起幂等更新；版本过旧、不识别 hook 时退回进程退出 / 静默兜底。
 
 ## 8. 新增一个 Agent
 
@@ -176,9 +198,11 @@ run_task
 - 通用 TUI 无法把权限请求结构化到桌面，只能在终端确认。
 - 当前 hook 只做「观察 + 状态展示」，不代替用户在终端里回执权限；结构化权限回执是后续阶段。
 - 会话 hook 会写客户端的用户级配置（settings.json / hooks.json / config.toml / plugins）；脚本在没有任务环境变量时为空操作。
-- 部分客户端的 hook 事件/字段可能随版本变化；失败只记录 warning，任务退回 `agent_task_report` / 静默兜底。
+- 部分客户端的 hook 事件/字段可能随版本变化；失败只记录 warning，任务退回进程退出 / 静默兜底。
 - `--version` 不保证所有 CLI 都很快返回；检测有 5 秒超时，超时的条目会记录错误但仍视为已安装。
-- 并发仍固定为 1；worktree 并行是后续独立阶段。
+- 默认单任务串行；开启 Worktree 隔离后按执行单元并行（1–8，默认 2），每个任务一个 worktree。非 git 仓库的任务会在创建 worktree 时明确失败。
+- Worktree 任务必须审核并合并回主仓库才算完成；合并失败不会把任务判为失败，而是保留待合并并提供手动步骤。队列有未结束任务时 Worktree 开关锁定，执行单元仍可调整。
+- `tapd-workflow` 目前只接入启动恢复、关闭停靠、进入门禁与纯策略；宿主仍有自己的队列 / 审核 / 合并状态机。两者在迁移期间可能重复记录同一规则，修改时必须同步核对。
 
 ## 10. 与 orca 的差异
 
@@ -186,7 +210,7 @@ run_task
 | --- | --- | --- |
 | 接入方式 | TUI 适配表 + 各 Agent hook | TUI 适配表 + 各 Agent hook |
 | 事件通道 | hook POST 到本地 hook server | hook POST 到桌面端 loopback `/agent/hook` |
-| 完成判定 | hook 事件 + 屏幕标记 | `agent_task_report` + hook 事件 + 进程退出 + 静默兜底 |
+| 完成判定 | hook 事件 + 屏幕标记 | 进程退出 + hook 事件 + 静默兜底 |
 | 权限 | 各 Agent hook / 终端 | 统一在终端确认 |
-| 隔离 | 每任务 worktree | 单仓库串行 |
+| 隔离 | 每任务 worktree | 默认串行；开启 Worktree 后每任务独立 worktree，审核通过后合并回主仓 |
 | 范围 | 桌面全功能编排 | TAPD 缺陷修复队列 |

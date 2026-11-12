@@ -172,7 +172,7 @@ export function AppearanceCard() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span
             className="text-ui-xs font-normal text-slate-500"
-            title="常驻：始终显示胶囊；仅通知：有通知、Agent 运行/待审核、更新或异常时才出现。"
+            title="常驻：始终显示胶囊；仅通知：有通知、Agent 运行/待审核/待合并、更新或异常时才出现。"
           >
             胶囊显示
           </span>

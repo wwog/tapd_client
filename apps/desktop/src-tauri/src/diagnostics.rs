@@ -54,7 +54,10 @@ fn export_bundle(
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
 
     write_json(&folder.join("meta.json"), &meta(state))?;
-    write_json(&folder.join("config.sanitized.json"), &sanitized_config(state))?;
+    write_json(
+        &folder.join("config.sanitized.json"),
+        &sanitized_config(state),
+    )?;
     write_json(
         &folder.join("notifications.settings.json"),
         &crate::notification::settings_for_diagnostics(state),
@@ -145,9 +148,13 @@ fn sanitized_config(state: &SharedState) -> Value {
 
 fn agent_summary(data_dir: &Path) -> Value {
     let raw = fs::read_to_string(data_dir.join("agent.json")).ok();
-    let Some(value) = raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+    let Some(raw) = raw else {
         return Value::Null;
     };
+    let Some(value) = serde_json::from_str::<Value>(&raw).ok() else {
+        return Value::Null;
+    };
+    let config = serde_json::from_str::<crate::agent::AgentConfig>(&raw).ok();
 
     let projects = value
         .get("projects")
@@ -170,12 +177,27 @@ fn agent_summary(data_dir: &Path) -> Value {
         })
         .unwrap_or_default();
 
+    let worktree_enabled = config
+        .as_ref()
+        .map(|config| config.worktree_enabled)
+        .unwrap_or(false);
+    let execution_units = config
+        .as_ref()
+        .map(|config| config.execution_units)
+        .unwrap_or(2);
+    let queue_concurrency = config
+        .as_ref()
+        .map(|config| config.effective_execution_units())
+        .unwrap_or(1);
+
     json!({
         "binaryPath": value.get("binaryPath"),
         "readyQuietMs": value.get("readyQuietMs"),
         "readyTimeoutMs": value.get("readyTimeoutMs"),
+        "worktreeEnabled": worktree_enabled,
+        "executionUnits": execution_units,
         "projects": projects,
-        "queueConcurrency": 1,
+        "queueConcurrency": queue_concurrency,
     })
 }
 
@@ -212,7 +234,10 @@ fn copy_recent_logs(source: &Path, target: &Path) {
                 .find(|(index, _)| *index >= start)
                 .map(|(index, _)| index)
                 .unwrap_or(0);
-            format!("[truncated to last {MAX_LOG_BYTES} bytes]\n{}", &text[start..])
+            format!(
+                "[truncated to last {MAX_LOG_BYTES} bytes]\n{}",
+                &text[start..]
+            )
         } else {
             text
         };
@@ -285,10 +310,8 @@ mod tests {
 
     #[test]
     fn bundle_is_written_and_never_copies_runtime_token() {
-        let root = std::env::temp_dir().join(format!(
-            "tapd-diag-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tapd-diag-{}", uuid::Uuid::new_v4().simple()));
         let data = root.join("data");
         let logs = data.join("logs");
         let exports = root.join("exports");
@@ -308,6 +331,7 @@ mod tests {
             logs_dir: logs,
             captures_dir: data.join("captures"),
             exports_dir: exports,
+            worktrees_dir: data.join("worktrees"),
             runtime_file: data.join("runtime.json"),
             config_file: data.join("config.json"),
         };

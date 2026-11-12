@@ -326,7 +326,7 @@ export function useDetailPane({
         const name =
           context?.workspaces.find((item) => item.id === target.workspaceId)?.name ??
           null;
-        const result = await api.exportBugMd(target.workspaceId, target.id, name);
+        const result = await api.exportBug(target.workspaceId, target.id, name);
         // Success is reported by the inline export panel in the detail pane;
         // a toast on top of it is just noise.
         setLastExport(result);

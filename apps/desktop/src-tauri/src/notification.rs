@@ -39,11 +39,7 @@ use serde_json::{json, Value};
 use tapd_core::tapd::api::{bug_detail_body, bug_detail_url, parse_bug_detail};
 use tauri::{AppHandle, Emitter};
 
-use crate::{
-    commands::auth::session_request_json,
-    notification_db,
-    state::SharedState,
-};
+use crate::{commands::auth::session_request_json, notification_db, state::SharedState};
 
 pub use actions::command;
 
@@ -371,7 +367,6 @@ pub fn settings_for_diagnostics(state: &SharedState) -> Value {
 // Window management
 // ---------------------------------------------------------------------------
 
-
 /// Re-applies the correct island layout: 3x update panel while an update owns
 /// the screen, otherwise the notification pill/cards.
 pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
@@ -389,19 +384,11 @@ pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
     crate::island_window::apply_island(app, state, expanded, count, true);
 }
 
-/// Expanded state and row count for a layout refresh. External AI cards are
-/// rendered by the frontend and registered on the island itself: an expansion
-/// that only holds those cards stays open, but a collapsed capsule never
-/// auto-expands for them.
+/// Expanded state and row count for a layout refresh. Only pending
+/// notifications can expand the capsule; a collapsed capsule never opens on its
+/// own.
 fn island_layout_state(items: &[NotificationItem], quiet: bool) -> (bool, usize) {
-    let extra = crate::island_window::extra_cards();
-    let count = items.len() + extra;
-    let expanded = if items.is_empty() {
-        extra > 0 && crate::island_window::is_expanded()
-    } else {
-        !quiet
-    };
-    (expanded, count)
+    (!items.is_empty() && !quiet, items.len())
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ import {
 import clsx from "clsx";
 import {
   AlertTriangle,
-  Bot,
   Check,
   CheckCircle2,
   Download,
@@ -21,10 +20,7 @@ import {
 
 import {
   agentApi,
-  externalClaimLabel,
-  externalClaimPillLabel,
   type AgentSummary,
-  type ExternalClaim,
 } from "../lib/agent";
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
 import { formatBytes } from "../lib/format";
@@ -144,7 +140,7 @@ export function IslandWindow() {
     }
   }, []);
 
-  /** Refreshes the Agent snapshot; claims also expire on the same tick. */
+  /** Refreshes the Agent snapshot. */
   const refreshAgentSummary = useCallback(async () => {
     try {
       setAgentSummary(await agentApi.summary());
@@ -177,8 +173,7 @@ export function IslandWindow() {
 
     // Keep the capsule honest even between polls; also self-heals if the
     // initial `island://layout` was emitted before the webview loaded.
-    // Agent state arrives through `agent://summary`; the tick also drops
-    // external AI claims whose heartbeat expired.
+    // Agent state arrives through `agent://summary`.
     const timer = window.setInterval(() => {
       void refreshStatus();
       void refreshAgentSummary();
@@ -233,53 +228,23 @@ export function IslandWindow() {
     }
   };
 
-  /** Opens an external claim's bug or releases it. */
-  const runClaim = async (claim: ExternalClaim, action: "view" | "release") => {
-    if (busy) return;
-    const id = `external:${claim.workspaceId}:${claim.bugId}`;
-    setBusy({ id, action });
-    setErrors((previous) => {
-      const next = { ...previous };
-      delete next[id];
-      return next;
-    });
-
-    try {
-      if (action === "view") {
-        await notificationApi.openBug(claim.workspaceId, claim.bugId);
-        if (layout.expanded) await notificationApi.expandIsland(false);
-      } else {
-        await agentApi.externalRelease(claim.workspaceId, claim.bugId);
-        const next = await agentApi.summary();
-        setAgentSummary(next);
-        if (
-          layout.expanded &&
-          items.length === 0 &&
-          (next.externalClaims?.length ?? 0) === 0
-        ) {
-          await notificationApi.expandIsland(false);
-        }
-      }
-    } catch (error) {
-      setErrors((previous) => ({ ...previous, [id]: String(error) }));
-    } finally {
-      setBusy(null);
-    }
-  };
-
   // Only treat the agent as clickable when there is actually something to show.
   const agentTaskId =
     agentSummary &&
-    ((agentSummary.awaitingApproval ?? 0) > 0 || agentSummary.running)
+    ((agentSummary.awaitingApproval ?? 0) > 0 ||
+      (agentSummary.awaitingMerge ?? 0) > 0 ||
+      agentSummary.running)
       ? agentSummary.activeTaskId
       : null;
   const agentAwaiting = agentSummary?.awaitingApproval ?? 0;
-  const externalClaims = agentSummary?.externalClaims ?? [];
-  const primaryClaim = externalClaims[0] ?? null;
-  const externalCount = externalClaims.length;
-  /** Awaiting review outranks external work; otherwise the capsule reports
-   *  the external AI client + model rather than the desktop queue. */
-  const showExternal = externalCount > 0 && agentAwaiting === 0;
+  const agentMerging = agentSummary?.awaitingMerge ?? 0;
+  /** Capsule wording: review first, then merge, then running. */
+  const agentStatusLabel =
+    agentAwaiting > 0
+      ? "Agent 待审核"
+      : agentMerging > 0
+        ? "Agent 待合并"
+        : "Agent 运行中";
 
   const { label: statusLabel, tone } = useMemo(() => {
     if (updateState?.available) {
@@ -288,11 +253,8 @@ export function IslandWindow() {
     if ((agentSummary?.awaitingApproval ?? 0) > 0) {
       return { label: "Agent 待审核", tone: "review" as const };
     }
-    if (showExternal && primaryClaim) {
-      return {
-        label: externalClaimPillLabel(primaryClaim, externalCount),
-        tone: "external" as const,
-      };
+    if ((agentSummary?.awaitingMerge ?? 0) > 0) {
+      return { label: "Agent 待合并", tone: "review" as const };
     }
     if (agentSummary?.running) return { label: "Agent 运行中", tone: "agent" as const };
     if (!snapshot) return { label: "连接中", tone: "idle" as const };
@@ -302,10 +264,7 @@ export function IslandWindow() {
     return { label: "待命", tone: "ok" as const };
   }, [
     agentSummary,
-    externalCount,
     items.length,
-    primaryClaim,
-    showExternal,
     snapshot,
     updateState?.available,
   ]);
@@ -315,7 +274,7 @@ export function IslandWindow() {
   const agentActive =
     statusLabel === "Agent 运行中" ||
     statusLabel === "Agent 待审核" ||
-    showExternal;
+    statusLabel === "Agent 待合并";
 
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
@@ -348,27 +307,6 @@ export function IslandWindow() {
     }
     void notificationApi.setPeek(peeking).catch(() => undefined);
   }, [peeking]);
-
-  // External cards come from the Agent summary while notification cards come
-  // from Rust; a claim appearing/expiring must resize the expanded window.
-  const expandedExternalRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!layout.expanded) {
-      expandedExternalRef.current = null;
-      return;
-    }
-    if (expandedExternalRef.current === externalCount) return;
-    expandedExternalRef.current = externalCount;
-    if (items.length + externalCount === 0) {
-      // The last live card expired while expanded: return to the capsule
-      // instead of leaving an empty card window on screen.
-      void notificationApi.expandIsland(false).catch(() => undefined);
-      return;
-    }
-    void notificationApi
-      .expandIsland(true, externalCount)
-      .catch(() => undefined);
-  }, [externalCount, items.length, layout.expanded]);
 
   if (updateActive) {
     return <UpdateCapsule state={updateState} />;
@@ -408,18 +346,10 @@ export function IslandWindow() {
               clickTimer.current = window.setTimeout(() => {
                 clickTimer.current = null;
                 setPeeking(false);
-                if (agentAwaiting > 0 && agentTaskId) {
-                  void agentApi.openTask(agentTaskId).catch(() => undefined);
-                } else if (showExternal) {
-                  void notificationApi
-                    .expandIsland(true, externalCount)
-                    .catch(() => undefined);
-                } else if (agentTaskId) {
+                if (agentTaskId) {
                   void agentApi.openTask(agentTaskId).catch(() => undefined);
                 } else if (items.length > 0) {
-                  void notificationApi
-                    .expandIsland(true, externalCount)
-                    .catch(() => undefined);
+                  void notificationApi.expandIsland(true).catch(() => undefined);
                 } else {
                   void notificationApi.openMain();
                 }
@@ -438,13 +368,11 @@ export function IslandWindow() {
               // repeat it (and cover it).
               peeking
                 ? undefined
-                : showExternal && primaryClaim
-                  ? `${externalClaimLabel(primaryClaim)} · 单击展开 · 可拖动`
-                  : agentTaskId
-                    ? `${agentAwaiting > 0 ? "Agent 待审核" : "Agent 运行中"} · 单击打开任务 · 可拖动`
-                    : items.length > 0
-                      ? "单击展开通知 · 双击打开客户端 · 可拖动"
-                      : "双击打开客户端 · 可拖动"
+                : agentTaskId
+                  ? `${agentStatusLabel} · 单击打开任务 · 可拖动`
+                  : items.length > 0
+                    ? "单击展开通知 · 双击打开客户端 · 可拖动"
+                    : "双击打开客户端 · 可拖动"
             }
             className={clsx(
               "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
@@ -465,14 +393,8 @@ export function IslandWindow() {
             ) : null}
           </button>
         </div>
-        {peeking && agentActive && showExternal && primaryClaim ? (
-          <ExternalPeekCard
-            claim={primaryClaim}
-            count={externalCount}
-            onView={() => void runClaim(primaryClaim, "view")}
-          />
-        ) : peeking && agentActive && agentSummary ? (
-          <AgentPeekCard summary={agentSummary} awaiting={agentAwaiting} />
+        {peeking && agentActive && agentSummary ? (
+          <AgentPeekCard summary={agentSummary} />
         ) : null}
       </div>
     );
@@ -480,25 +402,12 @@ export function IslandWindow() {
 
   return (
     <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
-      {items.length === 0 && externalCount === 0 ? (
+      {items.length === 0 ? (
         <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line backdrop-blur-xl">
           暂无待处理通知
         </div>
       ) : (
         <>
-          {externalClaims.map((claim) => {
-            const id = `external:${claim.workspaceId}:${claim.bugId}`;
-            return (
-              <ExternalClaimCard
-                key={id}
-                claim={claim}
-                busyAction={busy?.id === id ? busy.action : null}
-                error={errors[id]}
-                onView={() => void runClaim(claim, "view")}
-                onRelease={() => void runClaim(claim, "release")}
-              />
-            );
-          })}
           {items.map((item) => {
           const itemBusy = busy?.id === item.id ? busy.action : null;
           const error = errors[item.id];
@@ -851,120 +760,43 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
 }
 
 /**
- * Expanded card for a bug an external MCP client is working on. The desktop
- * queue never sees this as a notification, so it is rendered from the Agent
- * summary and only needs the live state plus a way into the bug.
- */
-function ExternalClaimCard(props: {
-  claim: ExternalClaim;
-  busyAction: string | null;
-  error?: string;
-  onView: () => void;
-  onRelease: () => void;
-}) {
-  const { claim, busyAction, error, onView, onRelease } = props;
-  const client = claim.client.trim() || "外部 AI";
-  const model = claim.model.trim();
-  const title = claim.title ? bugTitle(claim.title) : "";
-
-  return (
-    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
-      <button
-        type="button"
-        aria-label="取消外部占用"
-        title="取消外部占用（对方下次心跳会收到冲突）"
-        disabled={Boolean(busyAction)}
-        onClick={onRelease}
-        className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
-      >
-        {busyAction === "release" ? (
-          <Loader2 size={12} className="animate-spin" />
-        ) : (
-          <X size={13} />
-        )}
-      </button>
-
-      <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
-        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-violet-500/15 text-violet-700">
-          <Bot size={11} />
-        </span>
-        <span
-          className="truncate font-normal text-island-ink"
-          title={`${client}${model ? ` · ${model}` : ""}`}
-        >
-          {client}
-        </span>
-        {model ? <span className="shrink-0 truncate">· {model}</span> : null}
-        <span className="shrink-0 rounded bg-violet-400/15 px-1.5 py-0.5 text-ui-2xs font-normal text-violet-700">
-          {claim.status === "queued" ? "排队中" : "处理中"}
-        </span>
-        <span className="ml-auto shrink-0 tabular-nums">
-          {formatNotificationTime(claim.claimedAt)}
-        </span>
-      </div>
-
-      <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-island-muted">
-        {claim.workspaceName || claim.workspaceId ? (
-          <span className="truncate">{claim.workspaceName || claim.workspaceId}</span>
-        ) : null}
-        <span className="shrink-0 font-mono">#{claim.bugId}</span>
-      </div>
-
-      <h2
-        className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
-        title={title || undefined}
-      >
-        {title || "外部 AI 正在处理该缺陷"}
-      </h2>
-
-      <div className="mt-auto flex items-center gap-1.5 pt-2">
-        <button
-          type="button"
-          disabled={Boolean(busyAction)}
-          onClick={onView}
-          className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busyAction === "view" ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Eye size={12} />
-          )}
-          查看缺陷
-        </button>
-      </div>
-
-      {error ? (
-        <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
-          {error}
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
-/**
  * Hover summary under the collapsed capsule: which project and which bug the
  * current Agent task belongs to. Its height/gap must match the Rust
  * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
  */
-function AgentPeekCard({ summary, awaiting }: { summary: AgentSummary; awaiting: number }) {
+function AgentPeekCard({ summary }: { summary: AgentSummary }) {
   const title = summary.title ? bugTitle(summary.title) : "";
+  const review = summary.awaitingApproval ?? 0;
+  const merge = summary.awaitingMerge ?? 0;
+  const pending = review + merge;
+  // Both counts fit side by side only while they are small; keep one kind of
+  // label per state so 300px stays readable.
+  const status =
+    review > 0 && merge > 0
+      ? `待审核 ${review} · 待合并 ${merge}`
+      : review > 0
+        ? review > 1
+          ? `待审核 ${review}`
+          : "待审核"
+        : merge > 0
+          ? merge > 1
+            ? `待合并 ${merge}`
+            : "待合并"
+          : "运行中";
   return (
     <div className="mt-1.5 flex h-[88px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
       <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
         <span
           className={clsx(
             "h-1.5 w-1.5 shrink-0 rounded-full",
-            awaiting > 0 ? "bg-rose-500" : "bg-sky-500",
+            pending > 0 ? "bg-rose-500" : "bg-sky-500",
           )}
         />
         <span className="truncate text-island-ink">{summary.workspaceName || "未知项目"}</span>
         {summary.bugId ? (
           <span className="shrink-0 tabular-nums">#{summary.bugId}</span>
         ) : null}
-        <span className="ml-auto shrink-0">
-          {awaiting > 0 ? (awaiting > 1 ? `待审核 ${awaiting}` : "待审核") : "运行中"}
-        </span>
+        <span className="ml-auto shrink-0 pl-1.5">{status}</span>
       </div>
       <p className="mt-1 line-clamp-2 text-ui-sm" title={title || undefined}>
         {title || "正在准备任务…"}
@@ -973,52 +805,11 @@ function AgentPeekCard({ summary, awaiting }: { summary: AgentSummary; awaiting:
   );
 }
 
-function ExternalPeekCard(props: {
-  claim: ExternalClaim;
-  count: number;
-  onView: () => void;
-}) {
-  const { claim, count, onView } = props;
-  const client = claim.client.trim() || "外部 AI";
-  const model = claim.model.trim();
-  const title = claim.title ? bugTitle(claim.title) : "";
-
-  return (
-    <div className="mt-1.5 flex h-[88px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
-      <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" />
-        <span className="truncate text-island-ink" title={`${client}${model ? ` · ${model}` : ""}`}>
-          {client}
-        </span>
-        {model ? <span className="shrink-0 truncate">· {model}</span> : null}
-        {count > 1 ? <span className="shrink-0">+{count - 1}</span> : null}
-        <span className="ml-auto shrink-0">
-          {claim.status === "queued" ? "排队中" : "处理中"}
-        </span>
-      </div>
-      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-2xs text-island-muted">
-        <span className="truncate">{claim.workspaceName || claim.workspaceId || "未知项目"}</span>
-        <span className="shrink-0 font-mono">#{claim.bugId}</span>
-        <button
-          type="button"
-          onClick={onView}
-          className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-ui-2xs font-normal text-sky-700 transition hover:bg-island-soft-hover"
-        >
-          <Eye size={10} />
-          查看缺陷
-        </button>
-      </div>
-      <p className="mt-0.5 line-clamp-2 text-ui-sm leading-4" title={title || undefined}>
-        {title || "正在准备任务…"}
-      </p>
-    </div>
-  );
-}
 
 function StatusDot({
   tone,
 }: {
-  tone: "ok" | "alert" | "paused" | "error" | "idle" | "review" | "agent" | "external";
+  tone: "ok" | "alert" | "paused" | "error" | "idle" | "review" | "agent";
 }) {
   return (
     <span className="relative grid h-2 w-2 shrink-0 place-items-center">
@@ -1029,7 +820,6 @@ function StatusDot({
           tone === "alert" && "island-breathe bg-sky-400",
           tone === "review" && "island-breathe bg-rose-400",
           tone === "agent" && "island-breathe bg-sky-400",
-          tone === "external" && "island-breathe bg-violet-400",
         )}
       />
       <span
@@ -1042,7 +832,6 @@ function StatusDot({
           tone === "idle" && "bg-amber-500",
           tone === "review" && "bg-rose-500",
           tone === "agent" && "bg-sky-500",
-          tone === "external" && "bg-violet-500",
         )}
       />
     </span>

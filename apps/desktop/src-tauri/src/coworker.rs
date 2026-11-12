@@ -14,6 +14,7 @@
 //! [`prompt_section`] / `agent::render_prompt`.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -102,9 +103,8 @@ impl Registry {
     }
 }
 
-/// One skill package as handed to an external AI: a live pointer (absolute
-/// `SKILL.md`) when the caller can read the bundle, plus a bundle-relative copy
-/// when the skill was exported along with a bug.
+/// One skill package as handed to an external AI: a live pointer to the
+/// absolute `SKILL.md` inside the bundle.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRef {
@@ -115,9 +115,6 @@ pub struct SkillRef {
     pub description: String,
     /// Absolute path to the bundled `SKILL.md`.
     pub path: String,
-    /// `SKILL.md` inside the receiving export package (`skills/<coworker>/<skill>/SKILL.md`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relative_path: Option<String>,
 }
 
 impl Registry {
@@ -136,11 +133,42 @@ impl Registry {
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     path: skill.path.to_string_lossy().to_string(),
-                    relative_path: None,
                 });
             }
         }
         refs
+    }
+
+    /// Skill pointers keyed by skill name for MCP callers. Two coworkers often
+    /// ship a skill with the same name, so a duplicate key becomes
+    /// `<coworkerId>/<name>` and any further duplicate gets a counter suffix.
+    pub fn skill_map(&self, ids: &[String]) -> BTreeMap<String, SkillRef> {
+        let mut map: BTreeMap<String, SkillRef> = BTreeMap::new();
+        for skill in self.skill_refs(ids) {
+            let key = unique_skill_key(&map, &skill);
+            map.insert(key, skill);
+        }
+        map
+    }
+}
+
+fn unique_skill_key(map: &BTreeMap<String, SkillRef>, skill: &SkillRef) -> String {
+    if !map.contains_key(&skill.name) {
+        return skill.name.clone();
+    }
+
+    let qualified = format!("{}/{}", skill.coworker_id, skill.name);
+    if !map.contains_key(&qualified) {
+        return qualified;
+    }
+
+    let mut counter = 2;
+    loop {
+        let candidate = format!("{qualified}-{counter}");
+        if !map.contains_key(&candidate) {
+            return candidate;
+        }
+        counter += 1;
     }
 }
 
@@ -241,103 +269,13 @@ pub fn prompt_section(app: &AppHandle, ids: &[String]) -> String {
     load(app).prompt_section(ids)
 }
 
-/// Live skill pointers for MCP results. Empty when nothing is selected, so a
-/// caller that never enabled a coworker sees no extra payload.
-pub fn skill_refs(app: &AppHandle, ids: &[String]) -> Vec<SkillRef> {
+/// Skill pointers for MCP results, keyed by skill name. Empty when nothing is
+/// selected, so a caller that never enabled a coworker sees no extra payload.
+pub fn skill_map(app: &AppHandle, ids: &[String]) -> BTreeMap<String, SkillRef> {
     if ids.is_empty() {
-        return Vec::new();
+        return BTreeMap::new();
     }
-    load(app).skill_refs(ids)
-}
-
-/// Copies the selected skill packages into `<export_dir>/skills/<coworker>/<skill>/`
-/// so an exported bug keeps its skills even after the bundle is upgraded or the
-/// selection changes, and returns refs pointing at those copies.
-pub fn copy_skills(
-    app: &AppHandle,
-    ids: &[String],
-    export_dir: &Path,
-) -> (Vec<SkillRef>, Vec<String>) {
-    let mut refs = skill_refs(app, ids);
-    let mut warnings = Vec::new();
-    if refs.is_empty() {
-        return (refs, warnings);
-    }
-
-    let root = export_dir.join("skills");
-    let mut budget = CopyBudget::default();
-    for skill in &mut refs {
-        let Some(source) = Path::new(&skill.path).parent() else {
-            warnings.push(format!("{}：技能 {} 路径无效", skill.coworker_id, skill.name));
-            continue;
-        };
-        let Some(dir_name) = source.file_name().and_then(|name| name.to_str()) else {
-            warnings.push(format!("{}：技能 {} 目录名无效", skill.coworker_id, skill.name));
-            continue;
-        };
-        let dest = root.join(&skill.coworker_id).join(dir_name);
-        match copy_dir(source, &dest, 0, &mut budget) {
-            Ok(()) => {
-                skill.relative_path = Some(format!(
-                    "skills/{}/{dir_name}/{SKILL_FILE}",
-                    skill.coworker_id
-                ));
-            }
-            Err(error) => warnings.push(format!(
-                "{}：技能 {} 未复制：{error}",
-                skill.coworker_id, skill.name
-            )),
-        }
-    }
-    (refs, warnings)
-}
-
-/// Source of truth for "不要复制一个巨大的技能包进导出目录".
-const MAX_SKILL_FILES: usize = 400;
-const MAX_SKILL_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_SKILL_DEPTH: usize = 6;
-
-#[derive(Default)]
-struct CopyBudget {
-    files: usize,
-    bytes: u64,
-}
-
-/// Copies a skill directory. Symlinks are skipped instead of followed so a
-/// hand-edited package cannot pull files from outside its own directory.
-fn copy_dir(
-    source: &Path,
-    dest: &Path,
-    depth: usize,
-    budget: &mut CopyBudget,
-) -> Result<(), String> {
-    if depth > MAX_SKILL_DEPTH {
-        return Err("目录层级过深".to_string());
-    }
-    fs::create_dir_all(dest).map_err(|error| error.to_string())?;
-    let entries = fs::read_dir(source).map_err(|error| error.to_string())?;
-    for entry in entries.flatten() {
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => return Err(error.to_string()),
-        };
-        if file_type.is_symlink() {
-            continue;
-        }
-        let target = dest.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir(&entry.path(), &target, depth + 1, budget)?;
-            continue;
-        }
-        let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if budget.files >= MAX_SKILL_FILES || budget.bytes + size > MAX_SKILL_BYTES {
-            return Err("技能包超过复制上限".to_string());
-        }
-        fs::copy(entry.path(), &target).map_err(|error| error.to_string())?;
-        budget.files += 1;
-        budget.bytes += size;
-    }
-    Ok(())
+    load(app).skill_map(ids)
 }
 
 fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String> {
@@ -782,30 +720,39 @@ mod tests {
         assert_eq!(refs[0].coworker_name, "Author");
         assert_eq!(refs[0].role, "程序员");
         assert_eq!(refs[0].description, "技能说明");
+        assert!(refs[0].path.starts_with('/'), "live pointers are absolute");
         assert!(refs[0].path.ends_with("SKILL.md"));
-        assert!(refs[0].relative_path.is_none(), "live pointers are absolute");
         assert!(registry.skill_refs(&[]).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn copy_dir_copies_nested_skill_files() {
-        let source = temp_dir("copy-src");
-        fs::create_dir_all(source.join("references")).unwrap();
-        fs::write(source.join(SKILL_FILE), "skill").unwrap();
-        fs::write(source.join("references/notes.md"), "notes").unwrap();
+    fn skill_map_keys_by_name_and_disambiguates_duplicates() {
+        let root = temp_dir("map");
+        write_package(
+            &root,
+            "author",
+            r#"{"schemaVersion":1,"name":"Author","role":"程序员","description":"一起写代码","avatar":"avatar.png","skills":["skills/demo"]}"#,
+            Some("---\nname: demo\ndescription: 技能说明\n---\n"),
+        );
+        write_package(
+            &root,
+            "reviewer",
+            r#"{"schemaVersion":1,"name":"Reviewer","role":"评审","description":"把关质量","avatar":"avatar.png","skills":["skills/demo"]}"#,
+            Some("---\nname: demo\ndescription: 另一个同名技能\n---\n"),
+        );
+        let registry = load_dir(&root);
 
-        let copy_root = temp_dir("copy-dst");
-        let dest = copy_root.join("skills/author/demo");
-        let mut budget = CopyBudget::default();
-        copy_dir(&source, &dest, 0, &mut budget).unwrap();
+        let ids = vec!["author".to_string(), "reviewer".to_string()];
+        let map = registry.skill_map(&ids);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["demo"].coworker_id, "author");
+        assert_eq!(map["reviewer/demo"].coworker_id, "reviewer");
+        assert!(map["reviewer/demo"].path.starts_with('/'));
+        assert!(registry.skill_map(&[]).is_empty());
 
-        assert!(dest.join(SKILL_FILE).is_file());
-        assert!(dest.join("references/notes.md").is_file());
-        assert_eq!(budget.files, 2);
-        fs::remove_dir_all(source).unwrap();
-        fs::remove_dir_all(copy_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

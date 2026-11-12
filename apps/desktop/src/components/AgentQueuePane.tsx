@@ -113,7 +113,10 @@ function RunQueueRow(props: {
   onSelect: () => void;
 }) {
   const { task, position, status } = props;
-  const spinning = task.status === "preparing" || task.status === "running";
+  const spinning =
+    task.status === "preparing" ||
+    task.status === "running" ||
+    task.status === "merging";
   return (
     <button
       type="button"

@@ -9,7 +9,7 @@ use tapd_core::{
     tapd::{BugDetail, BugSummary},
 };
 
-pub(super) fn workspace_label(
+pub(crate) fn workspace_label(
     workspace_name: Option<String>,
     detail: &BugDetail,
     workspace_id: &str,
@@ -23,7 +23,7 @@ pub(super) fn workspace_label(
         .unwrap_or_else(|| workspace_id.to_string())
 }
 
-/// Directory that receives `bug.md`, `bug.json` and `assets/` for one bug.
+/// Directory that receives `bug.json` and `assets/` for one bug.
 ///
 /// Layout: `<exports>/<workspace>-<workspace_id>/<bug_ref>[-<ascii-slug>]`.
 /// `bug_ref` is the short id TAPD shows in its UI, and the slug is ASCII-only
@@ -79,6 +79,7 @@ mod tests {
             logs_dir: PathBuf::from("/tmp/tapd/logs"),
             captures_dir: PathBuf::from("/tmp/tapd/captures"),
             exports_dir: PathBuf::from("/exports"),
+            worktrees_dir: PathBuf::from("/tmp/tapd/worktrees"),
             runtime_file: PathBuf::from("/tmp/tapd/runtime.json"),
             config_file: PathBuf::from("/tmp/tapd/config.json"),
         }
@@ -107,10 +108,7 @@ mod tests {
             &bug_reference(&summary),
             &summary.title,
         );
-        assert_eq!(
-            dir.to_string_lossy(),
-            "/exports/UU-45336192/1010643-rust"
-        );
+        assert_eq!(dir.to_string_lossy(), "/exports/UU-45336192/1010643-rust");
     }
 
     #[test]

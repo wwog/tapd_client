@@ -31,10 +31,7 @@ impl AgentCore {
     }
 
     pub(super) fn set_storage_error(&self, message: Option<String>) {
-        *self
-            .storage_error
-            .lock()
-            .expect("agent storage error lock") = message;
+        *self.storage_error.lock().expect("agent storage error lock") = message;
     }
 
     pub(super) fn persist_tasks(&self) -> bool {
@@ -68,9 +65,7 @@ impl AgentCore {
         let paused = self.paused.load(Ordering::SeqCst);
         let persisted = self.state.cache.save_agent_tasks(&tasks, paused, &removed);
         if !persisted {
-            self.set_storage_error(Some(
-                "任务状态保存失败，重启后可能丢失".to_string(),
-            ));
+            self.set_storage_error(Some("任务状态保存失败，重启后可能丢失".to_string()));
             // SQLite is unavailable. Re-read the latest in-memory state (a
             // mutation may have landed while the write was failing) so the
             // retry never resurrects an older snapshot.

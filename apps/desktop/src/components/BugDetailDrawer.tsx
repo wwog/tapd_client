@@ -440,7 +440,7 @@ function BugDetailDrawerImpl(props: Props) {
                 {detail.descriptionHtml.includes("<img") ||
                 detail.descriptionHtml.includes("<video") ? (
                   <p className="mt-2 text-ui-sm text-slate-400">
-                    描述中包含内嵌图片/视频，已在下方「资源」列出；导出 MD 时会下载到 assets 目录。
+                    描述中包含内嵌图片/视频，已在下方「资源」列出；导出时会下载到 assets 目录。
                   </p>
                 ) : null}
               </section>

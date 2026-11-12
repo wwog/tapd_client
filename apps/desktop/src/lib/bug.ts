@@ -73,8 +73,8 @@ const TITLE_PUNCTUATION: Record<string, string> = {
  *
  * Bracketed ranges are kept apart from the surrounding text (`[x]y` → `[x] y`,
  * `a[x]` → `a [x]`), while a bracket at the very start of the title stays flush.
- * Only the title is rewritten; descriptions, comments and exported Markdown keep
- * the original text.
+ * Only the title is rewritten; descriptions, comments and exported bug.json
+ * keep the original text.
  */
 export const bugTitle = (value: string | null | undefined): string =>
   (value ?? "")

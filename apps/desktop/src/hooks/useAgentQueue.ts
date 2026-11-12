@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 
-import {
-  agentBugKey,
-  externalClaimMap,
-  inFlightAgentTasks,
-} from "../lib/agent";
-import { DEV_SIM, devSimClaim, devSimTask, useDevSim } from "../lib/devSim";
+import { agentBugKey, inFlightAgentTasks } from "../lib/agent";
+import { DEV_SIM, devSimTask, useDevSim } from "../lib/devSim";
 import {
   acquireAgentTasksStore,
   useAgentTasksStore,
@@ -13,8 +9,7 @@ import {
 
 /**
  * Agent queue snapshot shared across the app: the pending-review badge, the
- * in-flight map used to disable/redirect enqueue actions, external AI claims,
- * and the raw state.
+ * in-flight map used to disable/redirect enqueue actions, and the raw state.
  */
 export function useAgentQueue() {
   const agentState = useAgentTasksStore();
@@ -22,27 +17,18 @@ export function useAgentQueue() {
 
   useEffect(() => acquireAgentTasksStore(), []);
 
+  // 待审核与待合并都等用户决定，共用一个入口标记。
   const pendingReviews =
-    agentState?.awaitingApprovalCount ??
-    agentState?.tasks.filter((task) => task.status === "awaiting_approval").length ??
-    0;
+    (agentState?.awaitingApprovalCount ??
+      agentState?.tasks.filter((task) => task.status === "awaiting_approval")
+        .length ??
+      0) +
+    (agentState?.awaitingMergeCount ??
+      agentState?.tasks.filter((task) => task.status === "awaiting_merge").length ??
+      0);
 
   const agentTasks = useMemo(() => agentState?.tasks ?? [], [agentState]);
 
-  // Claims expire 15 minutes after the last heartbeat. The backend only emits
-  // state on changes, so re-evaluate freshness on a slow tick as well.
-  const storedClaims = useMemo(
-    () => agentState?.externalClaims ?? [],
-    [agentState],
-  );
-  const hasClaims = storedClaims.length > 0;
-  const [claimNow, setClaimNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!hasClaims) return;
-    setClaimNow(Date.now());
-    const timer = window.setInterval(() => setClaimNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, [hasClaims]);
   const agentInFlight = useMemo(() => {
     const map = inFlightAgentTasks(agentTasks);
     if (!DEV_SIM) return map;
@@ -61,20 +47,5 @@ export function useAgentQueue() {
     return map;
   }, [agentTasks, devSim]);
 
-  const externalClaims = useMemo(() => {
-    const map = externalClaimMap(storedClaims, claimNow);
-    if (!DEV_SIM) return map;
-
-    for (const entry of Object.values(devSim)) {
-      const key = agentBugKey(entry.workspaceId, entry.bugId);
-      if (entry.kind === "external-queued" || entry.kind === "external-running") {
-        map.set(key, devSimClaim(entry));
-      } else {
-        map.delete(key);
-      }
-    }
-    return map;
-  }, [storedClaims, claimNow, devSim]);
-
-  return { agentState, pendingReviews, agentInFlight, externalClaims };
+  return { agentState, pendingReviews, agentInFlight };
 }

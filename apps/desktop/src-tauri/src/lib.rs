@@ -25,11 +25,7 @@ mod window_state;
 
 use std::sync::Arc;
 
-use tapd_core::{
-    config::ConfigStore,
-    paths::AppPaths,
-    runtime::RuntimeInfo,
-};
+use tapd_core::{config::ConfigStore, paths::AppPaths, runtime::RuntimeInfo};
 use tauri::{Manager, RunEvent};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -85,7 +81,7 @@ pub fn run() {
             commands::bug_transitions,
             commands::bug_transition_form,
             commands::bug_transition,
-            export::export_bug_md,
+            export::export_bug,
             commands::set_current_user,
             commands::ensure_window_width,
             commands::mcp_config,
@@ -202,9 +198,8 @@ fn init_tracing(paths: &AppPaths) {
     // Keep the writer alive for the whole process lifetime.
     std::mem::forget(guard);
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,tapd_client_lib=debug,tapd_core=debug")
-    });
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,tapd_client_lib=debug,tapd_core=debug"));
 
     let _ = tracing_subscriber::registry()
         .with(filter)

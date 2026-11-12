@@ -18,6 +18,10 @@ pub struct AppPaths {
     pub logs_dir: PathBuf,
     pub captures_dir: PathBuf,
     pub exports_dir: PathBuf,
+    /// Per-task git worktrees, inside the data directory so a reset removes
+    /// them together with the rest of the agent state.
+    #[serde(default)]
+    pub worktrees_dir: PathBuf,
     pub runtime_file: PathBuf,
     pub config_file: PathBuf,
 }
@@ -43,6 +47,7 @@ impl AppPaths {
         let logs_dir = data_dir.join("logs");
         let captures_dir = data_dir.join("captures");
         let exports_dir = home.join("Documents/TAPDClient/exports");
+        let worktrees_dir = data_dir.join("worktrees");
         let runtime_file = data_dir.join("runtime.json");
         let config_file = data_dir.join("config.json");
 
@@ -51,6 +56,7 @@ impl AppPaths {
             logs_dir,
             captures_dir,
             exports_dir,
+            worktrees_dir,
             runtime_file,
             config_file,
         };
@@ -66,6 +72,7 @@ impl AppPaths {
             &self.logs_dir,
             &self.captures_dir,
             &self.exports_dir,
+            &self.worktrees_dir,
         ] {
             std::fs::create_dir_all(dir)?;
         }

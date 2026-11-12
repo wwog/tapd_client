@@ -42,12 +42,21 @@ export function AgentQueuedDetail(props: Props) {
               <span className="shrink-0">
                 {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
               </span>
-              <span
-                className="min-w-0 max-w-full truncate font-mono"
-                title={task.repoPath}
-              >
-                {task.repoPath || "未配置仓库"}
-              </span>
+              {task.worktreeBranch ? (
+                <span
+                  className="min-w-0 max-w-full truncate font-mono text-sky-700"
+                  title={task.worktreePath ?? task.worktreeBranch}
+                >
+                  ⎇ {task.worktreeBranch}
+                </span>
+              ) : (
+                <span
+                  className="min-w-0 max-w-full truncate font-mono"
+                  title={task.repoPath}
+                >
+                  {task.repoPath || "未配置仓库"}
+                </span>
+              )}
               <span className="shrink-0">入队 {relativeTime(task.createdAt)}</span>
             </div>
           </div>
@@ -99,12 +108,12 @@ export function AgentQueuedDetail(props: Props) {
               队列已暂停，点击右上角「继续队列」恢复执行。
             </p>
           ) : null}
-          {task.repoPath ? (
+          {task.worktreePath || task.repoPath ? (
             <p
               className="mt-2 break-all font-mono text-ui-xs text-slate-400"
-              title={task.repoPath}
+              title={task.worktreePath || task.repoPath}
             >
-              {task.repoPath}
+              {task.worktreePath || task.repoPath}
             </p>
           ) : null}
         </div>

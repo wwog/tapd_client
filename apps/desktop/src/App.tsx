@@ -7,10 +7,9 @@ import {
   agentActiveBugIds,
   agentApi,
   agentBugKey,
-  externalClaimLabel,
-  type ExternalClaim,
+  type RecoveryReport,
 } from "./lib/agent";
-import { clearDevSimForBug, clearDevSimForTask, DEV_SIM } from "./lib/devSim";
+import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
 import { useMembersDirectory } from "./lib/members";
 import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
@@ -33,6 +32,7 @@ import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectSidebar } from "./components/ProjectSidebar";
+import { RecoveryBanner } from "./components/RecoveryBanner";
 import { SettingsPage } from "./components/SettingsPage";
 import { SkeletonRows } from "./components/Skeleton";
 import { TitleBar } from "./components/TitleBar";
@@ -95,13 +95,20 @@ export default function App() {
   /** Incremented by 设置 → 默认 Agent to open Agent 页 →「配置」. */
   const [agentConfigFocus, setAgentConfigFocus] = useState(0);
 
+  /** Tasks the backend restored when this system entry began. */
+  const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
+  /** Report ids the user already dismissed; a re-login must not re-show them. */
+  const acknowledgedRecoveryIds = useRef<Set<number>>(new Set());
+  /** One request per system entry; failures clear it so the next entry retries. */
+  const recoveryRequestedRef = useRef(false);
+
   useEffect(() => {
     startUpdateStore();
   }, []);
 
   // Pending commit reviews are surfaced in the title bar so they cannot be
   // forgotten behind the Agent tab.
-  const { pendingReviews, agentInFlight, externalClaims } = useAgentQueue();
+  const { pendingReviews, agentInFlight } = useAgentQueue();
 
   /** Detail actions read by workspace events without a hook-order cycle. */
   const paneBridgeRef = useRef<WorkspacePaneBridge>({
@@ -134,14 +141,45 @@ export default function App() {
 
   useMembersDirectory(info?.loggedIn ?? false, workspaceId);
 
+  // The workflow may only be initialized after login + onboarding; the backend
+  // rejects an earlier call. One request per system entry, and a failure clears
+  // the guard so the next entry can retry.
+  const sessionReady = info?.loggedIn === true && info?.onboarded === true;
+  useEffect(() => {
+    if (!sessionReady) {
+      // Logout / onboarding reset re-arms the request for the next entry.
+      recoveryRequestedRef.current = false;
+      return;
+    }
+    if (recoveryRequestedRef.current) return;
+    recoveryRequestedRef.current = true;
+
+    void agentApi
+      .enterSystem()
+      .then(({ report }) => {
+        if (!report) return;
+        if (acknowledgedRecoveryIds.current.has(report.id)) return;
+        setRecoveryReport((current) => (current?.id === report.id ? current : report));
+      })
+      .catch((error) => {
+        // Older backends lack this command; the main UI must stay usable.
+        recoveryRequestedRef.current = false;
+        showToast("error", String(error));
+      });
+  }, [sessionReady, showToast]);
+
+  /** Remember the dismissal so the same report never reappears after re-login. */
+  const dismissRecoveryReport = useCallback(() => {
+    setRecoveryReport((report) => {
+      if (report) acknowledgedRecoveryIds.current.add(report.id);
+      return null;
+    });
+  }, []);
+
   // 处理中 exists only while an agent works on this project; when the last one
   // finishes (or the user switches project) fall back to 我负责的 so the list
   // can never sit on a scope whose segment is gone.
-  const processingCount = agentActiveBugIds(
-    workspaceId,
-    agentInFlight,
-    externalClaims,
-  ).length;
+  const processingCount = agentActiveBugIds(workspaceId, agentInFlight).length;
   useEffect(() => {
     if (scope === "processing" && processingCount === 0) setScope("mine");
   }, [scope, processingCount]);
@@ -244,19 +282,6 @@ export default function App() {
     [showToast],
   );
 
-  /** Row 取消 for an external AI claim. */
-  const releaseExternalClaim = useCallback(
-    async (claim: ExternalClaim) => {
-      if (DEV_SIM && clearDevSimForBug(claim.workspaceId, claim.bugId)) return;
-      try {
-        await agentApi.externalRelease(claim.workspaceId, claim.bugId);
-      } catch (error) {
-        showToast("error", String(error));
-      }
-    },
-    [showToast],
-  );
-
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
     setView("bugs");
@@ -331,13 +356,6 @@ export default function App() {
         return "queued";
       }
 
-      // An external AI already owns this bug; the backend would refuse too.
-      const claim = externalClaims.get(agentBugKey(target.workspaceId, target.id));
-      if (claim) {
-        showToast("error", externalClaimLabel(claim));
-        return "error";
-      }
-
       try {
         const { config } = await agentApi.configGet();
         const repoPath = (config.projects?.[target.workspaceId]?.repoPath ?? "").trim();
@@ -351,7 +369,7 @@ export default function App() {
       }
       return (await doEnqueueAgent(target, payload)) ? "queued" : "error";
     },
-    [agentInFlight, externalClaims, doEnqueueAgent, openAgentTask, showToast],
+    [agentInFlight, doEnqueueAgent, openAgentTask, showToast],
   );
 
   const applyAgentFolder = useCallback(
@@ -523,10 +541,8 @@ export default function App() {
             onAgentFix={enqueueAgent}
             onAgentCompose={openAgentCompose}
             agentInFlight={agentInFlight}
-            externalClaims={externalClaims}
             onOpenAgentTask={openAgentTask}
             onCancelTask={cancelAgentTask}
-            onReleaseExternal={releaseExternalClaim}
             onClaim={detailPane.claimFromList}
             refreshToken={refreshToken}
           />
@@ -714,6 +730,14 @@ export default function App() {
             ) : null}
 
           </header>
+
+          {recoveryReport ? (
+            <RecoveryBanner
+              report={recoveryReport}
+              onOpenTasks={() => activateView("agent")}
+              onDismiss={dismissRecoveryReport}
+            />
+          ) : null}
 
           {renderView()}
         </main>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot, ExternalLink, Fingerprint, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
+import { ExternalLink, Fingerprint, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
 import clsx from "clsx";
 
 import type { BugSummary } from "../lib/api";
@@ -12,7 +12,7 @@ export type BugRowMenu = { x: number; y: number; bug: BugSummary };
 
 /** Approximate row context menu box, used to keep it inside the window. */
 const MENU_WIDTH = 168;
-const MENU_HEIGHT = DEV_SIM ? 352 : 132;
+const MENU_HEIGHT = DEV_SIM ? 288 : 132;
 
 type Props = {
   menu: BugRowMenu;
@@ -115,16 +115,6 @@ function DevSimSection(props: { bug: BugSummary; onClose: () => void }) {
         <FlaskConical size={10} />
         开发测试
       </div>
-      <RowMenuItem
-        icon={<Hourglass size={12} />}
-        label="模拟外部队列"
-        onClick={() => apply("external-queued")}
-      />
-      <RowMenuItem
-        icon={<Bot size={12} />}
-        label="模拟外部运行"
-        onClick={() => apply("external-running")}
-      />
       <RowMenuItem
         icon={<Hourglass size={12} />}
         label="模拟本地排队 #1"

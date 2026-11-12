@@ -1,17 +1,18 @@
-//! Agent queue: one serial worker that runs a coding agent's TUI in a PTY.
+//! Agent queue: a concurrency-limited worker that runs coding agents in PTYs.
 //!
 //! Exposed through `feature_command` names starting with `agent_`.
 //!
 //! Design notes:
-//! - The queue is strictly serial: one tokio worker picks `queued` tasks and
-//!   runs them one at a time. Commands never start tasks directly. Every task
-//!   body runs inside its own `tokio::spawn` so a panic cannot kill the worker.
+//! - The queue runs up to `effective_execution_units()` tasks in parallel (one
+//!   when worktree isolation is off). Commands never start tasks directly.
+//!   Every task body runs inside its own `tokio::spawn` so a panic fails only
+//!   that task and cannot kill the worker loop.
 //! - Every runtime is a CLI started in a PTY (see `runtime_catalog`). The prompt
 //!   is delivered as argv, as a flag, or by bracketed paste on stdin once the
 //!   TUI has been quiet for `ready_quiet_ms`.
-//! - A turn ends on MCP `agent_task_report`, on process exit, or when output has
-//!   been silent for `idle_complete_ms`; the uncommitted-work safety net can
-//!   still force a review afterwards.
+//! - A turn ends on process exit, on a session hook `settled` event, or when
+//!   output has been silent for `idle_complete_ms`; the uncommitted-work safety
+//!   net can still force a review afterwards.
 //! - PTY work happens on dedicated std threads (reader, batcher, wait) so the
 //!   async worker only awaits a oneshot result (or an event-driven completion
 //!   notification).
@@ -24,6 +25,8 @@ mod hooks;
 mod persist;
 mod pty;
 mod status;
+mod workflow_bridge;
+mod worktree;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -45,7 +48,8 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::{shell_path, state::SharedState};
 use git::{
-    committed_since_baseline, git_head, stash_changes, uncommitted_files,
+    branch_merged, changed_files_since, committed_since_baseline, git_head, stash_changes,
+    uncommitted_files,
 };
 use hooks::SessionHookKind;
 use pty::{AgentRuntime, PromptGuard, PtyOutcome};
@@ -222,28 +226,24 @@ export default function tapdSessionMonitor(pi) {
 const DEFAULT_BINARY: &str = "opencode";
 const DEFAULT_RUNTIME_ID: &str = "opencode";
 /// TUI 运行时在提示词注入后，输出静默多久视为本轮结束。
-/// MCP 的 `agent_task_report` 是主信号，这里只是防止 Agent 忘记回报时任务永远卡住。
+/// 进程退出与会话 hook 是主信号，这里只是防止 Agent 长时间无输出时任务永远卡住。
 const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
 /// Cap the diff preview so a huge refactor cannot freeze the review panel.
 const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
 
-pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 TAPD MCP 中名称包含 tapd_request_review 的工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 本轮结束时必须调用 TAPD MCP 中名称包含 agent_task_report 的工具回报结果：taskId 使用 {{task_id}}；成功提交并回写 TAPD 后 status=completed，无法完成时 status=failed 并在 message 说明原因。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.json 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
 
 /// Follow-up prompt injected after the user approves a paused review. The
 /// working tree still holds the reviewed changes, so the agent only commits
 /// and writes back to TAPD instead of redoing the fix.
-pub const DEFAULT_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请继续完成 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与缺陷相关。\n3. 提交代码（git commit，不要 push）。\n4. 提交成功后，再在 TAPD 中追加评论并更新缺陷状态；评论说明原由、解决方案与影响范围。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接更新 TAPD，不要重复提交。\n6. 完成后调用 TAPD MCP 中名称包含 agent_task_report 的工具，taskId 使用 {{task_id}}，status=completed；失败时 status=failed 并说明原因。\n7. 绝对不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请继续完成 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与缺陷相关。\n3. 提交代码（git commit，不要 push）。\n4. 提交成功后，用 tapd_add_bug_comment 追加评论并说明原因、方案与影响范围，再用 tapd_update_bug_status 更新缺陷状态。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接更新 TAPD，不要重复提交。\n6. 绝对不要在提交成功前评论或更新 TAPD 状态。";
 
-/// Previous defaults; untouched installs are migrated to the current default
-/// (which also carries the `{{project_rule}}` slot).
-const LEGACY_PROMPT_TEMPLATES: &[&str] = &[
-    "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改。\n3.修复时请遵循团队代码规范，确保代码可读、可维护。\n4. 修复完成后，提交代码并在 TAPD 中更新缺陷状态并简要评论原由以及解决方案和修复影响范围。",
-    "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改。\n3. 修改后运行相关测试或构建。\n4. 不要自行 git commit / push，完成后说明改了哪些文件。",
-    // 引入同事技能之前的默认模板；未改动过的安装自动升级。
-    "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 TAPD MCP 中名称包含 tapd_request_review 的工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 本轮结束时必须调用 TAPD MCP 中名称包含 agent_task_report 的工具回报结果：taskId 使用 {{task_id}}；成功提交并回写 TAPD 后 status=completed，无法完成时 status=failed 并在 message 说明原因。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。",
-    // 引入 agent_task_report 之前的默认模板；未改动过的安装自动升级。
-    "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 tapd_request_review 工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。",
-];
+/// Worktree 任务审核通过后的提交阶段。TAPD 回写统一留到合并阶段，避免任务
+/// 还没并入主仓库就把缺陷标记为已解决。
+pub const DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请在当前 worktree 提交上一轮审核过的修改。\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建。\n3. 提交代码（git commit，不要 push）。\n4. 不要评论或更新 TAPD；合并阶段会统一回写。\n5. 如果工作区已经没有未提交改动，说明已提交，直接结束。";
+
+/// 追加到 Worktree 修复阶段的交付说明：修复轮不写 TAPD。
+const WORKTREE_FIX_NOTE: &str = "本轮在独立 worktree 中运行：不要评论或更新 TAPD。简单任务只提交；复杂任务保留未提交改动。审核与合并完成后，由合并阶段统一写回 TAPD。";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -255,7 +255,8 @@ const LEGACY_PROMPT_TEMPLATES: &[&str] = &[
 pub struct ProjectAgentConfig {
     /// Absolute local repository path used as the agent's working directory.
     pub repo_path: String,
-    /// Project-specific rules appended to (or injected into) the prompt.
+    /// Project-specific rules. Not part of the built-in prompt: `tapd_get_bug`
+    /// returns them as its own `projectRule` field for external agents.
     pub rule: String,
 }
 
@@ -280,8 +281,19 @@ pub struct AgentConfig {
     /// Upper bound for readiness detection; on expiry we inject anyway.
     pub ready_timeout_ms: u64,
     /// TUI 运行时本轮结束的兜底：提示词注入后输出静默达到该时长即视为完成。
-    /// 0 表示关闭兜底，只依赖 `agent_task_report` 或进程退出。
+    /// 0 表示关闭兜底，只依赖进程退出与会话 hook。
     pub idle_complete_ms: u64,
+    /// 每个任务在独立的 git worktree 中运行。关闭时并发固定为 1。
+    #[serde(default)]
+    pub worktree_enabled: bool,
+    /// 同时运行的任务数；仅在开启 worktree 时生效。
+    #[serde(default = "default_execution_units")]
+    pub execution_units: u32,
+}
+
+/// Worktree 开启后默认并行两个任务：再多会让 TUI 抢占交互终端，也不利于排查。
+fn default_execution_units() -> u32 {
+    2
 }
 
 impl Default for AgentConfig {
@@ -296,6 +308,8 @@ impl Default for AgentConfig {
             ready_quiet_ms: 900,
             ready_timeout_ms: 15_000,
             idle_complete_ms: DEFAULT_IDLE_COMPLETE_MS,
+            worktree_enabled: false,
+            execution_units: default_execution_units(),
         }
     }
 }
@@ -318,9 +332,7 @@ impl AgentConfig {
         };
 
         if self.prompt_template.trim().is_empty()
-            || LEGACY_PROMPT_TEMPLATES
-                .iter()
-                .any(|legacy| self.prompt_template.trim() == *legacy)
+            || template_uses_removed_contract(&self.prompt_template)
         {
             self.prompt_template = DEFAULT_PROMPT_TEMPLATE.to_string();
         }
@@ -330,6 +342,7 @@ impl AgentConfig {
         self.ready_quiet_ms = self.ready_quiet_ms.clamp(100, 10_000);
         self.ready_timeout_ms = self.ready_timeout_ms.clamp(1_000, 120_000);
         self.idle_complete_ms = self.idle_complete_ms.min(3_600_000);
+        self.execution_units = self.execution_units.clamp(1, 8);
 
         // Migrate the old id -> path map into per-project settings once.
         for (workspace_id, path) in std::mem::take(&mut self.repo_mappings) {
@@ -367,12 +380,14 @@ impl AgentConfig {
             .unwrap_or_default()
     }
 
-    /// Project rules for a workspace.
-    fn rule_for(&self, workspace_id: &str) -> String {
-        self.projects
-            .get(workspace_id)
-            .map(|project| project.rule.clone())
-            .unwrap_or_default()
+    /// How many tasks may run in parallel. Without worktree isolation the
+    /// tasks would share one working tree, so the queue stays serial.
+    pub(crate) fn effective_execution_units(&self) -> usize {
+        if self.worktree_enabled {
+            self.execution_units.clamp(1, 8) as usize
+        } else {
+            1
+        }
     }
 }
 
@@ -381,7 +396,7 @@ impl AgentConfig {
 // ---------------------------------------------------------------------------
 
 /// A lifecycle stage every runtime must declare. `needs_human` stages block the
-/// serial queue until the user acts; `terminal` stages are final states.
+/// queue until the user acts; `terminal` stages are final states.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentLifecycleStage {
@@ -482,14 +497,28 @@ fn runtime_lifecycle() -> Vec<AgentLifecycleStage> {
         AgentLifecycleStage {
             key: "awaiting_approval",
             label: "改动待审核",
-            description: "复杂改动暂停提交，等待通过并提交或停止储藏。",
+            description: "Worktree 任务改动或非 Worktree 复杂改动暂停，等待通过或停止。",
             needs_human: true,
+            terminal: false,
+        },
+        AgentLifecycleStage {
+            key: "awaiting_merge",
+            label: "待合并",
+            description: "审核已通过，等待确认用原 Agent 或手动把任务分支合并到主仓库。",
+            needs_human: true,
+            terminal: false,
+        },
+        AgentLifecycleStage {
+            key: "merging",
+            label: "合并中",
+            description: "原 Agent 正在主仓库合并任务分支，并校验分支是否已并入 HEAD。",
+            needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "succeeded",
             label: "任务完成",
-            description: "提交与 TAPD 回写完成。",
+            description: "合并校验通过（或非 Worktree 提交）并完成 TAPD 回写。",
             needs_human: false,
             terminal: true,
         },
@@ -529,7 +558,7 @@ fn tui_limitations(mcp_auto: bool) -> Vec<&'static str> {
     };
     vec![
         "权限确认在右侧嵌入式终端内完成，桌面不会代为回执。",
-        "本轮结束以 agent_task_report 为准；未调用时按输出静默兜底。",
+        "本轮结束以进程退出为准；未退出时按会话 hook 或输出静默兜底。",
         mcp,
     ]
 }
@@ -1213,7 +1242,6 @@ fn runtime_descriptor(id: &str) -> Option<AgentRuntimeDescriptor> {
         .find(|runtime| runtime.id == id)
 }
 
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct AgentConfigPatch {
@@ -1226,6 +1254,8 @@ struct AgentConfigPatch {
     ready_quiet_ms: Option<u64>,
     ready_timeout_ms: Option<u64>,
     idle_complete_ms: Option<u64>,
+    worktree_enabled: Option<bool>,
+    execution_units: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,16 +1336,20 @@ pub enum TaskStatus {
     /// approve the commit. The working tree keeps the diff; the queue is
     /// blocked until the user approves or stops the task.
     AwaitingApproval,
+    /// 审核已通过，等待用户确认把任务分支合并回主仓库。Worktree 目录保留。
+    AwaitingMerge,
+    /// 合并 Agent 正在主仓库执行合并。
+    Merging,
     Succeeded,
     Failed,
     Canceled,
 }
 
 impl TaskStatus {
-    /// A task occupying the single worker slot. `AwaitingApproval` blocks the
-    /// queue through the explicit awaiting-review check, not through this.
+    /// A task occupying one worker slot (or a merge runner). `AwaitingApproval`
+    /// blocks the queue through the explicit awaiting-review check, not here.
     fn is_active(self) -> bool {
-        matches!(self, Self::Preparing | Self::Running)
+        matches!(self, Self::Preparing | Self::Running | Self::Merging)
     }
 
     fn is_terminal(self) -> bool {
@@ -1333,8 +1367,20 @@ pub struct AgentTask {
     pub title: String,
     pub severity: String,
     pub priority: String,
-    pub md_path: String,
+    /// Exported `bug.json` (details + assets) handed to the agent. Older
+    /// records only had `mdPath`; they load with an empty path instead of being
+    /// dropped (no migration chain by design).
+    #[serde(default)]
+    pub json_path: String,
+    /// Main repository from the project settings. With worktree isolation this
+    /// stays the `git -C` repository while `worktree_path` is the working dir.
     pub repo_path: String,
+    /// Per-task git worktree checked out for this run. Removed on success;
+    /// kept for failed/canceled/awaiting-review tasks so they can be inspected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
     pub status: TaskStatus,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1358,6 +1404,9 @@ pub struct AgentTask {
     /// Post-work review (complex change) shown in the 待审核 tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<TaskApproval>,
+    /// 审核通过后的合并进度：错误、手动步骤与时间戳。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<TaskMerge>,
     /// Set after approval: the next run only verifies, commits and writes back
     /// to TAPD instead of repeating the fix.
     #[serde(default)]
@@ -1377,6 +1426,29 @@ pub struct AgentTask {
     /// Local resource paths supplied with the task. Only paths reach the agent.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// Number of automatic retries already spent after interruptions.
+    /// `serde(default)` keeps pre-workflow records readable.
+    #[serde(default)]
+    pub attempt: u32,
+    /// The previous run was interrupted by a client restart/suspend.
+    #[serde(default)]
+    pub interrupted: bool,
+    /// Host-computed change summary for the last run. Filled from the core
+    /// model so recovery keeps the durable shape aligned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<tapd_workflow::ChangeSet>,
+}
+
+impl AgentTask {
+    /// Directory the agent actually works in: the worktree when one exists,
+    /// otherwise the configured repository.
+    pub(super) fn work_dir(&self) -> &str {
+        self.worktree_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .unwrap_or(&self.repo_path)
+    }
 }
 
 /// A complex change the agent wants the user to approve before committing.
@@ -1396,77 +1468,30 @@ pub struct TaskApproval {
     pub stash: Option<String>,
 }
 
-/// A bug another MCP client (external AI) is working on. The desktop queue
-/// never takes over a fresh claim, and the list renders it as a live row.
+/// Merge stage state for a worktree task approved for merge.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct ExternalClaim {
-    pub workspace_id: String,
-    pub bug_id: String,
-    /// Project name resolved when the claim registered; empty for old records.
-    #[serde(default)]
-    pub workspace_name: String,
-    #[serde(default)]
-    pub title: String,
-    /// MCP client name from the handshake (for example "Zcode").
-    pub client: String,
-    /// Model the client reports; empty when it did not say.
-    #[serde(default)]
-    pub model: String,
-    /// `queued` (client is waiting for its turn) or `running`.
-    pub status: String,
-    #[serde(default)]
-    pub note: String,
-    pub claimed_at: String,
-    pub last_seen_at: String,
+pub struct TaskMerge {
+    /// 自动合并失败的原因；用户可据此改用下方手动步骤。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 手动合并步骤（含 TAPD 回写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
-/// How long a claim survives without a heartbeat. A crashed client must not
-/// block a bug forever.
-const EXTERNAL_CLAIM_TTL_SECS: i64 = 15 * 60;
-/// Upper bound so a misbehaving client cannot grow the claim list forever.
-const MAX_EXTERNAL_CLAIMS: usize = 200;
-const EXTERNAL_CLAIMS_CACHE_KIND: &str = "external_claims";
-
-/// Arguments for `tapd_claim_bug` / `agent_external_release`.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ExternalClaimRequest {
-    pub workspace_id: String,
-    pub bug_id: String,
-    pub workspace_name: String,
-    pub title: String,
-    pub client: String,
-    pub model: String,
-    pub status: String,
-    pub note: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ExternalReleaseRequest {
-    pub workspace_id: String,
-    pub bug_id: String,
-    pub client: Option<String>,
-}
-
-/// Why a claim was refused. `kind` is `desktop_agent` or `external`.
+/// Result of `agent_merge_start`: either the merge runner was started
+/// (`mode=agent`) or the user must merge by hand using `instructions`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExternalClaimConflict {
-    pub kind: String,
-    pub client: String,
-    pub model: String,
-    pub status: String,
-    pub claimed_at: String,
-    pub message: String,
-}
-
-pub struct ExternalClaimOutcome {
-    pub claimed: bool,
-    pub claim: Option<ExternalClaim>,
-    pub conflict: Option<ExternalClaimConflict>,
-    pub message: String,
+pub struct MergeStart {
+    pub mode: &'static str,
+    pub task: AgentTask,
+    pub instructions: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1498,19 +1523,18 @@ struct EnqueueRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTasksState {
-    /// Live tasks only (`queued` .. `awaiting_approval`). Terminal history is
-    /// fetched page by page through `agent_tasks_history`.
+    /// Live tasks only (`queued` .. `awaiting_merge` / `merging`). Terminal
+    /// history is fetched page by page through `agent_tasks_history`.
     tasks: Vec<AgentTask>,
     active_task_id: Option<String>,
     queued_count: usize,
     awaiting_approval_count: usize,
+    awaiting_merge_count: usize,
     /// True after the user stopped a review; the worker stays idle until
     /// `agent_queue_resume`.
     queue_paused: bool,
     /// Last persistence failure, cleared by the next successful write.
     storage_error: Option<String>,
-    /// Fresh external AI claims. Stale ones are dropped when read.
-    external_claims: Vec<ExternalClaim>,
     /// 运行中 Agent 的当前状态，key 是 task id。
     runtime_status: HashMap<String, AgentRuntimeStatus>,
 }
@@ -1553,13 +1577,12 @@ pub struct AgentSummary {
     running: bool,
     /// Number of tasks waiting for a commit decision (island/top-bar badge).
     awaiting_approval: usize,
+    /// Number of tasks waiting for a merge decision.
+    awaiting_merge: usize,
     active_task_id: Option<String>,
     title: Option<String>,
     workspace_name: Option<String>,
     bug_id: Option<String>,
-    /// Fresh external AI work. The capsule shows the client/model here even
-    /// when the desktop queue is idle.
-    external_claims: Vec<ExternalClaim>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1567,6 +1590,7 @@ struct TaskCounts {
     queued: usize,
     active: usize,
     awaiting_approval: usize,
+    awaiting_merge: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1619,17 +1643,15 @@ struct SaveResourceRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptVars {
-    /// Agent task id, passed to `tapd_request_review` for complex changes.
+    /// Agent task id, kept for templates that want to mention it.
     pub task_id: String,
     pub title: String,
-    pub md_path: String,
+    pub json_path: String,
     pub repo_path: String,
     pub workspace_name: String,
     pub bug_id: String,
     pub severity: String,
     pub priority: String,
-    /// Project-specific rules (from the project card in settings).
-    pub project_rule: String,
     /// Extra instructions from the compose sheet, rendered as Markdown.
     pub user_prompt: String,
     /// Absolute resource paths; inserted into the prompt as a path list.
@@ -1643,13 +1665,12 @@ impl PromptVars {
         Self {
             task_id: task.id.clone(),
             title: task.title.clone(),
-            md_path: task.md_path.clone(),
-            repo_path: task.repo_path.clone(),
+            json_path: task.json_path.clone(),
+            repo_path: task.work_dir().to_string(),
             workspace_name: task.workspace_name.clone(),
             bug_id: task.bug_id.clone(),
             severity: task.severity.clone(),
             priority: task.priority.clone(),
-            project_rule: String::new(),
             user_prompt: task.extra_prompt.clone(),
             attachments: task.attachments.clone(),
             coworker: String::new(),
@@ -1659,40 +1680,31 @@ impl PromptVars {
 
 /// Replaces `{{variable}}` placeholders; unknown placeholders are left intact.
 ///
-/// The project rule is exposed as `{{project_rule}}` so a global template can
-/// decide where it lands; when the template has no such placeholder the rule is
-/// appended as its own section instead of being silently dropped. Coworker
-/// skills (`{{coworker}}`) follow the same slot-or-append policy.
+/// Coworker skills (`{{coworker}}`) use a slot-or-append policy: an explicit
+/// placeholder keeps placement under the template's control, otherwise the whole
+/// section is appended.
 pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     let attachments = render_attachments(&vars.attachments);
     let pairs = [
         ("task_id", vars.task_id.as_str()),
         ("title", vars.title.as_str()),
-        ("md_path", vars.md_path.as_str()),
+        ("json_path", vars.json_path.as_str()),
         ("repo_path", vars.repo_path.as_str()),
         ("workspace_name", vars.workspace_name.as_str()),
         ("bug_id", vars.bug_id.as_str()),
         ("severity", vars.severity.as_str()),
         ("priority", vars.priority.as_str()),
-        ("project_rule", vars.project_rule.as_str()),
         ("user_prompt", vars.user_prompt.as_str()),
         ("attachments", attachments.as_str()),
         ("coworker", vars.coworker.as_str()),
     ];
 
-    let has_rule_slot = template.contains("{{project_rule}}");
     let has_prompt_slot = template.contains("{{user_prompt}}");
     let has_attachments_slot = template.contains("{{attachments}}");
     let has_coworker_slot = template.contains("{{coworker}}");
     let mut rendered = template.to_string();
     for (key, value) in pairs {
         rendered = rendered.replace(&format!("{{{{{key}}}}}"), value);
-    }
-
-    let rule = vars.project_rule.trim();
-    if !has_rule_slot && !rule.is_empty() {
-        rendered.push_str("\n\n项目规则：\n");
-        rendered.push_str(rule);
     }
 
     // Coworker skills use the same policy: an explicit slot keeps placement
@@ -1740,6 +1752,22 @@ fn attachment_kind(path: &str) -> &'static str {
     }
 }
 
+/// Templates that still point at removed tools or placeholders cannot work.
+/// Replacing them is validation, not a migration: no old template text is kept.
+fn template_uses_removed_contract(template: &str) -> bool {
+    [
+        "{{md_path}}",
+        "{{project_rule}}",
+        "tapd_request_review",
+        "agent_task_report",
+        "tapd_claim_bug",
+        "tapd_release_bug",
+        "tapd_export_bug_md",
+    ]
+    .iter()
+    .any(|marker| template.contains(marker))
+}
+
 fn next_queued_index(tasks: &[AgentTask]) -> Option<usize> {
     tasks
         .iter()
@@ -1784,12 +1812,14 @@ fn task_counts(tasks: &[AgentTask]) -> TaskCounts {
         queued: 0,
         active: 0,
         awaiting_approval: 0,
+        awaiting_merge: 0,
     };
     for task in tasks {
         match task.status {
             TaskStatus::Queued => counts.queued += 1,
-            TaskStatus::Preparing | TaskStatus::Running => counts.active += 1,
+            TaskStatus::Preparing | TaskStatus::Running | TaskStatus::Merging => counts.active += 1,
             TaskStatus::AwaitingApproval => counts.awaiting_approval += 1,
+            TaskStatus::AwaitingMerge => counts.awaiting_merge += 1,
             _ => {}
         }
     }
@@ -1797,7 +1827,8 @@ fn task_counts(tasks: &[AgentTask]) -> TaskCounts {
 }
 
 /// Picks the task the console should display: active first, then the next
-/// queued task, then the most recently created finished task.
+/// review/merge decision, then the next queued task, then the most recently
+/// created finished task.
 fn active_task_id(tasks: &[AgentTask]) -> Option<String> {
     tasks
         .iter()
@@ -1807,25 +1838,21 @@ fn active_task_id(tasks: &[AgentTask]) -> Option<String> {
                 .iter()
                 .find(|task| task.status == TaskStatus::AwaitingApproval)
         })
+        .or_else(|| {
+            tasks
+                .iter()
+                .find(|task| task.status == TaskStatus::AwaitingMerge)
+        })
         .or_else(|| tasks.iter().find(|task| task.status == TaskStatus::Queued))
         .or_else(|| tasks.iter().rev().find(|task| task.status.is_terminal()))
         .map(|task| task.id.clone())
 }
 
-fn agent_summary(tasks: &[AgentTask], mut external_claims: Vec<ExternalClaim>) -> AgentSummary {
+fn agent_summary(tasks: &[AgentTask]) -> AgentSummary {
     let active_id = active_task_id(tasks);
     let active = active_id
         .as_ref()
         .and_then(|id| tasks.iter().find(|task| &task.id == id));
-
-    // Running claims first, then the newest; the capsule only has room for
-    // the top item and the expanded cards read in this order.
-    external_claims.sort_by(|left, right| {
-        let rank = |status: &str| if status == "running" { 0 } else { 1 };
-        rank(&left.status)
-            .cmp(&rank(&right.status))
-            .then_with(|| right.claimed_at.cmp(&left.claimed_at))
-    });
 
     AgentSummary {
         running: tasks.iter().any(|task| task.status.is_active()),
@@ -1833,11 +1860,14 @@ fn agent_summary(tasks: &[AgentTask], mut external_claims: Vec<ExternalClaim>) -
             .iter()
             .filter(|task| task.status == TaskStatus::AwaitingApproval)
             .count(),
+        awaiting_merge: tasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::AwaitingMerge)
+            .count(),
         active_task_id: active_id,
         title: active.map(|task| task.title.clone()),
         workspace_name: active.map(|task| task.workspace_name.clone()),
         bug_id: active.map(|task| task.bug_id.clone()),
-        external_claims,
     }
 }
 
@@ -1857,6 +1887,24 @@ fn resolve_repo_path(task: &AgentTask, config: &AgentConfig) -> Result<String, S
     }
 
     Err("未配置项目仓库路径，请在 设置 → Agent 修复 中配置".to_string())
+}
+
+/// 存在非终态任务时不允许切换 Worktree；执行单元始终可调。纯逻辑，便于单测。
+/// 规则由 `tapd-workflow` 持有，避免核心与宿主各写一份。
+fn worktree_switch_blocked(current: bool, next: bool, has_live_task: bool) -> bool {
+    tapd_workflow::worktree_toggle_locked(current, next, has_live_task)
+}
+
+/// Prompt for the merge runner: merge the reviewed branch and then (and only
+/// then) write back to TAPD.
+fn merge_prompt(repo: &str, branch: &str) -> String {
+    tapd_workflow::merge_prompt(repo, branch)
+}
+
+/// Manual fallback shown in the merge card when the agent cannot merge (or the
+/// user prefers to do it themselves).
+fn manual_merge_instructions(repo: &str, branch: &str) -> String {
+    tapd_workflow::manual_merge_instructions(repo, branch)
 }
 
 fn finish_status(canceled: bool, exit_code: Option<i32>) -> TaskStatus {
@@ -1896,7 +1944,12 @@ fn set_awaiting_approval(
 /// A task that already reached a terminal state is never downgraded: a late
 /// `finish_task` must not turn an event-driven `succeeded` into `failed`.
 fn apply_finish(task: &mut AgentTask, outcome: &PtyOutcome, now: &str) -> bool {
-    if task.status.is_terminal() || task.status == TaskStatus::AwaitingApproval {
+    if task.status.is_terminal()
+        || matches!(
+            task.status,
+            TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
+        )
+    {
         return false;
     }
 
@@ -1932,23 +1985,6 @@ fn apply_finish(task: &mut AgentTask, outcome: &PtyOutcome, now: &str) -> bool {
         task.error = Some(message);
     }
     true
-}
-
-/// Marks tasks that were mid-flight when the client exited as failed, so the
-/// queue can make progress after a restart. Returns the recovered tasks.
-fn recover_incomplete(tasks: &mut [AgentTask], now: &str) -> Vec<AgentTask> {
-    let mut recovered = Vec::new();
-    for task in tasks.iter_mut() {
-        if !task.status.is_active() {
-            continue;
-        }
-        task.status = TaskStatus::Failed;
-        task.error = Some("客户端重启".to_string());
-        task.exit_code = None;
-        task.finished_at = Some(now.to_string());
-        recovered.push(task.clone());
-    }
-    recovered
 }
 
 // ---------------------------------------------------------------------------
@@ -2027,20 +2063,30 @@ pub struct AgentCore {
     state: SharedState,
     config: Mutex<AgentConfig>,
     tasks: Mutex<Vec<AgentTask>>,
-    /// External AI claims, keyed by workspace + bug (see `ExternalClaim`).
-    external: Mutex<Vec<ExternalClaim>>,
     runtimes: Mutex<HashMap<String, Arc<Mutex<AgentRuntime>>>>,
-    /// Serializes "who owns this bug" decisions. Enqueue, retry and an external
-    /// claim all check the other side and then write; without one lock in front
-    /// of that check-then-act, both sides can win and two agents edit the same
-    /// repository.
+    /// Serializes "who owns this bug" decisions between enqueue and retry.
+    /// Without one lock in front of the check-then-act, both can win and two
+    /// tasks edit the same repository at once.
     admission: tokio::sync::Mutex<()>,
+    /// Serializes `git worktree add/remove`: parallel tasks in one repository
+    /// would otherwise race on git's worktree metadata.
+    worktree_lock: tokio::sync::Mutex<()>,
+    /// Serializes merge starts: a repository must never run two merge agents
+    /// at once, and the check-then-act on `Merging` needs one lock.
+    merge_lock: tokio::sync::Mutex<()>,
     /// Terminal size the UI asked for. The console can be opened before the
     /// PTY exists, so the size is remembered and applied when it starts.
     sizes: Mutex<HashMap<String, (u16, u16)>>,
     /// Set when the user stops a review. Persisted in `agent_queue_state` so a
     /// restart does not silently resume a queue the user halted.
     paused: AtomicBool,
+    /// True once the user entered the system (valid login + onboarding done).
+    /// The workflow never loads or starts a task before that, so a login screen
+    /// cannot resurrect a queue behind the login wall.
+    entered: AtomicBool,
+    /// Set for the rest of the process once shutdown starts. In-flight runners
+    /// must not overwrite the parked queue status after `suspend_tasks`.
+    shutting_down: AtomicBool,
     /// Snapshots of tasks changed since the last write. Cloning at the
     /// mutation point keeps persistence O(changed) even with a large history.
     pending_tasks: Mutex<HashMap<String, AgentTask>>,
@@ -2075,11 +2121,14 @@ impl AgentCore {
             state,
             config: Mutex::new(AgentConfig::default()),
             tasks: Mutex::new(Vec::new()),
-            external: Mutex::new(Vec::new()),
             runtimes: Mutex::new(HashMap::new()),
             admission: tokio::sync::Mutex::new(()),
+            worktree_lock: tokio::sync::Mutex::new(()),
+            merge_lock: tokio::sync::Mutex::new(()),
             sizes: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(false),
+            entered: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             pending_tasks: Mutex::new(HashMap::new()),
             removed_tasks: Mutex::new(HashSet::new()),
             persist_lock: Mutex::new(()),
@@ -2115,7 +2164,7 @@ impl AgentCore {
         // an empty queue: log it loudly so the user can find the cause instead
         // of watching their history disappear.
         let mut load_failed = false;
-        let (mut tasks, paused) = match self.state.cache.load_agent_tasks() {
+        let (tasks, paused) = match self.state.cache.load_agent_tasks() {
             Some(loaded) => loaded,
             None => {
                 tracing::error!(
@@ -2128,23 +2177,11 @@ impl AgentCore {
         self.paused.store(paused, Ordering::SeqCst);
         self.paused_dirty.store(false, Ordering::SeqCst);
 
-        let recovered = recover_incomplete(&mut tasks, &now());
-        if !recovered.is_empty() {
-            tracing::warn!(
-                recovered = recovered.len(),
-                "recovered interrupted agent tasks"
-            );
-        }
+        // The persisted status is kept as-is: recovery runs once the user
+        // enters the system (`enter_system`), and the worker does not start
+        // anything before that. Marking live tasks failed here would turn a
+        // login-screen window into lost work.
         *self.tasks.lock().expect("agent tasks lock") = tasks;
-        self.mark_tasks_dirty(recovered);
-
-        let claims = self
-            .state
-            .cache
-            .get_snapshot::<Vec<ExternalClaim>>(EXTERNAL_CLAIMS_CACHE_KIND, "latest")
-            .map(|(claims, _)| claims)
-            .unwrap_or_default();
-        *self.external.lock().expect("external claims lock") = claims;
 
         // The agent console no longer records per-task logs; drop what earlier
         // versions left behind instead of keeping unread files forever. This
@@ -2154,10 +2191,80 @@ impl AgentCore {
         if load_failed {
             // `persist_tasks` may have cleared a write error; a failed read is
             // still a real data-loss signal and must stay visible.
-            self.set_storage_error(Some(
-                "本地任务存储不可用，历史任务可能无法读取".to_string(),
-            ));
+            self.set_storage_error(Some("本地任务存储不可用，历史任务可能无法读取".to_string()));
         }
+    }
+
+    /// Initializes the workflow once the user actually entered the system
+    /// (valid login + onboarding complete): applies the core's recovery rules
+    /// to the queue loaded from SQLite, persists what changed and reports the
+    /// outcome. Idempotent: a second call while already entered is a no-op.
+    pub(crate) fn enter_system(&self) -> Result<Option<tapd_workflow::RecoveryReport>, String> {
+        if !workflow_bridge::claim_entry(&self.entered) {
+            return Ok(None);
+        }
+
+        let config = self.config_snapshot();
+        let at = now();
+        // Recovery only rewrites live tasks, so they are the only records that
+        // can differ afterwards. Remember them by id to persist just those.
+        let live_ids: HashSet<String> = {
+            let tasks = self.tasks.lock().expect("agent tasks lock");
+            tasks
+                .iter()
+                .filter(|task| task.status.is_active())
+                .map(|task| task.id.clone())
+                .collect()
+        };
+
+        let recovered = {
+            let mut tasks = self.tasks.lock().expect("agent tasks lock");
+            workflow_bridge::recover_tasks(&mut tasks, &config, &at)
+        };
+        let report = match recovered {
+            Ok(report) => report,
+            Err(error) => {
+                // A failed recovery must not leave the workflow half-entered:
+                // release the claim so a later login can retry, and surface the
+                // error instead of pretending the queue is fine.
+                workflow_bridge::release_entry(&self.entered);
+                tracing::error!(%error, "failed to recover agent tasks on system entry");
+                return Err(format!("恢复任务失败：{error}"));
+            }
+        };
+
+        if !live_ids.is_empty() {
+            let changed: Vec<AgentTask> = {
+                let tasks = self.tasks.lock().expect("agent tasks lock");
+                tasks
+                    .iter()
+                    .filter(|task| live_ids.contains(&task.id))
+                    .cloned()
+                    .collect()
+            };
+            if !changed.is_empty() {
+                self.mark_tasks_dirty(changed);
+                self.persist_tasks();
+                self.emit_state();
+            }
+        }
+
+        if let Some(report) = report.as_ref() {
+            tracing::info!(
+                queued = report.queued,
+                retried = report.retried,
+                awaiting_approval = report.awaiting_approval,
+                awaiting_merge = report.awaiting_merge,
+                failed = report.failed,
+                "agent workflow recovery completed"
+            );
+            if !workflow_bridge::report_is_empty(report) {
+                let _ = self.app.emit("agent://recovery", report);
+            }
+        }
+
+        self.wake.notify_one();
+        Ok(report.filter(|report| !workflow_bridge::report_is_empty(report)))
     }
 
     pub(crate) fn config_snapshot(&self) -> AgentConfig {
@@ -2247,7 +2354,7 @@ impl AgentCore {
             return Err(HookError::Unauthorized);
         }
         match self.current_status(task_id) {
-            Some(TaskStatus::Preparing | TaskStatus::Running) => {}
+            Some(TaskStatus::Preparing | TaskStatus::Running | TaskStatus::Merging) => {}
             Some(_) => return Ok(()),
             None => return Err(HookError::UnknownTask),
         }
@@ -2288,10 +2395,7 @@ impl AgentCore {
             return Ok(());
         }
 
-        let mut events = self
-            .hook_events
-            .lock()
-            .map_err(|_| HookError::Internal)?;
+        let mut events = self.hook_events.lock().map_err(|_| HookError::Internal)?;
         // agent_end 已经入队后，任何迟到事件都不能覆盖它。
         if events
             .get(task_id)
@@ -2398,289 +2502,18 @@ impl AgentCore {
     fn store_config(&self, next: AgentConfig) -> Result<AgentConfig, String> {
         // Persist before publishing: if the write fails, memory and the task
         // prompts must keep the old config instead of diverging from disk.
-        write_json_atomic(&self.config_path(), &next)
-            .map_err(|error| {
-                tracing::warn!(%error, "failed to persist agent config");
-                format!("保存 Agent 配置失败：{error}")
-            })?;
+        write_json_atomic(&self.config_path(), &next).map_err(|error| {
+            tracing::warn!(%error, "failed to persist agent config");
+            format!("保存 Agent 配置失败：{error}")
+        })?;
         *self.config.lock().expect("agent config lock") = next.clone();
+        // Concurrency may have changed (worktree on/off or execution units);
+        // wake the worker so it re-evaluates instead of waiting for an event.
+        self.wake.notify_one();
         Ok(next)
     }
 
-    // -----------------------------------------------------------------------
-    // External AI claims
-    // -----------------------------------------------------------------------
-
-    fn persist_external_claims(&self) {
-        let claims = self.external.lock().expect("external claims lock").clone();
-        self.state
-            .cache
-            .put_snapshot(EXTERNAL_CLAIMS_CACHE_KIND, "latest", &claims);
-    }
-
-    /// Fresh claims only; stale rows are dropped and persisted away.
-    fn external_claims_snapshot(&self) -> Vec<ExternalClaim> {
-        let now = chrono::Utc::now().timestamp();
-        let (claims, dropped) = {
-            let mut claims = self.external.lock().expect("external claims lock");
-            let before = claims.len();
-            claims.retain(|claim| external_claim_fresh_at(claim, now));
-            (claims.clone(), claims.len() != before)
-        };
-        if dropped {
-            self.persist_external_claims();
-        }
-        claims
-    }
-
-    fn fresh_external_claim(&self, workspace_id: &str, bug_id: &str) -> Option<ExternalClaim> {
-        let now = chrono::Utc::now().timestamp();
-        external_claim_blocking(
-            &self.external.lock().expect("external claims lock"),
-            workspace_id,
-            bug_id,
-            now,
-        )
-        .cloned()
-    }
-
-    /// Registers an external AI claim. A queued desktop task yields to it, a
-    /// running one wins, and another fresh external claim blocks it.
-    async fn claim_external(
-        &self,
-        request: ExternalClaimRequest,
-    ) -> Result<ExternalClaimOutcome, String> {
-        let workspace_id = request.workspace_id.trim().to_string();
-        let bug_id = request.bug_id.trim().to_string();
-        if workspace_id.is_empty() || bug_id.is_empty() {
-            return Err("缺少 workspaceId 或 bugId".to_string());
-        }
-
-        let client = {
-            let value = request.client.trim();
-            if value.is_empty() {
-                "外部 AI".to_string()
-            } else {
-                truncate_text(value, 60)
-            }
-        };
-        let model = truncate_text(request.model.trim(), 60);
-        let workspace_name = truncate_text(request.workspace_name.trim(), 60);
-        let status = match request.status.trim() {
-            "queued" => "queued",
-            _ => "running",
-        }
-        .to_string();
-        let title = truncate_text(request.title.trim(), 200);
-        let note = truncate_text(request.note.trim(), 500);
-        let now = now();
-
-        // Serialized with enqueue/retry: the desktop queue and an external
-        // claim cannot both pass their ownership check.
-        let _admission = self.admission.lock().await;
-
-        // Our own queue owns the bug: a queued task yields, a live one wins.
-        let live = {
-            let tasks = self.tasks.lock().expect("agent tasks lock");
-            tasks
-                .iter()
-                .rev()
-                .find(|task| {
-                    task.workspace_id == workspace_id
-                        && task.bug_id == bug_id
-                        && !task.status.is_terminal()
-                })
-                .cloned()
-        };
-        if let Some(task) = live {
-            let label = if title.is_empty() {
-                task.title.clone()
-            } else {
-                title.clone()
-            };
-            if task.status == TaskStatus::Queued {
-                // The task can finish between the snapshot and the cancel; a
-                // terminal task must not block the external claim.
-                if let Err(error) = self.cancel(&task.id).await {
-                    let still_live = self
-                        .task_snapshot(&task.id)
-                        .is_some_and(|current| !current.status.is_terminal());
-                    if still_live {
-                        return Err(error);
-                    }
-                }
-                let _ = crate::notification::ai::raise_system_note(
-                    "外部 AI 接管任务",
-                    crate::notification::model::AiTone::Warning,
-                    &format!("“{client}”接管了「{label}」，队列中的 Agent 任务已取消"),
-                    Some(&format!("external-claim:{workspace_id}:{bug_id}:takeover")),
-                );
-            } else {
-                let _ = crate::notification::ai::raise_system_note(
-                    "外部 AI 接管被拒绝",
-                    crate::notification::model::AiTone::Warning,
-                    &format!("“{client}”想接管「{label}」，桌面 Agent 正在处理，已拒绝"),
-                    Some(&format!("external-claim:{workspace_id}:{bug_id}:rejected")),
-                );
-                return Ok(ExternalClaimOutcome {
-                    claimed: false,
-                    claim: None,
-                    conflict: Some(ExternalClaimConflict {
-                        kind: "desktop_agent".to_string(),
-                        client: "TAPD Client".to_string(),
-                        model: String::new(),
-                        status: task_status_key(task.status).to_string(),
-                        claimed_at: task
-                            .started_at
-                            .clone()
-                            .unwrap_or_else(|| task.created_at.clone()),
-                        message: "桌面 Agent 正在处理该缺陷，请勿修改；完成后会自动回写 TAPD"
-                            .to_string(),
-                    }),
-                    message: "桌面 Agent 正在处理该缺陷，已拒绝外部占用".to_string(),
-                });
-            }
-        }
-
-        // Another external client may already own it.
-        let now_secs = chrono::Utc::now().timestamp();
-        let blocked = {
-            let claims = self.external.lock().expect("external claims lock");
-            claims
-                .iter()
-                .find(|claim| {
-                    claim.workspace_id == workspace_id
-                        && claim.bug_id == bug_id
-                        && external_claim_fresh_at(claim, now_secs)
-                        && !same_client(&claim.client, &client)
-                })
-                .cloned()
-        };
-        if let Some(existing) = blocked {
-            return Ok(ExternalClaimOutcome {
-                claimed: false,
-                claim: None,
-                conflict: Some(ExternalClaimConflict {
-                    kind: "external".to_string(),
-                    client: existing.client.clone(),
-                    model: existing.model.clone(),
-                    status: existing.status.clone(),
-                    claimed_at: existing.claimed_at.clone(),
-                    message: format!("该缺陷当前由{}处理", external_claim_phrase(&existing)),
-                }),
-                message: format!("该缺陷已被{}占用", external_claim_phrase(&existing)),
-            });
-        }
-
-        // Insert a new claim, or refresh this client's heartbeat in place.
-        let claim = {
-            let mut claims = self.external.lock().expect("external claims lock");
-            claims.retain(|claim| external_claim_fresh_at(claim, now_secs));
-            if let Some(existing) = claims
-                .iter_mut()
-                .find(|claim| claim.workspace_id == workspace_id && claim.bug_id == bug_id)
-            {
-                if !title.is_empty() {
-                    existing.title = title;
-                }
-                // A heartbeat may omit model/note; keep the last known values
-                // instead of blanking the row.
-                if !model.is_empty() {
-                    existing.model = model;
-                }
-                if !workspace_name.is_empty() {
-                    existing.workspace_name = workspace_name;
-                }
-                if !note.is_empty() {
-                    existing.note = note;
-                }
-                existing.status = status;
-                existing.last_seen_at = now;
-                existing.clone()
-            } else {
-                let claim = ExternalClaim {
-                    workspace_id,
-                    bug_id,
-                    workspace_name,
-                    title,
-                    client,
-                    model,
-                    status,
-                    note,
-                    claimed_at: now.clone(),
-                    last_seen_at: now,
-                };
-                claims.push(claim.clone());
-                // Oldest claims are dropped first if a client floods us.
-                if claims.len() > MAX_EXTERNAL_CLAIMS {
-                    claims.sort_by(|left, right| left.claimed_at.cmp(&right.claimed_at));
-                    let extra = claims.len() - MAX_EXTERNAL_CLAIMS;
-                    claims.drain(0..extra);
-                }
-                claim
-            }
-        };
-        self.persist_external_claims();
-        self.emit_state();
-
-        Ok(ExternalClaimOutcome {
-            claimed: true,
-            claim: Some(claim),
-            conflict: None,
-            message: "已登记占用；请每 15 分钟内再次调用 tapd_claim_bug 续约，完成后调用 tapd_release_bug"
-                .to_string(),
-        })
-    }
-
-    /// Removes a claim. `client` is `Some` for MCP callers (they may only
-    /// release their own claim) and `None` for the user's 取消 button.
-    fn release_external(
-        &self,
-        workspace_id: &str,
-        bug_id: &str,
-        client: Option<&str>,
-    ) -> Result<bool, String> {
-        let now_secs = chrono::Utc::now().timestamp();
-
-        // Decide before mutating. Removing first and then failing on a foreign
-        // claim would leave memory ahead of SQLite: the claim reappears on the
-        // next launch even though the caller saw an error.
-        let blocked_by = {
-            let claims = self.external.lock().expect("external claims lock");
-            claims
-                .iter()
-                .find(|claim| {
-                    claim.workspace_id == workspace_id
-                        && claim.bug_id == bug_id
-                        && external_claim_fresh_at(claim, now_secs)
-                        && client.is_some_and(|caller| !same_client(&claim.client, caller))
-                })
-                .map(|claim| claim.client.clone())
-        };
-        if let Some(client) = blocked_by {
-            return Err(format!("该缺陷当前由“{client}”占用"));
-        }
-
-        let removed = {
-            let mut claims = self.external.lock().expect("external claims lock");
-            let before = claims.len();
-            // No fresh foreign claim is left at this point: drop every matching
-            // row (stale or the caller's own). `client = None` is the user's
-            // cancel button and may clear any claim.
-            claims.retain(|claim| {
-                claim.workspace_id != workspace_id || claim.bug_id != bug_id
-            });
-            before != claims.len()
-        };
-        if removed {
-            self.persist_external_claims();
-            self.emit_state();
-        }
-        Ok(removed)
-    }
-
     fn tasks_state(&self) -> AgentTasksState {
-        let external_claims = self.external_claims_snapshot();
         let tasks = self.tasks.lock().expect("agent tasks lock");
         let counts = task_counts(tasks.as_slice());
         let live: Vec<AgentTask> = tasks
@@ -2692,6 +2525,7 @@ impl AgentCore {
             active_task_id: active_task_id(tasks.as_slice()),
             queued_count: counts.queued,
             awaiting_approval_count: counts.awaiting_approval,
+            awaiting_merge_count: counts.awaiting_merge,
             queue_paused: self.paused.load(Ordering::SeqCst),
             storage_error: self
                 .storage_error
@@ -2699,7 +2533,6 @@ impl AgentCore {
                 .expect("agent storage error lock")
                 .clone(),
             tasks: live,
-            external_claims,
             runtime_status: self
                 .runtime_status
                 .lock()
@@ -2716,10 +2549,8 @@ impl AgentCore {
     }
 
     fn summary(&self) -> AgentSummary {
-        // Same lock order as `tasks_state`: claims before tasks.
-        let external_claims = self.external_claims_snapshot();
         let tasks = self.tasks.lock().expect("agent tasks lock");
-        agent_summary(&tasks, external_claims)
+        agent_summary(&tasks)
     }
 
     fn emit_state(&self) {
@@ -2729,33 +2560,6 @@ impl AgentCore {
         let summary = self.summary();
         let _ = self.app.emit("agent://state", state);
         let _ = self.app.emit("agent://summary", summary);
-    }
-
-    /// Runs `mutate` under the tasks lock and only persists/broadcasts when it
-    /// reports changed task snapshots.
-    fn mutate_tasks<F>(&self, mutate: F) -> bool
-    where
-        F: FnOnce(&mut Vec<AgentTask>) -> Vec<AgentTask>,
-    {
-        let changed = {
-            let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            let changed = mutate(&mut tasks);
-            if !changed.is_empty() {
-                // Mark dirty before releasing the tasks lock: two concurrent
-                // mutations must not leave an older snapshot pending last.
-                let mut pending = self.pending_tasks.lock().expect("agent pending lock");
-                for task in &changed {
-                    pending.insert(task.id.clone(), task.clone());
-                }
-            }
-            changed
-        };
-        if changed.is_empty() {
-            return false;
-        }
-        self.persist_tasks();
-        self.emit_state();
-        true
     }
 
     fn update_task<F>(&self, task_id: &str, mutate: F) -> Option<AgentTask>
@@ -2813,11 +2617,22 @@ impl AgentCore {
     }
 
     fn fail_task(&self, task_id: &str, message: String) {
+        // Shutdown already parked the queue; a late failure must not replace
+        // the resumable `Queued` state with `Failed`.
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let changed = self.update_task(task_id, |task| {
             // Never downgrade a task that already reached a terminal state
             // (e.g. event-driven `succeeded` followed by a late teardown), and
-            // never destroy a task that is waiting for the user's review.
-            if task.status.is_terminal() || task.status == TaskStatus::AwaitingApproval {
+            // never destroy a task that is waiting for the user's review or
+            // that the merge runner still owns.
+            if task.status.is_terminal()
+                || matches!(
+                    task.status,
+                    TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
+                )
+            {
                 return;
             }
             task.status = TaskStatus::Failed;
@@ -2829,7 +2644,32 @@ impl AgentCore {
         }
     }
 
-    fn update_config(&self, patch: AgentConfigPatch) -> Result<AgentConfig, String> {
+    async fn update_config(&self, patch: AgentConfigPatch) -> Result<AgentConfig, String> {
+        // Serialize with enqueue/retry: a task cannot slip in between the
+        // "queue idle?" check and the worktree switch being persisted.
+        let _admission = self.admission.lock().await;
+        // Toggling worktree isolation changes how queued/running tasks are
+        // isolated, so it is locked while any task is unfinished. Execution
+        // units are safe to change at any time.
+        if let Some(next) = patch.worktree_enabled {
+            let current = self
+                .config
+                .lock()
+                .expect("agent config lock")
+                .worktree_enabled;
+            let has_live_task = self
+                .tasks
+                .lock()
+                .expect("agent tasks lock")
+                .iter()
+                .any(|task| !task.status.is_terminal());
+            if worktree_switch_blocked(current, next, has_live_task) {
+                return Err(
+                    "队列中还有未结束的任务，不能切换 Worktree；执行单元仍可调整".to_string(),
+                );
+            }
+        }
+
         let next = {
             let mut config = self.config.lock().expect("agent config lock");
             if let Some(runtime_id) = patch.runtime_id {
@@ -2859,6 +2699,12 @@ impl AgentCore {
             if let Some(value) = patch.idle_complete_ms {
                 config.idle_complete_ms = value;
             }
+            if let Some(value) = patch.worktree_enabled {
+                config.worktree_enabled = value;
+            }
+            if let Some(value) = patch.execution_units {
+                config.execution_units = value;
+            }
             config.clone().sanitized()
         };
 
@@ -2866,15 +2712,18 @@ impl AgentCore {
     }
 
     async fn enqueue(&self, request: &EnqueueRequest, source: &str) -> Result<AgentTask, String> {
+        // Nothing may enter the queue before the workflow is initialized: the
+        // login/onboarding screens must not start work in the background.
+        workflow_bridge::ensure_entered(&self.entered)?;
+
         let workspace_id = request.workspace_id.trim();
         let bug_id = request.bug_id.trim();
         if workspace_id.is_empty() || bug_id.is_empty() {
             return Err("缺少 workspaceId 或 bugId".to_string());
         }
 
-        // Admission is serialized with retry and external claims so the
-        // "external owns it?" / "a desktop task owns it?" checks cannot both
-        // pass and start two agents on one repository.
+        // Admission is serialized with retry so the "does a live task own it?"
+        // check cannot pass twice and start two agents on one repository.
         let _admission = self.admission.lock().await;
 
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -2930,8 +2779,10 @@ impl AgentCore {
             title,
             severity: severity.trim().to_string(),
             priority: priority.trim().to_string(),
-            md_path: String::new(),
+            json_path: String::new(),
             repo_path,
+            worktree_path: None,
+            worktree_branch: None,
             status: TaskStatus::Queued,
             created_at: now(),
             started_at: None,
@@ -2943,20 +2794,16 @@ impl AgentCore {
             runtime_id,
             agent_session_id: None,
             approval: None,
+            merge: None,
             commit_only: false,
             baseline_dirty: Vec::new(),
             baseline_head: None,
             extra_prompt,
             attachments,
+            attempt: 0,
+            interrupted: false,
+            changes: None,
         };
-
-        // An external AI already owns the bug: do not duplicate work.
-        if let Some(claim) = self.fresh_external_claim(workspace_id, bug_id) {
-            return Err(format!(
-                "{}，请稍后再试或先在列表中取消外部占用",
-                external_claim_phrase(&claim)
-            ));
-        }
 
         // One bug owns at most one live task. A double click, the notification
         // flow and a manual enqueue can race; checking and pushing under the
@@ -2979,14 +2826,55 @@ impl AgentCore {
 
     /// Cancels a task: sets the cancel flag and kills the TUI process group.
     async fn cancel(&self, task_id: &str) -> Result<AgentTask, String> {
-        let status = self
-            .current_status(task_id)
+        let task = self
+            .task_snapshot(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
+        let status = task.status;
         if status == TaskStatus::AwaitingApproval {
             // A paused review owns an uncommitted diff. Cancelling it through
             // the generic path would drop that diff and leave the queue
             // unpaused; stop_review stashes it and keeps the queue halted.
             return self.stop_review(task_id).await;
+        }
+        if status == TaskStatus::AwaitingMerge {
+            // Nothing is running yet: cancel the merge decision but keep the
+            // worktree and branch so the fix can still be merged by hand.
+            let updated = self
+                .update_task(task_id, |task| {
+                    if task.status != TaskStatus::AwaitingMerge {
+                        return;
+                    }
+                    task.status = TaskStatus::Canceled;
+                    task.finished_at = Some(now());
+                    task.error = Some("已取消合并".to_string());
+                })
+                .ok_or_else(|| "任务不存在".to_string())?;
+            self.wake.notify_one();
+            return Ok(updated);
+        }
+        if status == TaskStatus::Merging {
+            // The merge runner checks the status after its TUI exits and will
+            // not overwrite this rollback.
+            self.stop_runtime(task_id);
+            let repo = task.repo_path.clone();
+            let branch = task.worktree_branch.clone().unwrap_or_default();
+            let updated = self
+                .update_task(task_id, |task| {
+                    if task.status != TaskStatus::Merging {
+                        return;
+                    }
+                    task.status = TaskStatus::AwaitingMerge;
+                    task.finished_at = None;
+                    task.error = None;
+                    let instructions = manual_merge_instructions(&repo, &branch);
+                    let merge = task.merge.get_or_insert_with(TaskMerge::default);
+                    merge.error = Some("合并已中止".to_string());
+                    merge.instructions = Some(instructions);
+                    merge.started_at = None;
+                })
+                .ok_or_else(|| "任务不存在".to_string())?;
+            self.wake.notify_one();
+            return Ok(updated);
         }
         if status.is_terminal() {
             return Err("任务已经结束，无需取消".to_string());
@@ -3055,6 +2943,34 @@ impl AgentCore {
     /// running: the turn keeps going after the window is gone and keeps
     /// writing back to TAPD while the task already looks abandoned.
     fn shutdown(&self) {
+        // Stop the worker and any late status writes before parking the queue.
+        self.shutting_down.store(true, Ordering::SeqCst);
+        // Stop the worker from dequeuing anything else while the queue is being
+        // parked: suspended tasks keep their record, so restarting them here
+        // would launch a fresh agent during exit.
+        workflow_bridge::release_entry(&self.entered);
+
+        // Park live tasks before the processes are killed: a fresh start then
+        // resumes them (`Queued` + interrupted) instead of finding `Running`
+        // records whose agent no longer exists. A suspend failure is logged and
+        // still tears the processes down — leaving them running is worse.
+        let suspended = {
+            let mut tasks = self.tasks.lock().expect("agent tasks lock");
+            workflow_bridge::suspend_tasks(&mut tasks, &now())
+        };
+        match suspended {
+            Ok(changed) => {
+                if !changed.is_empty() {
+                    tracing::info!(tasks = changed.len(), "agent tasks suspended for shutdown");
+                    self.mark_tasks_dirty(changed);
+                    self.persist_tasks();
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to suspend agent tasks during shutdown");
+            }
+        }
+
         let task_ids: Vec<String> = match self.tasks.lock() {
             Ok(tasks) => tasks.iter().map(|task| task.id.clone()).collect(),
             Err(error) => {
@@ -3068,8 +2984,6 @@ impl AgentCore {
         tracing::info!(tasks = task_ids.len(), "agent processes stopped");
     }
 
-    /// Marks a task succeeded from a turn-boundary event. Returns whether the
-    /// status changed; terminal tasks are never touched.
     // -- post-work review ---------------------------------------------------
 
     /// True while any task waits for a commit decision; the worker must not
@@ -3082,82 +2996,68 @@ impl AgentCore {
             .any(|task| task.status == TaskStatus::AwaitingApproval)
     }
 
-    /// Marks the active task as awaiting the user's commit decision and stops
-    /// the turn so the agent cannot keep editing after asking for review.
-    async fn request_review(
-        &self,
-        task_id: &str,
-        summary: String,
-        files: Vec<String>,
-        risk: Option<String>,
-    ) -> Result<Value, String> {
-        let task = self
-            .task_snapshot(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if !matches!(
-            task.status,
-            TaskStatus::Preparing | TaskStatus::Running
-        ) {
-            return Err("任务不在运行中，无法请求审核".to_string());
-        }
-
-        let at = now();
-        let updated = self
-            .update_task(task_id, |task| {
-                if !matches!(
-                    task.status,
-                    TaskStatus::Preparing | TaskStatus::Running
-                ) {
-                    return;
-                }
-                set_awaiting_approval(task, summary, files, risk, &at);
-            })
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if updated.status != TaskStatus::AwaitingApproval {
-            return Err("任务状态已变化，无法请求审核".to_string());
-        }
-
-        // Kill the TUI. The working tree is deliberately left untouched so
-        // approval can commit it.
-        self.stop_runtime(task_id);
-        self.persist_tasks();
-        self.emit_state();
-
-        tracing::info!(task_id, "agent task awaiting commit approval");
-        Ok(json!({ "status": "pending_review", "taskId": task_id }))
-    }
-
-    /// Approves a paused change: the task re-enters the queue and the next run
-    /// only verifies, commits and writes back to TAPD.
-    fn approve_review(&self, task_id: &str) -> Result<AgentTask, String> {
+    /// Approves a paused change. A non-worktree task re-enters the queue with
+    /// `commit_only`; a worktree task with nothing left uncommitted goes
+    /// straight to `AwaitingMerge`, otherwise it commits on its branch first.
+    async fn approve_review(&self, task_id: &str) -> Result<AgentTask, String> {
         let task = self
             .task_snapshot(task_id)
             .ok_or_else(|| "任务不存在".to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
         }
-        if !Path::new(task.repo_path.trim()).is_dir() {
-            return Err(format!("本地仓库路径不存在：{}", task.repo_path));
+        if !Path::new(task.work_dir().trim()).is_dir() {
+            return Err(format!("工作目录不存在：{}", task.work_dir()));
         }
 
         // Approving is an explicit "continue" signal, so a queue paused by an
         // earlier stop resumes unless another review still blocks it.
         self.set_paused(false);
+
+        // Decide from the live working tree instead of a stored flag: old
+        // records predate `commit_only` and the agent may have committed in
+        // the meantime. Never block the async runtime on git.
+        let work_dir = task.work_dir().to_string();
+        let baseline = task.baseline_dirty.clone();
+        let uncommitted = tokio::task::spawn_blocking(move || {
+            uncommitted_files(&work_dir)
+                .map(|files| files.into_iter().any(|file| !baseline.contains(&file)))
+        })
+        .await
+        .map_err(|error| format!("检查工作区失败：{error}"))?
+        .map_err(|error| format!("检查工作区失败：{error}"))?;
+
         let at = now();
+        let is_worktree = task.worktree_branch.is_some();
+        let repo = task.repo_path.clone();
+        let branch = task.worktree_branch.clone().unwrap_or_default();
         let updated = self
             .update_task(task_id, |task| {
-                task.status = TaskStatus::Queued;
-                task.commit_only = true;
                 task.finished_at = None;
                 task.error = None;
                 if let Some(approval) = task.approval.as_mut() {
-                    approval.approved_at = Some(at);
+                    approval.approved_at = Some(at.clone());
+                }
+                if is_worktree && !uncommitted {
+                    task.status = TaskStatus::AwaitingMerge;
+                    task.commit_only = false;
+                    task.merge = Some(TaskMerge {
+                        instructions: Some(manual_merge_instructions(&repo, &branch)),
+                        ..TaskMerge::default()
+                    });
+                } else {
+                    task.status = TaskStatus::Queued;
+                    task.commit_only = true;
                 }
             })
             .ok_or_else(|| "任务不存在".to_string())?;
 
-        tracing::info!(task_id, "agent review approved and requeued");
-        self.wake.notify_one();
+        if updated.status == TaskStatus::Queued {
+            tracing::info!(task_id, "agent review approved and requeued");
+            self.wake.notify_one();
+        } else {
+            tracing::info!(task_id, "agent review approved; waiting for merge");
+        }
         Ok(updated)
     }
 
@@ -3171,10 +3071,8 @@ impl AgentCore {
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
         }
-        let repo = task.repo_path.trim().to_string();
-        if repo.is_empty() || !Path::new(&repo).is_dir() {
-            return Err(format!("本地仓库路径不存在：{}", task.repo_path));
-        }
+        let repo = task.work_dir().trim().to_string();
+        let dir_exists = !repo.is_empty() && Path::new(&repo).is_dir();
 
         let label = format!("tapd-agent {} #{}", task.bug_id, task.id);
         let reviewed = task
@@ -3182,39 +3080,70 @@ impl AgentCore {
             .as_ref()
             .map(|approval| approval.files.clone())
             .unwrap_or_default();
-        let files = if reviewed.is_empty() {
+        let files = if !dir_exists {
+            Vec::new()
+        } else if reviewed.is_empty() {
             // No file list (e.g. model omitted it): use the run's own new
             // changes, excluding files that were already dirty before it.
-            uncommitted_files(&repo)
-                .into_iter()
-                .filter(|file| !task.baseline_dirty.contains(file))
-                .collect()
+            let repo = repo.clone();
+            let baseline = task.baseline_dirty.clone();
+            tokio::task::spawn_blocking(move || {
+                uncommitted_files(&repo).map(|files| {
+                    files
+                        .into_iter()
+                        .filter(|file| !baseline.contains(file))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .await
+            .map_err(|error| format!("检查工作区失败：{error}"))?
+            .map_err(|error| format!("检查工作区失败：{error}"))?
         } else {
             reviewed
         };
-        let repo_for_check = repo.clone();
-        let stash = tokio::task::spawn_blocking(move || stash_changes(&repo, &label, &files))
-            .await
-            .map_err(|error| format!("储藏改动失败：{error}"))?
-            .map_err(|error| format!("储藏改动失败：{error}"))?;
+        let stash = if dir_exists {
+            let repo = repo.clone();
+            let label = label.clone();
+            let files = files.clone();
+            tokio::task::spawn_blocking(move || stash_changes(&repo, &label, &files))
+                .await
+                .map_err(|error| format!("储藏改动失败：{error}"))?
+                .map_err(|error| format!("储藏改动失败：{error}"))?
+        } else {
+            "工作目录不存在，未储藏改动".to_string()
+        };
 
         self.teardown_task(task_id);
         self.set_paused(true);
-        let mut message = if stash.contains("无未提交改动") {
+        let mut message = if !dir_exists || stash.contains("无未提交改动") {
             format!("已停止：{stash}")
         } else {
             format!("已停止，改动已储藏：{stash}")
         };
         // Files the model did not list stay in the worktree; say so instead of
         // claiming the whole change was stashed.
-        let remaining = uncommitted_files(&repo_for_check)
-            .into_iter()
-            .filter(|file| !task.baseline_dirty.contains(file))
-            .count();
-        if remaining > 0 {
-            message.push_str(&format!(
-                "；另有 {remaining} 个文件未列入本次审核，仍保留在工作区"
-            ));
+        let remaining = if dir_exists {
+            let repo = repo.clone();
+            let baseline = task.baseline_dirty.clone();
+            tokio::task::spawn_blocking(move || {
+                uncommitted_files(&repo).map(|files| {
+                    files
+                        .into_iter()
+                        .filter(|file| !baseline.contains(file))
+                        .count()
+                })
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
+        } else {
+            Ok(0)
+        };
+        match remaining {
+            Ok(count) if count > 0 => message.push_str(&format!(
+                "；另有 {count} 个文件未列入本次审核，仍保留在工作区"
+            )),
+            Ok(_) => {}
+            Err(error) => message.push_str(&format!("；无法检查剩余文件：{error}")),
         }
         let updated = self
             .update_task(task_id, |task| {
@@ -3232,8 +3161,10 @@ impl AgentCore {
         Ok(updated)
     }
 
-    /// Unified diff of the reviewed change (`git diff HEAD`). Read-only; the
-    /// review card uses it so the user can inspect the diff before approving.
+    /// Unified diff of the reviewed change. Uses the run's `baseline_head` when
+    /// present so committed changes remain visible; otherwise falls back to
+    /// `git diff HEAD`. Read-only; the review card uses it so the user can
+    /// inspect the diff before approving.
     fn review_diff(&self, task_id: &str) -> Result<String, String> {
         let task = self
             .task_snapshot(task_id)
@@ -3241,13 +3172,19 @@ impl AgentCore {
         if task.status != TaskStatus::AwaitingApproval {
             return Err("任务不在待审核状态".to_string());
         }
-        if !Path::new(task.repo_path.trim()).is_dir() {
-            return Err(format!("本地仓库路径不存在：{}", task.repo_path));
+        if !Path::new(task.work_dir().trim()).is_dir() {
+            return Err(format!("工作目录不存在：{}", task.work_dir()));
         }
+        let baseline = task
+            .baseline_head
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(git::EMPTY_TREE);
         let output = std::process::Command::new("git")
             .arg("-C")
-            .arg(task.repo_path.trim())
-            .args(["diff", "--no-color", "HEAD"])
+            .arg(task.work_dir().trim())
+            .args(["diff", "--no-color", baseline])
             .output()
             .map_err(|error| format!("无法执行 git：{error}"))?;
         if !output.status.success() {
@@ -3283,7 +3220,7 @@ impl AgentCore {
 
     /// Deletes one finished history record. Only the local record goes away;
     /// the export directory, the bug and any committed code are untouched.
-    fn delete_task(&self, task_id: &str) -> Result<(), String> {
+    async fn delete_task(&self, task_id: &str) -> Result<(), String> {
         let removed = {
             let mut tasks = self.tasks.lock().expect("agent tasks lock");
             take_terminal_task(&mut tasks, task_id)?
@@ -3298,6 +3235,22 @@ impl AgentCore {
             .lock()
             .expect("agent removed lock")
             .insert(removed.id.clone());
+        // The record is gone either way; a failed cleanup only warns so the
+        // user can still remove a record whose directory was deleted manually.
+        if let Some(path) = removed.worktree_path.clone() {
+            let _worktree_guard = self.worktree_lock.lock().await;
+            let repo = removed.repo_path.clone();
+            let removed_id = removed.id.clone();
+            match tokio::task::spawn_blocking(move || worktree::remove(&repo, &path)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(task_id = %removed_id, %error, "failed to remove agent worktree");
+                }
+                Err(error) => {
+                    tracing::warn!(task_id = %removed_id, %error, "worktree cleanup task failed");
+                }
+            }
+        }
         self.persist_tasks();
         self.emit_state();
         Ok(())
@@ -3323,20 +3276,25 @@ impl AgentCore {
         task.exit_code = None;
         task.error = None;
         task.approval = None;
+        task.merge = None;
+        // A retry is a fresh fix, not the approved commit phase.
+        task.commit_only = false;
+        task.baseline_dirty.clear();
+        task.baseline_head = None;
+        // A manual retry starts a clean recovery history.
+        task.attempt = 0;
+        task.interrupted = false;
+        task.changes = None;
+        // A retry must start from a clean worktree; the old one (if kept for
+        // inspection) is left in place and cleaned when its record is deleted.
+        task.worktree_path = None;
+        task.worktree_branch = None;
 
-        // Retry is a new admission, not a bypass: the same bug may have been
-        // claimed externally or re-queued while this task was terminal.
-        if let Some(claim) = self.fresh_external_claim(&task.workspace_id, &task.bug_id) {
-            return Err(format!(
-                "{}，请稍后再试或先在列表中取消外部占用",
-                external_claim_phrase(&claim)
-            ));
-        }
+        // Retry is a new admission, not a bypass: the bug may have been
+        // re-queued while this task was terminal.
         {
             let mut tasks = self.tasks.lock().expect("agent tasks lock");
-            if let Some(existing) =
-                live_task_for_bug(&tasks, &task.workspace_id, &task.bug_id)
-            {
+            if let Some(existing) = live_task_for_bug(&tasks, &task.workspace_id, &task.bug_id) {
                 return Err(format!(
                     "该缺陷已有未结束的任务（{}），请先处理",
                     task_status_key(existing.status)
@@ -3377,12 +3335,12 @@ impl AgentCore {
         if task.status.is_active() {
             return Err("任务仍在运行，请先在嵌入式终端里操作".to_string());
         }
-        if task.repo_path.trim().is_empty() {
+        if task.work_dir().trim().is_empty() {
             return Err("该任务没有本地仓库".to_string());
         }
-        let repo = Path::new(&task.repo_path);
+        let repo = Path::new(task.work_dir());
         if !repo.is_dir() {
-            return Err(format!("本地仓库不存在：{}", task.repo_path));
+            return Err(format!("本地仓库不存在：{}", task.work_dir()));
         }
 
         let config = self.config_snapshot();
@@ -3430,40 +3388,115 @@ impl AgentCore {
 
     // -- queue worker --------------------------------------------------------
 
+    /// Makes sure the runtime's user-level config exposes the tapd MCP server.
+    /// Idempotent and best effort: a failure only warns and never blocks the
+    /// task. Runtimes without an injector are expected to be configured
+    /// manually (the management UI says so). Shared by the fix run and the
+    /// merge runner so the merge agent can write back to TAPD.
+    async fn ensure_runtime_mcp(&self, runtime_id: &str, task_id: &str) {
+        let Some(client) = mcp_client_for_runtime(runtime_id) else {
+            return;
+        };
+        let sidecar = crate::commands::sidecar_command_path();
+        match tokio::task::spawn_blocking(move || {
+            if client == crate::mcp_import::CLIENT_OPENCODE {
+                crate::mcp_import::ensure_opencode_mcp(&sidecar)
+            } else {
+                crate::mcp_import::ensure_client_mcp(client, &sidecar)
+            }
+        })
+        .await
+        {
+            Ok(Ok(result)) => {
+                tracing::info!(task_id, %result, "tapd MCP injection checked");
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(task_id, %error, "failed to inject tapd MCP");
+            }
+            Err(error) => {
+                tracing::warn!(task_id, %error, "MCP injection task panicked");
+            }
+        }
+    }
+
     fn spawn_worker(self: &Arc<Self>) {
         let core = self.clone();
         tauri::async_runtime::spawn(async move {
+            // Up to `effective_execution_units()` task runners. Each entry
+            // returns its task id so completion can be torn down per task.
+            let mut running: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
             loop {
-                // A user-stopped queue stays idle; a pending review blocks the
-                // single worker so no new task touches the repo before the
-                // reviewed diff is committed or stashed.
-                if core.paused.load(Ordering::SeqCst) || core.has_awaiting_approval() {
+                // Reap finished runners. Only the finished task is cleaned up;
+                // a panic in one task must not touch the other runners.
+                while let Some(joined) = running.try_join_next() {
+                    match joined {
+                        Ok(task_id) => core.teardown_task(&task_id),
+                        Err(error) => tracing::error!(%error, "agent task wrapper failed"),
+                    }
+                }
+
+                // The workflow is not initialized until the user entered the
+                // system. Wait here instead of starting persisted tasks behind
+                // the login/onboarding screen; `enter_system` notifies.
+                if !core.entered.load(Ordering::SeqCst) {
                     core.wake.notified().await;
                     continue;
                 }
 
-                let Some(task) = core.take_next_queued() else {
-                    core.wake.notified().await;
-                    continue;
-                };
-                let task_id = task.id.clone();
-
-                // Each task body runs in its own tokio task: a panic inside
-                // `run_task` must not kill the single worker loop.
-                let runner = core.clone();
-                let handle = tauri::async_runtime::spawn(async move {
-                    runner.run_task(task).await;
-                });
-
-                if let Err(error) = handle.await {
-                    tracing::error!(task_id, %error, "agent task runner failed");
-                    core.fail_task(&task_id, format!("Agent 任务执行异常：{error}"));
+                // A user-stopped queue always blocks. Pending reviews only
+                // block the serial (non-worktree) queue: worktree tasks each
+                // own a checkout, so waiting on a decision must not idle the
+                // other execution units. Tasks already running keep going.
+                let blocked = core.paused.load(Ordering::SeqCst)
+                    || (!core.config_snapshot().worktree_enabled && core.has_awaiting_approval());
+                if !blocked {
+                    let limit = core.config_snapshot().effective_execution_units();
+                    while running.len() < limit {
+                        let Some(task) = core.take_next_queued() else {
+                            break;
+                        };
+                        let task_id = task.id.clone();
+                        let runner = core.clone();
+                        running.spawn(async move {
+                            // Inner spawn contains a panic: the JoinError is
+                            // turned into a failure for this task id only, so
+                            // other concurrent tasks keep running.
+                            let inner_id = task_id.clone();
+                            let task_runner = runner.clone();
+                            let handle = tauri::async_runtime::spawn(async move {
+                                task_runner.run_task(task).await;
+                            });
+                            if let Err(error) = handle.await {
+                                tracing::error!(
+                                    task_id = %inner_id,
+                                    %error,
+                                    "agent task runner failed"
+                                );
+                                runner.fail_task(&inner_id, format!("Agent 任务执行异常：{error}"));
+                            }
+                            inner_id
+                        });
+                    }
                 }
 
-                core.teardown_task(&task_id);
-                // Belt and braces: no task may stay active after its runner
-                // returned, otherwise the queue would never advance.
-                core.recover_active_tasks("任务意外中断");
+                if running.is_empty() {
+                    // Nothing to join: sleep until an event (enqueue, resume,
+                    // config change) instead of busy-looping.
+                    core.wake.notified().await;
+                } else {
+                    tokio::select! {
+                        _ = core.wake.notified() => {}
+                        joined = running.join_next() => {
+                            match joined {
+                                Some(Ok(task_id)) => core.teardown_task(&task_id),
+                                Some(Err(error)) => {
+                                    tracing::error!(%error, "agent task wrapper failed");
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -3471,22 +3504,6 @@ impl AgentCore {
         if next_queued_index(&self.tasks.lock().expect("agent tasks lock")).is_some() {
             self.wake.notify_one();
         }
-    }
-
-    /// Fails any task still marked active. Called after each worker iteration.
-    fn recover_active_tasks(&self, reason: &str) {
-        self.mutate_tasks(|tasks| {
-            let mut changed = Vec::new();
-            for task in tasks.iter_mut() {
-                if task.status.is_active() {
-                    task.status = TaskStatus::Failed;
-                    task.error = Some(reason.to_string());
-                    task.finished_at = Some(now());
-                    changed.push(task.clone());
-                }
-            }
-            changed
-        });
     }
 
     fn take_next_queued(&self) -> Option<AgentTask> {
@@ -3508,20 +3525,26 @@ impl AgentCore {
     }
 
     async fn run_task(self: &Arc<Self>, mut task: AgentTask) {
+        // The queue was parked for shutdown; do not start a fresh run.
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let mut config = self.config_snapshot();
 
-        // 1. Export the bug package (bug.md + assets). The task prompt is built
-        //    below for the running agent, so no external prompt is written.
+        // 1. Export the bug package (bug.json + assets). The task prompt is
+        //    built below for the running agent.
         let export = crate::export::run_export(
             &self.app,
             &self.state.paths,
             &task.workspace_id,
             &task.bug_id,
             Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
-            None,
         )
         .await;
 
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         if self.current_status(&task.id) == Some(TaskStatus::Canceled) {
             return;
         }
@@ -3533,12 +3556,15 @@ impl AgentCore {
                 return;
             }
         };
-        task.md_path = export.markdown_path.clone();
+        for warning in &export.warnings {
+            tracing::warn!(task_id = %task.id, %warning, "bug export warning");
+        }
+        task.json_path = export.bug_json.clone();
         // Persist the export path early so failed tasks still expose their
         // generated bug package (e.g. when no repository is configured).
         let Some(prepared) = self.update_task(&task.id, |current| {
             if current.status != TaskStatus::Canceled {
-                current.md_path = task.md_path.clone();
+                current.json_path = task.json_path.clone();
             }
         }) else {
             return;
@@ -3566,6 +3592,82 @@ impl AgentCore {
         }
         task.repo_path = repo_path;
 
+        // 2b. Give the task its own worktree when enabled. A commit-only run
+        //     must reuse the review worktree: recreating it at HEAD would drop
+        //     the approved diff, so a missing directory is an explicit error.
+        if task.commit_only {
+            if let Some(path) = task.worktree_path.as_deref() {
+                let path = path.trim();
+                if !path.is_empty() && !Path::new(path).is_dir() {
+                    self.fail_task(
+                        &task.id,
+                        format!("审核用 worktree 已不存在：{path}，无法继续提交"),
+                    );
+                    return;
+                }
+            }
+        } else if !config.worktree_enabled {
+            task.worktree_path = None;
+            task.worktree_branch = None;
+        }
+
+        let reuse_worktree = task.commit_only
+            && task
+                .worktree_path
+                .as_deref()
+                .is_some_and(|path| Path::new(path.trim()).is_dir());
+
+        // A commit-only run whose review lived in the main repository keeps
+        // using it: a fresh worktree at HEAD would lose the approved diff.
+        if config.worktree_enabled && !reuse_worktree && !task.commit_only {
+            let _worktree_guard = self.worktree_lock.lock().await;
+            let worktrees_dir = self.state.paths.worktrees_dir.clone();
+            let repo = task.repo_path.clone();
+            let workspace_id = task.workspace_id.clone();
+            let bug_id = task.bug_id.clone();
+            let new_task_id = task.id.clone();
+            let created = tokio::task::spawn_blocking(move || {
+                worktree::create(&worktrees_dir, &repo, &workspace_id, &bug_id, &new_task_id)
+            })
+            .await;
+            match created {
+                Ok(Ok(created)) => {
+                    task.worktree_path = Some(created.path.to_string_lossy().to_string());
+                    task.worktree_branch = Some(created.branch);
+                }
+                Ok(Err(error)) => {
+                    self.fail_task(&task.id, format!("创建任务 worktree 失败：{error}"));
+                    return;
+                }
+                Err(error) => {
+                    self.fail_task(&task.id, format!("创建任务 worktree 失败：{error}"));
+                    return;
+                }
+            }
+        }
+
+        // Persist the worktree path before anything else can fail, so the
+        // record still points at the directory for review or deletion.
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(prepared) = self.update_task(&task.id, |current| {
+            current.repo_path = task.repo_path.clone();
+            current.worktree_path = task.worktree_path.clone();
+            current.worktree_branch = task.worktree_branch.clone();
+        }) else {
+            return;
+        };
+        if prepared.status == TaskStatus::Canceled {
+            return;
+        }
+
+        let work_dir = task.work_dir().to_string();
+        if work_dir.trim().is_empty() || !Path::new(work_dir.trim()).is_dir() {
+            self.fail_task(&task.id, format!("工作目录不存在或不是目录：{work_dir}"));
+            return;
+        }
+
         // 3. Resolve the agent binary. A queued task keeps the runtime it was
         //    enqueued with: `binary_path` only overrides the currently selected
         //    runtime, otherwise the descriptor's default command is used.
@@ -3582,70 +3684,77 @@ impl AgentCore {
         }
 
         // 3b. Make sure the runtime's user-level config exposes the tapd MCP
-        //     server. Idempotent and best effort: a failure only warns and never
-        //     blocks the task. Runtimes without an injector are expected to be
-        //     configured manually (the management UI says so).
-        if let Some(client) = mcp_client_for_runtime(&task.runtime_id) {
-            let sidecar = crate::commands::sidecar_command_path();
-            match tokio::task::spawn_blocking(move || {
-                if client == crate::mcp_import::CLIENT_OPENCODE {
-                    crate::mcp_import::ensure_opencode_mcp(&sidecar)
-                } else {
-                    crate::mcp_import::ensure_client_mcp(client, &sidecar)
-                }
-            })
-            .await
-            {
-                Ok(Ok(result)) => {
-                    tracing::info!(task_id = %task.id, %result, "tapd MCP injection checked");
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(task_id = %task.id, %error, "failed to inject tapd MCP");
-                }
-                Err(error) => {
-                    tracing::warn!(task_id = %task.id, %error, "MCP injection task panicked");
-                }
-            }
-        }
+        //     server (also required later by the merge runner).
+        self.ensure_runtime_mcp(&task.runtime_id, &task.id).await;
 
         let mut vars = PromptVars::from_task(&task);
-        vars.project_rule = config.rule_for(&task.workspace_id);
         vars.coworker = crate::coworker::prompt_section(&self.app, &config.coworker_ids);
+        let is_worktree = task.worktree_branch.is_some();
         // Approved reviews re-enter the queue with a commit-only prompt; the
-        // reviewed diff is still in the working tree.
+        // reviewed diff is still in the working tree. Worktree tasks use their
+        // own template because TAPD write-back waits for the merge stage.
         let template = if task.commit_only {
             // The commit phase only finishes the reviewed change; the original
             // compose instructions must not run a second time.
             vars.user_prompt.clear();
             vars.attachments.clear();
-            DEFAULT_COMMIT_PROMPT_TEMPLATE
+            if is_worktree {
+                DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE
+            } else {
+                DEFAULT_COMMIT_PROMPT_TEMPLATE
+            }
         } else {
             config.prompt_template.as_str()
         };
         task.prompt = render_prompt(template, &vars);
+        // Worktree fixes must not write back to TAPD: the merge stage owns the
+        // single, final write-back after the branch lands in the main repo.
+        if is_worktree && !task.commit_only {
+            task.prompt.push_str("\n\n");
+            task.prompt.push_str(WORKTREE_FIX_NOTE);
+        }
 
         // 4. Move to `running` with the resolved paths. Snapshot pre-existing
         //    dirty files so the uncommitted-change safety net only reacts to
         //    files this run touched.
-        let (baseline_dirty, baseline_head) = if task.commit_only {
+        let baseline: Result<(Vec<String>, Option<String>), String> = if task.commit_only {
             // Keep the pre-task snapshots so unrelated local files stay
             // excluded from the write guard during the commit phase.
-            (task.baseline_dirty.clone(), task.baseline_head.clone())
+            Ok((task.baseline_dirty.clone(), task.baseline_head.clone()))
         } else {
-            (
-                uncommitted_files(&task.repo_path),
-                git_head(&task.repo_path),
-            )
+            let work_dir = work_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                Ok::<_, String>((uncommitted_files(&work_dir)?, git_head(&work_dir)?))
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
         };
-        let Some(running_task) = self.update_task(&task.id, |current| {
-            // A late report or a review request may have finished/parked this
-            // task while it was preparing; never restart it from a terminal or
-            // awaiting state.
-            if current.status.is_terminal() || current.status == TaskStatus::AwaitingApproval {
+        let (baseline_dirty, baseline_head) = match baseline {
+            Ok(baseline) => baseline,
+            Err(error) => {
+                self.fail_task(&task.id, format!("无法读取工作区状态：{error}"));
                 return;
             }
-            current.md_path = task.md_path.clone();
+        };
+        let Some(running_task) = self.update_task(&task.id, |current| {
+            // The task may have been cancelled while it was preparing; never
+            // restart it from a terminal or awaiting state. Shutdown has
+            // already parked it back to Queued.
+            if self.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            if current.status.is_terminal()
+                || matches!(
+                    current.status,
+                    TaskStatus::AwaitingApproval | TaskStatus::AwaitingMerge | TaskStatus::Merging
+                )
+            {
+                return;
+            }
+            current.json_path = task.json_path.clone();
             current.repo_path = task.repo_path.clone();
+            current.worktree_path = task.worktree_path.clone();
+            current.worktree_branch = task.worktree_branch.clone();
             current.prompt = task.prompt.clone();
             current.baseline_dirty = baseline_dirty.clone();
             current.baseline_head = baseline_head.clone();
@@ -3664,17 +3773,15 @@ impl AgentCore {
 
         let descriptor = runtime_descriptor(&running_task.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
-        let outcome = self
-            .run_tui_task(&running_task, &config, &descriptor)
-            .await;
+        let outcome = self.run_tui_task(&running_task, &config, &descriptor).await;
         self.teardown_task(&task.id);
         self.finish_task(&task.id, outcome).await;
     }
 
     /// Runs one task through the generic TUI adapter: launch the CLI with the
     /// prompt delivered per the descriptor, then wait for the PTY to exit or
-    /// for the idle fallback. Completion normally arrives through the TAPD MCP
-    /// `agent_task_report` tool, which kills the PTY and finishes the task.
+    /// for the idle fallback. There is no protocol report: the turn ends when
+    /// the process exits, the session hook settles, or output goes quiet.
     async fn run_tui_task(
         self: &Arc<Self>,
         task: &AgentTask,
@@ -3777,13 +3884,364 @@ impl AgentCore {
         }
     }
 
+    // -- merge stage ---------------------------------------------------------
+
+    /// Starts the merge for an awaiting-merge task. Returns `mode=agent` when
+    /// the merge runner was started, or `mode=manual` with instructions when it
+    /// cannot run (dirty main repo, missing agent binary); the task stays
+    /// `AwaitingMerge` in the manual case.
+    async fn start_merge(self: &Arc<Self>, task_id: &str) -> Result<MergeStart, String> {
+        let task = self
+            .task_snapshot(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if task.status != TaskStatus::AwaitingMerge {
+            return Err("任务不在待合并状态".to_string());
+        }
+        let branch = task
+            .worktree_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .ok_or_else(|| "任务没有待合并分支".to_string())?
+            .to_string();
+        let repo = task.repo_path.trim().to_string();
+        if repo.is_empty() || !Path::new(&repo).is_dir() {
+            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
+        }
+
+        // Same-repo merges are serialized: two merge agents on one checkout
+        // would fight over HEAD. Different repos could merge in parallel, but
+        // one short lock is simpler and keeps the check atomic.
+        let merge_guard = self.merge_lock.lock().await;
+        {
+            let tasks = self.tasks.lock().expect("agent tasks lock");
+            if tasks.iter().any(|other| {
+                other.id != task_id
+                    && other.status == TaskStatus::Merging
+                    && other.repo_path.trim() == repo
+            }) {
+                return Err("该仓库已有任务正在合并，请稍后重试".to_string());
+            }
+        }
+
+        // The main repo must be clean; otherwise the merge would mix in the
+        // user's own work, so we fall back to manual instructions instead.
+        let dirty_check = {
+            let repo = repo.clone();
+            tokio::task::spawn_blocking(move || uncommitted_files(&repo)).await
+        };
+        match dirty_check {
+            Ok(Ok(files)) if files.is_empty() => {}
+            Ok(Ok(files)) => {
+                let error = format!("主仓库有 {} 个未提交文件，无法自动合并", files.len());
+                return self.manual_merge(task_id, &repo, &branch, error);
+            }
+            Ok(Err(error)) => {
+                let error = format!("无法检查主仓库状态：{error}");
+                return self.manual_merge(task_id, &repo, &branch, error);
+            }
+            Err(error) => {
+                let error = format!("无法检查主仓库状态：{error}");
+                return self.manual_merge(task_id, &repo, &branch, error);
+            }
+        }
+
+        let config = self.config_snapshot();
+        let binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
+        if let Err(error) = validate_binary(&binary) {
+            return self.manual_merge(task_id, &repo, &branch, error);
+        }
+
+        let at = now();
+        let updated = self
+            .update_task(task_id, |task| {
+                if task.status != TaskStatus::AwaitingMerge {
+                    return;
+                }
+                task.status = TaskStatus::Merging;
+                task.finished_at = None;
+                let merge = task.merge.get_or_insert_with(TaskMerge::default);
+                merge.error = None;
+                merge.instructions = None;
+                merge.started_at = Some(at.clone());
+                merge.finished_at = None;
+            })
+            .ok_or_else(|| "任务不存在".to_string())?;
+        drop(merge_guard);
+
+        if updated.status != TaskStatus::Merging {
+            return Err("任务状态已变化，无法开始合并".to_string());
+        }
+
+        let core = self.clone();
+        let merge_id = task_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            core.run_merge_runner(merge_id).await;
+        });
+
+        tracing::info!(task_id, repo = %repo, branch = %branch, "agent merge started");
+        Ok(MergeStart {
+            mode: "agent",
+            task: updated,
+            instructions: String::new(),
+        })
+    }
+
+    /// Records a manual fallback without leaving `AwaitingMerge`.
+    fn manual_merge(
+        &self,
+        task_id: &str,
+        repo: &str,
+        branch: &str,
+        error: String,
+    ) -> Result<MergeStart, String> {
+        let instructions = manual_merge_instructions(repo, branch);
+        let updated = self
+            .update_task(task_id, |task| {
+                if task.status != TaskStatus::AwaitingMerge {
+                    return;
+                }
+                let merge = task.merge.get_or_insert_with(TaskMerge::default);
+                merge.error = Some(error.clone());
+                merge.instructions = Some(instructions.clone());
+                merge.started_at = None;
+            })
+            .ok_or_else(|| "任务不存在".to_string())?;
+        tracing::warn!(task_id, %error, "agent merge unavailable; manual merge requested");
+        Ok(MergeStart {
+            mode: "manual",
+            task: updated,
+            instructions,
+        })
+    }
+
+    /// Runs one merge through an inner spawn so a panic is reported as a merge
+    /// failure and never kills the queue worker or the app.
+    async fn run_merge_runner(self: Arc<Self>, task_id: String) {
+        let core = self.clone();
+        let inner_id = task_id.clone();
+        let inner = tauri::async_runtime::spawn(async move { core.merge_task(&inner_id).await });
+        match inner.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => self.fail_merge(&task_id, error).await,
+            Err(error) => {
+                let message = format!("合并执行异常：{error}");
+                self.fail_merge(&task_id, message).await;
+            }
+        }
+    }
+
+    /// The merge turn itself: run the same runtime in the main repository with
+    /// the merge prompt, then verify the branch actually landed.
+    async fn merge_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        let task = self
+            .task_snapshot(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if task.status != TaskStatus::Merging {
+            return Ok(());
+        }
+        let branch = task
+            .worktree_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .ok_or_else(|| "任务没有待合并分支".to_string())?
+            .to_string();
+        let repo = task.repo_path.trim().to_string();
+        if repo.is_empty() || !Path::new(&repo).is_dir() {
+            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
+        }
+
+        let mut config = self.config_snapshot();
+        let binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
+        config.binary_path = validate_binary(&binary)?.to_string_lossy().into_owned();
+        self.ensure_runtime_mcp(&task.runtime_id, &task.id).await;
+
+        // Run in the main repository: clear the worktree path (so `work_dir()`
+        // falls back to `repo_path`) but keep the branch name for the prompt.
+        let mut merge_task = task.clone();
+        merge_task.worktree_path = None;
+        merge_task.commit_only = false;
+        merge_task.prompt = merge_prompt(&repo, &branch);
+
+        let descriptor = runtime_descriptor(&merge_task.runtime_id)
+            .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
+        let outcome = self.run_tui_task(&merge_task, &config, &descriptor).await;
+        self.teardown_task(task_id);
+
+        // The user cancelled while merging: `cancel` already moved the task
+        // back to AwaitingMerge, so never overwrite that rollback.
+        if self.current_status(task_id) != Some(TaskStatus::Merging) {
+            return Ok(());
+        }
+
+        let check = {
+            let repo = repo.clone();
+            let branch = branch.clone();
+            tokio::task::spawn_blocking(move || branch_merged(&repo, &branch)).await
+        };
+        match check {
+            Ok(Ok(true)) => self.complete_merge(task_id).await.map(|_| ()),
+            Ok(Ok(false)) => {
+                let error = match outcome.error.clone() {
+                    Some(error) => format!("{error}；分支仍未并入主仓库"),
+                    None => "合并 Agent 结束后分支仍未并入主仓库".to_string(),
+                };
+                Err(error)
+            }
+            Ok(Err(error)) => Err(format!("校验合并结果失败：{error}")),
+            Err(error) => Err(format!("校验合并结果失败：{error}")),
+        }
+    }
+
+    /// Finalizes a merge: remove the worktree directory (the branch is kept),
+    /// mark the task succeeded and close the merge timestamps.
+    async fn complete_merge(&self, task_id: &str) -> Result<AgentTask, String> {
+        let task = self
+            .task_snapshot(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        let repo = task.repo_path.clone();
+        let mut cleaned = false;
+        if let Some(path) = task.worktree_path.clone() {
+            // Never force-delete a worktree that still has uncommitted files;
+            // keep it for inspection instead (mirrors the finish path).
+            let status = {
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || uncommitted_files(&path)).await
+            };
+            let dirty = match status {
+                Ok(Ok(files)) => Some(files),
+                Ok(Err(error)) => {
+                    tracing::warn!(task_id, %error, "worktree status check failed; keeping it");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(task_id, %error, "worktree status task failed; keeping it");
+                    None
+                }
+            };
+            if let Some(files) = dirty {
+                if !files.is_empty() {
+                    tracing::warn!(
+                        task_id,
+                        files = files.len(),
+                        "worktree kept: uncommitted files remain after merge"
+                    );
+                } else {
+                    let removed = {
+                        let _guard = self.worktree_lock.lock().await;
+                        tokio::task::spawn_blocking(move || worktree::remove(&repo, &path)).await
+                    };
+                    match removed {
+                        Ok(Ok(())) => cleaned = true,
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                task_id,
+                                %error,
+                                "failed to remove agent worktree after merge"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                task_id,
+                                %error,
+                                "worktree cleanup task failed after merge"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let at = now();
+        let updated = self
+            .update_task(task_id, |task| {
+                if !matches!(task.status, TaskStatus::Merging | TaskStatus::AwaitingMerge) {
+                    return;
+                }
+                task.status = TaskStatus::Succeeded;
+                task.finished_at = Some(at.clone());
+                task.error = None;
+                task.commit_only = false;
+                if cleaned {
+                    task.worktree_path = None;
+                }
+                let merge = task.merge.get_or_insert_with(TaskMerge::default);
+                merge.finished_at = Some(at.clone());
+                merge.error = None;
+                merge.instructions = None;
+            })
+            .ok_or_else(|| "任务不存在".to_string())?;
+        tracing::info!(task_id, "agent merge verified and task succeeded");
+        self.wake.notify_one();
+        Ok(updated)
+    }
+
+    /// Rolls a failed/interrupted merge back to `AwaitingMerge` with a visible
+    /// error and manual steps. A task that is no longer `Merging` is untouched.
+    async fn fail_merge(&self, task_id: &str, error: String) {
+        if self.current_status(task_id) != Some(TaskStatus::Merging) {
+            return;
+        }
+        let Some(task) = self.task_snapshot(task_id) else {
+            return;
+        };
+        let instructions = manual_merge_instructions(
+            &task.repo_path,
+            task.worktree_branch.as_deref().unwrap_or(""),
+        );
+        let updated = self.update_task(task_id, |task| {
+            if task.status != TaskStatus::Merging {
+                return;
+            }
+            task.status = TaskStatus::AwaitingMerge;
+            task.finished_at = None;
+            let merge = task.merge.get_or_insert_with(TaskMerge::default);
+            merge.error = Some(error.clone());
+            merge.instructions = Some(instructions.clone());
+            merge.started_at = None;
+            merge.finished_at = None;
+        });
+        if updated.is_some() {
+            tracing::warn!(task_id, %error, "agent merge failed; awaiting manual merge");
+            self.wake.notify_one();
+        }
+    }
+
+    /// Verifies a manual merge: the branch must already be an ancestor of the
+    /// main repo's current HEAD, otherwise the task stays awaiting merge.
+    async fn verify_merge(&self, task_id: &str) -> Result<AgentTask, String> {
+        let task = self
+            .task_snapshot(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if task.status != TaskStatus::AwaitingMerge {
+            return Err("任务不在待合并状态".to_string());
+        }
+        let branch = task
+            .worktree_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .ok_or_else(|| "任务没有待合并分支".to_string())?
+            .to_string();
+        let repo = task.repo_path.trim().to_string();
+        if repo.is_empty() || !Path::new(&repo).is_dir() {
+            return Err(format!("主仓库路径不存在或不是目录：{repo}"));
+        }
+
+        let merged = tokio::task::spawn_blocking(move || branch_merged(&repo, &branch))
+            .await
+            .map_err(|error| format!("校验合并结果失败：{error}"))?
+            .map_err(|error| format!("校验合并结果失败：{error}"))?;
+        if !merged {
+            return Err("分支尚未合并到主仓库当前 HEAD".to_string());
+        }
+        self.complete_merge(task_id).await
+    }
 }
 
 /// loopback `/agent/hook` 的入口：校验 token 后把事件交给 AgentCore。
-pub(crate) fn handle_session_hook(
-    app: &AppHandle,
-    report: HookReport,
-) -> Result<(), HookError> {
+pub(crate) fn handle_session_hook(app: &AppHandle, report: HookReport) -> Result<(), HookError> {
     let core = app
         .try_state::<Arc<AgentCore>>()
         .ok_or(HookError::Internal)?;
@@ -3815,11 +4273,7 @@ pub(crate) fn extract_hook_session_id(payload: &Value) -> Option<String> {
 /// session id 来自不同客户端，过滤空值和未展开的模板变量（如 ZCode 的
 /// `${CLAUDE_SESSION_ID}`），避免把模板文本当作会话 id 持久化。
 fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && !id.contains('$')
-        && !id.contains('{')
-        && !id.contains('}')
+    !id.is_empty() && id.len() <= 256 && !id.contains('$') && !id.contains('{') && !id.contains('}')
 }
 
 fn hook_session_value(value: &Value) -> Option<String> {
@@ -3849,59 +4303,12 @@ fn task_status_key(status: TaskStatus) -> &'static str {
         TaskStatus::Preparing => "preparing",
         TaskStatus::Running => "running",
         TaskStatus::AwaitingApproval => "awaiting_approval",
+        TaskStatus::AwaitingMerge => "awaiting_merge",
+        TaskStatus::Merging => "merging",
         TaskStatus::Succeeded => "succeeded",
         TaskStatus::Failed => "failed",
         TaskStatus::Canceled => "canceled",
     }
-}
-
-fn parse_rfc3339_secs(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value.trim())
-        .ok()
-        .map(|time| time.timestamp())
-}
-
-/// The client name is whatever the MCP host sends as `clientInfo.name`, and a
-/// host does not spell it consistently across processes (`Zcode` / `zcode`).
-/// Ownership checks must not hinge on that casing.
-fn same_client(left: &str, right: &str) -> bool {
-    left.trim().to_lowercase() == right.trim().to_lowercase()
-}
-
-/// A claim is valid for `EXTERNAL_CLAIM_TTL_SECS` after its last heartbeat.
-fn external_claim_fresh_at(claim: &ExternalClaim, now_secs: i64) -> bool {
-    parse_rfc3339_secs(&claim.last_seen_at)
-        .is_some_and(|seen| now_secs.saturating_sub(seen) <= EXTERNAL_CLAIM_TTL_SECS)
-}
-
-/// Human phrase for lists and error messages: `“Zcode”正在使用“Deepseek”处理该缺陷`.
-fn external_claim_phrase(claim: &ExternalClaim) -> String {
-    let client = claim.client.trim();
-    let client = if client.is_empty() {
-        "外部 AI"
-    } else {
-        client
-    };
-    let model = claim.model.trim();
-    if model.is_empty() {
-        format!("“{client}”正在处理该缺陷")
-    } else {
-        format!("“{client}”正在使用“{model}”处理该缺陷")
-    }
-}
-
-/// Fresh claim that owns this bug, used to refuse enqueue / claim duplicates.
-fn external_claim_blocking<'a>(
-    claims: &'a [ExternalClaim],
-    workspace_id: &str,
-    bug_id: &str,
-    now_secs: i64,
-) -> Option<&'a ExternalClaim> {
-    claims.iter().find(|claim| {
-        claim.workspace_id == workspace_id
-            && claim.bug_id == bug_id
-            && external_claim_fresh_at(claim, now_secs)
-    })
 }
 
 /// Filters and paginates terminal tasks. Kept free-standing so the paging
@@ -4002,7 +4409,6 @@ fn truncate_text(text: &str, max: usize) -> String {
     truncated.push('…');
     truncated
 }
-
 
 /// Accepts either an absolute/relative path or a bare command name resolved
 /// through the user's shell `PATH` (the default `opencode` is normally installed
@@ -4266,66 +4672,11 @@ pub fn mcp_agent_config(app: &AppHandle) -> AgentConfig {
         .unwrap_or_default()
 }
 
-/// Fresh external claim for one bug, for MCP read tools.
-pub fn external_claim_for_bug(
-    app: &AppHandle,
-    workspace_id: &str,
-    bug_id: &str,
-) -> Option<ExternalClaim> {
-    app.try_state::<Arc<AgentCore>>()?
-        .fresh_external_claim(workspace_id, bug_id)
-}
-
-/// All fresh external claims, for list responses.
-pub fn external_claims(app: &AppHandle) -> Vec<ExternalClaim> {
-    app.try_state::<Arc<AgentCore>>()
-        .map(|core| core.external_claims_snapshot())
-        .unwrap_or_default()
-}
-
-/// MCP `tapd_claim_bug`: registers (or heartbeats) an external AI claim.
-pub async fn claim_external_from_mcp(
-    app: &AppHandle,
-    request: ExternalClaimRequest,
-) -> Result<Value, String> {
-    let core = app
-        .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
-    let outcome = core.claim_external(request).await?;
-    Ok(json!({
-        "claimed": outcome.claimed,
-        "claim": outcome.claim,
-        "conflict": outcome.conflict,
-        "message": outcome.message,
-    }))
-}
-
-/// MCP `tapd_release_bug`: releases the caller's own claim.
-pub fn release_external_from_mcp(
-    app: &AppHandle,
-    request: ExternalReleaseRequest,
-) -> Result<Value, String> {
-    let core = app
-        .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
-    let client = request.client.unwrap_or_default();
-    let client = client.trim();
-    let released = core.release_external(
-        request.workspace_id.trim(),
-        request.bug_id.trim(),
-        (!client.is_empty()).then_some(client),
-    )?;
-    Ok(json!({
-        "released": released,
-        "message": if released { "已释放占用" } else { "没有找到可释放的占用" },
-    }))
-}
-
 /// Blocks TAPD comment/status writes from the local agent while its worktree
 /// still has files changed by this run. This enforces "commit first, then write
 /// back" even if the model ignores the prompt. Unrelated dirty files recorded
 /// in `baseline_dirty` are ignored.
-pub fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Option<String> {
+pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Option<String> {
     let core = app.try_state::<Arc<AgentCore>>()?;
     let bug_id = arguments
         .get("bug_id")
@@ -4347,17 +4698,48 @@ pub fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Option<Str
         .find(|task| {
             task.bug_id == bug_id
                 && workspace_id.map_or(true, |workspace| task.workspace_id == workspace)
-                && !task.status.is_terminal()
+                && matches!(task.status, TaskStatus::Running | TaskStatus::Merging)
         })
         .cloned()?;
-    if task.repo_path.trim().is_empty() {
+
+    // During the merge a worktree fix is not yet in the main repository: block
+    // TAPD write-back until the branch is actually an ancestor of HEAD.
+    if task.status == TaskStatus::Merging {
+        let branch = task
+            .worktree_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or("")
+            .to_string();
+        let repo = task.repo_path.clone();
+        let merged = tokio::task::spawn_blocking(move || branch_merged(&repo, &branch)).await;
+        return match merged {
+            Ok(Ok(true)) => None,
+            _ => Some("合并尚未完成，请先完成合并再更新 TAPD".to_string()),
+        };
+    }
+
+    if task.work_dir().trim().is_empty() {
         return None;
     }
 
-    let pending: Vec<String> = uncommitted_files(&task.repo_path)
-        .into_iter()
-        .filter(|file| !task.baseline_dirty.contains(file))
-        .collect();
+    let work_dir = task.work_dir().to_string();
+    let baseline = task.baseline_dirty.clone();
+    let pending = tokio::task::spawn_blocking(move || {
+        uncommitted_files(&work_dir).map(|files| {
+            files
+                .into_iter()
+                .filter(|file| !baseline.contains(file))
+                .collect::<Vec<_>>()
+        })
+    })
+    .await;
+    let pending = match pending {
+        Ok(Ok(pending)) => pending,
+        Ok(Err(error)) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
+        Err(error) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
+    };
     if pending.is_empty() {
         return None;
     }
@@ -4365,151 +4747,6 @@ pub fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Option<Str
         "Agent 任务尚未提交（{} 个文件有未提交改动），请先 git commit，再评论或更新 TAPD 状态",
         pending.len()
     ))
-}
-
-/// MCP `tapd_request_review`: the local agent pauses a complex change and asks
-/// the user to approve the commit. Other MCP clients have no active task and
-/// are rejected, so they cannot pause the desktop queue.
-pub async fn request_review_from_mcp(app: &AppHandle, arguments: &Value) -> Result<Value, String> {
-    let core = app
-        .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
-    let task_id = arguments
-        .get("taskId")
-        .or_else(|| arguments.get("task_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "缺少参数 taskId".to_string())?
-        .to_string();
-
-    let summary = arguments
-        .get("summary")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|summary| !summary.is_empty())
-        .map(|summary| truncate_text(summary, 2_000))
-        .ok_or_else(|| "summary 不能为空".to_string())?;
-
-    let files = match arguments.get("files") {
-        None => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(|path| truncate_text(path, 300))
-            .take(50)
-            .collect(),
-        Some(_) => return Err("files 必须是字符串数组".to_string()),
-    };
-
-    let risk = arguments
-        .get("risk")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|risk| !risk.is_empty())
-        .map(|risk| truncate_text(risk, 500));
-
-    core.request_review(&task_id, summary, files, risk).await
-}
-
-/// MCP `agent_task_report`: explicit lifecycle report for generic TUI runtimes.
-/// This is the fallback that lets an agent say "completed / failed / needs
-/// review" instead of us reverse-engineering its transcript.
-pub async fn task_report_from_mcp(app: &AppHandle, arguments: &Value) -> Result<Value, String> {
-    let core = app
-        .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
-    let task_id = arguments
-        .get("taskId")
-        .or_else(|| arguments.get("task_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "缺少参数 taskId".to_string())?
-        .to_string();
-    let status = arguments
-        .get("status")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    let message = arguments
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(|message| truncate_text(message, 2_000));
-
-    // A report for a missing or already-finished task must be visible as an
-    // error, not silently accepted as if it changed something.
-    if matches!(status.as_str(), "completed" | "failed" | "needs_review") {
-        let current = core
-            .task_snapshot(&task_id)
-            .ok_or_else(|| format!("任务不存在：{task_id}"))?;
-        if current.status.is_terminal() {
-            return Err(format!(
-                "任务已结束（{}），不能再次回报",
-                task_status_key(current.status)
-            ));
-        }
-    }
-
-    match status.as_str() {
-        "completed" => {
-            core.finish_task(
-                &task_id,
-                PtyOutcome {
-                    exit_code: Some(0),
-                    completed: true,
-                    ..PtyOutcome::default()
-                },
-            )
-            .await;
-            core.stop_runtime(&task_id);
-            Ok(json!({ "status": "completed", "taskId": task_id }))
-        }
-        "failed" => {
-            core.fail_task(
-                &task_id,
-                message.unwrap_or_else(|| "Agent 报告任务失败".to_string()),
-            );
-            core.stop_runtime(&task_id);
-            Ok(json!({ "status": "failed", "taskId": task_id }))
-        }
-        "needs_review" => {
-            let summary = message.unwrap_or_else(|| "Agent 请求人工审核".to_string());
-            let files = match arguments.get("files") {
-                None => Vec::new(),
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::trim)
-                    .filter(|path| !path.is_empty())
-                    .map(|path| truncate_text(path, 300))
-                    .take(50)
-                    .collect(),
-                Some(_) => return Err("files 必须是字符串数组".to_string()),
-            };
-            let risk = arguments
-                .get("risk")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|risk| !risk.is_empty())
-                .map(|risk| truncate_text(risk, 500));
-            core.request_review(&task_id, summary, files, risk).await
-        }
-        "progress" => {
-            tracing::info!(
-                task_id = %task_id,
-                message = message.as_deref().unwrap_or("Agent 进度更新"),
-                "agent progress"
-            );
-            Ok(json!({ "status": "progress", "taskId": task_id }))
-        }
-        other => Err(format!("未知 status：{other}")),
-    }
 }
 
 pub async fn command(
@@ -4531,7 +4768,7 @@ pub async fn command(
         "agent_config_set" => {
             let patch: AgentConfigPatch = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的 Agent 配置：{error}"))?;
-            let config = core.update_config(patch)?;
+            let config = core.update_config(patch).await?;
             Ok(json!({ "config": config }))
         }
         "agent_enqueue_bug" => {
@@ -4542,6 +4779,9 @@ pub async fn command(
                 .await?;
             Ok(json!({ "task": task }))
         }
+        // Entering the system (valid login + onboarding done) initializes the
+        // workflow exactly once and reports what startup recovery changed.
+        "agent_enter_system" => Ok(json!({ "report": core.enter_system()? })),
         "agent_save_resource" => {
             let request: SaveResourceRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的资源参数：{error}"))?;
@@ -4577,17 +4817,6 @@ pub async fn command(
             let task = core.cancel(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
-        "agent_external_release" => {
-            let request: ExternalReleaseRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的释放参数：{error}"))?;
-            if request.bug_id.trim().is_empty() {
-                return Err("缺少 bugId".to_string());
-            }
-            // The user's 取消 button may close any claim.
-            let released =
-                core.release_external(request.workspace_id.trim(), request.bug_id.trim(), None)?;
-            Ok(json!({ "released": released }))
-        }
         "agent_task_retry" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的重试参数：{error}"))?;
@@ -4603,7 +4832,7 @@ pub async fn command(
             if request.task_id.trim().is_empty() {
                 return Err("缺少 taskId".to_string());
             }
-            core.delete_task(request.task_id.trim())?;
+            core.delete_task(request.task_id.trim()).await?;
             Ok(json!({ "deleted": true }))
         }
         "agent_review_approve" => {
@@ -4612,7 +4841,30 @@ pub async fn command(
             if request.task_id.trim().is_empty() {
                 return Err("缺少 taskId".to_string());
             }
-            let task = core.approve_review(request.task_id.trim())?;
+            let task = core.approve_review(request.task_id.trim()).await?;
+            Ok(json!({ "task": task }))
+        }
+        "agent_merge_start" => {
+            let request: TaskIdRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的合并参数：{error}"))?;
+            if request.task_id.trim().is_empty() {
+                return Err("缺少 taskId".to_string());
+            }
+            let core = core.inner().clone();
+            let result = core.start_merge(request.task_id.trim()).await?;
+            Ok(json!({
+                "mode": result.mode,
+                "task": result.task,
+                "instructions": result.instructions,
+            }))
+        }
+        "agent_merge_verify" => {
+            let request: TaskIdRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的合并参数：{error}"))?;
+            if request.task_id.trim().is_empty() {
+                return Err("缺少 taskId".to_string());
+            }
+            let task = core.verify_merge(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_review_stop" => {
@@ -4692,84 +4944,6 @@ mod tests {
     use super::pty::{open_pty, take_utf8_prefix, PtyHandles};
     use super::*;
 
-    fn sample_claim(last_seen_at: &str) -> ExternalClaim {
-        ExternalClaim {
-            workspace_id: "45336192".to_string(),
-            bug_id: "1145336192001234567".to_string(),
-            workspace_name: "UU".to_string(),
-            title: "示例缺陷".to_string(),
-            client: "Zcode".to_string(),
-            model: "Deepseek".to_string(),
-            status: "running".to_string(),
-            note: String::new(),
-            claimed_at: "2026-11-11T08:00:00Z".to_string(),
-            last_seen_at: last_seen_at.to_string(),
-        }
-    }
-
-    #[test]
-    fn external_claims_expire_without_a_heartbeat() {
-        let seen = parse_rfc3339_secs("2026-11-11T08:00:00Z").expect("timestamp");
-        let claim = sample_claim("2026-11-11T08:00:00Z");
-        assert!(external_claim_fresh_at(
-            &claim,
-            seen + EXTERNAL_CLAIM_TTL_SECS
-        ));
-        assert!(!external_claim_fresh_at(
-            &claim,
-            seen + EXTERNAL_CLAIM_TTL_SECS + 1
-        ));
-        // A malformed timestamp must never pin a bug forever.
-        assert!(!external_claim_fresh_at(&sample_claim("not-a-time"), seen));
-    }
-
-    #[test]
-    fn fresh_claim_blocks_enqueue_until_it_expires() {
-        let seen = parse_rfc3339_secs("2026-11-11T08:00:00Z").expect("timestamp");
-        let claim = sample_claim("2026-11-11T08:00:00Z");
-        let claims = vec![claim];
-
-        assert!(
-            external_claim_blocking(&claims, "45336192", "1145336192001234567", seen + 60)
-                .is_some()
-        );
-        // Other bugs and workspaces are unaffected.
-        assert!(external_claim_blocking(&claims, "45336192", "999", seen + 60).is_none());
-        assert!(
-            external_claim_blocking(&claims, "999", "1145336192001234567", seen + 60).is_none()
-        );
-        // Stale claims stop blocking.
-        assert!(external_claim_blocking(
-            &claims,
-            "45336192",
-            "1145336192001234567",
-            seen + EXTERNAL_CLAIM_TTL_SECS + 1
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn external_claim_phrase_names_client_and_model() {
-        assert_eq!(
-            external_claim_phrase(&sample_claim("2026-11-11T08:00:00Z")),
-            "“Zcode”正在使用“Deepseek”处理该缺陷"
-        );
-        let mut claim = sample_claim("2026-11-11T08:00:00Z");
-        claim.model.clear();
-        assert_eq!(external_claim_phrase(&claim), "“Zcode”正在处理该缺陷");
-        claim.client.clear();
-        assert_eq!(external_claim_phrase(&claim), "“外部 AI”正在处理该缺陷");
-    }
-
-    #[test]
-    fn same_client_ignores_casing_and_padding() {
-        assert!(same_client("Zcode", "zcode"));
-        assert!(same_client(" Zcode ", "zcode"));
-        assert!(same_client("Claude Code", "claude code"));
-        assert!(!same_client("Zcode", "zcode cli"));
-        assert!(!same_client("opencode", "zcode"));
-    }
-
     fn sample_task(id: &str, status: TaskStatus) -> AgentTask {
         AgentTask {
             id: id.to_string(),
@@ -4779,8 +4953,10 @@ mod tests {
             title: "示例缺陷".to_string(),
             severity: "严重".to_string(),
             priority: "高".to_string(),
-            md_path: "/tmp/bug.md".to_string(),
+            json_path: "/tmp/bug.json".to_string(),
             repo_path: "/tmp/repo".to_string(),
+            worktree_path: None,
+            worktree_branch: None,
             status,
             created_at: "2026-11-10T00:00:00Z".to_string(),
             started_at: None,
@@ -4792,11 +4968,15 @@ mod tests {
             runtime_id: DEFAULT_RUNTIME_ID.to_string(),
             agent_session_id: None,
             approval: None,
+            merge: None,
             commit_only: false,
             baseline_dirty: Vec::new(),
             baseline_head: None,
             extra_prompt: String::new(),
             attachments: Vec::new(),
+            attempt: 0,
+            interrupted: false,
+            changes: None,
         }
     }
 
@@ -4809,21 +4989,40 @@ mod tests {
         assert_eq!(config.ready_quiet_ms, 900);
         assert_eq!(config.ready_timeout_ms, 15_000);
         assert_eq!(config.idle_complete_ms, DEFAULT_IDLE_COMPLETE_MS);
-        assert!(config.prompt_template.contains("{{md_path}}"));
+        assert!(!config.worktree_enabled);
+        assert_eq!(config.execution_units, 2);
+        assert_eq!(config.effective_execution_units(), 1);
+        assert!(config.prompt_template.contains("{{json_path}}"));
         assert!(config.prompt_template.contains("{{title}}"));
         assert!(config.prompt_template.contains("{{coworker}}"));
+        assert!(!config.prompt_template.contains("{{project_rule}}"));
     }
 
     #[test]
-    fn old_default_prompt_migrates_to_the_review_flow() {
-        let config = AgentConfig {
-            prompt_template: LEGACY_PROMPT_TEMPLATES[0].to_string(),
+    fn templates_referencing_removed_contract_reset() {
+        for marker in [
+            "{{md_path}}",
+            "{{project_rule}}",
+            "tapd_request_review",
+            "agent_task_report",
+            "tapd_claim_bug",
+            "tapd_release_bug",
+            "tapd_export_bug_md",
+        ] {
+            let config = AgentConfig {
+                prompt_template: format!("旧模板 {marker}"),
+                ..AgentConfig::default()
+            }
+            .sanitized();
+            assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE, "{marker}");
+        }
+
+        let custom = AgentConfig {
+            prompt_template: "自定义 {{title}} / {{json_path}}".to_string(),
             ..AgentConfig::default()
         }
         .sanitized();
-        assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE);
-        assert!(config.prompt_template.contains("tapd_request_review"));
-        assert!(config.prompt_template.contains("{{task_id}}"));
+        assert_eq!(custom.prompt_template, "自定义 {{title}} / {{json_path}}");
     }
 
     #[test]
@@ -4841,11 +5040,15 @@ mod tests {
             ready_quiet_ms: 1,
             ready_timeout_ms: 999_999,
             idle_complete_ms: 9_999_999,
+            worktree_enabled: true,
+            execution_units: 99,
         }
         .sanitized();
 
         assert_eq!(config.binary_path, "opencode");
         assert_eq!(config.runtime_id, "opencode");
+        assert_eq!(config.execution_units, 8);
+        assert_eq!(config.effective_execution_units(), 8);
         assert_eq!(config.ready_quiet_ms, 100);
         assert_eq!(config.ready_timeout_ms, 120_000);
         assert_eq!(config.idle_complete_ms, 3_600_000);
@@ -4858,6 +5061,26 @@ mod tests {
             Some("/repo")
         );
         assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE);
+    }
+
+    #[test]
+    fn execution_units_are_clamped_and_disabled_means_serial() {
+        let mut config = AgentConfig {
+            worktree_enabled: true,
+            execution_units: 0,
+            ..AgentConfig::default()
+        }
+        .sanitized();
+        assert_eq!(config.execution_units, 1);
+        assert_eq!(config.effective_execution_units(), 1);
+
+        config.execution_units = 3;
+        assert_eq!(config.effective_execution_units(), 3);
+
+        // Without isolation every task shares one checkout, so it stays serial
+        // even if the stored unit count is higher.
+        config.worktree_enabled = false;
+        assert_eq!(config.effective_execution_units(), 1);
     }
 
     #[test]
@@ -4878,6 +5101,8 @@ mod tests {
             "preparing",
             "running",
             "awaiting_approval",
+            "awaiting_merge",
+            "merging",
             "succeeded",
             "failed",
             "canceled",
@@ -4898,7 +5123,11 @@ mod tests {
         for runtime in runtime_catalog() {
             assert!(!runtime.binary.trim().is_empty(), "{} binary", runtime.id);
             assert!(!runtime.lifecycle.is_empty(), "{} lifecycle", runtime.id);
-            assert!(!runtime.limitations.is_empty(), "{} limitations", runtime.id);
+            assert!(
+                !runtime.limitations.is_empty(),
+                "{} limitations",
+                runtime.id
+            );
             if runtime.prompt_injection == PromptInjection::Flag {
                 assert!(
                     runtime.prompt_flag.is_some(),
@@ -4971,8 +5200,14 @@ mod tests {
             extract_hook_session_id(&json!({ "session": { "id": "nested-1" } })),
             Some("nested-1".to_string())
         );
-        assert_eq!(extract_hook_session_id(&json!({ "session_id": "   " })), None);
-        assert_eq!(extract_hook_session_id(&json!({ "properties": { "sessionID": "child" } })), None);
+        assert_eq!(
+            extract_hook_session_id(&json!({ "session_id": "   " })),
+            None
+        );
+        assert_eq!(
+            extract_hook_session_id(&json!({ "properties": { "sessionID": "child" } })),
+            None
+        );
         assert_eq!(extract_hook_session_id(&json!("bad")), None);
         // ZCode 模板变量未展开时不能当作 session id。
         assert_eq!(
@@ -4991,7 +5226,10 @@ mod tests {
             resume_args("omp", Some("01a1ce52-93ab-756a-8e95-233cb9643e75")),
             vec!["--resume", "01a1ce52-93ab-756a-8e95-233cb9643e75"]
         );
-        assert_eq!(resume_args("kimi", Some("abc123")), vec!["--session", "abc123"]);
+        assert_eq!(
+            resume_args("kimi", Some("abc123")),
+            vec!["--session", "abc123"]
+        );
         assert_eq!(resume_args("kimi", None), vec!["--continue"]);
         assert_eq!(
             resume_args("opencode", Some("ses_123")),
@@ -5086,40 +5324,39 @@ mod tests {
         let vars = PromptVars {
             task_id: "task-42".to_string(),
             title: "标题".to_string(),
-            md_path: "/exports/bug.md".to_string(),
+            json_path: "/exports/bug.json".to_string(),
             repo_path: "/repo".to_string(),
             workspace_name: "UU".to_string(),
             bug_id: "42".to_string(),
             severity: "严重".to_string(),
             priority: "高".to_string(),
-            project_rule: "只用 Rust 写".to_string(),
             user_prompt: String::new(),
             attachments: Vec::new(),
             coworker: String::new(),
         };
 
         let rendered = render_prompt(
-            "{{title}}|{{md_path}}|{{repo_path}}|{{workspace_name}}|{{bug_id}}|{{severity}}|{{priority}}|{{unknown}}",
+            "{{title}}|{{json_path}}|{{repo_path}}|{{workspace_name}}|{{bug_id}}|{{severity}}|{{priority}}|{{unknown}}",
             &vars,
         );
         assert_eq!(
             rendered,
-            "标题|/exports/bug.md|/repo|UU|42|严重|高|{{unknown}}\n\n项目规则：\n只用 Rust 写"
+            "标题|/exports/bug.json|/repo|UU|42|严重|高|{{unknown}}"
         );
     }
 
     #[test]
-    fn project_rule_uses_the_explicit_slot() {
+    fn project_rule_placeholder_is_left_intact() {
+        // 旧自定义模板里的 {{project_rule}} 不再有取值；原样保留而不是报错。
         let vars = PromptVars {
             task_id: "task-1".to_string(),
             title: "t".to_string(),
-            md_path: "m".to_string(),
+            json_path: "j".to_string(),
             repo_path: "r".to_string(),
             workspace_name: "w".to_string(),
             bug_id: "1".to_string(),
             severity: "s".to_string(),
             priority: "p".to_string(),
-            project_rule: "先跑 cargo test".to_string(),
             user_prompt: String::new(),
             attachments: Vec::new(),
             coworker: String::new(),
@@ -5127,28 +5364,8 @@ mod tests {
 
         assert_eq!(
             render_prompt("规则：{{project_rule}}", &vars),
-            "规则：先跑 cargo test"
+            "规则：{{project_rule}}"
         );
-    }
-
-    #[test]
-    fn empty_project_rule_adds_nothing() {
-        let vars = PromptVars {
-            task_id: "task-1".to_string(),
-            title: "t".to_string(),
-            md_path: "m".to_string(),
-            repo_path: "r".to_string(),
-            workspace_name: "w".to_string(),
-            bug_id: "1".to_string(),
-            severity: "s".to_string(),
-            priority: "p".to_string(),
-            project_rule: String::new(),
-            user_prompt: String::new(),
-            attachments: Vec::new(),
-            coworker: String::new(),
-        };
-
-        assert_eq!(render_prompt("{{title}}", &vars), "t");
     }
 
     #[test]
@@ -5156,13 +5373,12 @@ mod tests {
         let vars = PromptVars {
             task_id: "task-1".to_string(),
             title: "t".to_string(),
-            md_path: "m".to_string(),
+            json_path: "j".to_string(),
             repo_path: "r".to_string(),
             workspace_name: "w".to_string(),
             bug_id: "1".to_string(),
             severity: "s".to_string(),
             priority: "p".to_string(),
-            project_rule: String::new(),
             user_prompt: "只改登录页".to_string(),
             attachments: vec![
                 "/tmp/shot.png".to_string(),
@@ -5196,13 +5412,12 @@ mod tests {
         let vars = PromptVars {
             task_id: "task-1".to_string(),
             title: "t".to_string(),
-            md_path: "m".to_string(),
+            json_path: "j".to_string(),
             repo_path: "r".to_string(),
             workspace_name: "w".to_string(),
             bug_id: "1".to_string(),
             severity: "s".to_string(),
             priority: "p".to_string(),
-            project_rule: String::new(),
             user_prompt: "只改登录页".to_string(),
             attachments: vec!["/tmp/shot.png".to_string()],
             coworker: String::new(),
@@ -5219,13 +5434,12 @@ mod tests {
         let vars = PromptVars {
             task_id: "task-1".to_string(),
             title: "t".to_string(),
-            md_path: "m".to_string(),
+            json_path: "j".to_string(),
             repo_path: "r".to_string(),
             workspace_name: "w".to_string(),
             bug_id: "1".to_string(),
             severity: "s".to_string(),
             priority: "p".to_string(),
-            project_rule: String::new(),
             user_prompt: String::new(),
             attachments: Vec::new(),
             coworker: "协作同事（各司其职）：\n- 程序员｜Author：一起写".to_string(),
@@ -5322,6 +5536,8 @@ mod tests {
             (TaskStatus::Preparing, "\"preparing\""),
             (TaskStatus::Running, "\"running\""),
             (TaskStatus::AwaitingApproval, "\"awaiting_approval\""),
+            (TaskStatus::AwaitingMerge, "\"awaiting_merge\""),
+            (TaskStatus::Merging, "\"merging\""),
             (TaskStatus::Succeeded, "\"succeeded\""),
             (TaskStatus::Failed, "\"failed\""),
             (TaskStatus::Canceled, "\"canceled\""),
@@ -5337,14 +5553,40 @@ mod tests {
     fn task_optional_fields_default_for_old_files() {
         let mut value = serde_json::to_value(sample_task("a", TaskStatus::Running)).unwrap();
         let object = value.as_object_mut().unwrap();
-        for key in ["approval", "commitOnly", "baselineDirty", "baselineHead"] {
+        for key in [
+            "approval",
+            "merge",
+            "commitOnly",
+            "baselineDirty",
+            "baselineHead",
+            "worktreePath",
+            "worktreeBranch",
+            "attempt",
+            "interrupted",
+            "changes",
+        ] {
             object.remove(key);
         }
         let parsed: AgentTask = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.approval, None);
+        assert_eq!(parsed.merge, None);
         assert!(!parsed.commit_only);
         assert!(parsed.baseline_dirty.is_empty());
         assert_eq!(parsed.baseline_head, None);
+        assert_eq!(parsed.worktree_path, None);
+        assert_eq!(parsed.worktree_branch, None);
+        // Records written before the workflow bridge existed still load.
+        assert_eq!(parsed.attempt, 0);
+        assert!(!parsed.interrupted);
+        assert_eq!(parsed.changes, None);
+
+        // 旧记录只有 mdPath：没有迁移链，字段为空但任务仍要能读出来。
+        let mut legacy = serde_json::to_value(sample_task("b", TaskStatus::Succeeded)).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("jsonPath");
+        object.insert("mdPath".to_string(), json!("/exports/bug.md"));
+        let parsed: AgentTask = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.json_path, "");
     }
 
     #[test]
@@ -5423,6 +5665,48 @@ mod tests {
         };
         assert!(!apply_finish(&mut task, &outcome, "2026-11-10T01:01:00Z"));
         assert_eq!(task.status, TaskStatus::AwaitingApproval);
+
+        // Merge-stage states are owned by the merge runner, not the PTY finish.
+        for status in [TaskStatus::AwaitingMerge, TaskStatus::Merging] {
+            let mut task = sample_task("merge", status);
+            assert!(!apply_finish(&mut task, &outcome, "2026-11-10T01:02:00Z"));
+            assert_eq!(task.status, status);
+        }
+    }
+
+    #[test]
+    fn work_dir_prefers_the_worktree_and_ignores_blanks() {
+        let mut task = sample_task("a", TaskStatus::Running);
+        task.repo_path = "/repo".to_string();
+        assert_eq!(task.work_dir(), "/repo");
+
+        // An empty/whitespace path must not become the PTY cwd.
+        task.worktree_path = Some("   ".to_string());
+        assert_eq!(task.work_dir(), "/repo");
+
+        task.worktree_path = Some("/data/worktrees/ws/a".to_string());
+        assert_eq!(task.work_dir(), "/data/worktrees/ws/a");
+    }
+
+    #[test]
+    fn worktree_fields_serialize_camel_case_and_skip_none() {
+        let mut task = sample_task("a", TaskStatus::Running);
+        let value = serde_json::to_value(&task).unwrap();
+        assert!(value.get("worktreePath").is_none());
+        assert!(value.get("worktreeBranch").is_none());
+
+        task.worktree_path = Some("/w".to_string());
+        task.worktree_branch = Some("tapd/01234567-abcdef01".to_string());
+        let value = serde_json::to_value(&task).unwrap();
+        assert_eq!(value["worktreePath"], "/w");
+        assert_eq!(value["worktreeBranch"], "tapd/01234567-abcdef01");
+
+        let parsed: AgentTask = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.worktree_path.as_deref(), Some("/w"));
+        assert_eq!(
+            parsed.worktree_branch.as_deref(),
+            Some("tapd/01234567-abcdef01")
+        );
     }
 
     #[test]
@@ -5469,28 +5753,24 @@ mod tests {
             active_task_id: Some("a".to_string()),
             queued_count: 0,
             awaiting_approval_count: 0,
+            awaiting_merge_count: 0,
             queue_paused: false,
             storage_error: None,
-            external_claims: vec![sample_claim("2026-11-11T08:00:00Z")],
             runtime_status: HashMap::new(),
         };
         let value = serde_json::to_value(&state).unwrap();
         assert_eq!(value["queuedCount"], 0);
-        assert_eq!(value["externalClaims"][0]["client"], "Zcode");
+        assert_eq!(value["awaitingMergeCount"], 0);
+        assert!(value.get("externalClaims").is_none());
         assert_eq!(value["activeTaskId"], "a");
         assert!(value.get("runtimeStatus").is_some());
 
-        let summary = serde_json::to_value(agent_summary(
-            &tasks,
-            vec![sample_claim("2026-11-11T08:00:00Z")],
-        ))
-        .unwrap();
+        let summary = serde_json::to_value(agent_summary(&tasks)).unwrap();
         assert_eq!(summary["running"], true);
         assert_eq!(summary["activeTaskId"], "a");
         assert_eq!(summary["workspaceName"], "UU");
         assert_eq!(summary["bugId"], "1145336192001234567");
-        assert_eq!(summary["externalClaims"][0]["client"], "Zcode");
-        assert_eq!(summary["externalClaims"][0]["workspaceName"], "UU");
+        assert!(summary.get("externalClaims").is_none());
     }
 
     #[test]
@@ -5515,7 +5795,7 @@ mod tests {
         assert_eq!(counts.active, 1);
         assert_eq!(counts.awaiting_approval, 1);
 
-        let summary = agent_summary(&tasks, Vec::new());
+        let summary = agent_summary(&tasks);
         assert!(summary.running);
         assert_eq!(summary.awaiting_approval, 1);
         // The first active task in list order is the running one.
@@ -5530,6 +5810,158 @@ mod tests {
         assert_eq!(summary.title.as_deref(), Some("示例缺陷"));
         assert_eq!(summary.workspace_name.as_deref(), Some("UU"));
         assert_eq!(summary.bug_id.as_deref(), Some("1145336192001234567"));
+    }
+
+    #[test]
+    fn counts_and_active_id_track_merge_states() {
+        let tasks = vec![
+            sample_task("approval", TaskStatus::AwaitingApproval),
+            sample_task("merge", TaskStatus::AwaitingMerge),
+            sample_task("merging", TaskStatus::Merging),
+            sample_task("queued", TaskStatus::Queued),
+        ];
+        let counts = task_counts(&tasks);
+        assert_eq!(counts.awaiting_approval, 1);
+        assert_eq!(counts.awaiting_merge, 1);
+        assert_eq!(counts.active, 1);
+        assert_eq!(counts.queued, 1);
+
+        let summary = agent_summary(&tasks);
+        assert!(summary.running);
+        assert_eq!(summary.awaiting_approval, 1);
+        assert_eq!(summary.awaiting_merge, 1);
+        // Active (Merging) outranks a pending decision.
+        assert_eq!(summary.active_task_id.as_deref(), Some("merging"));
+
+        // Without an active task, review comes before merge, merge before queue.
+        let decisions = vec![
+            sample_task("merge", TaskStatus::AwaitingMerge),
+            sample_task("approval", TaskStatus::AwaitingApproval),
+            sample_task("queued", TaskStatus::Queued),
+        ];
+        assert_eq!(active_task_id(&decisions).as_deref(), Some("approval"));
+
+        let merge_only = vec![
+            sample_task("merge", TaskStatus::AwaitingMerge),
+            sample_task("queued", TaskStatus::Queued),
+        ];
+        assert_eq!(active_task_id(&merge_only).as_deref(), Some("merge"));
+    }
+
+    #[test]
+    fn status_keys_cover_merge_states() {
+        for (status, expected) in [
+            (TaskStatus::Queued, "queued"),
+            (TaskStatus::Preparing, "preparing"),
+            (TaskStatus::Running, "running"),
+            (TaskStatus::AwaitingApproval, "awaiting_approval"),
+            (TaskStatus::AwaitingMerge, "awaiting_merge"),
+            (TaskStatus::Merging, "merging"),
+            (TaskStatus::Succeeded, "succeeded"),
+            (TaskStatus::Failed, "failed"),
+            (TaskStatus::Canceled, "canceled"),
+        ] {
+            assert_eq!(task_status_key(status), expected);
+        }
+    }
+
+    #[test]
+    fn merge_field_serializes_camel_case_and_defaults() {
+        let mut task = sample_task("a", TaskStatus::AwaitingMerge);
+        assert!(serde_json::to_value(&task).unwrap().get("merge").is_none());
+
+        task.merge = Some(TaskMerge {
+            error: Some("主仓库有未提交改动".to_string()),
+            instructions: Some("手动合并步骤".to_string()),
+            started_at: Some("2026-11-10T01:00:00Z".to_string()),
+            finished_at: None,
+        });
+        let value = serde_json::to_value(&task).unwrap();
+        assert_eq!(value["merge"]["error"], "主仓库有未提交改动");
+        assert_eq!(value["merge"]["instructions"], "手动合并步骤");
+        assert_eq!(value["merge"]["startedAt"], "2026-11-10T01:00:00Z");
+        assert!(value["merge"].get("finishedAt").is_none());
+
+        let parsed: AgentTask = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.merge, task.merge);
+
+        // Old records without `merge` still load.
+        let mut legacy =
+            serde_json::to_value(&sample_task("b", TaskStatus::AwaitingMerge)).unwrap();
+        legacy.as_object_mut().unwrap().remove("merge");
+        let parsed: AgentTask = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.merge, None);
+    }
+
+    #[test]
+    fn manual_merge_steps_include_repo_and_branch() {
+        let steps = manual_merge_instructions("/repo", "tapd/01234567-abcdef01");
+        assert!(steps.contains("cd \"/repo\""), "{steps}");
+        assert!(
+            steps.contains("git merge \"tapd/01234567-abcdef01\""),
+            "{steps}"
+        );
+        assert!(steps.contains("TAPD"), "{steps}");
+        assert!(steps.contains("我已手动合并"), "{steps}");
+
+        let prompt = merge_prompt("/repo", "tapd/01234567-abcdef01");
+        assert!(prompt.contains("仓库：/repo"));
+        assert!(prompt.contains("分支：tapd/01234567-abcdef01"));
+        assert!(prompt.contains("tapd_update_bug_status"));
+        assert!(!prompt.contains("{{"));
+    }
+
+    #[test]
+    fn worktree_switch_lock_blocks_only_real_switches_with_live_tasks() {
+        // Switching while a task is unfinished is refused.
+        assert!(worktree_switch_blocked(false, true, true));
+        assert!(worktree_switch_blocked(true, false, true));
+        // Re-sending the current value is a no-op even with live tasks.
+        assert!(!worktree_switch_blocked(true, true, true));
+        assert!(!worktree_switch_blocked(false, false, true));
+        // An idle queue may switch either way.
+        assert!(!worktree_switch_blocked(false, true, false));
+        assert!(!worktree_switch_blocked(true, false, false));
+    }
+
+    #[test]
+    fn merging_tasks_recover_to_awaiting_merge() {
+        let mut tasks = vec![
+            sample_task("merge", TaskStatus::Merging),
+            sample_task("running", TaskStatus::Running),
+            sample_task("done", TaskStatus::Succeeded),
+        ];
+        tasks[0].worktree_branch = Some("tapd/1-2".to_string());
+        let report = workflow_bridge::recover_tasks(
+            &mut tasks,
+            &AgentConfig::default(),
+            "2026-11-10T01:00:00Z",
+        )
+        .expect("bridge")
+        .expect("report");
+
+        // Merging rolls back to a retryable state and keeps the branch.
+        assert_eq!(tasks[0].status, TaskStatus::AwaitingMerge);
+        assert_eq!(tasks[0].finished_at, None);
+        assert_eq!(
+            tasks[0]
+                .merge
+                .as_ref()
+                .and_then(|merge| merge.error.as_deref()),
+            Some("客户端重启，合并已中止")
+        );
+        assert_eq!(tasks[0].worktree_branch.as_deref(), Some("tapd/1-2"));
+
+        // An interrupted fix run is requeued instead of failing by default.
+        assert_eq!(tasks[1].status, TaskStatus::Queued);
+        assert!(tasks[1].interrupted);
+        assert_eq!(tasks[1].attempt, 1);
+        assert_eq!(tasks[1].error, None);
+        assert_eq!(tasks[2].status, TaskStatus::Succeeded);
+
+        assert_eq!(report.retried, 1);
+        assert_eq!(report.awaiting_merge, 1);
+        assert_eq!(report.failed, 0);
     }
 
     #[test]
@@ -5587,25 +6019,157 @@ mod tests {
     }
 
     #[test]
-    fn recovery_marks_only_in_flight_tasks() {
+    fn recovery_keeps_waiting_tasks_and_requeues_in_flight_ones() {
         let mut tasks = vec![
             sample_task("queued", TaskStatus::Queued),
             sample_task("preparing", TaskStatus::Preparing),
             sample_task("running", TaskStatus::Running),
+            sample_task("review", TaskStatus::AwaitingApproval),
+            sample_task("approved", TaskStatus::AwaitingMerge),
             sample_task("done", TaskStatus::Succeeded),
         ];
-        let recovered = recover_incomplete(&mut tasks, "2026-11-10T01:00:00Z");
-        let ids: Vec<&str> = recovered.iter().map(|task| task.id.as_str()).collect();
-        assert_eq!(ids, vec!["preparing", "running"]);
+        let report = workflow_bridge::recover_tasks(
+            &mut tasks,
+            &AgentConfig::default(),
+            "2026-11-10T01:00:00Z",
+        )
+        .expect("bridge")
+        .expect("report");
+
+        // Queued and review states are untouched.
         assert_eq!(tasks[0].status, TaskStatus::Queued);
-        assert_eq!(tasks[1].status, TaskStatus::Failed);
-        assert_eq!(tasks[1].error.as_deref(), Some("客户端重启"));
+        assert!(!tasks[0].interrupted);
+        assert_eq!(tasks[3].status, TaskStatus::AwaitingApproval);
+        assert_eq!(tasks[4].status, TaskStatus::AwaitingMerge);
+        assert_eq!(tasks[5].status, TaskStatus::Succeeded);
+
+        // In-flight runs are requeued with the retry counter spent.
+        for task in [&tasks[1], &tasks[2]] {
+            assert_eq!(task.status, TaskStatus::Queued);
+            assert!(task.interrupted);
+            assert_eq!(task.attempt, 1);
+            assert_eq!(task.started_at, None);
+            assert_eq!(task.error, None);
+        }
+
+        assert_eq!(report.queued, 1);
+        assert_eq!(report.retried, 2);
+        assert_eq!(report.awaiting_approval, 1);
+        assert_eq!(report.awaiting_merge, 1);
+        assert_eq!(report.failed, 0);
+    }
+
+    #[test]
+    fn recovery_fails_tasks_after_the_retry_budget() {
+        let mut tasks = vec![sample_task("running", TaskStatus::Running)];
+        tasks[0].attempt = 3;
+        let report = workflow_bridge::recover_tasks(
+            &mut tasks,
+            &AgentConfig::default(),
+            "2026-11-10T01:00:00Z",
+        )
+        .expect("bridge")
+        .expect("report");
+
+        assert_eq!(tasks[0].status, TaskStatus::Failed);
+        assert_eq!(tasks[0].attempt, 4);
+        assert!(tasks[0].interrupted);
         assert_eq!(
-            tasks[1].finished_at.as_deref(),
-            Some("2026-11-10T01:00:00Z")
+            tasks[0].error.as_deref(),
+            Some(tapd_workflow::recovery::RETRY_EXHAUSTED_ERROR)
         );
-        assert_eq!(tasks[2].status, TaskStatus::Failed);
-        assert_eq!(tasks[3].status, TaskStatus::Succeeded);
+        assert_eq!(report.retried, 0);
+        assert_eq!(report.failed, 1);
+    }
+
+    #[test]
+    fn recovery_without_tasks_reports_nothing() {
+        let mut tasks: Vec<AgentTask> = Vec::new();
+        assert!(
+            workflow_bridge::recover_tasks(&mut tasks, &AgentConfig::default(), "now")
+                .expect("bridge")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn suspend_parks_live_tasks_and_keeps_waiting_ones() {
+        let mut tasks = vec![
+            sample_task("running", TaskStatus::Running),
+            sample_task("preparing", TaskStatus::Preparing),
+            sample_task("merge", TaskStatus::Merging),
+            sample_task("queued", TaskStatus::Queued),
+            sample_task("review", TaskStatus::AwaitingApproval),
+            sample_task("approved", TaskStatus::AwaitingMerge),
+        ];
+        tasks[2].worktree_branch = Some("tapd/9-9".to_string());
+        let changed =
+            workflow_bridge::suspend_tasks(&mut tasks, "2026-11-10T01:00:00Z").expect("bridge");
+        let ids: Vec<&str> = changed.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(ids, vec!["running", "preparing", "merge"]);
+
+        // Suspend keeps the queue but spends no retry: only recover does.
+        assert_eq!(tasks[0].status, TaskStatus::Queued);
+        assert!(tasks[0].interrupted);
+        assert_eq!(tasks[0].attempt, 0);
+        assert_eq!(tasks[1].status, TaskStatus::Queued);
+        assert!(tasks[1].interrupted);
+
+        // An in-flight merge becomes a manual decision again.
+        assert_eq!(tasks[2].status, TaskStatus::AwaitingMerge);
+        assert_eq!(
+            tasks[2]
+                .merge
+                .as_ref()
+                .and_then(|merge| merge.error.as_deref()),
+            Some(tapd_workflow::recovery::RESTARTED_MERGE_ERROR)
+        );
+        assert_eq!(tasks[2].worktree_branch.as_deref(), Some("tapd/9-9"));
+
+        assert_eq!(tasks[3].status, TaskStatus::Queued);
+        assert_eq!(tasks[4].status, TaskStatus::AwaitingApproval);
+        assert_eq!(tasks[5].status, TaskStatus::AwaitingMerge);
+    }
+
+    #[test]
+    fn workflow_entry_is_idempotent_and_gates_the_queue() {
+        let entered = AtomicBool::new(false);
+        assert_eq!(
+            workflow_bridge::ensure_entered(&entered).unwrap_err(),
+            "工作流尚未初始化，请先进入系统"
+        );
+
+        assert!(workflow_bridge::claim_entry(&entered));
+        assert!(workflow_bridge::ensure_entered(&entered).is_ok());
+        // A second entry (e.g. `/login` again) must not re-run recovery.
+        assert!(!workflow_bridge::claim_entry(&entered));
+        assert!(workflow_bridge::ensure_entered(&entered).is_ok());
+
+        // A failed recovery releases the claim so the next entry retries.
+        workflow_bridge::release_entry(&entered);
+        assert!(workflow_bridge::ensure_entered(&entered).is_err());
+        assert!(workflow_bridge::claim_entry(&entered));
+    }
+
+    #[test]
+    fn bridge_roundtrips_a_task_record() {
+        let mut task = sample_task("task-1", TaskStatus::Running);
+        task.attempt = 2;
+        task.interrupted = true;
+        task.changes = Some(tapd_workflow::ChangeSet {
+            files: vec!["src/a.rs".to_string()],
+            dirty: true,
+            committed: false,
+        });
+
+        let workflow = workflow_bridge::to_workflow_task(&task).expect("to core");
+        assert_eq!(workflow.id.as_str(), "task-1");
+        assert_eq!(workflow.status, tapd_workflow::TaskStatus::Running);
+        assert_eq!(workflow.attempt, 2);
+        assert!(workflow.interrupted);
+
+        let back = workflow_bridge::from_workflow_task(&workflow).expect("from core");
+        assert_eq!(back, task);
     }
 
     #[test]
@@ -5630,7 +6194,10 @@ mod tests {
     fn terminal_script_quotes_repo_path_and_resume_args() {
         let script = terminal_script(Path::new("/tmp/it's repo"), "opencode", &["--continue"]);
         assert!(script.starts_with("#!/bin/zsh\n"), "{script}");
-        assert!(script.contains(r#"cd '/tmp/it'\''s repo' || exit 1"#), "{script}");
+        assert!(
+            script.contains(r#"cd '/tmp/it'\''s repo' || exit 1"#),
+            "{script}"
+        );
         assert!(script.contains("exec 'opencode' '--continue'"), "{script}");
         // Runtimes without a resume entry point still open the repository.
         let plain = terminal_script(Path::new("/tmp/repo"), "/opt/bin/zcode", &[]);

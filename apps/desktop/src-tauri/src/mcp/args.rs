@@ -48,8 +48,8 @@ pub(super) fn root_is_cwd_hint(arguments: &Value) -> bool {
 
 /// Non-sensitive snapshot of the call shape for the audit table.
 ///
-/// Comment and prompt bodies are reduced to lengths so the log never carries
-/// user text.
+/// Comment and notification bodies are reduced to lengths so the log never
+/// carries user text.
 pub(super) fn summarize_arguments(arguments: &Value) -> Value {
     let mut summary = Map::new();
     for key in [
@@ -59,7 +59,6 @@ pub(super) fn summarize_arguments(arguments: &Value) -> Value {
         "next_status",
         "owner",
         "root",
-        "model",
         "limit",
         "page",
         "only_unresolved",
@@ -84,15 +83,6 @@ pub(super) fn summarize_arguments(arguments: &Value) -> Value {
     }
     if let Some(actions) = arguments.get("actions").and_then(Value::as_array) {
         summary.insert("actions".to_string(), Value::from(actions.len() as u64));
-    }
-    if let Some(files) = arguments.get("files").and_then(Value::as_array) {
-        summary.insert("files".to_string(), Value::from(files.len() as u64));
-    }
-    if let Some(summary_text) = arguments.get("summary").and_then(Value::as_str) {
-        summary.insert(
-            "summaryChars".to_string(),
-            Value::from(summary_text.chars().count() as u64),
-        );
     }
     Value::Object(summary)
 }

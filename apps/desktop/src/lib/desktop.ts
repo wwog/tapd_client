@@ -33,9 +33,9 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Opens the folder that holds a task's exported markdown, if it has one. */
+/** Opens the folder that holds a task's exported bug.json, if it has one. */
 export const openTaskExportDir = (task: AgentTask, toast: ToastFn): void => {
-  const dir = exportDirFor(task.mdPath);
+  const dir = exportDirFor(task.jsonPath);
   if (!dir) {
     toast("error", "该任务还没有导出目录");
     return;

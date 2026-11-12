@@ -131,7 +131,7 @@ export function BugTableToolbar(props: Props) {
   };
 
   // 处理中 is a live view over agent activity, so the segment only exists while
-  // an internal or external agent is working on this project.
+  // the local agent queue is working on this project.
   const scopeOptions: SegmentedOption<BugScope>[] = [
     { value: "mine", label: "我负责的", icon: <UserRound size={12} /> },
     { value: "all", label: "全部", icon: <Users size={12} /> },

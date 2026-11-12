@@ -27,7 +27,7 @@ type Props = {
   onExport: (detail: BugDetail) => void;
 };
 
-/** Sticky action footer: last export, claim, Agent and markdown export. */
+/** Sticky action footer: last export, claim, Agent and bug.json export. */
 export function BugDrawerFooter(props: Props) {
   const {
     detail,
@@ -67,15 +67,15 @@ export function BugDrawerFooter(props: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => onCopy(lastExport.markdownPath)}
+                onClick={() => onCopy(lastExport.bugJson)}
                 className="rounded border border-emerald-300 bg-surface px-1.5 py-0.5"
               >
                 复制路径
               </button>
             </div>
           </div>
-          <div className="mt-0.5 truncate font-mono text-emerald-700" title={lastExport.markdownPath}>
-            {lastExport.markdownPath}
+          <div className="mt-0.5 truncate font-mono text-emerald-700" title={lastExport.bugJson}>
+            {lastExport.bugJson}
           </div>
           {lastExport.warnings.length > 0 ? (
             <div className="mt-1 truncate text-amber-700" title={lastExport.warnings.join("；")}>
@@ -106,7 +106,8 @@ export function BugDrawerFooter(props: Props) {
               variant="primary"
               icon={
                 agentInfo.task.status === "preparing" ||
-                agentInfo.task.status === "running" ? (
+                agentInfo.task.status === "running" ||
+                agentInfo.task.status === "merging" ? (
                   <Loader2 size={13} className="animate-spin" />
                 ) : (
                   <Bot size={13} />
@@ -155,7 +156,7 @@ export function BugDrawerFooter(props: Props) {
           loading={exporting}
           onClick={() => onExport(detail)}
         >
-          {exporting ? "导出中…" : "导出 MD"}
+          {exporting ? "导出中…" : "导出"}
         </Button>
       </div>
     </div>

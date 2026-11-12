@@ -7,7 +7,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::Duration,
@@ -53,23 +53,6 @@ static EXPANDED: AtomicBool = AtomicBool::new(false);
 /// Hover peek requested by the frontend. Only the collapsed layout honours it;
 /// expanded notification cards always win.
 static PEEK: AtomicBool = AtomicBool::new(false);
-/// Cards rendered by the frontend outside the notification payload (external
-/// AI claims). Their count keeps an expansion open across unrelated refreshes
-/// and sizes it when no pending notification exists.
-static EXTRA_CARDS: AtomicUsize = AtomicUsize::new(0);
-
-/// Records how many frontend-fed cards are on the expanded island.
-pub fn set_extra_cards(count: usize) {
-    EXTRA_CARDS.store(count, Ordering::SeqCst);
-}
-
-pub fn extra_cards() -> usize {
-    EXTRA_CARDS.load(Ordering::SeqCst)
-}
-
-pub fn is_expanded() -> bool {
-    EXPANDED.load(Ordering::SeqCst)
-}
 
 /// Records the frontend's wish to keep the idle capsule on screen.
 pub fn set_collapsed_visible(visible: bool) {
@@ -366,7 +349,14 @@ fn apply_island_sized(
                 let next_y = lerp(start_pos.y as f64, y as f64, eased).round() as i32;
                 remember_position(next_x, next_y);
                 mark_animating();
-                apply_frame(&window_for_animation, next_x, next_y, next_w, next_h, centred);
+                apply_frame(
+                    &window_for_animation,
+                    next_x,
+                    next_y,
+                    next_w,
+                    next_h,
+                    centred,
+                );
                 tokio::time::sleep(Duration::from_millis(14)).await;
             }
         });
@@ -389,14 +379,7 @@ fn apply_island_sized(
 /// the top of the window was lifted and dropped back on every step (the shake
 /// seen while the peek card grew). `centred` says the window keeps its
 /// horizontal centre, which is when that atomic path applies.
-fn apply_frame(
-    window: &WebviewWindow,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    centred: bool,
-) {
+fn apply_frame(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32, centred: bool) {
     #[cfg(target_os = "macos")]
     if centred {
         macos::set_frame_keeping_top_center(window, width as f64, height as f64);

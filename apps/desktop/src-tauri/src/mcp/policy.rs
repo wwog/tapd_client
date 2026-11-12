@@ -13,7 +13,11 @@ pub(super) fn is_write_tool(tool: &str) -> bool {
 ///
 /// The check order is user-visible: the write switch is reported before the
 /// project allowlist, so a disabled write never leaks a project mismatch.
-pub(super) fn policy_violation(policy: &McpPolicy, tool: &str, arguments: &Value) -> Option<String> {
+pub(super) fn policy_violation(
+    policy: &McpPolicy,
+    tool: &str,
+    arguments: &Value,
+) -> Option<String> {
     if is_write_tool(tool) && !policy.writes_enabled {
         return Some("MCP 写操作已在「MCP 策略」中关闭".to_string());
     }

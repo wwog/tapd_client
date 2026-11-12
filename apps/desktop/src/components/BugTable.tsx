@@ -21,7 +21,6 @@ import { useCurrentAgent } from "../lib/useCurrentAgent";
 import {
   agentBugKey,
   type AgentInFlight,
-  type ExternalClaim,
 } from "../lib/agent";
 import { AgentActivityLine } from "./AgentActivityLine";
 import { TableFilter } from "./TableFilter";
@@ -65,8 +64,6 @@ type Props = {
   columns: ColumnPref[];
   hideOwner: boolean;
   agentInFlight?: Map<string, AgentInFlight>;
-  /** Fresh external AI claims keyed by workspace + bug. */
-  externalClaims?: Map<string, ExternalClaim>;
   claimingId: string | null;
   sort: BugSort | null;
   statusFilter: string[];
@@ -92,8 +89,6 @@ type Props = {
   onClaim: (bug: BugSummary) => void;
   /** Cancel a local task (queued = remove, running = interrupt). */
   onCancelTask?: (taskId: string) => Promise<void> | void;
-  /** Close an external AI claim. */
-  onReleaseExternal?: (claim: ExternalClaim) => Promise<void> | void;
 };
 
 /** The bug table, its filter/sort headers and the row context menu. */
@@ -126,25 +121,20 @@ export function BugTable(props: Props) {
     onAgentCompose,
     onOpenAgentTask,
     onClaim,
-    externalClaims,
     onCancelTask,
-    onReleaseExternal,
   } = props;
 
-  /** Row whose 取消 request is in flight (local task id or `external:<key>`). */
+  /** Row whose 取消 request is in flight. */
   const [cancelingId, setCancelingId] = useState<string | null>(null);
   /** Runtime the row action will launch, from 设置 →「默认 Agent」. */
   const currentAgent = useCurrentAgent();
 
-  const cancelActivity = async (claim?: ExternalClaim, agent?: AgentInFlight) => {
-    const id = claim
-      ? `external:${agentBugKey(claim.workspaceId, claim.bugId)}`
-      : agent?.task.id;
+  const cancelActivity = async (agent?: AgentInFlight) => {
+    const id = agent?.task.id;
     if (!id || cancelingId) return;
     setCancelingId(id);
     try {
-      if (claim) await onReleaseExternal?.(claim);
-      else if (agent) await onCancelTask?.(agent.task.id);
+      await onCancelTask?.(agent.task.id);
     } finally {
       setCancelingId(null);
     }
@@ -301,11 +291,7 @@ export function BugTable(props: Props) {
         >
           {page.bugs.map((bug) => {
             const key = agentBugKey(bug.workspaceId, bug.id);
-            const claim = externalClaims?.get(key);
-            // A fresh external claim always wins; a queued/running local task
-            // is cancelled or refused when the claim is registered.
-            const agent = claim ? undefined : agentInFlight?.get(key);
-            const activityId = claim ? `external:${key}` : agent?.task.id ?? null;
+            const agent = agentInFlight?.get(key);
             const active = activeBugId === bug.id;
             return (
             <tr
@@ -345,8 +331,8 @@ export function BugTable(props: Props) {
                   ) : null}
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
-                {claim || agent ? (
-                  <AgentActivityLine claim={claim} task={agent} />
+                {agent ? (
+                  <AgentActivityLine task={agent} />
                 ) : null}
               </td>
               {visibleColumns.map((column) => (
@@ -361,13 +347,13 @@ export function BugTable(props: Props) {
                 )}
                 onClick={(event) => event.stopPropagation()}
               >
-                {claim || agent ? (
+                {agent ? (
                   // Active rows only keep jump-to-task and 取消: the bug is
-                  // already owned by an external AI or the local queue, so it
-                  // must not be enqueued, edited or claimed twice. Row click
-                  // still opens the detail.
+                  // already owned by the local queue, so it must not be
+                  // enqueued, edited or claimed twice. Row click still opens
+                  // the detail.
                   <div className="flex items-center justify-end gap-1">
-                    {agent && onOpenAgentTask ? (
+                    {onOpenAgentTask ? (
                       <button
                         type="button"
                         title="查看 Agent 任务"
@@ -383,27 +369,25 @@ export function BugTable(props: Props) {
                     ) : null}
                     <button
                       type="button"
-                      disabled={cancelingId === activityId}
+                      disabled={cancelingId === agent.task.id}
                       title={
-                        claim
-                          ? `取消外部占用（${claim.client} 下次心跳会收到冲突）`
-                          : agent?.task.status === "queued"
-                            ? "从 Agent 队列中移除这个任务"
-                            : "中断当前 Agent 任务"
+                        agent.task.status === "queued"
+                          ? "从 Agent 队列中移除这个任务"
+                          : "中断当前 Agent 任务"
                       }
-                      aria-label={claim ? "取消外部占用" : "取消 Agent 任务"}
+                      aria-label="取消 Agent 任务"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void cancelActivity(claim, agent);
+                        void cancelActivity(agent);
                       }}
                       className={clsx(
                         "grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition",
-                        cancelingId === activityId
+                        cancelingId === agent.task.id
                           ? "cursor-not-allowed opacity-60"
                           : "hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700",
                       )}
                     >
-                      {cancelingId === activityId ? (
+                      {cancelingId === agent.task.id ? (
                         <Loader2 size={12} className="animate-spin" />
                       ) : (
                         <X size={13} />

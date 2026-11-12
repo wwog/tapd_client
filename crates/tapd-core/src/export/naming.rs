@@ -1,12 +1,12 @@
 //! Filesystem naming for export directories.
 //!
-//! Kept apart from the Markdown rendering: the document content must stay
-//! stable even when the on-disk naming rules change.
+//! Kept apart from the export payload: the package content must stay stable
+//! even when the on-disk naming rules change.
 
 /// Short, filesystem-safe slug used in export directory names.
 ///
 /// ASCII-only on purpose: TAPD titles are usually Chinese, and non-ASCII paths
-/// break on some Windows toolchains. The full title still lives in `bug.md`,
+/// break on some Windows toolchains. The full title still lives in `bug.json`,
 /// so the directory only needs to be short and unique. Returns an empty string
 /// when the title has no usable ASCII characters, letting the caller fall back
 /// to the bug id.

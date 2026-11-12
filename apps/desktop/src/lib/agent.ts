@@ -5,6 +5,8 @@ export type AgentTaskStatus =
   | "preparing"
   | "running"
   | "awaiting_approval"
+  | "awaiting_merge"
+  | "merging"
   | "succeeded"
   | "failed"
   | "canceled";
@@ -27,8 +29,12 @@ export type AgentConfig = {
   coworkerIds: string[];
   readyQuietMs: number;
   readyTimeoutMs: number;
-  /** TUI 运行时输出静默多久视为本轮结束；0 表示只依赖 MCP 回报。 */
+  /** TUI 运行时输出静默多久视为本轮结束；0 表示只依赖进程退出/会话 hook。 */
   idleCompleteMs: number;
+  /** 每个任务在独立 git worktree 中运行。 */
+  worktreeEnabled: boolean;
+  /** 开启 worktree 后的并行任务数；关闭时固定为 1。 */
+  executionUnits: number;
 };
 
 /** A stage every runtime declares in its catalog entry. */
@@ -120,8 +126,12 @@ export type AgentTask = {
   title: string;
   severity: string;
   priority: string;
-  mdPath: string;
+  jsonPath: string;
   repoPath: string;
+  /** Absolute path of the task's git worktree, when worktree isolation is on. */
+  worktreePath?: string;
+  /** Branch created for the worktree; kept after the directory is cleaned. */
+  worktreeBranch?: string;
   status: AgentTaskStatus;
   createdAt: string;
   startedAt?: string;
@@ -136,12 +146,25 @@ export type AgentTask = {
   agentSessionId?: string | null;
   /** Present while the task waits for the commit decision. */
   approval?: AgentApproval | null;
+  /** Merge phase state: agent failure text, manual steps and timing. */
+  merge?: AgentMerge | null;
   /** The next run is the post-approval commit phase. */
   commitOnly?: boolean;
   /** Markdown instructions from the compose sheet. */
   extraPrompt?: string;
   /** Local resource paths supplied with the task. */
   attachments?: string[];
+};
+
+/**
+ * Worktree tasks merge back into the main repo after review. `instructions`
+ * holds the manual steps written when the merge agent is unavailable.
+ */
+export type AgentMerge = {
+  error?: string | null;
+  instructions?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 };
 
 /** 运行中 Agent 的状态，只存在于内存；任务结束后清空。 */
@@ -174,80 +197,15 @@ export type AgentTasksState = {
   activeTaskId: string | null;
   queuedCount?: number;
   awaitingApprovalCount?: number;
+  /** Worktree tasks that passed review and wait for the merge decision. */
+  awaitingMergeCount?: number;
   /** Set after the user stopped a review; resume from the Agent tab. */
   queuePaused?: boolean;
   /** SQLite is unavailable; task state may not survive a restart. */
   storageError?: string | null;
-  /** Fresh external AI claims (backend already drops expired ones). */
-  externalClaims?: ExternalClaim[];
   /** 运行中 Agent 的状态，key 是 task id。 */
   runtimeStatus?: Record<string, AgentRuntimeStatus>;
 };
-
-/** A bug an external MCP client is working on. */
-export type ExternalClaimStatus = "queued" | "running";
-
-export type ExternalClaim = {
-  workspaceId: string;
-  bugId: string;
-  /** Resolved project name; empty for claims registered before it existed. */
-  workspaceName?: string;
-  title: string;
-  /** MCP client name from the handshake, e.g. "Zcode". */
-  client: string;
-  /** Model the client reported; empty when unknown. */
-  model: string;
-  status: ExternalClaimStatus;
-  note?: string;
-  claimedAt: string;
-  lastSeenAt: string;
-};
-
-/** Claims expire server-side after 15 minutes without a heartbeat. */
-export const EXTERNAL_CLAIM_TTL_MS = 15 * 60 * 1000;
-
-export function isExternalClaimFresh(
-  claim: ExternalClaim,
-  now: number = Date.now(),
-): boolean {
-  const seen = Date.parse(claim.lastSeenAt);
-  return Number.isFinite(seen) && now - seen <= EXTERNAL_CLAIM_TTL_MS;
-}
-
-/** Fresh claims keyed by `agentBugKey`, newest state per bug. */
-export function externalClaimMap(
-  claims: ExternalClaim[] = [],
-  now: number = Date.now(),
-): Map<string, ExternalClaim> {
-  const map = new Map<string, ExternalClaim>();
-  for (const claim of claims) {
-    if (!isExternalClaimFresh(claim, now)) continue;
-    const key = agentBugKey(claim.workspaceId, claim.bugId);
-    if (!map.has(key)) map.set(key, claim);
-  }
-  return map;
-}
-
-/** `“Zcode”正在使用“Deepseek”进行处理` */
-export function externalClaimLabel(claim: ExternalClaim): string {
-  const client = claim.client.trim() || "外部 AI";
-  const model = claim.model.trim();
-  if (claim.status === "queued") return `“${client}”排队等待处理`;
-  return model
-    ? `“${client}”正在使用“${model}”进行处理`
-    : `“${client}”正在处理`;
-}
-
-/** Compact capsule label: `Zcode · Deepseek`, plus `+N` for more claims. */
-export function externalClaimPillLabel(
-  claim: ExternalClaim,
-  total = 1,
-): string {
-  const client = claim.client.trim() || "外部 AI";
-  const model = claim.model.trim();
-  const base = model ? `${client} · ${model}` : client;
-  return total > 1 ? `${base} +${total - 1}` : base;
-}
 
 /** Paginated terminal-task history; filtering and paging run in Rust. */
 export type AgentHistoryQuery = {
@@ -271,16 +229,30 @@ export type AgentTasksPage = {
   workspaces: AgentWorkspaceRef[];
 };
 
+/**
+ * Counts of tasks restored by the backend when the user re-enters the system
+ * (login + onboarding done). `null` means there was nothing to recover.
+ */
+export type RecoveryReport = {
+  id: number;
+  restoredAt: string;
+  queued: number;
+  retried: number;
+  awaitingApproval: number;
+  awaitingMerge: number;
+  failed: number;
+};
+
 /** Lightweight agent state for the island capsule. */
 export type AgentSummary = {
   running: boolean;
   awaitingApproval?: number;
+  /** Worktree tasks waiting for the user to confirm the merge. */
+  awaitingMerge?: number;
   activeTaskId: string | null;
   title: string | null;
   workspaceName: string | null;
   bugId: string | null;
-  /** Fresh external AI work, running first (backend drops expired claims). */
-  externalClaims?: ExternalClaim[];
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */
@@ -289,7 +261,13 @@ const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
   "preparing",
   "running",
   "awaiting_approval",
+  "awaiting_merge",
+  "merging",
 ];
+
+/** Worktree tasks pending user review or merge confirmation. */
+export const isAgentApprovalStatus = (status: AgentTaskStatus): boolean =>
+  status === "awaiting_approval" || status === "awaiting_merge";
 
 export const isAgentInFlight = (task: AgentTask): boolean =>
   IN_FLIGHT_STATUSES.includes(task.status);
@@ -328,29 +306,30 @@ export function inFlightAgentTasks(tasks: AgentTask[]): Map<string, AgentInFligh
 
 const stateRank = (status: AgentTaskStatus): number => {
   switch (status) {
-    case "running":
+    case "merging":
       return 0;
-    case "preparing":
+    case "running":
       return 1;
-    case "awaiting_approval":
+    case "preparing":
+      return 2;
+    case "awaiting_merge":
       return 3;
-    case "queued":
+    case "awaiting_approval":
       return 4;
-    default:
+    case "queued":
       return 5;
+    default:
+      return 6;
   }
 };
 
 /**
  * Bugs in one workspace that an agent is currently working on, in display
- * order. External claims win over local tasks (a local task on the same bug is
- * cancelled or refused when the claim registers), so ids are deduplicated with
- * claims first.
+ * order. Deduplicated because legacy snapshots can contain duplicates.
  */
 export function agentActiveBugIds(
   workspaceId: string | null | undefined,
   agentInFlight?: Map<string, AgentInFlight>,
-  externalClaims?: Map<string, ExternalClaim>,
 ): string[] {
   if (!workspaceId) return [];
   const ids: string[] = [];
@@ -360,9 +339,6 @@ export function agentActiveBugIds(
     seen.add(id);
     ids.push(id);
   };
-  for (const claim of externalClaims?.values() ?? []) {
-    if (claim.workspaceId === workspaceId) push(claim.bugId);
-  }
   for (const info of agentInFlight?.values() ?? []) {
     if (info.task.workspaceId === workspaceId) push(info.task.bugId);
   }
@@ -380,6 +356,10 @@ export function agentInFlightLabel(info: AgentInFlight): string {
       return "修复中";
     case "awaiting_approval":
       return "待审核";
+    case "awaiting_merge":
+      return "待合并";
+    case "merging":
+      return "合并中";
     default:
       return AGENT_STATUS_LABELS[info.task.status];
   }
@@ -410,6 +390,8 @@ export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
   preparing: "准备中",
   running: "运行中",
   awaiting_approval: "待审核",
+  awaiting_merge: "待合并",
+  merging: "合并中",
   succeeded: "已完成",
   failed: "失败",
   canceled: "已取消",
@@ -417,15 +399,25 @@ export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
 
 export const AGENT_STATUS_TONES: Record<
   AgentTaskStatus,
-  "neutral" | "blue" | "green" | "amber" | "red"
+  "neutral" | "blue" | "green" | "amber" | "red" | "cyan"
 > = {
   queued: "neutral",
   preparing: "blue",
   running: "amber",
   awaiting_approval: "amber",
+  awaiting_merge: "cyan",
+  merging: "blue",
   succeeded: "green",
   failed: "red",
   canceled: "neutral",
+};
+
+/** Result of starting a merge: the agent took over, or the user must merge. */
+export type AgentMergeStart = {
+  mode: "agent" | "manual";
+  task: AgentTask;
+  /** Manual steps; also written to `task.merge.instructions`. */
+  instructions?: string | null;
 };
 
 export const agentApi = {
@@ -437,6 +429,12 @@ export const agentApi = {
     featureCommand<{ config: AgentConfig }>("agent_config_set", patch),
   enqueueBug: (request: AgentEnqueueRequest) =>
     featureCommand<{ task: AgentTask }>("agent_enqueue_bug", request),
+  /**
+   * Initialize the workflow once the user is inside the system. The backend
+   * may report the tasks it restored; it is called once per system entry.
+   */
+  enterSystem: () =>
+    featureCommand<{ report: RecoveryReport | null }>("agent_enter_system"),
   /** Persist a pasted screenshot and return its absolute path. */
   saveResource: (name: string, data: string) =>
     featureCommand<{ path: string }>("agent_save_resource", { name, data }),
@@ -446,12 +444,6 @@ export const agentApi = {
   summary: () => featureCommand<AgentSummary>("agent_summary"),
   cancel: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_task_cancel", { taskId }),
-  /** Close an external AI claim from the list (user's 取消 action). */
-  externalRelease: (workspaceId: string, bugId: string) =>
-    featureCommand<{ released: boolean }>("agent_external_release", {
-      workspaceId,
-      bugId,
-    }),
   retry: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_task_retry", { taskId }),
   /** Deletes one finished history record; only the local record is removed. */
@@ -464,6 +456,12 @@ export const agentApi = {
   stopReview: (taskId: string) =>
     featureCommand<{ task: AgentTask }>("agent_review_stop", { taskId }),
   resumeQueue: () => featureCommand<AgentTasksState>("agent_queue_resume"),
+  /** Merge the approved worktree branch with the original agent. */
+  mergeStart: (taskId: string) =>
+    featureCommand<AgentMergeStart>("agent_merge_start", { taskId }),
+  /** Confirm the branch is already merged (manual merge fallback). */
+  mergeVerify: (taskId: string) =>
+    featureCommand<{ task?: AgentTask }>("agent_merge_verify", { taskId }),
   /** Unified diff of the paused change, for the review card. */
   reviewDiff: (taskId: string) =>
     featureCommand<{ diff: string }>("agent_review_diff", { taskId }),
@@ -486,10 +484,10 @@ export const agentApi = {
     featureCommand<AgentScanSnapshot>("agent_scan", { force }),
 };
 
-/** Directory containing `bug.md`, for the console's "open export folder" action. */
-export const exportDirFor = (mdPath: string): string | null => {
-  if (!mdPath) return null;
-  const index = mdPath.lastIndexOf("/");
+/** Directory containing `bug.json`, for the console's "open export folder" action. */
+export const exportDirFor = (jsonPath: string): string | null => {
+  if (!jsonPath) return null;
+  const index = jsonPath.lastIndexOf("/");
   if (index <= 0) return null;
-  return mdPath.slice(0, index);
+  return jsonPath.slice(0, index);
 };

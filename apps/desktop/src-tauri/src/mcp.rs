@@ -8,12 +8,11 @@
 //! - this module: one call = policy gate -> dispatch -> audit
 //! - [`policy`]: write-tool classification and the allowlist gate
 //! - [`session`]: TAPD identity context and project selection
-//! - [`read`], [`write`], [`claim`]: the tool handlers, grouped by effect
+//! - [`read`], [`write`]: the tool handlers, grouped by effect
 //! - [`args`], [`audit`]: argument access and audit-entry writes
 
 mod args;
 mod audit;
-mod claim;
 mod policy;
 mod read;
 mod session;
@@ -45,7 +44,7 @@ pub async fn handle(
 
     // The local agent must commit before it comments or changes TAPD state.
     if is_write_tool(tool) {
-        if let Some(message) = crate::agent::tapd_write_block_reason(app, arguments) {
+        if let Some(message) = crate::agent::tapd_write_block_reason(app, arguments).await {
             audit.record(state, &policy, "denied", false, Some(message.clone()));
             tracing::info!(tool, client, ok = false, error = %message, "mcp write blocked until commit");
             return Err(message);
@@ -58,13 +57,7 @@ pub async fn handle(
         Err(_) => ("error", false),
     };
 
-    audit.record(
-        state,
-        &policy,
-        decision,
-        ok,
-        result.as_ref().err().cloned(),
-    );
+    audit.record(state, &policy, decision, ok, result.as_ref().err().cloned());
 
     tracing::info!(
         tool,
@@ -98,20 +91,12 @@ async fn dispatch(
         "tapd_list_bugs" => read::list_bugs(app, state, arguments).await,
         "tapd_list_my_bugs" => read::list_my_bugs(app, state, arguments).await,
         "tapd_get_bug" => read::get_bug(app, state, arguments).await,
-        "tapd_export_bug_md" => read::export_bug_md(app, state, arguments).await,
         "tapd_get_bug_transitions" => write::get_bug_transitions(app, state, arguments).await,
         "tapd_add_bug_comment" => write::add_bug_comment(app, state, arguments).await,
         "tapd_update_bug_status" => write::update_bug_status(app, state, arguments).await,
-        // External AI ownership: mutual exclusion with the local queue.
-        "tapd_claim_bug" => claim::claim_bug(app, state, arguments, client).await,
-        "tapd_release_bug" => claim::release_bug(app, state, arguments, client).await,
         // Local-only: no TAPD session or workspace scope involved.
         "tapd_notify_user" => crate::notification::ai::mcp_notify(arguments, client).await,
         "tapd_wait_notification" => crate::notification::ai::mcp_wait(arguments).await,
-        // Local agent only: pauses the running task for a commit decision.
-        "tapd_request_review" => crate::agent::request_review_from_mcp(app, arguments).await,
-        // Local agent only: explicit lifecycle report for generic TUI runtimes.
-        "agent_task_report" => crate::agent::task_report_from_mcp(app, arguments).await,
         // Only reachable when a manifest entry was added without a handler;
         // the manifest test below catches that case.
         other => Err(format!("tool `{other}` is not available")),
@@ -124,22 +109,17 @@ mod manifest_tests {
 
     /// Mirrors the arms in [`super::dispatch`]. The test below fails when this
     /// list and `tapd_core::mcp::TOOLS` drift apart in either direction.
-    const DISPATCHED_TOOLS: [&str; 15] = [
+    const DISPATCHED_TOOLS: [&str; 10] = [
         "tapd_whoami",
         "tapd_list_projects",
         "tapd_list_bugs",
         "tapd_list_my_bugs",
         "tapd_get_bug",
-        "tapd_export_bug_md",
         "tapd_get_bug_transitions",
         "tapd_add_bug_comment",
         "tapd_update_bug_status",
-        "tapd_claim_bug",
-        "tapd_release_bug",
         "tapd_notify_user",
         "tapd_wait_notification",
-        "tapd_request_review",
-        "agent_task_report",
     ];
 
     #[test]

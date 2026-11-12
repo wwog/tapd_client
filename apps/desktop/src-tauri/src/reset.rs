@@ -5,11 +5,7 @@
 //! handles block deletion, so the command only drops a marker and restarts;
 //! the fresh process wipes the directory before logging or SQLite opens it.
 
-use std::{
-    fs, io,
-    path::Path,
-    time::Duration,
-};
+use std::{fs, io, path::Path, time::Duration};
 
 use tapd_core::paths::AppPaths;
 
@@ -111,6 +107,7 @@ mod tests {
             logs_dir: root.join("data").join("logs"),
             captures_dir: root.join("data").join("captures"),
             exports_dir: root.join("exports"),
+            worktrees_dir: root.join("data").join("worktrees"),
             runtime_file: root.join("data").join("runtime.json"),
             config_file: root.join("data").join("config.json"),
         }
@@ -124,10 +121,17 @@ mod tests {
         fs::write(&paths.runtime_file, "{}").expect("runtime");
         fs::write(paths.logs_dir.join("app.log"), "log").expect("log");
         fs::create_dir_all(paths.data_dir.join("app-icons").join("nested")).expect("nested");
-        fs::write(paths.data_dir.join("app-icons").join("nested").join("icon.png"), "x")
-            .expect("icon");
+        fs::write(
+            paths
+                .data_dir
+                .join("app-icons")
+                .join("nested")
+                .join("icon.png"),
+            "x",
+        )
+        .expect("icon");
         // Export output lives outside the data directory and must survive.
-        fs::write(paths.exports_dir.join("bug.md"), "md").expect("export");
+        fs::write(paths.exports_dir.join("bug.json"), "{}").expect("export");
 
         request(&paths).expect("marker");
         assert!(paths.data_dir.join(MARKER_FILE).exists());
@@ -141,7 +145,7 @@ mod tests {
         assert!(!paths.runtime_file.exists());
         assert!(!paths.logs_dir.join("app.log").exists());
         assert!(!paths.data_dir.join("app-icons").exists());
-        assert!(paths.exports_dir.join("bug.md").exists());
+        assert!(paths.exports_dir.join("bug.json").exists());
 
         let _ = fs::remove_dir_all(paths.data_dir.parent().expect("root"));
     }

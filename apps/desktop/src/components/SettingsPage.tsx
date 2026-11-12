@@ -13,6 +13,7 @@ import {
 import { api, type AppInfo } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
+import { AgentExecutionCard } from "./AgentExecutionCard";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { DefaultAgentCard } from "./DefaultAgentCard";
@@ -80,6 +81,8 @@ export function SettingsPage(props: Props) {
       <AppearanceCard />
 
       <DefaultAgentCard toast={toast} onManageAgents={onManageAgents} />
+
+      <AgentExecutionCard toast={toast} />
 
       <NotificationSettings toast={toast} />
 

@@ -410,32 +410,6 @@ impl NotificationService {
     }
 }
 
-/// System notice for local queue events (external AI takeover, rejected claim).
-/// This is not an AI request, so it bypasses the "allow AI notifications"
-/// toggle: losing a queued task must always be visible. A `tag` replaces an
-/// outstanding card in place, so a client that keeps retrying cannot spam the
-/// island.
-pub fn raise_system_note(
-    title: &str,
-    tone: AiTone,
-    body: &str,
-    tag: Option<&str>,
-) -> Result<(), String> {
-    let service = service()?;
-    let payload = AiPayload {
-        tone,
-        client: "TAPD Client".to_string(),
-        blocks: vec![AiBlock::Text {
-            text: body.trim().to_string(),
-        }],
-        actions: Vec::new(),
-        tag: tag.map(str::to_string),
-        resolution: None,
-    };
-    service.raise_ai(title.trim().to_string(), payload, true)?;
-    Ok(())
-}
-
 enum AiWait {
     Resolved(AiResolution),
     /// The user did not act before the wait deadline; the card stays visible.

@@ -19,7 +19,6 @@ import {
 import {
   agentActiveBugIds,
   type AgentInFlight,
-  type ExternalClaim,
 } from "../lib/agent";
 import { cacheApi, type Cached } from "../lib/cache";
 import { SkeletonRows } from "./Skeleton";
@@ -67,12 +66,9 @@ type Props = {
   onAgentCompose?: (bug: BugSummary) => void;
   /** In-flight agent tasks keyed by workspace + bug. */
   agentInFlight?: Map<string, AgentInFlight>;
-  /** Fresh external AI claims keyed by workspace + bug. */
-  externalClaims?: Map<string, ExternalClaim>;
   /** Jump to an already queued/running task instead of enqueuing again. */
   onOpenAgentTask?: (taskId: string) => void;
   onCancelTask?: (taskId: string) => Promise<void> | void;
-  onReleaseExternal?: (claim: ExternalClaim) => Promise<void> | void;
   /** Claim a bug owned by someone else, which unlocks its actions. */
   onClaim?: (bug: BugSummary) => Promise<void>;
   refreshToken: number;
@@ -91,10 +87,8 @@ function BugListViewImpl(props: Props) {
     onAgentFix,
     onAgentCompose,
     agentInFlight,
-    externalClaims,
     onOpenAgentTask,
     onCancelTask,
-    onReleaseExternal,
     onClaim,
     refreshToken,
   } = props;
@@ -190,10 +184,10 @@ function BugListViewImpl(props: Props) {
     setPageNo(1);
   }, [scope]);
 
-  /** Bugs in this project that an internal or external agent is working on. */
+  /** Bugs in this project that the local agent queue is working on. */
   const processingIds = useMemo(
-    () => agentActiveBugIds(workspace?.id, agentInFlight, externalClaims),
-    [workspace?.id, agentInFlight, externalClaims],
+    () => agentActiveBugIds(workspace?.id, agentInFlight),
+    [workspace?.id, agentInFlight],
   );
   /**
    * Content key for the 处理中 set. Agent state emits on every progress tick, so
@@ -738,7 +732,7 @@ function BugListViewImpl(props: Props) {
               scope === "processing"
                 ? activeFilterCount > 0
                   ? "试试清除部分筛选条件。"
-                  : "内部 Agent 或外部 AI 开始处理后会出现在这里。"
+                  : "内部 Agent 开始处理后会出现在这里。"
                 : activeFilterCount > 0
                   ? "试试清除部分筛选条件，或切换到「全部」。"
                   : "当前项目的缺陷列表为空，或视图权限不足。"
@@ -762,7 +756,6 @@ function BugListViewImpl(props: Props) {
             columns={columns}
             hideOwner={hideOwner}
             agentInFlight={agentInFlight}
-            externalClaims={externalClaims}
             claimingId={claimingId}
             sort={sort}
             statusFilter={statusFilter}
@@ -798,7 +791,6 @@ function BugListViewImpl(props: Props) {
             onAgentCompose={onAgentCompose}
             onOpenAgentTask={onOpenAgentTask}
             onCancelTask={onCancelTask}
-            onReleaseExternal={onReleaseExternal}
             onClaim={claim}
           />
         ) : null}

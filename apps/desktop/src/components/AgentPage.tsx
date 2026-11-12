@@ -3,6 +3,7 @@ import { Bot, Terminal } from "lucide-react";
 
 import {
   agentApi,
+  isAgentApprovalStatus,
   type AgentRuntimeDescriptor,
   type AgentTask,
   type AgentTaskStatus,
@@ -13,7 +14,7 @@ import {
   useAgentTasksStore,
 } from "../lib/agentStore";
 import { openTaskExportDir } from "../lib/desktop";
-import { AgentApproval } from "./AgentApproval";
+import { AgentApproval, type ManualMerge } from "./AgentApproval";
 import { AgentConfigPane } from "./AgentConfigPane";
 import { AgentHistory } from "./AgentHistory";
 import { AgentQueuePane, QUEUE_PANE_WIDTH } from "./AgentQueuePane";
@@ -23,9 +24,9 @@ import { AgentTaskHeader } from "./AgentTaskHeader";
 import { AgentTerminal } from "./AgentTerminal";
 import { Button } from "./ui";
 
-const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running"];
+const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running", "merging"];
 const isActiveStatus = (status: AgentTaskStatus) => ACTIVE_STATUSES.includes(status);
-const isApprovalStatus = (status: AgentTaskStatus) => status === "awaiting_approval";
+const isApprovalStatus = (status: AgentTaskStatus) => isAgentApprovalStatus(status);
 
 /** Tabs whose left column is a list that can collapse into the detail pane. */
 const LIST_TABS = ["run", "approval", "history"] as const;
@@ -51,7 +52,7 @@ const autoCollapseWidth = (tab: ListTab) =>
 type Props = {
   /** Task selected by the island capsule (`agent://focus`). */
   focusTaskId: string | null;
-  /** Incremented by the title-bar review badge to open the 待审核 tab. */
+  /** Incremented by the title-bar badge to open the 待处理 tab. */
   focusReviewToken?: number;
   /** Incremented by 设置 → 默认 Agent to open the 配置 tab. */
   focusConfigToken?: number;
@@ -64,8 +65,9 @@ type Props = {
 
 /**
  * Agent workspace: "运行" (live queue: running task with PTY on the right,
- * queued tasks below), "待审核" (complex changes waiting for a commit decision)
- * and "历史" (terminal execution records, logs and bug links).
+ * queued tasks below), "待处理" (changes waiting for a review decision and
+ * approved worktree branches waiting for the merge decision) and "历史"
+ * (terminal execution records, logs and bug links).
  */
 export function AgentPage({
   focusTaskId,
@@ -82,6 +84,12 @@ export function AgentPage({
   // cleared when the active task changes so the terminal follows the worker.
   const [explicitTaskId, setExplicitTaskId] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  /** Manual steps returned by 用原 Agent 合并 when the agent cannot merge. */
+  const [manualMerge, setManualMerge] = useState<ManualMerge | null>(null);
+  /** One-shot selection for the 待处理 tab (e.g. just entered AwaitingMerge). */
+  const [approvalFocusId, setApprovalFocusId] = useState<string | null>(null);
+  /** Worktree task approved with a pending commit; prompt merge when it lands. */
+  const [mergeWatchId, setMergeWatchId] = useState<string | null>(null);
   /** Runtime catalog, used to show which agent owns the selected task. */
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   /** List tab -> its left column is collapsed to give the detail its width. */
@@ -110,6 +118,29 @@ export function AgentPage({
   const loaded = tasksState !== null;
   const runTasks = tasks.filter((task) => isActiveStatus(task.status));
   const approvalTasks = tasks.filter((task) => isApprovalStatus(task.status));
+
+  // A worktree task approved with uncommitted changes first re-enters the
+  // queue to commit. As soon as that commit round lands in AwaitingMerge,
+  // bring the user straight to the merge confirmation instead of leaving them
+  // on the run tab.
+  useEffect(() => {
+    if (!mergeWatchId) return;
+    const watched = tasks.find((task) => task.id === mergeWatchId);
+    if (!watched) return;
+    if (watched.status === "awaiting_merge") {
+      setMergeWatchId(null);
+      setApprovalFocusId(watched.id);
+      setTab("approval");
+    } else if (watched.status === "failed") {
+      setMergeWatchId(null);
+      toast("error", watched.error ?? "提交轮失败，请查看执行记录");
+    } else if (
+      watched.status === "succeeded" ||
+      watched.status === "canceled"
+    ) {
+      setMergeWatchId(null);
+    }
+  }, [tasks, mergeWatchId, toast]);
 
   const refresh = useCallback(async () => {
     try {
@@ -245,23 +276,32 @@ export function AgentPage({
   /** Human-readable runtime name for a task; falls back to the stored id. */
   const runtimeName = (id?: string) =>
     runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "Agent";
-  /** The PTY is live only while the task is actually running. */
-  const live = selectedTask !== null && selectedTask.status === "running";
+  /** The PTY is live while the task is running or merging. */
+  const live =
+    selectedTask !== null &&
+    (selectedTask.status === "running" || selectedTask.status === "merging");
 
   const counts = useMemo(() => {
     const queued =
       tasksState?.queuedCount ??
       tasks.filter((task) => task.status === "queued").length;
     const active = tasks.filter(
-      (task) => task.status === "preparing" || task.status === "running",
+      (task) =>
+        task.status === "preparing" ||
+        task.status === "running" ||
+        task.status === "merging",
     ).length;
-    const awaiting =
+    // 审核与合并都算「待处理」；后端计数已包含两者各自的合计。
+    const awaitingApproval =
       tasksState?.awaitingApprovalCount ??
       tasks.filter((task) => task.status === "awaiting_approval").length;
+    const awaitingMerge =
+      tasksState?.awaitingMergeCount ??
+      tasks.filter((task) => task.status === "awaiting_merge").length;
     return {
       queued,
       active,
-      awaiting,
+      awaiting: awaitingApproval + awaitingMerge,
       paused: Boolean(tasksState?.queuePaused),
     };
   }, [tasksState, tasks]);
@@ -288,10 +328,19 @@ export function AgentPage({
     if (actionBusy) return;
     setActionBusy(`approve:${task.id}`);
     try {
-      await agentApi.approveReview(task.id);
-      // The approved task re-enters the queue; show it running again.
-      setExplicitTaskId(task.id);
-      setTab("run");
+      const { task: approved } = await agentApi.approveReview(task.id);
+      if (approved.status === "awaiting_merge") {
+        // Committed worktree task: the next step is the merge confirmation.
+        setManualMerge(null);
+        setApprovalFocusId(approved.id);
+        setTab("approval");
+      } else {
+        // A worktree task with uncommitted changes commits first; switch to
+        // the merge tab automatically when that round completes.
+        if (task.worktreeBranch) setMergeWatchId(task.id);
+        setExplicitTaskId(task.id);
+        setTab("run");
+      }
       await refresh();
     } catch (error) {
       toast("error", String(error));
@@ -317,6 +366,62 @@ export function AgentPage({
 
   const handleResumeQueue = () =>
     runAction("queue:resume", () => agentApi.resumeQueue());
+
+  const handleMergeStart = async (task: AgentTask) => {
+    if (actionBusy) return;
+    setActionBusy(`merge:${task.id}`);
+    try {
+      const result = await agentApi.mergeStart(task.id);
+      if (result.mode === "manual") {
+        // Keep the user on the merge card: the agent cannot merge, so show
+        // the steps it would have run instead of pretending work started.
+        setManualMerge({
+          taskId: task.id,
+          instructions:
+            result.instructions ?? result.task.merge?.instructions ?? "",
+        });
+        await refresh();
+        return;
+      }
+      // The merge agent owns the task now; follow it in the run tab.
+      setManualMerge(null);
+      setExplicitTaskId(task.id);
+      setTab("run");
+      await refresh();
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleMergeVerify = async (task: AgentTask) => {
+    if (actionBusy) return;
+    setActionBusy(`verify:${task.id}`);
+    try {
+      await agentApi.mergeVerify(task.id);
+      setManualMerge(null);
+      await refresh();
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleCancelMerge = async (task: AgentTask) => {
+    if (actionBusy) return;
+    setActionBusy(`merge-cancel:${task.id}`);
+    try {
+      await agentApi.cancel(task.id);
+      setManualMerge(null);
+      await refresh();
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setActionBusy(null);
+    }
+  };
 
   const canCancel = selectedTask !== null && ACTIVE_STATUSES.includes(selectedTask.status);
 
@@ -366,11 +471,17 @@ export function AgentPage({
           tasks={approvalTasks}
           busy={actionBusy}
           queuePaused={counts.paused}
+          manualMerge={manualMerge}
           onApprove={handleApprove}
           onStop={handleStopReview}
+          onMergeStart={handleMergeStart}
+          onMergeVerify={handleMergeVerify}
+          onCancelMerge={handleCancelMerge}
           onResumeQueue={handleResumeQueue}
           onOpenBug={onOpenBug}
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
+          focusTaskId={approvalFocusId}
+          onFocusConsumed={() => setApprovalFocusId(null)}
           areaRef={listAreaRef}
           listCollapsed={listCollapsed.approval}
         />
@@ -410,7 +521,7 @@ export function AgentPage({
                       className="mt-3"
                       onClick={() => setTab("approval")}
                     >
-                      有 {counts.awaiting} 个改动待审核
+                      有 {counts.awaiting} 个任务待处理
                     </Button>
                   ) : null}
                 </div>

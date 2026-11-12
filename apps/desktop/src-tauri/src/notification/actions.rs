@@ -10,12 +10,7 @@ use serde_json::{json, Value};
 use tapd_core::tapd::api::user_workspace_url;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{
-    bug_write,
-    commands::auth::session_request_json,
-    notification_db,
-    state::SharedState,
-};
+use crate::{bug_write, commands::auth::session_request_json, notification_db, state::SharedState};
 
 use super::{
     ai::ai_payload_from_arguments,
@@ -78,16 +73,8 @@ pub async fn command(
                 .get("expanded")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
-            // External AI cards are rendered by the frontend from the Agent
-            // summary, so the backend only needs their count to size the
-            // window (and to allow an expansion with no pending notifications).
-            let extra = payload
-                .get("extra")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            crate::island_window::set_extra_cards(extra);
             let (items, _quiet) = service.pending_payload();
-            let count = items.len() + extra;
+            let count = items.len();
             let expanded = expanded && count > 0;
             crate::island_window::apply_island(app, state, expanded, count, true);
             Ok(json!({ "ok": true, "expanded": expanded, "count": count }))

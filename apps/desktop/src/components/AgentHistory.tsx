@@ -352,7 +352,7 @@ export function AgentHistory({
                   size="sm"
                   variant="secondary"
                   icon={<FolderOpen size={12} />}
-                  disabled={!selected.mdPath}
+                  disabled={!selected.jsonPath}
                   onClick={() => openTaskExportDir(selected, toast)}
                 >
                   打开导出目录
@@ -361,7 +361,10 @@ export function AgentHistory({
                   size="sm"
                   variant="secondary"
                   icon={<Terminal size={12} />}
-                  disabled={!selected.repoPath || terminalBusy === selected.id}
+                  disabled={
+                    !(selected.worktreePath || selected.repoPath) ||
+                    terminalBusy === selected.id
+                  }
                   onClick={() => void openTerminal(selected)}
                 >
                   打开系统终端
@@ -404,7 +407,16 @@ export function AgentHistory({
                   value={selected.exitCode !== undefined ? String(selected.exitCode) : "—"}
                   mono
                 />
-                <Meta label="仓库" value={selected.repoPath || "未配置仓库"} mono wide />
+                <Meta
+                  label={selected.worktreePath ? "工作目录" : "仓库"}
+                  value={selected.worktreePath || selected.repoPath || "未配置仓库"}
+                  title={selected.worktreePath || selected.repoPath}
+                  mono
+                  wide
+                />
+                {selected.worktreeBranch ? (
+                  <Meta label="分支" value={selected.worktreeBranch} mono />
+                ) : null}
               </dl>
 
               {selected.error ? (
