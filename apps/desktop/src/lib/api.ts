@@ -233,7 +233,16 @@ export type BugDetail = BugSummary & {
   changes: ChangeHistory;
 };
 
-export type McpClientId = "opencode" | "zcode" | "claude" | "cursor" | "codex";
+export type McpClientId =
+  | "opencode"
+  | "zcode"
+  | "claude"
+  | "cursor"
+  | "codex"
+  | "omp"
+  | "kimi"
+  | "gemini"
+  | "qwen";
 
 /** Per-client one-click import status. */
 export type McpClientStatus = {

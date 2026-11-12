@@ -14,16 +14,20 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 
-import { agentApi } from "../lib/agent";
+import { agentApi, type AgentRuntimeDescriptor } from "../lib/agent";
+import { useAgentScan } from "../lib/agentScan";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
+import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { useTauriSubscription } from "../lib/tauriEvent";
-import { useCurrentAgent } from "../lib/useCurrentAgent";
+import { AgentPicker } from "./AgentPicker";
 import { Button } from "./ui";
 
 export type AgentComposePayload = {
   prompt: string;
   attachments: string[];
+  /** 本次任务指定运行时；为空时使用设置里的默认 Agent。 */
+  runtimeId?: string;
 };
 
 type Props = {
@@ -48,8 +52,11 @@ export function AgentComposeSheet(props: Props) {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
-  /** Runtime the queue will use; it comes from Agent 页 →「配置」. */
-  const currentAgent = useCurrentAgent(open);
+  /** 运行时目录。 */
+  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
+  /** 本次任务要用的运行时；默认跟随设置。 */
+  const [runtimeId, setRuntimeId] = useState("");
+  const { byRuntime, snapshot: scan } = useAgentScan();
 
   // Every opening starts clean; the bug id is part of the panel key upstream,
   // so switching targets also remounts this sheet.
@@ -59,8 +66,24 @@ export function AgentComposeSheet(props: Props) {
     setAttachments([]);
     setSaving(false);
     setDragging(false);
+    setRuntimeId("");
   }, [open]);
 
+  // 打开时读取目录与默认运行时，刷新「本次任务使用」的初值。
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void Promise.all([agentApi.configGet(), agentApi.runtimes()])
+      .then(([configResult, runtimeResult]) => {
+        if (cancelled) return;
+        setRuntimes(runtimeResult.runtimes.filter((runtime) => runtime.available));
+        setRuntimeId(configResult.config.runtimeId);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const addPaths = useCallback((paths: string[]) => {
     const next = paths.map((path) => path.trim()).filter(Boolean);
@@ -118,14 +141,19 @@ export function AgentComposeSheet(props: Props) {
 
   const submit = useCallback(() => {
     if (submitting || saving) return;
-    onSubmit({ prompt: prompt.trim(), attachments });
-  }, [attachments, onSubmit, prompt, saving, submitting]);
+    onSubmit({
+      prompt: prompt.trim(),
+      attachments,
+      runtimeId: runtimeId || undefined,
+    });
+  }, [attachments, onSubmit, prompt, runtimeId, saving, submitting]);
 
   // Escape closes, ⌘/Ctrl + Enter submits from anywhere in the sheet.
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) {
+      // Esc 先关掉打开的选择器菜单，再考虑关闭面板。
+      if (event.key === "Escape" && !submitting && !hasOpenDismissLayer()) {
         event.preventDefault();
         onClose();
         return;
@@ -255,14 +283,20 @@ export function AgentComposeSheet(props: Props) {
         </div>
 
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
-          <span
-            className="min-w-0 truncate text-ui-xs text-slate-400"
-            title="当前 Agent 来自 Agent 页「配置」；图片、视频只把本地路径交给它"
-          >
-            {currentAgent
-              ? `将使用 ${currentAgent.name} · ${currentAgent.binary}`
-              : "正在读取当前 Agent…"}
-          </span>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-ui-xs text-slate-400">本次任务使用</span>
+            <AgentPicker
+              compact
+              placement="up"
+              className="w-[220px]"
+              runtimes={runtimes}
+              value={runtimeId}
+              byRuntime={byRuntime}
+              hasScan={Boolean(scan)}
+              disabled={submitting || runtimes.length === 0}
+              onChange={setRuntimeId}
+            />
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
               取消

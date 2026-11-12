@@ -32,6 +32,8 @@ type Props = {
   focusTaskId: string | null;
   /** Incremented by the title-bar review badge to open the 待审核 tab. */
   focusReviewToken?: number;
+  /** Incremented by 设置 → 默认 Agent to open the 配置 tab. */
+  focusConfigToken?: number;
   /** Jump to the bug a task belongs to (selects workspace + opens drawer). */
   onOpenBug: (workspaceId: string, bugId: string) => void;
   toast: (kind: "ok" | "error", text: string) => void;
@@ -47,6 +49,7 @@ type Props = {
 export function AgentPage({
   focusTaskId,
   focusReviewToken = 0,
+  focusConfigToken = 0,
   onOpenBug,
   toast,
   onFocusConsumed,
@@ -145,6 +148,12 @@ export function AgentPage({
     setTab("approval");
     onFocusConsumed?.();
   }, [focusReviewToken, onFocusConsumed]);
+
+  // 设置页的「管理全部运行时」直接落到配置子页。
+  useEffect(() => {
+    if (focusConfigToken <= 0) return;
+    setTab("config");
+  }, [focusConfigToken]);
 
   // The queue is strictly FIFO: active work first, then the insertion order in
   // which the Rust worker will pick the rest.

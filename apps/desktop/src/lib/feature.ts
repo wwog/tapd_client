@@ -21,6 +21,7 @@ export type FeatureCommandName =
   | "agent_review_diff"
   | "agent_review_stop"
   | "agent_runtimes"
+  | "agent_scan"
   | "agent_save_resource"
   | "agent_summary"
   | "agent_task_cancel"

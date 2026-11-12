@@ -101,7 +101,7 @@ AI 客户端 → tapd-mcp (stdio) → POST /mcp/call → mcp.rs
 - 除显式 `workspace_id` 外，工具还接受 `root`（本地仓库目录）：按项目设置里的「本地文件夹」匹配项目，sidecar 默认注入自身 cwd 作为软提示。
 - 外部占用存在 `AgentCore.external`（内存 + `snapshots` 表持久化，15 分钟无心跳失效）；本地排队任务让位，运行中的任务拒绝外部，列表行只保留「查看任务」（本地任务）与图标化的「取消」。
 - 写操作可整体关闭；审计只记录工具、客户端、结果、耗时与项目 / 缺陷 / 目录，不保存评论正文和 Cookie。
-- 「接入 AI 客户端」把 sidecar 路径幂等写入 opencode / ZCode / Claude Code / Cursor / Codex 的用户级配置，并自动备份。
+- 「接入 AI 客户端」把 sidecar 路径幂等写入 opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code 的用户级配置，并自动备份。
 
 ### 3.6 AI / MCP 胶囊通知
 
@@ -142,10 +142,11 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 
 - Agent tab：子页为运行 / 待审核 / 历史；运行栏只显示排队 / 准备 / 运行 / 权限审核任务，待审核显示复杂改动，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。
 - Agent 改动审核：待审核卡片展示摘要、文件与风险，通过后重新入队提交，停止则按文件 `git stash` 并暂停队列；主窗口标题栏与顶部胶囊都会提示待审核数量。
-- Agent 运行时：所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定。任务 JSON 同步写入 `agent_tasks.payload`。
+- Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；设置页「默认 Agent」下拉框可查看版本、切换默认、手动刷新，「管理全部运行时」跳到 Agent 页「配置」。缺陷详情的提交面板可以只为本次任务指定运行时。
 - 终端输出：后端按显示帧节拍（16ms，单次上限 32KB）合批推送，**不能**用「输出静默 N ms 才发」——TUI 的 spinner 每 ~17ms 重绘一次，静默判断永远不触发，会把几秒的输出攒在内存里，表现为输入无回显；前端 xterm 走 WebGL 渲染器（DOM 渲染器跟不上 60fps 全屏重绘），无上下文时自动回退。
-- 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude `--continue`、codex `resume`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。
-- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 区只放 agent 参数，默认提示词模板自带 `{{project_rule}}` 段落；未配置目录时点 Agent 修复会先要求选择目录。
+- 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude/OMP/Kimi/Qwen `--continue`、codex `resume`、gemini `--resume latest`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。
+- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 参数集中在 Agent 页「配置」，默认提示词模板自带 `{{project_rule}}` 段落；未配置目录时点 Agent 修复会先要求选择目录。
 
 ### MCP 与运维
 

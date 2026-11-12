@@ -47,7 +47,8 @@ const COPY_BUTTON =
 
 /**
  * MCP tab: server status, policy/audit, and per-client one-click import
- * (opencode / Claude Code / Cursor / Codex) with manual project-level config.
+ * (opencode / Claude Code / Cursor / Codex / OMP / Kimi / Gemini / Qwen) with
+ * manual project-level config.
  */
 export function McpPage({ workspaces, onCopy, toast }: Props) {
   const [mcp, setMcp] = useState<McpConfigInfo | null>(null);
@@ -282,6 +283,46 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
       code: JSON.stringify({ mcpServers: { tapd: { command: commandPath } } }, null, 2),
       manual:
         "只想对某个项目生效时，把同样的 mcpServers.tapd 写入项目的 .cursor/mcp.json。",
+    },
+    {
+      id: "omp",
+      title: "OMP",
+      hint: "用户级：~/.omp/agent/mcp.json",
+      icon: <Plug size={15} className="text-slate-400" />,
+      code: JSON.stringify(
+        { mcpServers: { tapd: { type: "stdio", command: commandPath } } },
+        null,
+        2,
+      ),
+      manual:
+        "项目级可用 .omp/mcp.json；设置了 PI_CONFIG_DIR 时写入 <PI_CONFIG_DIR>/agent/mcp.json。",
+    },
+    {
+      id: "kimi",
+      title: "Kimi Code",
+      hint: "用户级：~/.kimi-code/mcp.json",
+      icon: <Sparkles size={15} className="text-slate-400" />,
+      code: JSON.stringify({ mcpServers: { tapd: { command: commandPath } } }, null, 2),
+      manual:
+        "项目级可用 .kimi-code/mcp.json；设置了 KIMI_CODE_HOME 时写入 <KIMI_CODE_HOME>/mcp.json。",
+    },
+    {
+      id: "gemini",
+      title: "Gemini CLI",
+      hint: "用户级：~/.gemini/settings.json",
+      icon: <Zap size={15} className="text-slate-400" />,
+      code: JSON.stringify({ mcpServers: { tapd: { command: commandPath } } }, null, 2),
+      manual:
+        "只想对某个项目生效时，把同样的 mcpServers.tapd 写入项目的 .gemini/settings.json。",
+    },
+    {
+      id: "qwen",
+      title: "Qwen Code",
+      hint: "用户级：~/.qwen/settings.json",
+      icon: <Terminal size={15} className="text-slate-400" />,
+      code: JSON.stringify({ mcpServers: { tapd: { command: commandPath } } }, null, 2),
+      manual:
+        "只想对某个项目生效时，把同样的 mcpServers.tapd 写入项目的 .qwen/settings.json。",
     },
     // Codex 一键导入暂时下线：不展示入口，也不提示；后端 client spec 与
     // Agent 启动时的幂等注入保持原样，恢复时取消注释即可。

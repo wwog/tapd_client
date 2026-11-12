@@ -5,10 +5,17 @@
 ## 新增
 
 - 缺陷列表的处理人筛选支持多选，选中的处理人按任一匹配。
+- 自动检测本机已安装的 Agent 与版本：启动时每天最多扫描一次，设置页可手动「刷新检测」，结果缓存在 `agent-scan.json`。
+- 运行时目录对齐 orca：新增 Grok、Hermes、Kiro、Qoder、OpenCode 2、Droid、Jcode、DeepSeek Harness 等 30+ 个 TUI Agent，并支持检测别名与 argv `--` 终止符。
+- 设置页新增「默认 Agent」下拉选择：显示版本与检测状态；「管理全部运行时」跳到 Agent 页「配置」。
+- 缺陷详情的「补充说明」面板新增「本次任务使用」选择器，可以只为当前缺陷换一个 Agent，不影响默认设置。
+- MCP 自动注入扩展到 OMP（`~/.omp/agent/mcp.json`）、Kimi Code（`~/.kimi-code/mcp.json`）、Gemini CLI（`~/.gemini/settings.json`）与 Qwen Code（`~/.qwen/settings.json`），启动这些 Agent 时会像 opencode / Claude / Codex 一样幂等写入 tapd MCP。
 
 ## 修改
 
-- Agent 管理从设置页移到 Agent 页的「配置」子视图：运行时选择、参数、生命周期、能力与互通限制平铺显示，不再弹窗。
+- Agent 页「配置」重做为单列页面：默认 Agent 改为带检测状态与版本的下拉选择器，运行时参数、生命周期、能力与互通限制按卡片排列，不再使用窄栏长列表。
+- OMP 启动时通过 `--extension` 临时挂载会话监控 hook：监听 `session_start` / `agent_start` / `turn_end` / `agent_end`，回合结束即自动结束任务（TUI 持续重绘时「静默完成」不会触发），并把 `sessionId` 写回任务记录。
+- 「打开系统终端」按运行时续接会话：OMP / Kimi / Qwen 用 `--continue`，Gemini 用 `--resume latest`；OMP 捕获到 session id 时优先 `--resume <id>` 精确恢复对应的会话。
 
 # TAPD Client v1.1.3
 

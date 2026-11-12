@@ -9,7 +9,7 @@ export type CurrentAgent = {
 };
 
 /**
- * Reads the default runtime from Agent 页 →「配置」.
+ * Reads the default runtime from 设置 →「默认 Agent」.
  *
  * `reloadKey` lets a dialog refresh the label when it opens; the setting itself
  * is persisted by the config pane, not here.

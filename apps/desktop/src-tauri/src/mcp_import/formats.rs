@@ -28,6 +28,16 @@ pub(super) fn cursor_entry(command_path: &str) -> Value {
     json!({ "command": command_path })
 }
 
+/// 标准 `mcpServers` stdio 条目（Gemini CLI / Qwen Code / Kimi Code）。
+pub(super) fn stdio_entry(command_path: &str) -> Value {
+    json!({ "command": command_path })
+}
+
+/// OMP 的 mcp.json 显式声明 transport。
+pub(super) fn omp_entry(command_path: &str) -> Value {
+    json!({ "type": "stdio", "command": command_path })
+}
+
 pub(super) fn opencode_default_root() -> Value {
     json!({ "$schema": CONFIG_SCHEMA })
 }

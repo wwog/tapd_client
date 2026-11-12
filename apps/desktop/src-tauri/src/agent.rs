@@ -52,6 +52,53 @@ pub const MAIN_LABEL: &str = "main";
 const CONFIG_FILE: &str = "agent.json";
 /// Pasted screenshots/videos; only their paths are handed to the agent.
 const RESOURCE_DIR: &str = "agent-resources";
+/// 回合结束标记目录（见 `prepare_completion_extension`）。
+const COMPLETION_EVENT_DIR: &str = "agent-events";
+/// 启动时临时挂载的运行时扩展目录。
+const EXTENSION_DIR: &str = "agent-extensions";
+
+/// OMP 会话监控 hook：在会话/回合事件上写一个 JSON 状态文件。
+///
+/// - `agent_end` 且没有后续工作 → 桌面结束本轮，解决 TUI 持续重绘时静默兜底
+///   永不触发的问题；
+/// - 任意事件带上 `sessionId` → 桌面持久化它，「打开系统终端」可以精确
+///   `--resume <id>`，而不是碰运气 `--continue`。
+///
+/// 通过 `--extension` 传入，只在当前任务生效，不写用户配置。
+const OMP_SESSION_HOOK: &str = r#"import { writeFileSync } from "node:fs";
+
+export default function tapdSessionMonitor(pi) {
+  const write = (phase, ctx, event) => {
+    const file = process.env.TAPD_AGENT_EVENT_FILE;
+    if (!file) return;
+    let sessionId = null;
+    try {
+      sessionId = ctx && ctx.sessionManager ? ctx.sessionManager.getSessionId() : null;
+    } catch {
+      sessionId = null;
+    }
+    try {
+      writeFileSync(
+        file,
+        JSON.stringify({
+          phase,
+          sessionId: sessionId || null,
+          willContinue: Boolean(event && event.willContinue),
+          awaitingAsyncWork: Boolean(event && event.awaitingAsyncWork),
+          at: Date.now(),
+        }),
+      );
+    } catch {
+      // Best effort: the desktop still has the idle timeout as a last resort.
+    }
+  };
+
+  pi.on("session_start", (event, ctx) => write("session_start", ctx, event));
+  pi.on("agent_start", (event, ctx) => write("agent_start", ctx, event));
+  pi.on("turn_end", (event, ctx) => write("turn_end", ctx, event));
+  pi.on("agent_end", (event, ctx) => write("agent_end", ctx, event));
+}
+"#;
 
 const DEFAULT_BINARY: &str = "opencode";
 const DEFAULT_RUNTIME_ID: &str = "opencode";
@@ -255,11 +302,18 @@ pub struct AgentRuntimeDescriptor {
     pub description: &'static str,
     /// Default executable, used as the placeholder in the settings form.
     pub binary: &'static str,
+    /// 同一 CLI 的其他可执行名，只用于安装检测（例如 `auggie` / `kimi-code`）。
+    pub aliases: Vec<&'static str>,
     /// 启动参数（不含提示词）。
     pub args: Vec<&'static str>,
     pub prompt_injection: PromptInjection,
     /// Flag 模式下承载提示词的参数名，例如 `-i` / `--prompt`。
     pub prompt_flag: Option<&'static str>,
+    /// Argv 模式下放在提示词前的参数终止符，避免 `--help` 之类被当成 CLI 选项。
+    pub argv_separator: Option<&'static str>,
+    /// 该运行时支持会话 hook：启动时挂一个只写状态文件的 hook，用于监控
+    /// 回合结束与捕获会话 id（目前仅 OMP）。
+    pub session_hook: bool,
     /// False for future runtimes that are listed but not executable yet.
     pub available: bool,
     pub capabilities: AgentRuntimeCapabilities,
@@ -350,6 +404,19 @@ fn tui_limitations(mcp_auto: bool) -> Vec<&'static str> {
     ]
 }
 
+/// 目录里只有少数运行时需要别名、子命令或参数终止符，其余用空扩展。
+#[derive(Default)]
+struct TuiRuntimeExtra {
+    /// 只用于安装检测的其他可执行名。
+    aliases: Vec<&'static str>,
+    /// 固定启动参数（子命令、信任跳过等）。
+    args: Vec<&'static str>,
+    /// Argv 注入时提示词前面的参数终止符。
+    argv_separator: Option<&'static str>,
+    /// 启动时挂 `agent_end` 上报扩展（见 `prepare_completion_extension`）。
+    session_hook: bool,
+}
+
 /// 一条通用 TUI 运行时描述。参数与注入方式参考 orca 的 TUI agent 适配表。
 fn tui_runtime(
     id: &'static str,
@@ -362,15 +429,46 @@ fn tui_runtime(
     prompt_flag: Option<&'static str>,
     mcp_auto: bool,
 ) -> AgentRuntimeDescriptor {
+    tui_runtime_with(
+        id,
+        name,
+        vendor,
+        description,
+        binary,
+        TuiRuntimeExtra {
+            args,
+            ..TuiRuntimeExtra::default()
+        },
+        prompt_injection,
+        prompt_flag,
+        mcp_auto,
+    )
+}
+
+/// 需要别名或参数终止符的运行时用这个入口。
+fn tui_runtime_with(
+    id: &'static str,
+    name: &'static str,
+    vendor: &'static str,
+    description: &'static str,
+    binary: &'static str,
+    extra: TuiRuntimeExtra,
+    prompt_injection: PromptInjection,
+    prompt_flag: Option<&'static str>,
+    mcp_auto: bool,
+) -> AgentRuntimeDescriptor {
     AgentRuntimeDescriptor {
         id,
         name,
         vendor,
         description,
         binary,
-        args,
+        aliases: extra.aliases,
+        args: extra.args,
         prompt_injection,
         prompt_flag,
+        argv_separator: extra.argv_separator,
+        session_hook: extra.session_hook,
         available: true,
         capabilities: tui_capabilities(),
         lifecycle: runtime_lifecycle(),
@@ -381,6 +479,9 @@ fn tui_runtime(
 
 /// Single source of truth for the runtime list. Adding an agent means adding one
 /// descriptor here, not branching the queue or the UI.
+///
+/// The list mirrors orca's TUI agent table, minus its private `claude-teams`
+/// wrapper (that one launches Orca's own CLI, not a standalone agent).
 pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
     vec![
         tui_runtime(
@@ -447,7 +548,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             Vec::new(),
             PromptInjection::Flag,
             Some("-i"),
-            false,
+            true,
         ),
         tui_runtime(
             "qwen",
@@ -458,7 +559,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             Vec::new(),
             PromptInjection::Stdin,
             None,
-            false,
+            true,
         ),
         tui_runtime(
             "copilot",
@@ -500,6 +601,411 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "Goose 交互式终端，启动后写入提示词。",
             "goose",
             Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "amp",
+            "Amp",
+            "Sourcegraph",
+            "Amp 终端 Agent，启动后写入提示词。",
+            "amp",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "antigravity",
+            "Antigravity",
+            "Google",
+            "Antigravity CLI（agy），启动后写入提示词。",
+            "agy",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "aug",
+            "Auggie",
+            "Augment Code",
+            "Augment 的 auggie CLI，启动后写入提示词。",
+            "auggie",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "autohand",
+            "Autohand Code",
+            "Autohand",
+            "Autohand Code 终端 Agent，启动后写入提示词。",
+            "autohand",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "codebuddy",
+            "CodeBuddy",
+            "Tencent",
+            "CodeBuddy CLI，提示词作为启动参数传入。",
+            "codebuddy",
+            TuiRuntimeExtra {
+                aliases: vec!["cbc"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "codebuff",
+            "Codebuff",
+            "Codebuff",
+            "Codebuff 终端 Agent，启动后写入提示词。",
+            "codebuff",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "command-code",
+            "Command Code",
+            "Command Code",
+            "Command Code 终端 Agent，跳过首次信任提示后写入提示词。",
+            "command-code",
+            TuiRuntimeExtra {
+                args: vec!["--trust"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "continue",
+            "Continue",
+            "Continue",
+            "Continue CLI（cn），启动后写入提示词。",
+            "cn",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "crush",
+            "Charm",
+            "Charm",
+            "Charm 的 crush 终端 Agent，启动后写入提示词。",
+            "crush",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "devin",
+            "Devin",
+            "Cognition",
+            "Devin CLI，提示词作为启动参数传入。",
+            "devin",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "droid",
+            "Droid",
+            "Factory",
+            "Factory Droid 终端 Agent，提示词作为启动参数传入。",
+            "droid",
+            Vec::new(),
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "freebuff",
+            "Freebuff",
+            "Freebuff",
+            "Freebuff 终端 Agent，启动后写入提示词。",
+            "freebuff",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "grok",
+            "Grok",
+            "xAI",
+            "Grok CLI，提示词作为启动参数传入。",
+            "grok",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "hermes",
+            "Hermes",
+            "Nous Research",
+            "Hermes 全屏 TUI，启动后写入提示词。",
+            "hermes",
+            TuiRuntimeExtra {
+                args: vec!["--tui"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "jcode",
+            "Jcode",
+            "Jcode",
+            "Jcode 终端 Agent，启动后写入提示词。",
+            "jcode",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "kilo",
+            "Kilocode",
+            "Kilocode",
+            "Kilocode 终端 Agent，启动后写入提示词。",
+            "kilo",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "kimi",
+            "Kimi",
+            "Moonshot",
+            "Kimi CLI，启动后写入提示词。",
+            "kimi",
+            TuiRuntimeExtra {
+                aliases: vec!["kimi-code"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            true,
+        ),
+        tui_runtime_with(
+            "kiro",
+            "Kiro",
+            "AWS",
+            "Kiro CLI 的 chat TUI，启动后写入提示词。",
+            "kiro-cli",
+            TuiRuntimeExtra {
+                args: vec!["chat", "--tui"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "mimo-code",
+            "MiMo Code",
+            "Xiaomi",
+            "MiMo Code 终端 Agent，启动后写入提示词。",
+            "mimo",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "mistral-vibe",
+            "Mistral Vibe",
+            "Mistral",
+            "Mistral Vibe CLI（vibe），启动后写入提示词。",
+            "vibe",
+            TuiRuntimeExtra {
+                aliases: vec!["mistral-vibe"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "muse",
+            "Muse",
+            "Meta",
+            "Muse CLI，跳过工作区信任后写入提示词。",
+            "muse",
+            TuiRuntimeExtra {
+                args: vec!["--trust-workspace"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "omp",
+            "OMP",
+            "OMP",
+            "OMP 终端 Agent，提示词作为启动参数传入。",
+            "omp",
+            TuiRuntimeExtra {
+                // OMP 的 TUI 会持续重绘，静默兜底无法触发；用会话 hook 收尾并记录 session id。
+                session_hook: true,
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            true,
+        ),
+        tui_runtime(
+            "openclaude",
+            "OpenClaude",
+            "OpenClaude",
+            "OpenClaude 终端 Agent，提示词作为启动参数传入。",
+            "openclaude",
+            Vec::new(),
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "openclaw",
+            "OpenClaw",
+            "OpenClaw",
+            "OpenClaw 终端 Agent，启动后写入提示词。",
+            "openclaw",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "opencode2",
+            "OpenCode 2",
+            "SST",
+            "OpenCode 2 独立 TUI，启动后写入提示词。",
+            "opencode2",
+            TuiRuntimeExtra {
+                args: vec!["--standalone"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "pi",
+            "Pi",
+            "Pi",
+            "Pi 终端 Agent，提示词作为启动参数传入。",
+            "pi",
+            Vec::new(),
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "prime-agent",
+            "Prime Agent",
+            "Prime Intellect",
+            "Prime Agent，提示词作为启动参数传入。",
+            "prime-agent",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "qoder",
+            "Qoder CLI",
+            "Alibaba",
+            "Qoder CLI，启动后写入提示词。",
+            "qodercli",
+            TuiRuntimeExtra {
+                aliases: vec!["qoder"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "qoder-cn",
+            "Qoder CLI China",
+            "Alibaba",
+            "Qoder 国内版 CLI，启动后写入提示词。",
+            "qoderclicn",
+            TuiRuntimeExtra {
+                aliases: vec!["qodercn"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "rovo",
+            "Rovo Dev",
+            "Atlassian",
+            "Rovo Dev（acli rovodev run），启动后写入提示词。",
+            "acli",
+            TuiRuntimeExtra {
+                args: vec!["rovodev", "run"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "trae",
+            "Trae",
+            "ByteDance",
+            "Trae CLI（traecli），提示词作为启动参数传入。",
+            "traecli",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "dsh",
+            "DeepSeek Harness",
+            "DeepSeek",
+            "DeepSeek Harness TUI，启动后写入提示词。",
+            "dsh-tui",
+            TuiRuntimeExtra {
+                aliases: vec!["dst"],
+                args: vec!["."],
+                ..TuiRuntimeExtra::default()
+            },
             PromptInjection::Stdin,
             None,
             false,
@@ -597,6 +1103,10 @@ pub struct AgentTask {
     /// cannot change how an existing/queued task runs.
     #[serde(default = "default_task_runtime")]
     pub runtime_id: String,
+    /// 会话 hook 捕获的运行时 session id（目前 OMP），用于「打开系统终端」
+    /// 精确续接对应会话；缺失时退回各 CLI 的「继续最近会话」参数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
     /// Post-work review (complex change) shown in the 待审核 tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<TaskApproval>,
@@ -728,6 +1238,9 @@ struct EnqueueRequest {
     /// Absolute paths to screenshots, videos or other resources.
     #[serde(default)]
     pub attachments: Option<Vec<String>>,
+    /// 本次任务指定运行时；为空或未知时回退到设置里的默认运行时。
+    #[serde(default)]
+    pub runtime_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -824,6 +1337,14 @@ struct TaskResizeRequest {
 #[serde(rename_all = "camelCase", default)]
 struct DetectRequest {
     path: Option<String>,
+}
+
+/// `agent_scan`: 安装检测缓存读取 / 强制刷新。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ScanRequest {
+    /// 设置页「刷新检测」；false 且缓存未过期时直接返回缓存。
+    force: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1235,6 +1756,11 @@ pub struct AgentCore {
     /// Last SQLite failure. Surfaced in the Agent header so a broken store is
     /// visible instead of looking like a queue that simply lost history.
     storage_error: Mutex<Option<String>>,
+    /// 本机安装检测结果（`agent-scan.json`）；每日自动检测一次。
+    scan: Mutex<Option<crate::agent_scan::AgentScanSnapshot>>,
+    /// Serializes scans so the startup scan and an opening settings card cannot
+    /// probe every CLI twice at the same time.
+    scan_lock: Mutex<()>,
     wake: tokio::sync::Notify,
 }
 
@@ -1255,6 +1781,8 @@ impl AgentCore {
             persist_lock: Mutex::new(()),
             paused_dirty: AtomicBool::new(false),
             storage_error: Mutex::new(None),
+            scan: Mutex::new(None),
+            scan_lock: Mutex::new(()),
             wake: tokio::sync::Notify::new(),
         }
     }
@@ -1271,6 +1799,10 @@ impl AgentCore {
             tracing::warn!(%error, "failed to persist agent config");
         }
         *self.config.lock().expect("agent config lock") = loaded;
+        // Cached install scan; stale or missing results are refreshed by the
+        // background daily scan started in `init`.
+        *self.scan.lock().expect("agent scan lock") =
+            crate::agent_scan::load(&self.state.paths.data_dir);
 
         // SQLite is the only task store. A failed read is a startup error, not
         // an empty queue: log it loudly so the user can find the cause instead
@@ -1308,7 +1840,8 @@ impl AgentCore {
         *self.external.lock().expect("external claims lock") = claims;
 
         // The agent console no longer records per-task logs; drop what earlier
-        // versions left behind instead of keeping unread files forever.
+        // versions left behind instead of keeping unread files forever. This
+        // also clears the per-task completion markers from the last run.
         remove_legacy_logs(&self.state.paths.data_dir);
         self.persist_tasks();
         if load_failed {
@@ -1322,6 +1855,69 @@ impl AgentCore {
 
     fn config_snapshot(&self) -> AgentConfig {
         self.config.lock().expect("agent config lock").clone()
+    }
+
+    fn scan_snapshot(&self) -> Option<crate::agent_scan::AgentScanSnapshot> {
+        self.scan.lock().expect("agent scan lock").clone()
+    }
+
+    /// 为支持会话 hook 的运行时准备启动参数、环境变量与状态文件路径。
+    ///
+    /// hook 文件写在应用数据目录，每次启动按内容覆盖；状态文件按任务隔离，
+    /// 启动前清掉同名的旧文件，避免上一轮残留导致任务被立刻判定完成。
+    fn prepare_session_hook(
+        &self,
+        task: &AgentTask,
+    ) -> Option<(Vec<String>, Vec<(String, String)>, PathBuf)> {
+        let extension_dir = self.state.paths.data_dir.join(EXTENSION_DIR);
+        std::fs::create_dir_all(&extension_dir).ok()?;
+        let script = extension_dir.join("omp-session-monitor.ts");
+        if std::fs::read_to_string(&script).ok().as_deref() != Some(OMP_SESSION_HOOK) {
+            std::fs::write(&script, OMP_SESSION_HOOK).ok()?;
+        }
+
+        let events_dir = self.state.paths.data_dir.join(COMPLETION_EVENT_DIR);
+        std::fs::create_dir_all(&events_dir).ok()?;
+        let state_file = events_dir.join(format!("{}.json", task.id));
+        let _ = std::fs::remove_file(&state_file);
+
+        Some((
+            vec![
+                "--extension".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            vec![(
+                "TAPD_AGENT_EVENT_FILE".to_string(),
+                state_file.to_string_lossy().into_owned(),
+            )],
+            state_file,
+        ))
+    }
+
+    /// 读取缓存，必要时重新扫描并广播结果。`force` 对应设置页的「刷新检测」。
+    fn ensure_scan(&self, force: bool) -> crate::agent_scan::AgentScanSnapshot {
+        if !force {
+            if let Some(snapshot) = self.scan_snapshot() {
+                if snapshot.fresh() {
+                    return snapshot;
+                }
+            }
+        }
+        // 启动扫描和前端首次读取可能同时到达，串行化后第二次直接复用结果。
+        let _guard = self.scan_lock.lock().expect("agent scan lock");
+        if !force {
+            if let Some(snapshot) = self.scan_snapshot() {
+                if snapshot.fresh() {
+                    return snapshot;
+                }
+            }
+        }
+        let snapshot = crate::agent_scan::scan(&self.state.paths.data_dir);
+        *self.scan.lock().expect("agent scan lock") = Some(snapshot.clone());
+        if let Err(error) = self.app.emit("agent://scan", &snapshot) {
+            tracing::warn!(%error, "failed to emit agent scan results");
+        }
+        snapshot
     }
 
     // -----------------------------------------------------------------------
@@ -1770,6 +2366,15 @@ impl AgentCore {
         let id = uuid::Uuid::new_v4().simple().to_string();
 
         let config = self.config_snapshot();
+        // 本次任务可以覆盖默认运行时；未知 id 仍回退到默认，避免坏配置卡住队列。
+        let runtime_id = request
+            .runtime_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .filter(|id| runtime_descriptor(id).is_some())
+            .map(str::to_string)
+            .unwrap_or_else(|| config.runtime_id.clone());
         let workspace_name = request
             .workspace_name
             .as_deref()
@@ -1821,7 +2426,8 @@ impl AgentCore {
             error: None,
             prompt: String::new(),
             source: source.to_string(),
-            runtime_id: config.runtime_id.clone(),
+            runtime_id,
+            agent_session_id: None,
             approval: None,
             commit_only: false,
             baseline_dirty: Vec::new(),
@@ -1919,6 +2525,14 @@ impl AgentCore {
     fn teardown_task(&self, task_id: &str) {
         self.stop_runtime(task_id);
         self.sizes.lock().expect("agent sizes lock").remove(task_id);
+        // 会话 hook 的状态文件只在任务运行期间有用；正常完成或取消后清掉。
+        let state_file = self
+            .state
+            .paths
+            .data_dir
+            .join(COMPLETION_EVENT_DIR)
+            .join(format!("{task_id}.json"));
+        let _ = std::fs::remove_file(state_file);
     }
 
     /// Kills every TUI this process started.
@@ -2258,12 +2872,17 @@ impl AgentCore {
         }
 
         let config = self.config_snapshot();
-        let binary = validate_binary(&binary_for_task(&config, &task.runtime_id))?;
-        let mut args: Vec<&str> = runtime_descriptor(&task.runtime_id)
-            .map(|descriptor| descriptor.args.clone())
+        let scan = self.scan_snapshot();
+        let binary = validate_binary(&binary_for_task(&config, &task.runtime_id, scan.as_ref()))?;
+        let mut args: Vec<String> = runtime_descriptor(&task.runtime_id)
+            .map(|descriptor| descriptor.args.iter().map(|arg| arg.to_string()).collect())
             .unwrap_or_default();
-        args.extend_from_slice(resume_args(&task.runtime_id));
-        launch_system_terminal(repo, &binary.to_string_lossy(), &args)
+        args.extend(resume_args(
+            &task.runtime_id,
+            task.agent_session_id.as_deref(),
+        ));
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        launch_system_terminal(repo, &binary.to_string_lossy(), &arg_refs)
     }
 
     fn resize(&self, task_id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -2434,7 +3053,7 @@ impl AgentCore {
         // 3. Resolve the agent binary. A queued task keeps the runtime it was
         //    enqueued with: `binary_path` only overrides the currently selected
         //    runtime, otherwise the descriptor's default command is used.
-        let task_binary = binary_for_task(&config, &task.runtime_id);
+        let task_binary = binary_for_task(&config, &task.runtime_id, self.scan_snapshot().as_ref());
         // Bare names are looked up on the user's shell PATH and replaced with
         // the absolute path, so every spawn (serve / TUI) works even when the
         // app was launched from Finder with a minimal PATH.
@@ -2546,8 +3165,28 @@ impl AgentCore {
         descriptor: &AgentRuntimeDescriptor,
     ) -> PtyOutcome {
         let mut args: Vec<String> = descriptor.args.iter().map(|arg| arg.to_string()).collect();
+        let mut envs: Vec<(String, String)> = Vec::new();
+        let mut session_hook_state: Option<PathBuf> = None;
+        if descriptor.session_hook {
+            match self.prepare_session_hook(task) {
+                Some((hook_args, hook_envs, state_file)) => {
+                    args.extend(hook_args);
+                    envs.extend(hook_envs);
+                    session_hook_state = Some(state_file);
+                }
+                None => tracing::warn!(
+                    task_id = %task.id,
+                    "failed to prepare the agent session hook"
+                ),
+            }
+        }
+
         let inject_prompt = match descriptor.prompt_injection {
             PromptInjection::Argv => {
+                // `--` 终止参数解析，避免提示词以 `--foo` / 子命令开头时被 CLI 吃掉。
+                if let Some(separator) = descriptor.argv_separator {
+                    args.push(separator.to_string());
+                }
                 args.push(task.prompt.clone());
                 false
             }
@@ -2601,10 +3240,11 @@ impl AgentCore {
                     &pty_task,
                     &pty_config,
                     args,
-                    Vec::new(),
+                    envs,
                     guard,
                     inject_prompt,
                     idle_complete,
+                    session_hook_state,
                 );
                 let _ = sender.send(outcome);
             })
@@ -2807,42 +3447,81 @@ fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     // Not the inherited `PATH`: a bundled macOS app started from Finder only
     // sees `/usr/bin:/bin:/usr/sbin:/sbin`, so `opencode` installed by Homebrew
     // or npm would never be found there.
-    for dir in std::env::split_paths(shell_path::user_path()) {
-        let candidate = dir.join(binary);
-        if shell_path::is_executable(&candidate) {
-            return Ok(candidate);
-        }
+    resolve_on_user_path(binary).ok_or_else(|| {
+        format!("在 PATH 中找不到 Agent 可执行文件：{binary}（可在 Agent 设置里填写绝对路径）")
+    })
+}
+
+/// 在用户 shell 的 `PATH` 中查找裸命令名。
+fn resolve_on_user_path(binary: &str) -> Option<PathBuf> {
+    std::env::split_paths(shell_path::user_path())
+        .map(|dir| dir.join(binary))
+        .find(|candidate| shell_path::is_executable(candidate))
+}
+
+/// 安装检测用：路径或裸命令名都可以，找不到返回 `None`。
+pub(crate) fn resolve_executable(binary: &str) -> Option<PathBuf> {
+    let binary = binary.trim();
+    if binary.is_empty() {
+        return None;
     }
-    Err(format!(
-        "在 PATH 中找不到 Agent 可执行文件：{binary}（可在 Agent 设置里填写绝对路径）"
-    ))
+    let path = Path::new(binary);
+    if path.is_absolute() || binary.contains('/') || binary.contains('\\') {
+        return (path.is_file() && shell_path::is_executable(path)).then(|| path.to_path_buf());
+    }
+    resolve_on_user_path(binary)
 }
 
 /// CLI arguments that pick the previous session back up in the task's working
-/// directory, used by the "打开系统终端" recovery path. Only runtimes whose
-/// resume entry point is known are listed; everything else opens a plain
-/// terminal in the repository.
-fn resume_args(runtime_id: &str) -> &'static [&'static str] {
+/// directory, used by the "打开系统终端" recovery path.
+///
+/// When a session hook captured the runtime's session id, resume that exact
+/// session; otherwise fall back to the CLI's "continue the most recent"
+/// command. Runtimes whose entry point is unknown open a plain terminal.
+fn resume_args(runtime_id: &str, session_id: Option<&str>) -> Vec<String> {
+    let session = session_id.map(str::trim).filter(|id| !id.is_empty());
+    let continue_recent = || vec!["--continue".to_string()];
     match runtime_id {
-        "opencode" => &["--continue"],
-        "claude" => &["--continue"],
-        "codex" => &["resume"],
-        _ => &[],
+        "omp" => match session {
+            Some(id) => vec!["--resume".to_string(), id.to_string()],
+            None => continue_recent(),
+        },
+        "kimi" => match session {
+            Some(id) => vec!["--session".to_string(), id.to_string()],
+            None => continue_recent(),
+        },
+        // 这几个 CLI 的 `--continue` 都是「继续当前目录最近一次会话」。
+        "opencode" | "claude" | "qwen" => continue_recent(),
+        "codex" => vec!["resume".to_string()],
+        // Gemini 没有 --continue，必须显式指定 latest。
+        "gemini" => vec!["--resume".to_string(), "latest".to_string()],
+        _ => Vec::new(),
     }
 }
 
 /// The command a task runs with: the configured path while it points at the
-/// task's runtime, otherwise that runtime's default binary. Queued tasks keep
-/// the runtime they were enqueued with, so switching settings later cannot
-/// change how an existing task (or its recovery terminal) starts.
-fn binary_for_task(config: &AgentConfig, runtime_id: &str) -> String {
+/// task's runtime, otherwise the detected path for that runtime, and finally
+/// its default binary. Queued tasks keep the runtime they were enqueued with,
+/// so switching settings later cannot change how an existing task (or its
+/// recovery terminal) starts.
+fn binary_for_task(
+    config: &AgentConfig,
+    runtime_id: &str,
+    scan: Option<&crate::agent_scan::AgentScanSnapshot>,
+) -> String {
     if config.runtime_id == runtime_id {
-        config.binary_path.clone()
-    } else {
-        runtime_descriptor(runtime_id)
-            .map(|descriptor| descriptor.binary.to_string())
-            .unwrap_or_else(|| config.binary_path.clone())
+        return config.binary_path.clone();
     }
+    if let Some(path) = scan
+        .and_then(|snapshot| snapshot.result_for(runtime_id))
+        .and_then(|result| result.resolved_path.as_deref())
+        .filter(|path| !path.is_empty())
+    {
+        return path.to_string();
+    }
+    runtime_descriptor(runtime_id)
+        .map(|descriptor| descriptor.binary.to_string())
+        .unwrap_or_else(|| config.binary_path.clone())
 }
 
 /// True when the configured agent is opencode (MCP injection only applies to it).
@@ -2856,60 +3535,17 @@ fn mcp_client_for_runtime(runtime_id: &str) -> Option<&'static str> {
         "claude" => Some(crate::mcp_import::CLIENT_CLAUDE),
         "cursor" => Some(crate::mcp_import::CLIENT_CURSOR),
         "codex" => Some(crate::mcp_import::CLIENT_CODEX),
+        "omp" => Some(crate::mcp_import::CLIENT_OMP),
+        "kimi" => Some(crate::mcp_import::CLIENT_KIMI),
+        "gemini" => Some(crate::mcp_import::CLIENT_GEMINI),
+        "qwen" => Some(crate::mcp_import::CLIENT_QWEN),
         _ => None,
     }
 }
 
 fn detect_version(binary: &str) -> Result<String, String> {
-    let binary = binary.trim();
-    if binary.is_empty() {
-        return Err("未配置 Agent 可执行文件路径".to_string());
-    }
-
-    // Resolve through the user's shell PATH instead of the minimal one a
-    // Finder-launched app inherits.
     let resolved = validate_binary(binary)?;
-    let mut child = std::process::Command::new(&resolved)
-        .env("PATH", shell_path::user_path())
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("无法启动 {binary}：{error}"))?;
-
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if started.elapsed() >= Duration::from_secs(5) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("{binary} --version 超时（5 秒）"));
-                }
-                std::thread::sleep(Duration::from_millis(80));
-            }
-            Err(error) => return Err(format!("等待 {binary} --version 失败：{error}")),
-        }
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| error.to_string())?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let version = if !stdout.is_empty() { stdout } else { stderr };
-
-    if version.is_empty() {
-        return Err(format!("{binary} --version 没有输出"));
-    }
-    Ok(version
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string())
+    crate::agent_scan::probe_version(&resolved)
 }
 
 /// Persists a pasted resource and returns its absolute path. The agent only
@@ -2987,6 +3623,23 @@ pub fn init(app: &AppHandle, state: SharedState) {
     core.load();
     app.manage(core.clone());
     core.spawn_worker();
+
+    // 每天最多一次的本机 Agent 检测：缓存过期才在后台扫，避免阻塞启动和
+    // 前端首帧。completed 后通过 `agent://scan` 推给设置页 / 配置页。
+    let scan_core = core.clone();
+    std::thread::Builder::new()
+        .name("agent-scan".to_string())
+        .spawn(move || {
+            let fresh = scan_core
+                .scan_snapshot()
+                .map(|snapshot| snapshot.fresh())
+                .unwrap_or(false);
+            if !fresh {
+                scan_core.ensure_scan(false);
+            }
+        })
+        .map_err(|error| tracing::warn!(%error, "failed to spawn agent scan thread"))
+        .ok();
 
     let listener_core = core.clone();
     app.listen("agent://enqueue", move |event| {
@@ -3427,6 +4080,14 @@ pub async fn command(
             let version = detect_version(&path)?;
             Ok(json!({ "version": version, "path": path }))
         }
+        "agent_scan" => {
+            let request: ScanRequest = serde_json::from_value(payload).unwrap_or_default();
+            let core = core.inner().clone();
+            let snapshot = tokio::task::spawn_blocking(move || core.ensure_scan(request.force))
+                .await
+                .map_err(|error| format!("Agent 检测失败：{error}"))?;
+            Ok(json!(snapshot))
+        }
         other => Err(format!("unknown agent command: {other}")),
     }
 }
@@ -3529,6 +4190,7 @@ mod tests {
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
             runtime_id: DEFAULT_RUNTIME_ID.to_string(),
+            agent_session_id: None,
             approval: None,
             commit_only: false,
             baseline_dirty: Vec::new(),
@@ -3645,6 +4307,113 @@ mod tests {
             assert!(runtime.capabilities.interactive_terminal);
             assert!(!runtime.capabilities.external_decision);
         }
+    }
+
+    #[test]
+    fn catalog_ids_are_unique_and_include_the_extended_agents() {
+        let catalog = runtime_catalog();
+        let mut ids = HashSet::new();
+        for runtime in &catalog {
+            assert!(
+                ids.insert(runtime.id),
+                "duplicate runtime id {}",
+                runtime.id
+            );
+            assert!(
+                !runtime.aliases.contains(&runtime.binary),
+                "{} lists its own binary as an alias",
+                runtime.id
+            );
+        }
+        for expected in [
+            "opencode2",
+            "grok",
+            "hermes",
+            "kiro",
+            "qoder",
+            "qoder-cn",
+            "rovo",
+            "droid",
+            "jcode",
+            "custom",
+        ] {
+            assert!(ids.contains(expected), "missing runtime {expected}");
+        }
+    }
+
+    #[test]
+    fn argv_separator_only_applies_to_argv_injection() {
+        for runtime in runtime_catalog() {
+            if runtime.argv_separator.is_some() {
+                assert_eq!(
+                    runtime.prompt_injection,
+                    PromptInjection::Argv,
+                    "{} declares a separator without argv injection",
+                    runtime.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_args_prefer_the_captured_session() {
+        assert_eq!(resume_args("opencode", None), vec!["--continue"]);
+        assert_eq!(resume_args("omp", None), vec!["--continue"]);
+        assert_eq!(
+            resume_args("omp", Some("01a1ce52-93ab-756a-8e95-233cb9643e75")),
+            vec!["--resume", "01a1ce52-93ab-756a-8e95-233cb9643e75"]
+        );
+        assert_eq!(resume_args("kimi", Some("abc123")), vec!["--session", "abc123"]);
+        assert_eq!(resume_args("kimi", None), vec!["--continue"]);
+        assert_eq!(resume_args("qwen", None), vec!["--continue"]);
+        assert_eq!(resume_args("gemini", None), vec!["--resume", "latest"]);
+        // 空白 id 不能变成空的 --resume 参数。
+        assert_eq!(resume_args("omp", Some("  ")), vec!["--continue"]);
+        assert!(resume_args("unknown", None).is_empty());
+    }
+
+    #[test]
+    fn only_omp_declares_the_session_hook() {
+        for runtime in runtime_catalog() {
+            assert_eq!(
+                runtime.session_hook,
+                runtime.id == "omp",
+                "{} session hook flag",
+                runtime.id
+            );
+        }
+    }
+
+    #[test]
+    fn per_task_runtime_prefers_the_detected_path() {
+        let mut config = AgentConfig::default();
+        let scan = crate::agent_scan::AgentScanSnapshot {
+            checked_at: String::new(),
+            results: vec![crate::agent_scan::AgentScanResult {
+                runtime_id: "claude".to_string(),
+                name: "Claude Code".to_string(),
+                binary: "claude".to_string(),
+                resolved_path: Some("/opt/bin/claude".to_string()),
+                version: None,
+                found: true,
+                error: None,
+            }],
+        };
+
+        // 非默认运行时：优先用检测到的绝对路径，避免依赖全局 binaryPath。
+        assert_eq!(
+            binary_for_task(&config, "claude", Some(&scan)),
+            "/opt/bin/claude"
+        );
+        // 没有检测结果时退回描述符里的默认命令。
+        assert_eq!(binary_for_task(&config, "claude", None), "claude");
+        // 默认运行时仍以用户配置的路径为准。
+        config.runtime_id = "claude".to_string();
+        config.binary_path = "/custom/claude".to_string();
+        assert_eq!(
+            binary_for_task(&config, "claude", Some(&scan)),
+            "/custom/claude"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod agent;
+mod agent_scan;
 mod bug_write;
 mod cache;
 mod commands;

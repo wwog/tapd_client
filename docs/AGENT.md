@@ -25,7 +25,7 @@
 
 ## 2. 配置
 
-Agent 页 →「配置」：
+Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理全部运行时」进入）：
 
 | 配置 | 说明 |
 | --- | --- |
@@ -49,7 +49,7 @@ Agent 页 →「配置」：
 
 1. 状态 `queued`，立即返回前端（提示“已加入队列”）。
 2. `preparing`：调用导出，生成 `bug.md` + `assets/` + `bug.json`。
-3. 校验仓库路径、运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex；失败只记录 warning）。
+3. 校验仓库路径、运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex / OMP / Kimi Code / Gemini CLI / Qwen Code；失败只记录 warning）。
 4. `running`：在仓库目录用 PTY 启动运行时。
    - `argv` / `flag` 模式：提示词随启动命令传入。
    - `stdin` 模式：等待 TUI 就绪后，用括号粘贴写入提示词并回车。
@@ -74,7 +74,7 @@ Agent 页 →「配置」：
 ## 5. 任务与历史
 
 - SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
-- 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」用 `opencode --continue` 等 resume 参数在系统终端里续接会话。
+- 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」用运行时声明的 resume 参数（`opencode`/`claude`/`omp`/`kimi`/`qwen` 用 `--continue`，`codex` 用 `resume`，`gemini` 用 `--resume latest`）在系统终端里续接会话；OMP 的会话 hook 会记录 `sessionId`，有值时改用 `--resume <id>` 精确恢复。
 - 状态：`queued | preparing | running | awaiting_approval | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
 - 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。
