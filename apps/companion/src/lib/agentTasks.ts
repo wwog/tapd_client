@@ -1,13 +1,35 @@
 /**
- * Shared `agent_tasks_list` feed: one 8s poll while at least one mounted
- * consumer exists (tab badge in App, Agent page, settings worktree lock).
+ * Shared `agent_tasks_list` feed: one poll while at least one mounted consumer
+ * exists (tab badge in App, Agent page, settings worktree lock). Interval is
+ * adaptive — 8s while the Agent tab is on screen, 30s elsewhere (the badge
+ * only needs the counts) — and pauses entirely while the page is hidden.
  * The poll doubles as a desktop-recovery probe on gated screens.
  */
 import { useEffect, useSyncExternalStore } from "react";
 
 import { api, asApiError, type AgentTask, type AgentTasksState } from "./api";
+import { isPageHidden, onPageVisibilityChange } from "./visibility";
 
-const POLL_MS = 8000;
+/** Agent 页 / 任务详情实时节奏。 */
+const POLL_ACTIVE_MS = 8000;
+/** 其他页面的角标节奏。 */
+const POLL_IDLE_MS = 30_000;
+
+export type AgentPollMode = "active" | "idle";
+
+let pollMode: AgentPollMode = "idle";
+
+/** App switches the cadence with the visible tab; an armed timer restarts. */
+export function setAgentPollMode(mode: AgentPollMode): void {
+  if (pollMode === mode) return;
+  pollMode = mode;
+  if (timer !== null && consumers > 0) {
+    stopPoll();
+    startPoll();
+  }
+}
+
+const pollInterval = (): number => (pollMode === "active" ? POLL_ACTIVE_MS : POLL_IDLE_MS);
 
 export type AgentTasksFeed = {
   state: AgentTasksState | null;
@@ -49,15 +71,27 @@ export async function refreshAgentTasks(): Promise<void> {
 }
 
 const startPoll = () => {
-  if (timer !== null) return;
+  if (timer !== null || isPageHidden() || consumers === 0) return;
   void refreshAgentTasks();
-  timer = window.setInterval(() => void refreshAgentTasks(), POLL_MS);
+  timer = window.setInterval(() => void refreshAgentTasks(), pollInterval());
 };
 
 const stopPoll = () => {
   if (timer === null) return;
   window.clearInterval(timer);
   timer = null;
+};
+
+let visibilityHooked = false;
+
+const hookVisibility = () => {
+  if (visibilityHooked) return;
+  visibilityHooked = true;
+  onPageVisibilityChange(() => {
+    // 隐藏暂停一切轮询；恢复可见立即补一轮再按当前节奏继续。
+    if (isPageHidden()) stopPoll();
+    else startPoll();
+  });
 };
 
 /** Synchronous lookup, e.g. resolving a task id against the live feed. */
@@ -72,6 +106,7 @@ export function useAgentTasks(): AgentTasksFeed & { refresh: () => void } {
 
   useEffect(() => {
     consumers += 1;
+    hookVisibility();
     startPoll();
     return () => {
       consumers -= 1;

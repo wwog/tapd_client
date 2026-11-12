@@ -140,6 +140,32 @@ export type ChangeHistory = {
   error: string | null;
 };
 
+/** A person who can be picked as owner / creator in a workspace. */
+export type WorkspaceMember = {
+  nick: string;
+  userId: string;
+  name: string;
+  avatar: string;
+};
+
+export type BugTransitionChoice = {
+  key: string;
+  label: string;
+};
+
+export type BugTransitionInfo = {
+  currentStatus: string;
+  currentLabel: string;
+  transitions: BugTransitionChoice[];
+};
+
+export type BugTransitionResult = {
+  from: string;
+  status: string;
+  label: string;
+  changed: boolean;
+};
+
 export type BugDetail = BugSummary & {
   descriptionHtml: string;
   descriptionText: string;
@@ -583,6 +609,48 @@ export const api = {
     const params = new URLSearchParams({ workspaceId, bugId });
     return request<BugDetail>(`/companion/api/bug?${params.toString()}`);
   },
+
+  /** Member directory for filter options (server caches 2h; client 30min). */
+  members: (workspaceId: string) => {
+    const params = new URLSearchParams({ workspaceId });
+    return request<WorkspaceMember[]>(`/companion/api/members?${params.toString()}`);
+  },
+
+  /* -- Bug write actions (user-initiated only) ---------------------------- */
+
+  bugAddComment: (workspaceId: string, bugId: string, comment: string) =>
+    request<void>("/companion/api/bug/comment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, bugId, comment }),
+    }),
+
+  bugUpdateField: (workspaceId: string, bugId: string, field: string, value: string, claim = false) =>
+    request<void>("/companion/api/bug/update-field", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, bugId, field, value, claim }),
+    }),
+
+  bugTransitions: (workspaceId: string, bugId: string) => {
+    const params = new URLSearchParams({ workspaceId, bugId });
+    return request<BugTransitionInfo>(`/companion/api/bug/transitions?${params.toString()}`);
+  },
+
+  bugTransition: (workspaceId: string, bugId: string, status: string) =>
+    request<BugTransitionResult>("/companion/api/bug/transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, bugId, status }),
+    }),
+
+  /** 认领：桌面侧取 me 改派处理人并接受。 */
+  bugClaim: (workspaceId: string, bugId: string) =>
+    request<void>("/companion/api/bug/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, bugId }),
+    }),
 
   notifications: () => request<CompanionNotification[]>("/companion/api/notifications"),
 

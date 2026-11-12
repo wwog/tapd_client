@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Bot, Bug, RefreshCw, Settings } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
-import { useAgentTasks } from "./lib/agentTasks";
+import { setAgentPollMode, useAgentTasks } from "./lib/agentTasks";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
@@ -108,6 +108,12 @@ export default function App() {
   const connection = useConnection();
   const session = getSession();
   const { state: agentState } = useAgentTasks();
+
+  // Agent feed cadence follows the visible tab: 8s on Agent pages (live
+  // phases), 30s elsewhere where only the badge consumes the feed.
+  useEffect(() => {
+    setAgentPollMode(tabOf(route) === "agent" ? "active" : "idle");
+  }, [route]);
 
   // Pairing is the only entry: without a session every route is #/pair,
   // with one #/pair is only kept when it carries a fresh pairing code.

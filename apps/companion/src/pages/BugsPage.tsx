@@ -8,9 +8,19 @@ import {
   type BugListPage,
   type BugSummary,
   type Workspace,
+  type WorkspaceMember,
 } from "../lib/api";
 import { refreshAgentTasks } from "../lib/agentTasks";
 import { bugTitle, ownerNames, relativeTime } from "../lib/format";
+import { loadMembers, subscribeMembers } from "../lib/members";
+import {
+  cached,
+  invalidateBug,
+  STATE_KEY,
+  subscribeCache,
+  TTL,
+  WORKSPACES_KEY,
+} from "../lib/reqCache";
 import { navigate } from "../lib/router";
 import { Badge, PriorityDot, STATUS_TONES } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
@@ -36,24 +46,40 @@ const visitedStamp = (iso: string | null): number => {
 
 /* -------------------------------------------------------------------------
    缺陷筛选：本地持久化（companion.bugFilter），确认后并入 BugQuery。
+   scope 对齐桌面「我的/全部」；sort 对齐桌面的服务端排序（created/modified 双向）。
    ------------------------------------------------------------------------- */
 
+type BugScope = "mine" | "all";
+
 type BugFilter = {
+  scope: BugScope;
   statuses: string[];
   owners: string[];
   priority: string | null;
   severity: string | null;
   creator: string | null;
+  sortName: "created" | "modified";
+  sortOrder: "asc" | "desc";
 };
 
 const FILTER_KEY = "companion.bugFilter";
 const EMPTY_FILTER: BugFilter = {
+  scope: "mine",
   statuses: [],
   owners: [],
   priority: null,
   severity: null,
   creator: null,
+  sortName: "created",
+  sortOrder: "desc",
 };
+
+const SORT_OPTIONS: ReadonlyArray<{ value: `${BugFilter["sortName"]}:${BugFilter["sortOrder"]}`; label: string }> = [
+  { value: "created:desc", label: "创建时间 ↓" },
+  { value: "created:asc", label: "创建时间 ↑" },
+  { value: "modified:desc", label: "更新时间 ↓" },
+  { value: "modified:asc", label: "更新时间 ↑" },
+];
 
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -64,11 +90,15 @@ function readFilter(): BugFilter {
     if (!raw) return EMPTY_FILTER;
     const parsed = JSON.parse(raw) as Partial<BugFilter>;
     return {
+      // 旧数据没有 scope/sort 字段：回落到桌面默认（我的 + 创建时间倒序）。
+      scope: parsed.scope === "all" ? "all" : "mine",
       statuses: asStringArray(parsed.statuses),
       owners: asStringArray(parsed.owners),
       priority: typeof parsed.priority === "string" ? parsed.priority : null,
       severity: typeof parsed.severity === "string" ? parsed.severity : null,
       creator: typeof parsed.creator === "string" ? parsed.creator : null,
+      sortName: parsed.sortName === "modified" ? "modified" : "created",
+      sortOrder: parsed.sortOrder === "asc" ? "asc" : "desc",
     };
   } catch {
     return EMPTY_FILTER;
@@ -120,6 +150,34 @@ function FilterGroup(props: { label: string; children: React.ReactNode }) {
   );
 }
 
+function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="范围"
+      className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
+    >
+      {(["mine", "all"] as const).map((value) => {
+        const active = props.value === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => props.onChange(value)}
+            className={`rounded-md px-2.5 py-1 text-ui-sm transition ${
+              active ? "bg-slate-100 text-slate-900" : "text-slate-500"
+            }`}
+          >
+            {value === "mine" ? "我的" : "全部"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ListSkeleton() {
   return (
     <div>
@@ -133,7 +191,7 @@ function ListSkeleton() {
   );
 }
 
-/** Bug list: keyword search, unresolved filter, filter sheet, agent actions. */
+/** Bug list: scope, keyword search, unresolved filter, filter sheet, sort, agent actions. */
 export function BugsPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -144,6 +202,13 @@ export function BugsPage() {
   const [result, setResult] = useState<BugListPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // 当前账号 nick（「我的」scope 用）；undefined = 还没读到桌面状态。
+  const [me, setMe] = useState<string | null | undefined>(undefined);
+
+  // 成员目录：筛选面板处理人/创建人选项的来源（每项目一份缓存）。
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [membersError, setMembersError] = useState<string | null>(null);
 
   // 行操作 sheet 与「用 Agent 修复」sheet 互斥；入队表单独立在 compose。
   const [actionBug, setActionBug] = useState<BugSummary | null>(null);
@@ -159,34 +224,75 @@ export function BugsPage() {
   const [filterDraft, setFilterDraft] = useState<BugFilter>(EMPTY_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // The list needs a workspace; default to the most recently visited one,
-  // mirroring the desktop's startup project.
+  // Project list + connection info, both through the shared request cache.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const context = await api.workspaces();
-        if (cancelled) return;
-        const sorted = [...context.workspaces].sort(
-          (a, b) => visitedStamp(b.lastVisitedTime) - visitedStamp(a.lastVisitedTime),
-        );
-        setWorkspaces(sorted);
-        setWorkspaceId(sorted[0]?.id ?? null);
-        if (sorted.length === 0) {
-          setError("没有可用项目");
-          setLoading(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(asApiError(err).message);
-          setLoading(false);
-        }
-      }
-    })();
+    const load = () => {
+      void cached(WORKSPACES_KEY, TTL.workspaces, api.workspaces)
+        .then((context) => {
+          if (cancelled) return;
+          const sorted = [...context.workspaces].sort(
+            (a, b) => visitedStamp(b.lastVisitedTime) - visitedStamp(a.lastVisitedTime),
+          );
+          setWorkspaces(sorted);
+          // 后台刷新不覆盖用户已选项目。
+          setWorkspaceId((current) => current ?? sorted[0]?.id ?? null);
+          setError(null);
+        })
+        .catch((err) => {
+          if (!cancelled) setError(asApiError(err).message);
+        });
+    };
+    load();
+    const off = subscribeCache(WORKSPACES_KEY, load);
     return () => {
       cancelled = true;
+      off();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void cached(STATE_KEY, TTL.state, api.state)
+        .then((state) => {
+          if (!cancelled) setMe(state.me);
+        })
+        .catch(() => {
+          // 掉线由全局 gate 呈现；me 未知时「我的」查询等待下一次刷新。
+        });
+    };
+    load();
+    const off = subscribeCache(STATE_KEY, load);
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
+
+  // 成员目录随项目加载一次；后台过期刷新通过订阅回填。
+  useEffect(() => {
+    if (!workspaceId) return;
+    let cancelled = false;
+    const load = () => {
+      void loadMembers(workspaceId)
+        .then((list) => {
+          if (!cancelled) {
+            setMembers(list);
+            setMembersError(null);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setMembersError(asApiError(err).message);
+        });
+    };
+    load();
+    const off = subscribeMembers(workspaceId, load);
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [workspaceId]);
 
   // Keyword search debounces so each keystroke does not hit the desktop.
   useEffect(() => {
@@ -194,48 +300,91 @@ export function BugsPage() {
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
+  const statuses = useMemo(
+    () => [...new Set([...(onlyOpen ? OPEN_STATUSES : []), ...filter.statuses])],
+    [onlyOpen, filter.statuses],
+  );
+
+  // 「我的」固定为当前账号（对齐桌面 owners=[me]）；「全部」用面板多选。
+  const owners = useMemo(
+    () => (filter.scope === "mine" ? (typeof me === "string" ? [me] : []) : filter.owners),
+    [filter.scope, filter.owners, me],
+  );
+
+  const queryKey = useMemo(
+    () =>
+      [
+        "bugs",
+        workspaceId ?? "",
+        filter.scope,
+        owners.join(","),
+        filter.creator ?? "",
+        statuses.join(","),
+        filter.priority ?? "",
+        filter.severity ?? "",
+        query,
+        filter.sortName,
+        filter.sortOrder,
+        page,
+      ].join("|"),
+    [workspaceId, filter.scope, filter.creator, filter.priority, filter.severity, filter.sortName, filter.sortOrder, owners, statuses, query, page],
+  );
+
   useEffect(() => {
     setPage(1);
   }, [workspaceId, query, onlyOpen, filter]);
 
+  // 列表读取走 reqCache：fresh(≤30s) 直接渲染不发请求，过期后台刷新先回旧值。
   useEffect(() => {
     if (!workspaceId) return;
+    // 「我的」等待桌面状态给出 me，避免空 owners 把全部缺陷误标成我的。
+    if (filter.scope === "mine" && me === undefined) return;
+    // 换查询键才清结果；后台刷新走订阅回调，不清屏。
+    setResult(null);
+    setError(null);
     let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const data = await api.bugs({
+    const load = (quiet: boolean) => {
+      if (!quiet) setLoading(true);
+      void cached(queryKey, TTL.bugs, () =>
+        api.bugs({
           workspaceId,
-          owners: filter.owners,
+          owners,
           creator: filter.creator,
-          statuses: [...new Set([...(onlyOpen ? OPEN_STATUSES : []), ...filter.statuses])],
+          statuses,
           priorities: filter.priority ? [filter.priority] : [],
           severities: filter.severity ? [filter.severity] : [],
           keyword: query || null,
           modifiedAfter: null,
           createdAfter: null,
-          sortName: "created",
-          order: "desc",
+          sortName: filter.sortName,
+          order: filter.sortOrder,
           page,
           perpage: PAGE_SIZE,
           confId: null,
+        }),
+      )
+        .then((data) => {
+          if (!cancelled) {
+            setResult(data);
+            setError(null);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(asApiError(err).message);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
         });
-        if (!cancelled) {
-          setResult(data);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError(asApiError(err).message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    };
+    load(false);
+    const off = subscribeCache(queryKey, () => load(true));
     return () => {
       cancelled = true;
+      off();
     };
-  }, [workspaceId, query, onlyOpen, page, filter]);
+  }, [queryKey]);
 
-  // 聚合选项：当前列表数据去重（状态并上常用集）。
+  // 聚合选项：状态并上常用集；处理人/创建人来自成员目录。
   const statusOptions = useMemo(() => {
     const keys = [
       ...COMMON_STATUSES,
@@ -245,9 +394,9 @@ export function BugsPage() {
     return uniqueValues(keys);
   }, [result]);
 
-  const ownerOptions = useMemo(
-    () => uniqueValues((result?.bugs ?? []).flatMap((bug) => ownerNames(bug.owner))),
-    [result],
+  const memberNicks = useMemo(
+    () => uniqueValues(members.map((member) => member.nick)),
+    [members],
   );
 
   const priorityOptions = useMemo(
@@ -260,11 +409,6 @@ export function BugsPage() {
     [result],
   );
 
-  const creatorOptions = useMemo(
-    () => uniqueValues((result?.bugs ?? []).map((bug) => bug.creator)),
-    [result],
-  );
-
   const statusLabel = (key: string): string => result?.statusMap?.[key] || key;
   const priorityLabel = (key: string): string =>
     result?.bugs.find((bug) => bug.priority === key)?.priorityLabel || key;
@@ -273,7 +417,7 @@ export function BugsPage() {
 
   const activeFilterCount =
     filter.statuses.length +
-    filter.owners.length +
+    (filter.scope === "all" ? filter.owners.length : 0) +
     (filter.priority ? 1 : 0) +
     (filter.severity ? 1 : 0) +
     (filter.creator ? 1 : 0);
@@ -329,6 +473,8 @@ export function BugsPage() {
         runtimeId: runtimeId || null,
         source: "companion",
       });
+      // 入队会在缺陷上留下 source 标记：失效该项目列表与详情缓存。
+      invalidateBug(workspaceId, composeBug.id);
       setComposeBug(null);
       // 立刻刷新角标，并跳到 Agent 页看队列里的新任务。
       await refreshAgentTasks();
@@ -378,7 +524,11 @@ export function BugsPage() {
             />
           </div>
         </div>
-        <div className="flex items-center gap-2 px-4 pb-2">
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
+          <ScopeSegmented
+            value={filter.scope}
+            onChange={(scope) => applyFilter({ ...filter, scope })}
+          />
           <button
             type="button"
             aria-pressed={onlyOpen}
@@ -402,6 +552,28 @@ export function BugsPage() {
             <SlidersHorizontal size={12} />
             筛选{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
           </button>
+          <select
+            aria-label="排序"
+            title="服务端排序：更新时间/创建时间，升/降序。"
+            value={`${filter.sortName}:${filter.sortOrder}`}
+            onChange={(event) => {
+              const [sortName, sortOrder] = event.target.value.split(":");
+              if (sortName === "created" || sortName === "modified") {
+                applyFilter({
+                  ...filter,
+                  sortName,
+                  sortOrder: sortOrder === "asc" ? "asc" : "desc",
+                });
+              }
+            }}
+            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
       </header>
 
@@ -524,19 +696,19 @@ export function BugsPage() {
             />
           ))}
         </FilterGroup>
-        {ownerOptions.length > 0 ? (
+        {filterDraft.scope === "all" && memberNicks.length > 0 ? (
           <FilterGroup
             label={`处理人${filterDraft.owners.length ? `（已选 ${filterDraft.owners.length}）` : ""}`}
           >
-            {ownerOptions.map((owner) => (
+            {memberNicks.map((nick) => (
               <FilterChip
-                key={owner}
-                label={owner}
-                selected={filterDraft.owners.includes(owner)}
+                key={nick}
+                label={nick}
+                selected={filterDraft.owners.includes(nick)}
                 onSelect={() =>
                   setFilterDraft((current) => ({
                     ...current,
-                    owners: toggleIn(current.owners, owner),
+                    owners: toggleIn(current.owners, nick),
                   }))
                 }
               />
@@ -577,29 +749,33 @@ export function BugsPage() {
             ))}
           </FilterGroup>
         ) : null}
-        {creatorOptions.length > 0 ? (
+        {memberNicks.length > 0 ? (
           <FilterGroup label="创建人">
-            {creatorOptions.map((creator) => (
+            {memberNicks.map((nick) => (
               <FilterChip
-                key={creator}
-                label={creator}
-                selected={filterDraft.creator === creator}
+                key={nick}
+                label={nick}
+                selected={filterDraft.creator === nick}
                 onSelect={() =>
                   setFilterDraft((current) => ({
                     ...current,
-                    creator: current.creator === creator ? null : creator,
+                    creator: current.creator === nick ? null : nick,
                   }))
                 }
               />
             ))}
           </FilterGroup>
         ) : null}
-        <p
-          className="mt-4 text-ui-xs text-slate-400"
-          title="选项来自当前列表数据；翻页或切换项目后会重新聚合。"
-        >
-          选项来自当前列表数据
-        </p>
+        {membersError ? (
+          <p className="mt-4 text-ui-xs text-slate-400">{membersError}</p>
+        ) : (
+          <p
+            className="mt-4 text-ui-xs text-slate-400"
+            title="处理人/创建人来自项目成员目录；「我的」范围固定为当前账号，处理人筛选仅在「全部」下生效。"
+          >
+            选项来自项目成员
+          </p>
+        )}
       </BottomSheet>
 
       {/* -- 行操作 sheet：查看详情 / 用 Agent 修复 ------------------------ */}

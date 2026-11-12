@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { api, useConnection, type CompanionNotification } from "../lib/api";
 import { navigate } from "../lib/router";
 import { getSession } from "../lib/session";
+import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
 
 const SEEN_KEY = "companion.notifSeenAt";
 const POLL_MS = 30_000;
@@ -70,6 +71,7 @@ export function NotificationBanner() {
   useEffect(() => {
     if (!getSession()) return;
     let stopped = false;
+    let timer: number | null = null;
     const tick = async () => {
       try {
         const items = await api.notifications();
@@ -102,11 +104,32 @@ export function NotificationBanner() {
         // Poll failures surface through the connection gate.
       }
     };
+    const start = () => {
+      if (timer === null && !stopped && !isPageHidden()) {
+        timer = window.setInterval(() => void tick(), POLL_MS);
+      }
+    };
+    const stop = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+    };
     void tick();
-    const timer = window.setInterval(() => void tick(), POLL_MS);
+    start();
+    // 隐藏暂停轮询；恢复可见时只在真的暂停过的情况下立即补一轮。
+    const offVisibility = onPageVisibilityChange(() => {
+      if (isPageHidden()) {
+        stop();
+      } else if (timer === null && !stopped) {
+        void tick();
+        start();
+      }
+    });
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      stop();
+      offVisibility();
     };
   }, []);
 
