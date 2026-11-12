@@ -32,6 +32,8 @@ export type FeatureCommandName =
   | "cache_bug_list"
   | "cache_workspace_context"
   | "cache_workspace_members"
+  | "coworker_list"
+  | "coworker_select"
   | "mcp_import_client"
   | "notification_ai_action"
   | "notification_ai_debug"

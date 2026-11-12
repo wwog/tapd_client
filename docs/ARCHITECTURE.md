@@ -170,12 +170,13 @@ apps/desktop/
     session.rs               隐藏 WebView、同步 / 异步桥、Cookie
     inject.js                抓包与 __TAPDCB__ 请求助手
     commands.rs              Tauri 命令（会话、缺陷、MCP 配置、媒体打开方式）
-    feature_router.rs        通知 / Agent / 缓存 / MCP 的统一命令路由
+    feature_router.rs        通知 / Agent / 同事 / 缓存 / MCP 的统一命令路由
     cache.rs                 SQLite 离线快照缓存
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
     agent.rs                 Agent 队列、运行时目录、PTY、任务持久化
+    coworker.rs              同事包注册表、技能 frontmatter 与提示词注入
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入

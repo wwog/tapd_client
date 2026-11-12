@@ -16,7 +16,7 @@ import { openTaskExportDir } from "../lib/desktop";
 import { AgentApproval } from "./AgentApproval";
 import { AgentConfigPane } from "./AgentConfigPane";
 import { AgentHistory } from "./AgentHistory";
-import { AgentQueuePane } from "./AgentQueuePane";
+import { AgentQueuePane, QUEUE_PANE_WIDTH } from "./AgentQueuePane";
 import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
 import { AgentTaskHeader } from "./AgentTaskHeader";
@@ -26,6 +26,14 @@ import { Button } from "./ui";
 const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running"];
 const isActiveStatus = (status: AgentTaskStatus) => ACTIVE_STATUSES.includes(status);
 const isApprovalStatus = (status: AgentTaskStatus) => status === "awaiting_approval";
+
+/** Gap between the queue column and the terminal section. */
+const QUEUE_PANE_GAP = 12;
+/** Terminal width that still fits the task header and a readable TUI. */
+const MIN_TERMINAL_WIDTH = 560;
+/** Below this the queue column collapses and leaves the width to the terminal. */
+const QUEUE_AUTO_COLLAPSE_WIDTH =
+  QUEUE_PANE_WIDTH + QUEUE_PANE_GAP + MIN_TERMINAL_WIDTH;
 
 type Props = {
   /** Task selected by the island capsule (`agent://focus`). */
@@ -60,6 +68,13 @@ export function AgentPage({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Runtime catalog, used to show which agent owns the selected task. */
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
+  /** Run tab: the queue column collapsed to give the terminal its width. */
+  const [queueCollapsed, setQueueCollapsed] = useState(false);
+  /** Width of the run split (queue + terminal), measured, not the viewport. */
+  const [runAreaWidth, setRunAreaWidth] = useState<number | null>(null);
+  const runAreaRef = useRef<HTMLDivElement | null>(null);
+  /** Latched narrow flag; widening never re-expands the queue by itself. */
+  const runNarrowRef = useRef(false);
 
   const appliedFocusRef = useRef<string | null>(null);
   const focusRefreshRef = useRef<string | null>(null);
@@ -98,6 +113,29 @@ export function AgentPage({
       cancelled = true;
     };
   }, []);
+
+  // Measure the run split rather than the viewport: the detail drawer and the
+  // project column both take width away from this page.
+  useEffect(() => {
+    if (tab !== "run") return;
+    const node = runAreaRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number" && width > 0) setRunAreaWidth(width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [tab]);
+
+  // Collapsing is one-way: crossing into a narrow run area hides the queue, but
+  // widening the window leaves the user's expanded choice alone.
+  useEffect(() => {
+    if (tab !== "run" || runAreaWidth === null) return;
+    const narrow = runAreaWidth < QUEUE_AUTO_COLLAPSE_WIDTH;
+    if (narrow && !runNarrowRef.current) setQueueCollapsed(true);
+    runNarrowRef.current = narrow;
+  }, [tab, runAreaWidth]);
 
   // Follow the island capsule's focus request. Terminal tasks belong to the
   // history tab; active/queued ones to the run tab.
@@ -254,6 +292,8 @@ export function AgentPage({
         onTabChange={setTab}
         counts={counts}
         actionBusy={actionBusy}
+        queueCollapsed={queueCollapsed}
+        onToggleQueue={() => setQueueCollapsed((current) => !current)}
         onResumeQueue={handleResumeQueue}
         onRefresh={() => void refresh()}
       />
@@ -293,16 +333,18 @@ export function AgentPage({
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
         />
       ) : (
-        <div className="flex min-h-0 flex-1 gap-3">
-          <AgentQueuePane
-            loaded={loaded}
-            runTasks={runTasks}
-            activeRunTasks={activeRunTasks}
-            queuedTasks={queuedTasks}
-            selectedId={selectedId}
-            queuePosition={queuePosition}
-            onSelect={setExplicitTaskId}
-          />
+        <div ref={runAreaRef} className="flex min-h-0 flex-1 gap-3">
+          {queueCollapsed ? null : (
+            <AgentQueuePane
+              loaded={loaded}
+              runTasks={runTasks}
+              activeRunTasks={activeRunTasks}
+              queuedTasks={queuedTasks}
+              selectedId={selectedId}
+              queuePosition={queuePosition}
+              onSelect={setExplicitTaskId}
+            />
+          )}
 
           {/* Right: PTY terminal for the running task, queue card otherwise. */}
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface ">

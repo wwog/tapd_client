@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
 import clsx from "clsx";
 
 import { Segmented } from "./Segmented";
@@ -18,16 +18,44 @@ type Props = {
   onTabChange: (tab: AgentTab) => void;
   counts: AgentCounts;
   actionBusy: string | null;
+  /** Run tab only: the execution queue column is currently out of layout. */
+  queueCollapsed: boolean;
+  onToggleQueue: () => void;
   onResumeQueue: () => void;
   onRefresh: () => void;
 };
 
 /** Tab switch, queue counters, pause/resume and manual refresh. */
 export function AgentRunToolbar(props: Props) {
-  const { tab, onTabChange, counts, actionBusy, onResumeQueue, onRefresh } = props;
+  const {
+    tab,
+    onTabChange,
+    counts,
+    actionBusy,
+    queueCollapsed,
+    onToggleQueue,
+    onResumeQueue,
+    onRefresh,
+  } = props;
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
+      {tab === "run" ? (
+        <button
+          type="button"
+          aria-label={queueCollapsed ? "展开执行队列" : "收起执行队列"}
+          title={
+            queueCollapsed
+              ? "展开执行队列（空间不足时会自动收起）"
+              : "收起执行队列，把宽度留给终端"
+          }
+          onClick={onToggleQueue}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+        >
+          {queueCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+        </button>
+      ) : null}
+
       <Segmented
         value={tab}
         onChange={onTabChange}

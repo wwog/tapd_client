@@ -162,7 +162,8 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 按缺陷 id 返回一份可以直接交给 AI 的修复提示词，结构对齐桌面端 Agent 收到的那份：
 
 - `kind`（默认 `mcp`）：`mcp` 用内置模板，去掉只属于桌面 Agent 的 `tapd_request_review` 审核队列，并内置「先 `tapd_claim_bug`、定期续约、完成后 `tapd_release_bug`」的协作约定；`agent` 返回「Agent 页 → 配置」里的全局模板原文。
-- `template`：完全自定义模板，优先级最高；支持 `{{title}}`、`{{md_path}}`、`{{repo_path}}`、`{{workspace_name}}`、`{{bug_id}}`、`{{severity}}`、`{{priority}}`、`{{project_rule}}`、`{{user_prompt}}`、`{{attachments}}`、`{{task_id}}`。
+- `template`：完全自定义模板，优先级最高；支持 `{{title}}`、`{{md_path}}`、`{{repo_path}}`、`{{workspace_name}}`、`{{bug_id}}`、`{{severity}}`、`{{priority}}`、`{{project_rule}}`、`{{coworker}}`、`{{user_prompt}}`、`{{attachments}}`、`{{task_id}}`。
+- 同事：复用「同事」页启用的同事，角色与技能包 `SKILL.md` 绝对路径会随提示词注入；模板有 `{{coworker}}` 时替换到该位置，没有时整段追加。
 - `instructions`：补充说明，渲染到 `{{user_prompt}}`；模板没有该占位符时自动追加为「用户补充说明」。
 - MD 包：默认复用已有导出，没有才导出；`refresh: true` 强制重新导出。导出失败不会让工具失败，`mdPath` 为 `null`、原因写进 `warnings`，提示词里会提示改用 `tapd_export_bug_md`。
 - `repo_path` 取该项目「本地文件夹」，否则用调用方 `root`，都没有时写「（当前工作目录）」。

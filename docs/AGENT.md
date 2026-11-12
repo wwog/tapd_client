@@ -31,7 +31,7 @@ Agent 页 →「配置」：
 | --- | --- |
 | 运行时 | 从目录中选择一个作为默认运行时 |
 | 可执行路径 | 默认取该运行时的命令；可填绝对路径 |
-| prompt 模板 | 支持变量 `{{task_id}}`、`{{title}}`、`{{md_path}}`、`{{repo_path}}`、`{{workspace_name}}`、`{{bug_id}}`、`{{severity}}`、`{{priority}}`、`{{project_rule}}` |
+| prompt 模板 | 支持变量 `{{task_id}}`、`{{title}}`、`{{md_path}}`、`{{repo_path}}`、`{{workspace_name}}`、`{{bug_id}}`、`{{severity}}`、`{{priority}}`、`{{project_rule}}`、`{{coworker}}` |
 | TUI 就绪静默 | 有输出后静默多久认为 TUI 就绪，默认 900ms |
 | 就绪超时 | 最长等待，默认 15s；超时会强制注入并记录 warning |
 | 静默完成 | 通用 TUI 未调用 `agent_task_report` 时，输出静默多久视为本轮结束，默认 180s；0 表示关闭 |
@@ -39,6 +39,14 @@ Agent 页 →「配置」：
 配置文件：`~/Library/Application Support/com.tapdclient.desktop/agent.json`。
 
 每个 TAPD 项目在项目卡片里配置本地仓库路径与项目规则；缺失仓库时任务会失败并提示去配置。
+
+### 同事与技能注入
+
+「同事」页勾选的内置同事可叠加，选择顺序会写进 `agent.json` 的 `coworkerIds`。每个任务
+组装提示词时，`{{coworker}}` 会展开为一段协作说明：角色、简述和每个技能包的
+`SKILL.md` 绝对路径，要求 Agent 开工前先读取。模板没有 `{{coworker}}` 插槽时整段追加；
+没有启用同事时整段为空，不会留下空标题。同事包格式与投稿规范见
+[`assets/coworker/README.md`](../assets/coworker/README.md)。
 
 ## 3. 触发方式
 

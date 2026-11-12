@@ -1,15 +1,16 @@
 import clsx from "clsx";
 import type { ReactNode } from "react";
-import { Bot, Bug, FolderGit2, Plug, Settings as SettingsIcon } from "lucide-react";
+import { Bot, Bug, FolderGit2, Plug, Settings as SettingsIcon, Users } from "lucide-react";
 
 import { AccountChip } from "./AccountChip";
 
-export type View = "bugs" | "projects" | "agent" | "mcp" | "settings" | "account";
+export type View = "bugs" | "projects" | "agent" | "coworker" | "mcp" | "settings" | "account";
 
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
   projects: "rail-folder-bounce",
   agent: "rail-bot-shake",
+  coworker: "rail-users-wave",
   mcp: "rail-plug-rise",
   settings: "rail-settings-spin",
   account: "rail-avatar-pop",
@@ -19,6 +20,7 @@ const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
   { id: "bugs", label: "缺陷", icon: <Bug size={15} /> },
   { id: "projects", label: "项目", icon: <FolderGit2 size={15} /> },
   { id: "agent", label: "Agent", icon: <Bot size={15} /> },
+  { id: "coworker", label: "同事", icon: <Users size={15} /> },
   { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
   { id: "settings", label: "设置", icon: <SettingsIcon size={15} /> },
 ];

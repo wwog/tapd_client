@@ -61,7 +61,7 @@ pub(super) const TAPD_EXPORT_BUG_MD: ToolSpec = ToolSpec {
 
 pub(super) const TAPD_GET_BUG_PROMPT: ToolSpec = ToolSpec {
     name: r#"tapd_get_bug_prompt"#,
-    description: r#"按缺陷 id 生成一份可直接使用的修复提示词：复用客户端 Agent 的 {{变量}} 渲染，包含项目规则、本地仓库与已导出的 bug.md 路径。默认使用面向外部 AI 的 MCP 模板；kind=agent 返回「设置 → Agent 修复」中的全局模板原文；也可用 template 传自定义模板。返回 prompt 以及 mdPath / repoPath 等结构化字段。"#,
+    description: r#"按缺陷 id 生成一份可直接使用的修复提示词：复用客户端 Agent 的 {{变量}} 渲染，包含项目规则、已启用同事、本地仓库与已导出的 bug.md 路径。默认使用面向外部 AI 的 MCP 模板；kind=agent 返回客户端 Agent 页「配置」中的全局模板原文；也可用 template 传自定义模板。返回 prompt 以及 mdPath / repoPath 等结构化字段。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -84,11 +84,11 @@ pub(super) const TAPD_GET_BUG_PROMPT: ToolSpec = ToolSpec {
         "agent"
       ],
       "default": "mcp",
-      "description": "mcp：内置模板（无审核队列，适合外部客户端）；agent：客户端「设置 → Agent 修复」里的全局模板原文"
+      "description": "mcp：内置模板（无审核队列，适合外部客户端）；agent：客户端 Agent 页「配置」里的全局模板原文"
     },
     "template": {
       "type": "string",
-      "description": "自定义模板，优先级最高。支持 {{title}} {{md_path}} {{repo_path}} {{workspace_name}} {{bug_id}} {{severity}} {{priority}} {{project_rule}} {{user_prompt}} {{attachments}} {{task_id}}"
+      "description": "自定义模板，优先级最高。支持 {{title}} {{md_path}} {{repo_path}} {{workspace_name}} {{bug_id}} {{severity}} {{priority}} {{project_rule}} {{coworker}} {{user_prompt}} {{attachments}} {{task_id}}"
     },
     "instructions": {
       "type": "string",

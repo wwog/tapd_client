@@ -20,6 +20,9 @@ type Props = {
   onSelect: (taskId: string) => void;
 };
 
+/** Fixed column width; the run split derives its auto-collapse threshold from it. */
+export const QUEUE_PANE_WIDTH = 300;
+
 /** Left column of the run tab: active work first, then the FIFO queue. */
 export function AgentQueuePane(props: Props) {
   const {
@@ -33,7 +36,10 @@ export function AgentQueuePane(props: Props) {
   } = props;
 
   return (
-    <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface ">
+    <aside
+      className="flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface "
+      style={{ width: QUEUE_PANE_WIDTH }}
+    >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
         <ListOrdered size={13} className="text-slate-400" />
         <span className="text-ui-sm text-slate-500">执行队列</span>

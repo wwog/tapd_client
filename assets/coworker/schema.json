@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wwog/tapd_client/assets/coworker/schema.json",
+  "title": "TAPD Client Coworker",
+  "description": "One coworker package. The containing folder name is the coworker id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "role", "description", "avatar", "skills"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 24
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12,
+      "description": "Short role label shown on the card and in the injected prompt, e.g. 产品 / 程序员 / 设计 / 测试."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "Optional one-line signature."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "How this coworker works; injected into the prompt together with the skills."
+    },
+    "avatar": {
+      "type": "string",
+      "pattern": "^(?![\\\\/])(?!.*\\.\\.).+",
+      "description": "Image path relative to this folder; PNG/JPG/WebP/GIF/SVG, at most 512KB."
+    },
+    "accent": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "description": "Optional card accent colour."
+    },
+    "skills": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "description": "Skill package folders relative to this folder. Each folder contains SKILL.md with YAML frontmatter.",
+      "items": {
+        "type": "string",
+        "pattern": "^(?![\\\\/])(?!.*\\.\\.).+"
+      }
+    }
+  }
+}

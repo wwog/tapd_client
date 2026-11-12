@@ -23,6 +23,8 @@ export type AgentConfig = {
   repoMappings: Record<string, string>;
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
+  /** Enabled coworker ids (selection order); managed from the 同事 page. */
+  coworkerIds: string[];
   readyQuietMs: number;
   readyTimeoutMs: number;
   /** TUI 运行时输出静默多久视为本轮结束；0 表示只依赖 MCP 回报。 */

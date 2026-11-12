@@ -32,7 +32,7 @@ const DEFAULT_RESULTS: u32 = 20;
 /// Prompt used by `tapd_get_bug_prompt` for external MCP clients. It mirrors
 /// `agent::DEFAULT_PROMPT_TEMPLATE` but drops the review-queue flow, which only
 /// exists for tasks owned by the desktop app.
-const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n协作约定：开始前先调用 tapd_claim_bug 登记占用（model 传你使用的模型名），处理期间每 15 分钟续约一次，完成后调用 tapd_release_bug；如果返回 conflict，说明桌面 Agent 正在处理，请停止并告知用户。\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 改动复杂（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）时，先向用户说明方案与风险、等待确认，不要直接扩大改动范围。\n4. 提交成功后（git commit，不要 push），再用 tapd_add_bug_comment 追加评论、tapd_update_bug_status 更新状态；评论说明原因、解决方案与影响范围。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n{{coworker}}\n\n协作约定：开始前先调用 tapd_claim_bug 登记占用（model 传你使用的模型名），处理期间每 15 分钟续约一次，完成后调用 tapd_release_bug；如果返回 conflict，说明桌面 Agent 正在处理，请停止并告知用户。\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 改动复杂（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）时，先向用户说明方案与风险、等待确认，不要直接扩大改动范围。\n4. 提交成功后（git commit，不要 push），再用 tapd_add_bug_comment 追加评论、tapd_update_bug_status 更新状态；评论说明原因、解决方案与影响范围。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
 
 pub(super) async fn whoami(
     app: &AppHandle,
@@ -264,6 +264,7 @@ pub(super) async fn get_bug_prompt(
         project_rule,
         user_prompt: string_arg(arguments, "instructions").unwrap_or_default(),
         attachments: Vec::new(),
+        coworker: crate::coworker::prompt_section(app, &agent_config.coworker_ids),
     };
     let prompt = agent::render_prompt(&template, &vars);
 
@@ -409,12 +410,14 @@ mod tests {
             project_rule: "先跑 pnpm test".to_string(),
             user_prompt: String::new(),
             attachments: Vec::new(),
+            coworker: "协作同事：\n- 程序员｜Author：一起写".to_string(),
         };
         let prompt = render_prompt(MCP_PROMPT_TEMPLATE, &vars);
         assert!(prompt.contains("按钮错位"));
         assert!(prompt.contains("/exports/bug.md"));
         assert!(prompt.contains("/repo"));
         assert!(prompt.contains("先跑 pnpm test"));
+        assert!(prompt.contains("程序员｜Author"));
         assert!(!prompt.contains("{{"));
         // External clients cannot pause the desktop review queue.
         assert!(!prompt.contains("tapd_request_review"));

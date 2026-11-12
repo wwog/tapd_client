@@ -2,6 +2,7 @@ mod agent;
 mod bug_write;
 mod cache;
 mod commands;
+mod coworker;
 mod diagnostics;
 mod export;
 mod feature_router;

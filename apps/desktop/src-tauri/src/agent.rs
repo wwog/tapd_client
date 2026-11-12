@@ -61,7 +61,7 @@ const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
 /// Cap the diff preview so a huge refactor cannot freeze the review panel.
 const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
 
-pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 TAPD MCP 中名称包含 tapd_request_review 的工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 本轮结束时必须调用 TAPD MCP 中名称包含 agent_task_report 的工具回报结果：taskId 使用 {{task_id}}；成功提交并回写 TAPD 后 status=completed，无法完成时 status=failed 并在 message 说明原因。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 TAPD MCP 中名称包含 tapd_request_review 的工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 本轮结束时必须调用 TAPD MCP 中名称包含 agent_task_report 的工具回报结果：taskId 使用 {{task_id}}；成功提交并回写 TAPD 后 status=completed，无法完成时 status=failed 并在 message 说明原因。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
 
 /// Follow-up prompt injected after the user approves a paused review. The
 /// working tree still holds the reviewed changes, so the agent only commits
@@ -73,6 +73,8 @@ pub const DEFAULT_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请继续完
 const LEGACY_PROMPT_TEMPLATES: &[&str] = &[
     "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改。\n3.修复时请遵循团队代码规范，确保代码可读、可维护。\n4. 修复完成后，提交代码并在 TAPD 中更新缺陷状态并简要评论原由以及解决方案和修复影响范围。",
     "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改。\n3. 修改后运行相关测试或构建。\n4. 不要自行 git commit / push，完成后说明改了哪些文件。",
+    // 引入同事技能之前的默认模板；未改动过的安装自动升级。
+    "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 TAPD MCP 中名称包含 tapd_request_review 的工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 本轮结束时必须调用 TAPD MCP 中名称包含 agent_task_report 的工具回报结果：taskId 使用 {{task_id}}；成功提交并回写 TAPD 后 status=completed，无法完成时 status=failed 并在 message 说明原因。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。",
     // 引入 agent_task_report 之前的默认模板；未改动过的安装自动升级。
     "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情文件：{{md_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n项目规则：\n{{project_rule}}\n\n要求：\n1. 先完整阅读 bug.md 和 assets/ 下的截图、视频，定位根因，做最小必要修改，并遵循团队代码规范。\n2. 修改后运行相关测试或构建。\n3. 判断改动复杂度：\n   - 简单缺陷（单文件或少量文件、局部改动，不涉及公共接口/数据模型/依赖/构建配置，测试通过）：直接 git commit（不要 push），提交成功后再在 TAPD 中评论并更新状态。\n   - 复杂缺陷（多文件、跨模块、涉及公共接口/数据模型/依赖/构建配置、风险较高或测试失败）：不要 commit，也不要修改 TAPD。调用 tapd_request_review 工具，taskId 使用 {{task_id}}，summary 说明根因、方案与影响范围，files 列出改动文件，risk 说明风险点，然后结束本轮等待用户审核。\n4. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。",
 ];
@@ -103,6 +105,9 @@ pub struct AgentConfig {
     /// TAPD workspace id -> repository path + project rules.
     pub projects: BTreeMap<String, ProjectAgentConfig>,
     pub prompt_template: String,
+    /// Enabled coworkers from the bundled registry, in selection order. Their
+    /// roles and skill packages are appended to every task prompt.
+    pub coworker_ids: Vec<String>,
     /// How long the TUI must stay quiet (after producing output) before we
     /// consider it ready and inject the task.
     pub ready_quiet_ms: u64,
@@ -121,6 +126,7 @@ impl Default for AgentConfig {
             repo_mappings: BTreeMap::new(),
             projects: BTreeMap::new(),
             prompt_template: DEFAULT_PROMPT_TEMPLATE.to_string(),
+            coworker_ids: Vec::new(),
             ready_quiet_ms: 900,
             ready_timeout_ms: 15_000,
             idle_complete_ms: DEFAULT_IDLE_COMPLETE_MS,
@@ -152,6 +158,8 @@ impl AgentConfig {
         {
             self.prompt_template = DEFAULT_PROMPT_TEMPLATE.to_string();
         }
+
+        self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
 
         self.ready_quiet_ms = self.ready_quiet_ms.clamp(100, 10_000);
         self.ready_timeout_ms = self.ready_timeout_ms.clamp(1_000, 120_000);
@@ -533,6 +541,7 @@ struct AgentConfigPatch {
     repo_mappings: Option<BTreeMap<String, String>>,
     projects: Option<BTreeMap<String, ProjectAgentConfig>>,
     prompt_template: Option<String>,
+    coworker_ids: Option<Vec<String>>,
     ready_quiet_ms: Option<u64>,
     ready_timeout_ms: Option<u64>,
     idle_complete_ms: Option<u64>,
@@ -856,6 +865,8 @@ pub struct PromptVars {
     pub user_prompt: String,
     /// Absolute resource paths; inserted into the prompt as a path list.
     pub attachments: Vec<String>,
+    /// Enabled coworkers and their skill package paths; empty when none is on.
+    pub coworker: String,
 }
 
 impl PromptVars {
@@ -872,6 +883,7 @@ impl PromptVars {
             project_rule: String::new(),
             user_prompt: task.extra_prompt.clone(),
             attachments: task.attachments.clone(),
+            coworker: String::new(),
         }
     }
 }
@@ -880,7 +892,8 @@ impl PromptVars {
 ///
 /// The project rule is exposed as `{{project_rule}}` so a global template can
 /// decide where it lands; when the template has no such placeholder the rule is
-/// appended as its own section instead of being silently dropped.
+/// appended as its own section instead of being silently dropped. Coworker
+/// skills (`{{coworker}}`) follow the same slot-or-append policy.
 pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     let attachments = render_attachments(&vars.attachments);
     let pairs = [
@@ -895,11 +908,13 @@ pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
         ("project_rule", vars.project_rule.as_str()),
         ("user_prompt", vars.user_prompt.as_str()),
         ("attachments", attachments.as_str()),
+        ("coworker", vars.coworker.as_str()),
     ];
 
     let has_rule_slot = template.contains("{{project_rule}}");
     let has_prompt_slot = template.contains("{{user_prompt}}");
     let has_attachments_slot = template.contains("{{attachments}}");
+    let has_coworker_slot = template.contains("{{coworker}}");
     let mut rendered = template.to_string();
     for (key, value) in pairs {
         rendered = rendered.replace(&format!("{{{{{key}}}}}"), value);
@@ -909,6 +924,14 @@ pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     if !has_rule_slot && !rule.is_empty() {
         rendered.push_str("\n\n项目规则：\n");
         rendered.push_str(rule);
+    }
+
+    // Coworker skills use the same policy: an explicit slot keeps placement
+    // under the template's control, otherwise the whole section is appended.
+    let coworker = vars.coworker.trim();
+    if !has_coworker_slot && !coworker.is_empty() {
+        rendered.push_str("\n\n");
+        rendered.push_str(coworker);
     }
 
     // The compose sheet works with any template: when the global template has
@@ -956,6 +979,23 @@ fn next_queued_index(tasks: &[AgentTask]) -> Option<usize> {
 
 fn default_task_runtime() -> String {
     DEFAULT_RUNTIME_ID.to_string()
+}
+
+/// Trims, de-duplicates and caps the enabled coworkers so a hand-edited
+/// `agent.json` cannot grow every prompt without bound.
+fn normalize_coworker_ids(values: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let id = value.trim();
+        if id.is_empty() || out.iter().any(|item| item == id) {
+            continue;
+        }
+        out.push(id.to_string());
+        if out.len() >= crate::coworker::MAX_ENABLED_COWORKERS {
+            break;
+        }
+    }
+    out
 }
 
 /// The live task that already owns a bug, if any. Terminal tasks are ignored so
@@ -1320,8 +1360,37 @@ impl AgentCore {
         }
     }
 
-    fn config_snapshot(&self) -> AgentConfig {
+    pub(crate) fn config_snapshot(&self) -> AgentConfig {
         self.config.lock().expect("agent config lock").clone()
+    }
+
+    /// Enabled coworker ids, in selection order.
+    pub(crate) fn selected_coworker_ids(&self) -> Vec<String> {
+        self.config_snapshot().coworker_ids
+    }
+
+    /// Replaces the enabled coworker list. Unknown ids are filtered by the
+    /// caller; sanitizing here only trims, de-duplicates and caps. A failed
+    /// write is returned so the page does not pretend the choice was saved.
+    pub(crate) fn set_coworker_ids(&self, ids: Vec<String>) -> Result<AgentConfig, String> {
+        let next = {
+            let mut config = self.config.lock().expect("agent config lock");
+            config.coworker_ids = ids;
+            config.clone().sanitized()
+        };
+        self.store_config(next)
+    }
+
+    fn store_config(&self, next: AgentConfig) -> Result<AgentConfig, String> {
+        // Persist before publishing: if the write fails, memory and the task
+        // prompts must keep the old config instead of diverging from disk.
+        write_json_atomic(&self.config_path(), &next)
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to persist agent config");
+                format!("保存 Agent 配置失败：{error}")
+            })?;
+        *self.config.lock().expect("agent config lock") = next.clone();
+        Ok(next)
     }
 
     // -----------------------------------------------------------------------
@@ -1718,7 +1787,7 @@ impl AgentCore {
         }
     }
 
-    fn update_config(&self, patch: AgentConfigPatch) -> AgentConfig {
+    fn update_config(&self, patch: AgentConfigPatch) -> Result<AgentConfig, String> {
         let next = {
             let mut config = self.config.lock().expect("agent config lock");
             if let Some(runtime_id) = patch.runtime_id {
@@ -1736,6 +1805,9 @@ impl AgentCore {
             if let Some(template) = patch.prompt_template {
                 config.prompt_template = template;
             }
+            if let Some(ids) = patch.coworker_ids {
+                config.coworker_ids = ids;
+            }
             if let Some(value) = patch.ready_quiet_ms {
                 config.ready_quiet_ms = value;
             }
@@ -1748,11 +1820,7 @@ impl AgentCore {
             config.clone().sanitized()
         };
 
-        *self.config.lock().expect("agent config lock") = next.clone();
-        if let Err(error) = write_json_atomic(&self.config_path(), &next) {
-            tracing::warn!(%error, "failed to persist agent config");
-        }
-        next
+        self.store_config(next)
     }
 
     async fn enqueue(&self, request: &EnqueueRequest, source: &str) -> Result<AgentTask, String> {
@@ -2475,6 +2543,7 @@ impl AgentCore {
 
         let mut vars = PromptVars::from_task(&task);
         vars.project_rule = config.rule_for(&task.workspace_id);
+        vars.coworker = crate::coworker::prompt_section(&self.app, &config.coworker_ids);
         // Approved reviews re-enter the queue with a commit-only prompt; the
         // reviewed diff is still in the working tree.
         let template = if task.commit_only {
@@ -3288,7 +3357,7 @@ pub async fn command(
         "agent_config_set" => {
             let patch: AgentConfigPatch = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的 Agent 配置：{error}"))?;
-            let config = core.update_config(patch);
+            let config = core.update_config(patch)?;
             Ok(json!({ "config": config }))
         }
         "agent_enqueue_bug" => {
@@ -3549,6 +3618,7 @@ mod tests {
         assert_eq!(config.idle_complete_ms, DEFAULT_IDLE_COMPLETE_MS);
         assert!(config.prompt_template.contains("{{md_path}}"));
         assert!(config.prompt_template.contains("{{title}}"));
+        assert!(config.prompt_template.contains("{{coworker}}"));
     }
 
     #[test]
@@ -3574,6 +3644,7 @@ mod tests {
             ]),
             projects: BTreeMap::new(),
             prompt_template: "  ".to_string(),
+            coworker_ids: Vec::new(),
             ready_quiet_ms: 1,
             ready_timeout_ms: 999_999,
             idle_complete_ms: 9_999_999,
@@ -3661,6 +3732,7 @@ mod tests {
             project_rule: "只用 Rust 写".to_string(),
             user_prompt: String::new(),
             attachments: Vec::new(),
+            coworker: String::new(),
         };
 
         let rendered = render_prompt(
@@ -3687,6 +3759,7 @@ mod tests {
             project_rule: "先跑 cargo test".to_string(),
             user_prompt: String::new(),
             attachments: Vec::new(),
+            coworker: String::new(),
         };
 
         assert_eq!(
@@ -3709,6 +3782,7 @@ mod tests {
             project_rule: String::new(),
             user_prompt: String::new(),
             attachments: Vec::new(),
+            coworker: String::new(),
         };
 
         assert_eq!(render_prompt("{{title}}", &vars), "t");
@@ -3732,6 +3806,7 @@ mod tests {
                 "/tmp/demo.mp4".to_string(),
                 "/tmp/log.txt".to_string(),
             ],
+            coworker: String::new(),
         };
 
         let rendered = render_prompt("修 {{title}}", &vars);
@@ -3767,12 +3842,53 @@ mod tests {
             project_rule: String::new(),
             user_prompt: "只改登录页".to_string(),
             attachments: vec!["/tmp/shot.png".to_string()],
+            coworker: String::new(),
         };
 
         assert_eq!(
             render_prompt("说明：{{user_prompt}}｜资源：{{attachments}}", &vars),
             "说明：只改登录页｜资源：- 图片：/tmp/shot.png"
         );
+    }
+
+    #[test]
+    fn coworker_section_appends_or_uses_its_slot() {
+        let vars = PromptVars {
+            task_id: "task-1".to_string(),
+            title: "t".to_string(),
+            md_path: "m".to_string(),
+            repo_path: "r".to_string(),
+            workspace_name: "w".to_string(),
+            bug_id: "1".to_string(),
+            severity: "s".to_string(),
+            priority: "p".to_string(),
+            project_rule: String::new(),
+            user_prompt: String::new(),
+            attachments: Vec::new(),
+            coworker: "协作同事（各司其职）：\n- 程序员｜Author：一起写".to_string(),
+        };
+
+        let appended = render_prompt("修 {{title}}", &vars);
+        assert!(appended.ends_with("协作同事（各司其职）：\n- 程序员｜Author：一起写"));
+
+        let slotted = render_prompt("{{coworker}}\n\n修 {{title}}", &vars);
+        assert!(slotted.starts_with("协作同事（各司其职）："));
+        assert!(!slotted.contains("{{coworker}}"));
+    }
+
+    #[test]
+    fn coworker_ids_are_trimmed_deduped_and_capped() {
+        let mut ids = vec![
+            " author ".to_string(),
+            "author".to_string(),
+            String::new(),
+            "designer".to_string(),
+        ];
+        ids.extend((0..20).map(|index| format!("extra-{index}")));
+        let normalized = normalize_coworker_ids(ids);
+        assert_eq!(normalized[0], "author");
+        assert_eq!(normalized.len(), crate::coworker::MAX_ENABLED_COWORKERS);
+        assert_eq!(normalized[1], "designer");
     }
 
     #[test]
