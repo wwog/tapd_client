@@ -2,6 +2,8 @@ import { useSyncExternalStore } from "react";
 import { emit as emitToAll } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { readPref, writePref } from "./uiPrefs";
+
 export type ThemeMode = "light" | "dark" | "system";
 /** The island capsule can follow the app theme or keep its own fixed theme. */
 export type IslandThemeMode = "follow" | "light" | "dark";
@@ -22,7 +24,8 @@ export type Appearance = {
   fontSize: number;
 };
 
-const STORAGE_KEY = "tapd.appearance.v1";
+/** Preference key inside the `config.json` UI blob. */
+const PREF_KEY = "appearance";
 
 export const DEFAULT_APPEARANCE: Appearance = {
   mode: "system",
@@ -57,7 +60,7 @@ export const FONT_OPTIONS: Array<{ value: FontChoice; label: string }> = [
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 17;
 
-let current: Appearance = load();
+let current: Appearance = DEFAULT_APPEARANCE;
 let media: MediaQueryList | null = null;
 /** Only the main window paints a native background; overlays stay transparent. */
 let windowBackground = true;
@@ -103,21 +106,12 @@ function normalize(parsed: Partial<Appearance>): Appearance {
 
 function load(): Appearance {
   if (typeof window === "undefined") return DEFAULT_APPEARANCE;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_APPEARANCE;
-    return normalize(JSON.parse(raw) as Partial<Appearance>);
-  } catch {
-    return DEFAULT_APPEARANCE;
-  }
+  const stored = readPref<Partial<Appearance>>(PREF_KEY);
+  return stored ? normalize(stored) : DEFAULT_APPEARANCE;
 }
 
 function persist() {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
-  } catch {
-    // Private mode / storage disabled: the theme still applies for this run.
-  }
+  writePref(PREF_KEY, current);
 }
 
 function systemDark(): boolean {
@@ -189,11 +183,16 @@ function onSystemChange() {
   broadcast();
 }
 
-/** Applies the stored appearance before React renders, avoiding a flash. */
+/** Applies the stored appearance before React renders, avoiding a flash.
+ *
+ * Callers must await `loadUiPrefs()` first: the preferences live in
+ * `config.json`, not in WebView storage (logout wipes that).
+ */
 export function initAppearance(
   options: { windowBackground?: boolean; overlay?: boolean } = {},
 ) {
   if (typeof window === "undefined") return;
+  current = load();
   windowBackground = options.windowBackground ?? true;
   overlay = options.overlay ?? false;
   apply();

@@ -209,9 +209,37 @@ select,
   animation: login-breathe 7s ease-in-out infinite;
 }
 
+/* Login screen: the status capsule wobbles, then swaps to the next state. */
+@keyframes login-capsule-shake {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  15% {
+    transform: translate(-14px, 5px) rotate(-5deg);
+  }
+  30% {
+    transform: translate(14px, -5px) rotate(5deg);
+  }
+  45% {
+    transform: translate(-11px, -4px) rotate(-4deg);
+  }
+  60% {
+    transform: translate(11px, 5px) rotate(4deg);
+  }
+  75% {
+    transform: translate(-5px, -2px) rotate(-2deg);
+  }
+}
+
+.login-capsule-shake {
+  animation: login-capsule-shake 0.42s ease-in-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .login-float,
-  .login-breathe {
+  .login-breathe,
+  .login-capsule-shake {
     animation: none;
   }
 }

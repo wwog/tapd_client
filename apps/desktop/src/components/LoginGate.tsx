@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
+  ArrowUpCircle,
   Bell,
+  Bot,
   Bug,
   CheckCircle2,
   Loader2,
@@ -63,14 +65,14 @@ const FLOATING_CHIPS: Array<{
   },
   {
     icon: <Bell size={17} />,
-    position: "left-[8%] top-[49%]",
+    position: "left-[3%] top-[49%]",
     tone: "text-violet-500",
     delay: "0.8s",
     rotate: "10deg",
   },
   {
     icon: <QrCode size={18} />,
-    position: "left-[77%] top-[47%]",
+    position: "left-[84%] top-[47%]",
     tone: "text-slate-700",
     delay: "3.4s",
     rotate: "-6deg",
@@ -83,6 +85,10 @@ const FLOATING_CHIPS: Array<{
     rotate: "12deg",
   },
 ];
+
+/** Brand-side status capsule: one message per interval, with a wobble first. */
+const CAPSULE_SHAKE_MS = 420;
+const CAPSULE_HOLD_MS = 860;
 
 function phaseCopy(state: LoginQrState, refreshing: boolean): { title: string; hint: string } {
   if (refreshing) {
@@ -122,9 +128,29 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
   const [state, setState] = useState<LoginQrState>(EMPTY_STATE);
   const [refreshing, setRefreshing] = useState(false);
   const [avatarBroken, setAvatarBroken] = useState(false);
+  const [capsuleIndex, setCapsuleIndex] = useState(0);
+  const [capsuleShaking, setCapsuleShaking] = useState(false);
   const avatar = state.avatarUrl;
   const displayName = state.name?.trim();
   const cachedAvatar = useRef<string | null>(null);
+
+  // Shake the capsule, swap the copy, hold briefly, then shake it again.
+  useEffect(() => {
+    let shake: number | undefined;
+    let next: number | undefined;
+    const step = () => {
+      setCapsuleIndex((index) => index + 1);
+      setCapsuleShaking(true);
+      shake = window.setTimeout(() => setCapsuleShaking(false), CAPSULE_SHAKE_MS);
+      next = window.setTimeout(step, CAPSULE_SHAKE_MS + CAPSULE_HOLD_MS);
+    };
+    next = window.setTimeout(step, CAPSULE_SHAKE_MS + CAPSULE_HOLD_MS);
+    return () => {
+      if (shake !== undefined) window.clearTimeout(shake);
+      if (next !== undefined) window.clearTimeout(next);
+    };
+  }, []);
+
 
   useEffect(() => {
     setAvatarBroken(false);
@@ -181,6 +207,25 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
   const showScanned = !refreshing && state.phase === "scanned";
   const copy = phaseCopy(state, refreshing);
 
+  const capsules = [
+    {
+      icon: <Bot size={15} />,
+      tone: "text-emerald-300",
+      text: "TAPD Agent 运行中",
+    },
+    {
+      icon: <ArrowUpCircle size={15} />,
+      tone: "text-sky-300",
+      text: info ? `TAPD v${info.version} 升级` : "TAPD 客户端已就绪",
+    },
+    {
+      icon: <RefreshCw size={15} />,
+      tone: "text-slate-300",
+      text: "缺陷 · 需求 · 迭代 已同步",
+    },
+  ];
+  const capsule = capsules[capsuleIndex % capsules.length];
+
   return (
     <div data-theme="light" className="relative flex h-full overflow-hidden bg-surface text-slate-900">
       {/* macOS traffic lights live over this strip; the whole strip drags. */}
@@ -194,11 +239,11 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
           <div className="login-breathe absolute left-1/2 top-1/3 h-64 w-64 -translate-x-1/2 rounded-full bg-white/80 blur-2xl" />
         </div>
 
-        <div className="pointer-events-none absolute inset-0">
+        <div className="pointer-events-none absolute inset-0 z-10">
           {FLOATING_CHIPS.map((chip) => (
             <div
               key={chip.position}
-              className={`login-float absolute grid h-12 w-12 place-items-center rounded-2xl bg-white/95  border border-black/5 ${chip.position}`}
+              className={`login-float absolute grid h-12 w-12 place-items-center ${chip.position}`}
               style={
                 {
                   animationDelay: chip.delay,
@@ -214,15 +259,14 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
         <div className="relative z-10 flex flex-1 items-center justify-center px-10 pt-16">
           <div className="relative -translate-y-2">
             <div className="login-breathe absolute -inset-20 rounded-full bg-sky-100/50 blur-2xl" />
-            <div className="relative -rotate-3 rounded-[26px] bg-[#0b1220] px-7 py-4 ">
-              <span className="absolute -left-4 top-2 font-serif text-4xl leading-none text-[#0b1220]">
-                “
-              </span>
-              <span className="relative text-[22px] font-normal tracking-tight text-white">
-                Hello!
-              </span>
-              <span className="absolute -bottom-3 -right-4 font-serif text-4xl leading-none text-[#0b1220]">
-                ”
+            <div
+              className={`relative flex h-[42px] w-[252px] items-center justify-center gap-2.5 rounded-full bg-[#0b1220] ${
+                capsuleShaking ? "login-capsule-shake" : ""
+              }`}
+            >
+              <span className={`grid place-items-center ${capsule.tone}`}>{capsule.icon}</span>
+              <span className="whitespace-nowrap text-[15px] font-normal tracking-tight text-white">
+                {capsule.text}
               </span>
             </div>
             <div className="mt-8 flex items-center justify-center gap-2 text-ui-sm text-slate-400">
@@ -269,7 +313,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
 
             <div className="relative rounded-[28px] bg-gradient-to-br from-sky-200/80 via-white to-emerald-100/80 p-[1.5px] ">
               <div className="rounded-[26.5px] bg-white p-3">
-                <div className="relative aspect-square w-[clamp(190px,30vh,248px)] overflow-hidden rounded-[18px] bg-[#06111c] border border-slate-900/5">
+                <div className="relative aspect-square w-[clamp(190px,30vh,248px)] overflow-hidden rounded-[18px] bg-white">
                   {showQr ? (
                     <img
                       key={state.qrUrl ?? "qr"}

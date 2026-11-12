@@ -38,10 +38,10 @@ mod tests {
     use serde_json::{json, Value};
 
     #[test]
-    fn owner_filter_is_a_string() {
+    fn single_owner_filter_is_a_string() {
         let query = BugQuery {
             workspace_id: "45336192".to_string(),
-            owner: Some("郭俊宏".to_string()),
+            owners: vec!["郭俊宏".to_string()],
             statuses: vec!["new".to_string()],
             ..BugQuery::default()
         };
@@ -56,6 +56,29 @@ mod tests {
         assert_eq!(filters[0]["fieldOption"], "equal");
         assert_eq!(filters[1]["fieldSystemName"], "status");
         assert_eq!(filters[1]["value"], json!(["new"]));
+    }
+
+    #[test]
+    fn multiple_owners_filter_as_one_in_expr() {
+        let query = BugQuery {
+            workspace_id: "45336192".to_string(),
+            owners: vec![
+                "郭俊宏".to_string(),
+                "  ".to_string(),
+                "张芳兰".to_string(),
+            ],
+            ..BugQuery::default()
+        };
+        let body = query.body();
+        let filters = body
+            .pointer("/filter_expr/data")
+            .and_then(Value::as_array)
+            .expect("filters");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0]["fieldSystemName"], "current_owner");
+        assert_eq!(filters[0]["fieldType"], "user_chooser");
+        assert_eq!(filters[0]["fieldOption"], "in");
+        assert_eq!(filters[0]["value"], json!(["郭俊宏", "张芳兰"]));
     }
 
     #[test]

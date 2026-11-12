@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { initAppearance } from "./lib/appearance";
 import { revealWhenPainted } from "./lib/startup";
+import { loadUiPrefs } from "./lib/uiPrefs";
 import { IslandWindow } from "./windows/IslandWindow";
 import "./styles.css";
 
@@ -15,9 +16,6 @@ try {
 }
 
 const isOverlay = label === "island" || label === "notification";
-// The island reads the same appearance so the capsule follows the app theme;
-// it just never paints a native window background (it must stay transparent).
-initAppearance({ windowBackground: !isOverlay, overlay: isOverlay });
 
 /** Main window shell: reveals the native window once this tree is painted. */
 function MainWindow() {
@@ -31,4 +29,13 @@ function MainWindow() {
 
 const content = isOverlay ? <IslandWindow /> : <MainWindow />;
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(content);
+// Preferences live in config.json (logout wipes WebView storage), so read them
+// before the first render: the themed frame must be the first frame painted.
+// The window stays hidden until `ui_ready`, so the extra IPC costs no flash.
+void (async () => {
+  await loadUiPrefs();
+  // The island reads the same appearance so the capsule follows the app theme;
+  // it just never paints a native window background (it must stay transparent).
+  initAppearance({ windowBackground: !isOverlay, overlay: isOverlay });
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(content);
+})();

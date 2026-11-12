@@ -1,8 +1,11 @@
 /**
  * Persisted presentation preferences for the bug list: visible/reorderable
- * columns, filters and server-side sort. Pure data + localStorage readers so
- * the component keeps only the state and the effects that write them back.
+ * columns, filters and server-side sort. Pure data + readers for the
+ * `config.json` preference blob so the component keeps only the state and the
+ * effects that write them back.
  */
+
+import { readPref, writePref } from "../lib/uiPrefs";
 
 export const PRIORITIES = [
   ["urgent", "紧急"],
@@ -73,8 +76,8 @@ export type BugFilters = {
   statuses: string[];
   priority: string;
   severity: string;
-  /** 处理人 nickname; only used in the 全部 scope. */
-  owner: string;
+  /** 处理人 nicknames; several match with OR. Only used in the 全部 scope. */
+  owners: string[];
   /** 创建人 (TAPD `reporter`) nickname. */
   creator: string;
   /** Title keyword, matched with TAPD's `like` filter. */
@@ -98,18 +101,17 @@ export const DEFAULT_SORT: BugSort = { name: "created", order: "desc" };
 
 export function loadSort(): BugSort | null {
   if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(SORT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<BugSort> | null;
-    if (parsed?.name !== "status" && parsed?.name !== "created") return null;
-    const order = parsed.order === "asc" ? "asc" : "desc";
-    // 取消排序 == TAPD 默认（创建时间倒序），不必把默认态画成用户排序。
-    if (parsed.name === "created" && order === "desc") return null;
-    return { name: parsed.name, order };
-  } catch {
-    return null;
-  }
+  const parsed = readPref<Partial<BugSort> | null>(SORT_KEY);
+  if (!parsed) return null;
+  if (parsed.name !== "status" && parsed.name !== "created") return null;
+  const order = parsed.order === "asc" ? "asc" : "desc";
+  // 取消排序 == TAPD 默认（创建时间倒序），不必把默认态画成用户排序。
+  if (parsed.name === "created" && order === "desc") return null;
+  return { name: parsed.name, order };
+}
+
+export function saveSort(sort: BugSort | null) {
+  writePref(SORT_KEY, sort);
 }
 
 export function loadFilters(): BugFilters {
@@ -117,62 +119,61 @@ export function loadFilters(): BugFilters {
     statuses: [],
     priority: "",
     severity: "",
-    owner: "",
+    owners: [],
     creator: "",
     keyword: "",
   };
   if (typeof window === "undefined") return fallback;
-  try {
-    const raw = window.localStorage.getItem(FILTER_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<BugFilters>;
-    return {
-      statuses: Array.isArray(parsed.statuses)
-        ? parsed.statuses.filter((value): value is string => typeof value === "string")
-        : [],
-      priority:
-        typeof parsed.priority === "string" &&
-        PRIORITIES.some(([value]) => value === parsed.priority)
-          ? parsed.priority
-          : "",
-      severity:
-        typeof parsed.severity === "string" &&
-        SEVERITIES.some(([value]) => value === parsed.severity)
-          ? parsed.severity
-          : "",
-      owner: typeof parsed.owner === "string" ? parsed.owner : "",
-      creator: typeof parsed.creator === "string" ? parsed.creator : "",
-      keyword: typeof parsed.keyword === "string" ? parsed.keyword : "",
-    };
-  } catch {
-    return fallback;
-  }
+  const parsed = readPref<Partial<BugFilters>>(FILTER_KEY);
+  if (!parsed) return fallback;
+  return {
+    statuses: Array.isArray(parsed.statuses)
+      ? parsed.statuses.filter((value): value is string => typeof value === "string")
+      : [],
+    priority:
+      typeof parsed.priority === "string" &&
+      PRIORITIES.some(([value]) => value === parsed.priority)
+        ? parsed.priority
+        : "",
+    severity:
+      typeof parsed.severity === "string" &&
+      SEVERITIES.some(([value]) => value === parsed.severity)
+        ? parsed.severity
+        : "",
+    owners: Array.isArray(parsed.owners)
+      ? parsed.owners.filter((value): value is string => typeof value === "string")
+      : [],
+    creator: typeof parsed.creator === "string" ? parsed.creator : "",
+    keyword: typeof parsed.keyword === "string" ? parsed.keyword : "",
+  };
+}
+
+export function saveFilters(filters: BugFilters) {
+  writePref(FILTER_KEY, filters);
 }
 
 export function loadColumns(): ColumnPref[] {
   const fallback = DEFAULT_COLUMNS.map((column) => ({ ...column }));
   if (typeof window === "undefined") return fallback;
-  try {
-    const raw = window.localStorage.getItem(COLUMN_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Array<{ key?: unknown; visible?: unknown }>;
-    if (!Array.isArray(parsed)) return fallback;
+  const parsed = readPref<Array<{ key?: unknown; visible?: unknown }>>(COLUMN_KEY);
+  if (!Array.isArray(parsed)) return fallback;
 
-    const known = new Set<ColumnKey>(DEFAULT_COLUMNS.map((column) => column.key));
-    const seen = new Set<ColumnKey>();
-    const result: ColumnPref[] = [];
-    for (const item of parsed) {
-      if (typeof item?.key !== "string") continue;
-      const key = item.key as ColumnKey;
-      if (!known.has(key) || seen.has(key)) continue;
-      seen.add(key);
-      result.push({ key, visible: Boolean(item.visible) });
-    }
-    for (const column of DEFAULT_COLUMNS) {
-      if (!seen.has(column.key)) result.push({ ...column });
-    }
-    return result;
-  } catch {
-    return fallback;
+  const known = new Set<ColumnKey>(DEFAULT_COLUMNS.map((column) => column.key));
+  const seen = new Set<ColumnKey>();
+  const result: ColumnPref[] = [];
+  for (const item of parsed) {
+    if (typeof item?.key !== "string") continue;
+    const key = item.key as ColumnKey;
+    if (!known.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    result.push({ key, visible: Boolean(item.visible) });
   }
+  for (const column of DEFAULT_COLUMNS) {
+    if (!seen.has(column.key)) result.push({ ...column });
+  }
+  return result;
+}
+
+export function saveColumns(columns: ColumnPref[]) {
+  writePref(COLUMN_KEY, columns);
 }

@@ -147,7 +147,7 @@ mod tests {
 
         let query = BugQuery {
             workspace_id: "ws".to_string(),
-            owner: Some("me".to_string()),
+            owners: vec!["me".to_string()],
             perpage: 10,
             page: 1,
             sort_name: "created".to_string(),
@@ -159,9 +159,16 @@ mod tests {
         assert_eq!(page.bugs[0].id, "1");
         assert!(fetched_at > 0);
 
+        let several = BugQuery {
+            owners: vec!["me".to_string(), "someone".to_string()],
+            ..query.clone()
+        };
+        let (page, _) = cache.query_bugs(&several).expect("several owners");
+        assert_eq!(page.total, 2);
+
         let keyword = BugQuery {
             keyword: Some("CRASH".to_string()),
-            owner: None,
+            owners: Vec::new(),
             perpage: 1,
             page: 2,
             ..query.clone()

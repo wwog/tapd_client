@@ -740,6 +740,21 @@ pub fn set_last_workspace(
         .map_err(|error| error.to_string())
 }
 
+/// Frontend-owned preference blob (theme, bug list layout). `Null` on a fresh
+/// install, or when the stored config predates the field.
+#[tauri::command]
+pub fn ui_prefs_get(state: State<'_, SharedState>) -> Value {
+    state.config_snapshot().ui_prefs
+}
+
+/// Replaces the whole preference blob; the frontend owns its schema.
+#[tauri::command]
+pub fn ui_prefs_set(state: State<'_, SharedState>, prefs: Value) -> Result<(), String> {
+    state
+        .update_config(|config| config.ui_prefs = prefs)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn capture_snapshot(app: AppHandle) -> Result<Vec<CapturedRequest>, String> {
     snapshot_captures(&app).await

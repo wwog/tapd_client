@@ -29,13 +29,13 @@ import { BugRowContextMenu, type BugRowMenu } from "./BugRowContextMenu";
 import { BugTable } from "./BugTable";
 import { BugTableToolbar } from "./BugTableToolbar";
 import {
-  COLUMN_KEY,
   DEFAULT_SORT,
-  FILTER_KEY,
-  SORT_KEY,
   loadColumns,
   loadFilters,
   loadSort,
+  saveColumns,
+  saveFilters,
+  saveSort,
   type BugScope,
   type BugSort,
 } from "./bugListPrefs";
@@ -105,7 +105,9 @@ function BugListViewImpl(props: Props) {
   );
   const [priority, setPriority] = useState(initialFilters.priority);
   const [severity, setSeverity] = useState(initialFilters.severity);
-  const [ownerFilter, setOwnerFilter] = useState(initialFilters.owner);
+  const [ownerFilter, setOwnerFilter] = useState<string[]>(
+    initialFilters.owners,
+  );
   const [creatorFilter, setCreatorFilter] = useState(initialFilters.creator);
   const [keyword, setKeyword] = useState(initialFilters.keyword);
   const [sort, setSort] = useState<BugSort | null>(loadSort);
@@ -136,37 +138,22 @@ function BugListViewImpl(props: Props) {
   const menuSeqRef = useRef(0);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(COLUMN_KEY, JSON.stringify(columns));
-    } catch {
-      // Storage disabled: the layout still applies for this run.
-    }
+    saveColumns(columns);
   }, [columns]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        FILTER_KEY,
-        JSON.stringify({
-          statuses: statusFilter,
-          priority,
-          severity,
-          owner: ownerFilter,
-          creator: creatorFilter,
-          keyword: debouncedKeyword,
-        }),
-      );
-    } catch {
-      // Storage disabled: filters still apply for this run.
-    }
+    saveFilters({
+      statuses: statusFilter,
+      priority,
+      severity,
+      owners: ownerFilter,
+      creator: creatorFilter,
+      keyword: debouncedKeyword,
+    });
   }, [statusFilter, priority, severity, ownerFilter, creatorFilter, debouncedKeyword]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(SORT_KEY, JSON.stringify(sort));
-    } catch {
-      // Storage disabled: the sort still applies for this run.
-    }
+    saveSort(sort);
   }, [sort]);
 
   // Owner / creator filter options. The list response only covers one page, so
@@ -229,7 +216,7 @@ function BugListViewImpl(props: Props) {
           (statusFilter.length === 0 || statusFilter.includes(bug.status)) &&
           (!priority || bug.priority === priority) &&
           (!severity || bug.severity === severity) &&
-          (!ownerFilter || bug.owner === ownerFilter) &&
+          (ownerFilter.length === 0 || ownerFilter.includes(bug.owner)) &&
           (!creatorFilter || bug.creator === creatorFilter) &&
           (!needle || bug.title.toLowerCase().includes(needle)),
       );
@@ -277,7 +264,7 @@ function BugListViewImpl(props: Props) {
     const query: BugQuery = {
       workspaceId: workspace.id,
       // "我负责的" always wins; the 处理人 filter only applies in 全部.
-      owner: scope === "mine" ? me : ownerFilter || null,
+      owners: scope === "mine" ? (me ? [me] : []) : ownerFilter,
       creator: creatorFilter || null,
       statuses: statusFilter,
       priorities: priority ? [priority] : [],
@@ -524,7 +511,7 @@ function BugListViewImpl(props: Props) {
     statusFilter.length +
     (priority ? 1 : 0) +
     (severity ? 1 : 0) +
-    (!hideOwner && ownerFilter ? 1 : 0) +
+    (!hideOwner && ownerFilter.length > 0 ? 1 : 0) +
     (creatorFilter ? 1 : 0) +
     (keyword.trim() ? 1 : 0);
 
@@ -554,7 +541,7 @@ function BugListViewImpl(props: Props) {
     setStatusFilter([]);
     setPriority("");
     setSeverity("");
-    setOwnerFilter("");
+    setOwnerFilter([]);
     setCreatorFilter("");
     setKeyword("");
     // Clear the applied keyword in the same commit, otherwise the reset page

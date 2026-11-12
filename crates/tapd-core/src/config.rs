@@ -42,6 +42,12 @@ pub struct AppConfig {
     /// carried the force marker). Persisted so the upgrade modal survives a
     /// restart and stays visible while offline.
     pub forced_update: Option<ForcedUpdate>,
+    /// Frontend-owned UI preferences (theme, bug list columns/filters/sort).
+    ///
+    /// Kept here instead of the WebView's localStorage because logging out
+    /// clears all WebView browsing data. The schema belongs to the frontend;
+    /// the backend only stores the blob.
+    pub ui_prefs: serde_json::Value,
 }
 
 /// A release the client must install before it can keep being used.
@@ -148,6 +154,7 @@ impl Default for AppConfig {
             mcp_policy: McpPolicy::default(),
             last_update_check_at: None,
             forced_update: None,
+            ui_prefs: serde_json::Value::Null,
         }
     }
 }

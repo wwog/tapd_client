@@ -75,7 +75,8 @@ export type WorkspaceContext = {
 
 export type BugQuery = {
   workspaceId: string;
-  owner: string | null;
+  /** 处理人 nicknames; several match with OR. */
+  owners: string[];
   /** Creator (TAPD `reporter`) nickname. */
   creator: string | null;
   statuses: string[];

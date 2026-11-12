@@ -194,7 +194,7 @@ impl NotificationService {
         query.perpage = POLL_PAGE_SIZE;
         query.modified_after = modified_after;
         if settings.scope == NotificationScope::Mine {
-            query.owner = Some(me.to_string());
+            query.owners = vec![me.to_string()];
         }
 
         let max_pages = if baseline {

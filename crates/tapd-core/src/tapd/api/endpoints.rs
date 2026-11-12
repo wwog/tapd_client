@@ -47,8 +47,8 @@ const DEFAULT_FILTER_IDENTIFIER: &str = "app_for_list_tools,app_for_list_operati
 #[serde(rename_all = "camelCase", default)]
 pub struct BugQuery {
     pub workspace_id: String,
-    /// Exact TAPD nickname.
-    pub owner: Option<String>,
+    /// Exact TAPD nicknames; several people match with OR.
+    pub owners: Vec<String>,
     /// Creator (TAPD `reporter`) nickname.
     pub creator: Option<String>,
     /// Status keys such as `new`, `in_progress`, `reopened`.
@@ -74,7 +74,7 @@ impl Default for BugQuery {
     fn default() -> Self {
         Self {
             workspace_id: String::new(),
-            owner: None,
+            owners: Vec::new(),
             creator: None,
             statuses: Vec::new(),
             priorities: Vec::new(),
@@ -102,13 +102,28 @@ impl BugQuery {
     pub fn body(&self) -> Value {
         let mut filters = Vec::new();
 
-        if let Some(owner) = non_empty(self.owner.as_deref()) {
-            filters.push(filter_expr(
+        let owners: Vec<&str> = self
+            .owners
+            .iter()
+            .map(|owner| owner.trim())
+            .filter(|owner| !owner.is_empty())
+            .collect();
+        match owners.as_slice() {
+            // One owner keeps TAPD's verified `equal` form; several owners use
+            // the `in` form that every other multi-value field takes.
+            [] => {}
+            [owner] => filters.push(filter_expr(
                 "current_owner",
                 "user_chooser",
                 "equal",
                 json!(owner),
-            ));
+            )),
+            multi => filters.push(filter_expr(
+                "current_owner",
+                "user_chooser",
+                "in",
+                json!(multi),
+            )),
         }
         if let Some(creator) = non_empty(self.creator.as_deref()) {
             filters.push(filter_expr(

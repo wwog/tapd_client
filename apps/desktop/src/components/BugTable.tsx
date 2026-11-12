@@ -72,14 +72,14 @@ type Props = {
   statusFilter: string[];
   priority: string;
   severity: string;
-  ownerFilter: string;
+  ownerFilter: string[];
   creatorFilter: string;
   peopleOptions: Array<{ value: string; label: string }>;
   onToggleSort: (name: SortKey) => void;
   onStatusChange: (values: string[]) => void;
   onPriorityChange: (value: string) => void;
   onSeverityChange: (value: string) => void;
-  onOwnerChange: (value: string) => void;
+  onOwnerChange: (values: string[]) => void;
   onCreatorChange: (value: string) => void;
   onOpenBug: (bug: BugSummary) => void;
   onRowContextMenu: (
@@ -206,9 +206,8 @@ export function BugTable(props: Props) {
             label="处理人"
             className="px-3 py-2.5"
             options={peopleOptions}
-            selected={ownerFilter ? [ownerFilter] : []}
-            multiple={false}
-            onChange={(values) => onOwnerChange(values[0] ?? "")}
+            selected={ownerFilter}
+            onChange={onOwnerChange}
           />
         );
       case "creator":
@@ -250,7 +249,7 @@ export function BugTable(props: Props) {
       case "severity":
         return Boolean(severity);
       case "owner":
-        return Boolean(ownerFilter);
+        return ownerFilter.length > 0;
       case "creator":
         return Boolean(creatorFilter);
       case "created":

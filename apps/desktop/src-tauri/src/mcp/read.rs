@@ -309,10 +309,10 @@ async fn query_bugs(
     } else {
         string_arg(arguments, "owner")
     };
-    query.owner = match owner.as_deref() {
-        Some("all") | Some("") | None => None,
-        Some("me") => resolve_me(app, state).await?,
-        Some(nick) => Some(nick.to_string()),
+    query.owners = match owner.as_deref() {
+        Some("all") | Some("") | None => Vec::new(),
+        Some("me") => resolve_me(app, state).await?.into_iter().collect(),
+        Some(nick) => vec![nick.to_string()],
     };
 
     query.statuses = string_array(arguments, "statuses");

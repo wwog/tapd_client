@@ -96,6 +96,8 @@ pub fn run() {
             feature_router::feature_command,
             commands::set_last_workspace,
             commands::set_hidden_workspaces,
+            commands::ui_prefs_get,
+            commands::ui_prefs_set,
             commands::capture_snapshot,
             commands::capture_clear,
             commands::capture_export,

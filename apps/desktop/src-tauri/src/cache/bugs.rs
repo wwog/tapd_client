@@ -108,15 +108,14 @@ impl Cache {
 }
 
 fn matches_query(query: &BugQuery, bug: &BugSummary) -> bool {
-    if let Some(owner) = query
-        .owner
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        if bug.owner != owner {
-            return false;
-        }
+    let owners: Vec<&str> = query
+        .owners
+        .iter()
+        .map(|owner| owner.trim())
+        .filter(|owner| !owner.is_empty())
+        .collect();
+    if !owners.is_empty() && !owners.contains(&bug.owner.as_str()) {
+        return false;
     }
     if let Some(creator) = query
         .creator

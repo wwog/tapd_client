@@ -91,6 +91,7 @@
 | 场景 | fieldSystemName | fieldOption | fieldType | value |
 | --- | --- | --- | --- | --- |
 | 处理人 | `current_owner` | `equal` | `user_chooser` | `"郭俊宏"`（字符串） |
+| 处理人（多选） | `current_owner` | `in` | `user_chooser` | `["郭俊宏","何帅"]`（数组，任一匹配） |
 | 状态 | `status` | `in` | `multi_select` | `["new"]` |
 | 优先级 | `priority` | `in` | `select` | `["high"]` |
 | 严重程度 | `severity` | `in` | `select` | `["normal","serious"]` |
