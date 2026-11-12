@@ -5,6 +5,18 @@
 ## 新增
 
 - 缺陷列表右键菜单新增「复制长 ID」：短 ID 用于搜索和展示，长 ID 用于接口、日志等需要完整标识的场景，两者都能直接复制。
+- 自动检测本机已安装的 Agent 与版本：启动时每天最多扫描一次，设置页可手动「刷新检测」，结果缓存在 `agent-scan.json`。
+- 运行时目录对齐 orca：新增 Grok、Hermes、Kiro、Qoder、OpenCode 2、Droid、Jcode、DeepSeek Harness 等 30+ 个 TUI Agent，并支持检测别名与 argv `--` 终止符。
+- 设置页新增「默认 Agent」下拉选择：显示版本与检测状态；「管理全部运行时」跳到 Agent 页「配置」。
+- 缺陷详情的「补充说明」面板新增「本次任务使用」选择器，可以只为当前缺陷换一个 Agent，不影响默认设置。
+- MCP 自动注入扩展到 OMP（`~/.omp/agent/mcp.json`）、Kimi Code（`~/.kimi-code/mcp.json`）、Gemini CLI（`~/.gemini/settings.json`）与 Qwen Code（`~/.qwen/settings.json`），启动这些 Agent 时会像 opencode / Claude / Codex 一样幂等写入 tapd MCP。
+
+## 修改
+
+- Agent 页「配置」重做为单列页面：默认 Agent 改为带检测状态与版本的下拉选择器，运行时参数、生命周期、能力与互通限制按卡片排列，不再使用窄栏长列表。
+- Codex、OMP、OpenCode、Claude、Cursor、Gemini、Qwen、OpenClaude、Qoder、Qoder CN、CodeBuddy、Kimi、ZCode 启动时自动安装/刷新会话 hook：Claude 系安装完整的会话、提示词、工具、权限、子 Agent 与结束事件；Codex 同时写入 `hooks.json` 与 `config.toml` 信任哈希；OpenCode 插件上报工具/权限/提问；OMP 使用 `agent_settled` 作为真正的回合结束信号。事件 POST 到桌面端 loopback `/agent/hook`，并把 `sessionId` 写回任务记录。
+- Agent 任务头新增运行时状态条：显示当前工具、等待权限/回答、最后消息、模型与子 Agent 数量；状态只存内存，通过 `agent://runtime` 实时推送，任务结束后清空。
+- 「打开系统终端」按运行时续接会话：OMP / Kimi / Qwen 用 `--continue`，Gemini 用 `--resume latest`；会话 hook 捕获到 session id 时优先 `--resume <id>` 精确恢复对应的会话。
 
 ## 修复
 

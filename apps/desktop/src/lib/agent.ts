@@ -60,18 +60,45 @@ export type AgentRuntimeDescriptor = {
   description: string;
   /** Default executable, used as the form placeholder. */
   binary: string;
+  /** 仅用于安装检测的其他可执行名。 */
+  aliases: string[];
   /** 启动参数（不含提示词）。 */
   args: string[];
   /** 提示词交付方式。 */
   promptInjection: "argv" | "flag" | "stdin";
   /** flag 模式下承载提示词的参数名。 */
   promptFlag?: string | null;
+  /** argv 注入时提示词前的参数终止符（通常为 `--`）。 */
+  argvSeparator?: string | null;
+  /** 启动时加载会话监控 hook（OpenCode / Claude / Cursor / Gemini / Qwen / Kimi / ZCode / OMP 等）。 */
+  sessionHook?: boolean;
   available: boolean;
   capabilities: AgentRuntimeCapabilities;
   lifecycle: AgentLifecycleStage[];
   limitations: string[];
   /** What the UI does when an external decision cannot be applied. */
   fallback: string;
+};
+
+/** One runtime's local install state, refreshed at most once a day. */
+export type AgentScanResult = {
+  runtimeId: string;
+  name: string;
+  /** Default command declared by the catalog. */
+  binary: string;
+  /** Absolute path resolved through the user's shell PATH. */
+  resolvedPath?: string | null;
+  /** First line of `--version`. */
+  version?: string | null;
+  found: boolean;
+  /** Why the version probe failed even though the binary exists. */
+  error?: string | null;
+};
+
+export type AgentScanSnapshot = {
+  /** RFC3339; empty when the app has never scanned. */
+  checkedAt: string;
+  results: AgentScanResult[];
 };
 
 /** A complex change paused for the user's commit decision. */
@@ -105,6 +132,8 @@ export type AgentTask = {
   source: string;
   /** Runtime snapshotted at enqueue time. */
   runtimeId?: string;
+  /** 会话 hook 捕获的运行时 session id，用于精确续接会话。 */
+  agentSessionId?: string | null;
   /** Present while the task waits for the commit decision. */
   approval?: AgentApproval | null;
   /** The next run is the post-approval commit phase. */
@@ -113,6 +142,31 @@ export type AgentTask = {
   extraPrompt?: string;
   /** Local resource paths supplied with the task. */
   attachments?: string[];
+};
+
+/** 运行中 Agent 的状态，只存在于内存；任务结束后清空。 */
+export type AgentRuntimePhase =
+  | "idle"
+  | "working"
+  | "waiting_permission"
+  | "waiting_question"
+  | "error";
+
+export type AgentRuntimeStatus = {
+  phase: AgentRuntimePhase;
+  /** 后端生成的中文摘要，例如「等待权限确认」。 */
+  label: string;
+  /** 当前工具名，例如 Bash / Edit。 */
+  tool?: string;
+  /** 工具参数、错误信息等短摘要。 */
+  detail?: string;
+  /** 最近的提示词、回复或通知。 */
+  message?: string;
+  model?: string;
+  sessionId?: string;
+  /** 正在运行的子 Agent 数量。 */
+  subagents: number;
+  updatedAt: string;
 };
 
 export type AgentTasksState = {
@@ -126,6 +180,8 @@ export type AgentTasksState = {
   storageError?: string | null;
   /** Fresh external AI claims (backend already drops expired ones). */
   externalClaims?: ExternalClaim[];
+  /** 运行中 Agent 的状态，key 是 task id。 */
+  runtimeStatus?: Record<string, AgentRuntimeStatus>;
 };
 
 /** A bug an external MCP client is working on. */
@@ -340,6 +396,8 @@ export type AgentEnqueueRequest = {
   extraPrompt?: string | null;
   /** Absolute paths; the agent only ever receives paths, not file bytes. */
   attachments?: string[];
+  /** Runtime for this task only; omitted means the default from settings. */
+  runtimeId?: string | null;
 };
 
 export type AgentOutputPayload = {
@@ -423,6 +481,9 @@ export const agentApi = {
     featureCommand<{ version: string; path: string }>("agent_detect", {
       path: path ?? null,
     }),
+  /** Cached install scan; `force` probes every catalog binary again. */
+  scan: (force = false) =>
+    featureCommand<AgentScanSnapshot>("agent_scan", { force }),
 };
 
 /** Directory containing `bug.md`, for the console's "open export folder" action. */

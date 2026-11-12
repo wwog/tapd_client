@@ -25,7 +25,7 @@
 
 ## 2. 配置
 
-Agent 页 →「配置」：
+Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理全部运行时」进入）：
 
 | 配置 | 说明 |
 | --- | --- |
@@ -57,7 +57,7 @@ Agent 页 →「配置」：
 
 1. 状态 `queued`，立即返回前端（提示“已加入队列”）。
 2. `preparing`：调用导出，生成 `bug.md` + `assets/` + `bug.json`。
-3. 校验仓库路径、运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex；失败只记录 warning）。
+3. 校验仓库路径、运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex / OMP / Kimi Code / Gemini CLI / Qwen Code；失败只记录 warning）。随后为支持会话 hook 的运行时安装/刷新原生 hook（Codex / OpenCode / Claude / Cursor / Gemini / Qwen / OpenClaude / Qoder / Qoder CN / CodeBuddy / Kimi / ZCode / OMP），事件 POST 到桌面端 loopback `/agent/hook`。Codex 会同时写入 `hooks.json` 与 `config.toml` 的信任哈希。
 4. `running`：在仓库目录用 PTY 启动运行时。
    - `argv` / `flag` 模式：提示词随启动命令传入。
    - `stdin` 模式：等待 TUI 就绪后，用括号粘贴写入提示词并回车。
@@ -71,7 +71,8 @@ Agent 页 →「配置」：
 ## 4. Agent tab
 
 - 子页分「运行 / 待审核 / 历史」。运行只显示 `queued / preparing / running`；待审核显示 `awaiting_approval`；历史只显示终态任务。
-- 头部显示任务标题、状态、项目/缺陷、仓库路径、队列/运行/待审核数量与退出码。
+- 头部显示任务标题、状态、项目/缺陷、仓库路径、队列/运行/待审核数量与退出码；有 hook 事件时额外显示运行时状态条（当前工具、最后消息、模型、子 Agent 数量）。
+- 运行时状态来自 hook：`working / waiting_permission / waiting_question / error / idle`，只保存在内存，通过 `agent://runtime` 推送；任务结束后清空。
 - 操作：中断、打开导出目录、打开关联缺陷；右侧终端可直接接管键盘。
 - 终端：PTY 输出只走实时通道（WebGL 渲染的 xterm），不写日志文件；面板中途打开时靠一次尺寸抖动让 TUI 整屏重绘。
 - 权限确认：直接在右侧终端里操作；能力声明里 `externalDecision=false`，桌面不会代为回执。
@@ -82,7 +83,7 @@ Agent 页 →「配置」：
 ## 5. 任务与历史
 
 - SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。
-- 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」用 `opencode --continue` 等 resume 参数在系统终端里续接会话。
+- 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」优先用 hook 捕获的 `sessionId` 精确恢复（Claude/Cursor/OMP 用 `--resume <id>`，OpenCode/Kimi 用 `--session <id>`，Codex 用 `resume <id>`，Gemini 用 `--resume <id>`）；没有 id 时退回各 CLI 的「继续最近会话」（`--continue`，Gemini 用 `--resume latest`）。
 - 状态：`queued | preparing | running | awaiting_approval | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
 - 「历史」子页只展示终态任务，按项目 / 终态 / 关键词在服务端筛选并分页加载（每页 50 条）；查看错误、prompt、退出码与运行时，可「打开系统终端」「重试」。「打开缺陷」只在右侧详情面板展开/切换该缺陷，不跳转项目缺陷列表。

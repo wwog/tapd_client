@@ -4,6 +4,7 @@ import clsx from "clsx";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
@@ -17,6 +18,8 @@ type Props = {
   queuedTasks: AgentTask[];
   selectedId: string | null;
   queuePosition: (task: AgentTask) => number | null;
+  /** 运行中 Agent 的当前状态，key 是 task id。 */
+  runtimeStatus?: Record<string, AgentRuntimeStatus>;
   onSelect: (taskId: string) => void;
 };
 
@@ -32,6 +35,7 @@ export function AgentQueuePane(props: Props) {
     queuedTasks,
     selectedId,
     queuePosition,
+    runtimeStatus,
     onSelect,
   } = props;
 
@@ -67,6 +71,7 @@ export function AgentQueuePane(props: Props) {
               <RunQueueRow
                 key={task.id}
                 task={task}
+                status={runtimeStatus?.[task.id]}
                 selected={task.id === selectedId}
                 onSelect={() => onSelect(task.id)}
               />
@@ -79,6 +84,7 @@ export function AgentQueuePane(props: Props) {
               <RunQueueRow
                 key={task.id}
                 task={task}
+                status={runtimeStatus?.[task.id]}
                 position={queuePosition(task)}
                 selected={task.id === selectedId}
                 onSelect={() => onSelect(task.id)}
@@ -101,11 +107,12 @@ function QueueGroup({ label }: { label: string }) {
 
 function RunQueueRow(props: {
   task: AgentTask;
+  status?: AgentRuntimeStatus;
   position?: number | null;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const { task, position } = props;
+  const { task, position, status } = props;
   const spinning = task.status === "preparing" || task.status === "running";
   return (
     <button
@@ -149,6 +156,12 @@ function RunQueueRow(props: {
       <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
         {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
       </div>
+      {status ? (
+        <div className="mt-0.5 truncate text-ui-xs text-sky-600" title={status.label}>
+          {status.label}
+          {status.tool ? ` · ${status.tool}` : ""}
+        </div>
+      ) : null}
     </button>
   );
 }

@@ -1,7 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 
-import { agentApi, type AgentTasksState } from "./agent";
+import { agentApi, type AgentRuntimeStatus, type AgentTasksState } from "./agent";
 import { createExternalStore } from "./store";
+
+type AgentRuntimeEvent = {
+  taskId: string;
+  status?: AgentRuntimeStatus | null;
+};
 
 /**
  * Shared `agent://state` snapshot. App and AgentPage both read this store, so
@@ -36,9 +41,29 @@ const startSubscription = (): (() => void) => {
     else unlisten = fn;
   });
 
+  // 运行时状态更新频繁，单独推送，避免每次工具事件都重发整份任务列表。
+  let unlistenRuntime: (() => void) | undefined;
+  void listen<AgentRuntimeEvent>("agent://runtime", (event) => {
+    if (cancelled) return;
+    agentTasksStore.set((current) => {
+      if (!current) return current;
+      const next = { ...(current.runtimeStatus ?? {}) };
+      if (event.payload.status) {
+        next[event.payload.taskId] = event.payload.status;
+      } else {
+        delete next[event.payload.taskId];
+      }
+      return { ...current, runtimeStatus: next };
+    });
+  }).then((fn) => {
+    if (cancelled) fn();
+    else unlistenRuntime = fn;
+  });
+
   return () => {
     cancelled = true;
     unlisten?.();
+    unlistenRuntime?.();
   };
 };
 

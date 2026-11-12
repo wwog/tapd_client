@@ -64,6 +64,53 @@ pub(super) fn codex_config_path() -> Option<PathBuf> {
         .map(|home| home.join(".codex").join("config.toml"))
 }
 
+/// OMP keeps MCP servers in the active profile's agent directory:
+/// `~/.omp/agent/mcp.json` by default, a profile's own file when OMP_PROFILE /
+/// PI_PROFILE is set, and `$PI_CONFIG_DIR` replaces the home root.
+pub(super) fn omp_config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("PI_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            tapd_core::paths::home_dir()
+                .ok()
+                .map(|home| home.join(".omp"))
+        })?;
+    let profile = std::env::var_os("OMP_PROFILE")
+        .or_else(|| std::env::var_os("PI_PROFILE"))
+        .filter(|value| !value.is_empty());
+    Some(match profile {
+        Some(profile) => base
+            .join("profiles")
+            .join(profile)
+            .join("agent")
+            .join("mcp.json"),
+        None => base.join("agent").join("mcp.json"),
+    })
+}
+
+/// Kimi Code: `$KIMI_CODE_HOME/mcp.json`, defaulting to `~/.kimi-code/mcp.json`.
+pub(super) fn kimi_config_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("KIMI_CODE_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(dir).join("mcp.json"));
+    }
+    tapd_core::paths::home_dir()
+        .ok()
+        .map(|home| home.join(".kimi-code").join("mcp.json"))
+}
+
+pub(super) fn gemini_config_path() -> Option<PathBuf> {
+    tapd_core::paths::home_dir()
+        .ok()
+        .map(|home| home.join(".gemini").join("settings.json"))
+}
+
+pub(super) fn qwen_config_path() -> Option<PathBuf> {
+    tapd_core::paths::home_dir()
+        .ok()
+        .map(|home| home.join(".qwen").join("settings.json"))
+}
+
 /// GUI apps inherit a minimal `PATH` on macOS, so `claude` / `opencode` are
 /// only found when the child gets the user's shell `PATH`.
 pub(super) fn command_with_user_path(binary: &str) -> Command {

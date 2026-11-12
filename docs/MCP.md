@@ -19,11 +19,15 @@ TAPD Client 通过一个独立的 stdio sidecar（`tapd-mcp`）向 AI 客户端�
 | Claude Code | `~/.claude.json` 的 `mcpServers.tapd` | 执行 `claude mcp add --scope user --transport stdio tapd -- <路径>`；需要已安装 Claude Code CLI |
 | Cursor | `~/.cursor/mcp.json` 的 `mcpServers.tapd` | 保留文件中其他 server |
 | Codex | `~/.codex/config.toml` 的 `[mcp_servers.tapd]` | 优先 `$CODEX_HOME/config.toml`；保留其他配置与注释 |
+| OMP | `~/.omp/agent/mcp.json` 的 `mcpServers.tapd` | 优先 `$PI_CONFIG_DIR/agent/mcp.json`；保留其他 server |
+| Kimi Code | `~/.kimi-code/mcp.json` 的 `mcpServers.tapd` | 优先 `$KIMI_CODE_HOME/mcp.json`；保留其他 server |
+| Gemini CLI | `~/.gemini/settings.json` 的 `mcpServers.tapd` | 保留 settings.json 里的其他配置 |
+| Qwen Code | `~/.qwen/settings.json` 的 `mcpServers.tapd` | 保留 settings.json 里的其他配置 |
 
 - 所有导入都是幂等的：重复导入返回 `changed: false`，不会重复写入。
 - 写入前自动备份为 `<文件名>.bak-<时间戳>`；Claude Code 走 CLI 写入，失败时会恢复导入前的文件。
 - 现有配置无法安全解析时（JSONC 注释、非法 TOML、字段类型不符）会拒绝写入并提示路径，不会覆盖。
-- 之后每次启动 Agent 任务也会幂等确保注入 opencode，不需要再手动改配置。
+- 之后每次启动 Agent 任务也会幂等确保注入对应客户端（opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code），不需要再手动改配置。
 - 一键导入只改用户级配置。**只想对某个项目生效**时，展开该客户端的「手动配置」，按提示写入项目级配置（Claude Code 用 `--scope project`，Cursor/opencode 用项目内配置文件）。
 
 ## 3. 手动配置（项目级，可选）

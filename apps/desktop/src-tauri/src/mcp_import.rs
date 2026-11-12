@@ -7,6 +7,10 @@
 //! - Claude Code: `claude mcp add --scope user` (writes `~/.claude.json`)
 //! - Cursor: `~/.cursor/mcp.json` → `mcpServers.tapd`
 //! - Codex: `~/.codex/config.toml` → `[mcp_servers.tapd]`
+//! - OMP: `~/.omp/agent/mcp.json` → `mcpServers.tapd`
+//! - Kimi Code: `~/.kimi-code/mcp.json` → `mcpServers.tapd`
+//! - Gemini CLI: `~/.gemini/settings.json` → `mcpServers.tapd`
+//! - Qwen Code: `~/.qwen/settings.json` → `mcpServers.tapd`
 //!
 //! Every import is idempotent and backs the file up before changing it.
 //! Frontend access goes through the `mcp_import_client` feature command.
@@ -39,12 +43,20 @@ pub const CLIENT_ZCODE: &str = "zcode";
 pub const CLIENT_CLAUDE: &str = "claude";
 pub const CLIENT_CURSOR: &str = "cursor";
 pub const CLIENT_CODEX: &str = "codex";
-pub const CLIENTS: [&str; 5] = [
+pub const CLIENT_OMP: &str = "omp";
+pub const CLIENT_KIMI: &str = "kimi";
+pub const CLIENT_GEMINI: &str = "gemini";
+pub const CLIENT_QWEN: &str = "qwen";
+pub const CLIENTS: [&str; 9] = [
     CLIENT_OPENCODE,
     CLIENT_ZCODE,
     CLIENT_CLAUDE,
     CLIENT_CURSOR,
     CLIENT_CODEX,
+    CLIENT_OMP,
+    CLIENT_KIMI,
+    CLIENT_GEMINI,
+    CLIENT_QWEN,
 ];
 
 /// How a client stores the MCP server entry.
@@ -129,6 +141,59 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         path: paths::codex_config_path,
         missing_path_error: "无法定位 Codex 配置目录（未设置 CODEX_HOME、HOME 或 USERPROFILE）",
         format: Format::Toml,
+    },
+    ClientSpec {
+        id: CLIENT_OMP,
+        label: "OMP",
+        path: paths::omp_config_path,
+        missing_path_error: "无法定位 OMP 配置目录（未设置 PI_CONFIG_DIR 或 HOME）",
+        format: Format::Json {
+            segments: &["mcpServers", "tapd"],
+            entry: formats::omp_entry,
+            default_root: formats::empty_config,
+            normalize: None,
+            legacy_segments: None,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_KIMI,
+        label: "Kimi Code",
+        path: paths::kimi_config_path,
+        missing_path_error:
+            "无法定位 Kimi Code 配置目录（未设置 KIMI_CODE_HOME、HOME 或 USERPROFILE）",
+        format: Format::Json {
+            segments: &["mcpServers", "tapd"],
+            entry: formats::stdio_entry,
+            default_root: formats::empty_config,
+            normalize: None,
+            legacy_segments: None,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_GEMINI,
+        label: "Gemini CLI",
+        path: paths::gemini_config_path,
+        missing_path_error: "无法定位 Gemini CLI 配置目录（未设置 HOME 或 USERPROFILE）",
+        format: Format::Json {
+            segments: &["mcpServers", "tapd"],
+            entry: formats::stdio_entry,
+            default_root: formats::empty_config,
+            normalize: None,
+            legacy_segments: None,
+        },
+    },
+    ClientSpec {
+        id: CLIENT_QWEN,
+        label: "Qwen Code",
+        path: paths::qwen_config_path,
+        missing_path_error: "无法定位 Qwen Code 配置目录（未设置 HOME 或 USERPROFILE）",
+        format: Format::Json {
+            segments: &["mcpServers", "tapd"],
+            entry: formats::stdio_entry,
+            default_root: formats::empty_config,
+            normalize: None,
+            legacy_segments: None,
+        },
     },
 ];
 
@@ -279,6 +344,24 @@ mod tests {
             ),
             (
                 CLIENT_CURSOR,
+                json!({ "mcpServers": { "tapd": { "command": command } } }),
+            ),
+            (
+                CLIENT_OMP,
+                json!({
+                    "mcpServers": { "tapd": { "type": "stdio", "command": command } }
+                }),
+            ),
+            (
+                CLIENT_KIMI,
+                json!({ "mcpServers": { "tapd": { "command": command } } }),
+            ),
+            (
+                CLIENT_GEMINI,
+                json!({ "mcpServers": { "tapd": { "command": command } } }),
+            ),
+            (
+                CLIENT_QWEN,
                 json!({ "mcpServers": { "tapd": { "command": command } } }),
             ),
         ];

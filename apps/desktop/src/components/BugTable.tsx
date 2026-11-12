@@ -133,7 +133,7 @@ export function BugTable(props: Props) {
 
   /** Row whose 取消 request is in flight (local task id or `external:<key>`). */
   const [cancelingId, setCancelingId] = useState<string | null>(null);
-  /** Runtime the row action will launch, from Agent 页 →「配置」. */
+  /** Runtime the row action will launch, from 设置 →「默认 Agent」. */
   const currentAgent = useCurrentAgent();
 
   const cancelActivity = async (claim?: ExternalClaim, agent?: AgentInFlight) => {

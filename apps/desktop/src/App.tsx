@@ -92,6 +92,8 @@ export default function App() {
   const [agentFocusTaskId, setAgentFocusTaskId] = useState<string | null>(null);
   /** Incremented by the title-bar badge to open the approval queue. */
   const [agentReviewFocus, setAgentReviewFocus] = useState(0);
+  /** Incremented by 设置 → 默认 Agent to open Agent 页 →「配置」. */
+  const [agentConfigFocus, setAgentConfigFocus] = useState(0);
 
   useEffect(() => {
     startUpdateStore();
@@ -294,6 +296,8 @@ export default function App() {
           priority: target.priorityLabel,
           extraPrompt: payload?.prompt.trim() ? payload.prompt : null,
           attachments: payload?.attachments.length ? payload.attachments : undefined,
+          // 提交面板可以为本次任务单独选 Agent；为空时后端用默认运行时。
+          runtimeId: payload?.runtimeId ?? null,
         });
         // The view switches to the Agent tab and focuses this task; a toast
         // on top of that is just noise.
@@ -553,6 +557,7 @@ export default function App() {
           <AgentPage
             focusTaskId={agentFocusTaskId}
             focusReviewToken={agentReviewFocus}
+            focusConfigToken={agentConfigFocus}
             onOpenBug={openBugById}
             toast={showToast}
             onFocusConsumed={clearAgentFocus}
@@ -602,6 +607,10 @@ export default function App() {
                   .resetOnboarding()
                   .then(() => refreshBase())
                   .catch((error) => showToast("error", String(error)));
+              }}
+              onManageAgents={() => {
+                setAgentConfigFocus((current) => current + 1);
+                activateView("agent");
               }}
               toast={showToast}
             />

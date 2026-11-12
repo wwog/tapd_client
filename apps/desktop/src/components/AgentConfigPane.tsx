@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import clsx from "clsx";
 import {
   AlertTriangle,
   Bot,
   Check,
   CircleSlash,
+  RefreshCw,
   ShieldAlert,
+  TriangleAlert,
   Workflow,
 } from "lucide-react";
 
@@ -14,21 +15,29 @@ import {
   type AgentConfig,
   type AgentRuntimeDescriptor,
 } from "../lib/agent";
+import { useAgentScan } from "../lib/agentScan";
+import { formatDateTime } from "../lib/format";
 import type { SettingsSectionProps } from "../lib/feature";
+import { AgentPicker } from "./AgentPicker";
 import { AgentSettings } from "./AgentSettings";
-import { Badge, Spinner } from "./ui";
+import { Badge, Button, Spinner, cardClass } from "./ui";
 
 type Props = {
   toast: SettingsSectionProps["toast"];
 };
 
 /**
- * Agent 配置：运行时选择、运行时参数与互通说明，平铺在 Agent 页的「配置」
- * 子视图里。
+ * Agent 页 →「配置」：默认 Agent 选择 + 该运行时的参数与互通说明。
+ *
+ * 默认运行时用下拉选择器（带检测状态与版本），不再用左侧长列表，避免 40+
+ * 个运行时挤在窄栏里、选中状态也不明显。
  */
 export function AgentConfigPane({ toast }: Props) {
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
+  const [saving, setSaving] = useState(false);
+  /** 本机安装检测；设置页与本页共享同一份缓存。 */
+  const { byRuntime, snapshot, loading: scanning, refresh } = useAgentScan();
 
   useEffect(() => {
     void Promise.all([agentApi.configGet(), agentApi.runtimes()])
@@ -41,6 +50,7 @@ export function AgentConfigPane({ toast }: Props) {
 
   const selectedRuntime =
     runtimes.find((runtime) => runtime.id === config?.runtimeId) ?? runtimes[0] ?? null;
+  const selectedScan = selectedRuntime ? byRuntime.get(selectedRuntime.id) : undefined;
 
   const patchConfig = (patch: Partial<AgentConfig>) => {
     setConfig((current) => (current ? { ...current, ...patch } : current));
@@ -69,81 +79,122 @@ export function AgentConfigPane({ toast }: Props) {
     }
   };
 
-  const selectRuntime = (runtime: AgentRuntimeDescriptor) => {
-    if (!config || !runtime.available || runtime.id === config.runtimeId) return;
+  const selectRuntime = async (runtimeId: string) => {
+    const runtime = runtimes.find((item) => item.id === runtimeId);
+    if (!config || !runtime || !runtime.available || runtime.id === config.runtimeId) return;
+    setSaving(true);
     // 可执行路径只有一个，切换运行时同时切回该运行时的默认命令。
     patchConfig({ runtimeId: runtime.id, binaryPath: runtime.binary });
-    void commit({ runtimeId: runtime.id, binaryPath: runtime.binary });
+    try {
+      await commit({ runtimeId: runtime.id, binaryPath: runtime.binary });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="flex min-h-0 flex-1 gap-3">
-      <aside className="flex w-[232px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
-          <Bot size={13} className="text-slate-400" />
-          <span className="text-ui-sm text-slate-500">运行时</span>
-        </div>
-        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-2">
-          {runtimes.map((runtime) => (
-            <button
-              key={runtime.id}
-              type="button"
-              disabled={!runtime.available}
-              onClick={() => selectRuntime(runtime)}
-              title={runtime.description}
-              className={clsx(
-                "w-full rounded-xl border px-3 py-2.5 text-left transition",
-                runtime.id === config?.runtimeId
-                  ? "border-sky-400 bg-sky-50"
-                  : "border-border bg-surface hover:border-slate-300 hover:bg-slate-50",
-                !runtime.available && "cursor-not-allowed opacity-60",
-              )}
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="text-ui-caption font-normal text-slate-800">
-                  {runtime.name}
-                </span>
-                <Badge tone={runtime.available ? "green" : "neutral"}>
-                  {runtime.available ? "已支持" : "即将支持"}
-                </Badge>
-              </div>
-              <div className="mt-0.5 text-ui-xs text-slate-400">
-                {runtime.vendor} · {runtime.binary}
-              </div>
-            </button>
-          ))}
-          {runtimes.length === 0 ? (
-            <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
-              <Spinner />
-              正在读取…
-            </div>
-          ) : null}
-        </div>
-      </aside>
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div className="mx-auto max-w-4xl space-y-4 pb-2">
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+              <Bot size={15} className="text-slate-400" />
+              Agent 运行时
+            </h2>
+            <p className="mt-1 text-ui-caption leading-5 text-slate-500">
+              选择默认 Agent，并调整它的启动方式与提示词模板。改动只影响之后入队的任务。
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<RefreshCw size={13} />}
+            loading={scanning}
+            onClick={() => void refresh(true)}
+          >
+            刷新检测
+          </Button>
+        </header>
 
-      <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface p-4">
+        <section className={cardClass}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-ui-caption font-normal text-slate-800">默认 Agent</h3>
+              <p className="mt-0.5 text-ui-xs leading-4 text-slate-400">
+                缺陷详情的「用 Agent 修复」与修复队列默认使用这个运行时。
+              </p>
+            </div>
+            <span className="text-ui-xs text-slate-400">
+              {snapshot?.checkedAt
+                ? `上次检测 ${formatDateTime(snapshot.checkedAt)}`
+                : "尚未检测本机 Agent"}
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            {!config || !selectedRuntime ? (
+              <span className="flex items-center gap-2 text-ui-caption text-slate-400">
+                <Spinner />
+                正在读取运行时…
+              </span>
+            ) : (
+              <AgentPicker
+                className="w-full max-w-lg"
+                runtimes={runtimes}
+                value={config.runtimeId}
+                byRuntime={byRuntime}
+                hasScan={Boolean(snapshot)}
+                disabled={saving}
+                onChange={(runtimeId) => void selectRuntime(runtimeId)}
+              />
+            )}
+            {saving ? <Spinner className="h-3.5 w-3.5" /> : null}
+          </div>
+
+          {selectedRuntime &&
+          snapshot &&
+          !selectedScan?.found &&
+          selectedRuntime.id !== "custom" ? (
+            <p className="mt-3 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-ui-sm leading-5 text-amber-800">
+              <TriangleAlert size={13} className="mt-0.5 shrink-0 text-amber-600" />
+              该 Agent 未在本机 PATH 中检测到。安装后点「刷新检测」，或把下方的可执行路径改成绝对路径。
+            </p>
+          ) : null}
+        </section>
+
         {!config || !selectedRuntime ? (
           <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
             <Spinner />
             读取 Agent 运行时…
           </div>
         ) : (
-          <div className="space-y-5">
-            <AgentSettings
-              key={selectedRuntime.id}
-              config={config}
-              runtime={selectedRuntime}
-              onChange={patchConfig}
-              onCommit={commit}
-              toast={toast}
-            />
+          <>
+            <section className={cardClass}>
+              <AgentSettings
+                key={selectedRuntime.id}
+                config={config}
+                runtime={selectedRuntime}
+                onChange={patchConfig}
+                onCommit={commit}
+                toast={toast}
+              />
+            </section>
 
-            <Lifecycle stages={selectedRuntime.lifecycle} />
-            <Capabilities runtime={selectedRuntime} />
-            <Limitations runtime={selectedRuntime} />
-          </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <section className={cardClass}>
+                <Lifecycle stages={selectedRuntime.lifecycle} />
+              </section>
+              <section className={cardClass}>
+                <Capabilities runtime={selectedRuntime} />
+              </section>
+            </div>
+
+            <section className={cardClass}>
+              <Limitations runtime={selectedRuntime} />
+            </section>
+          </>
         )}
-      </section>
+      </div>
     </div>
   );
 }

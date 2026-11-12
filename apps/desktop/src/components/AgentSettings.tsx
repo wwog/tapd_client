@@ -56,7 +56,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
             className="text-ui-caption text-slate-800"
             title={`${runtime.name} · 修改后自动保存`}
           >
-            运行时配置
+            运行时参数
           </h3>
         </div>
         <div className="flex shrink-0 items-center gap-2">

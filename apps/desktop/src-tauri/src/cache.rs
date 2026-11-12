@@ -222,6 +222,7 @@ mod tests {
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
             runtime_id: "opencode".to_string(),
+            agent_session_id: None,
             approval: None,
             commit_only: false,
             extra_prompt: String::new(),

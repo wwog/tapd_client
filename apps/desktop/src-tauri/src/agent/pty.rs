@@ -203,6 +203,7 @@ impl AgentCore {
         guard: Arc<PromptGuard>,
         inject_prompt: bool,
         idle_complete: Option<Duration>,
+        monitor_hook: bool,
     ) -> PtyOutcome {
         // A cancel can land between the status update and this thread starting;
         // don't spawn a process that is already doomed.
@@ -447,6 +448,38 @@ impl AgentCore {
                 Err(error) => {
                     outcome.error = Some(format!("等待 Agent 进程失败：{error}"));
                     break;
+                }
+            }
+
+            // 会话 hook 在 session_start / agent_end 等事件上报到 loopback：
+            // session id 已在服务端落库，这里只处理回合结束。
+            if monitor_hook {
+                if let Some(state) = self.take_hook_event(&task.id) {
+                    if state.phase == "agent_end"
+                        && !state.will_continue
+                        && !state.awaiting_async_work
+                    {
+                        tracing::info!(task_id = %task.id, "agent session hook reported agent_end");
+                        if let Some(error) = state.error {
+                            // StopFailure 等事件表示本轮失败，不能按成功收尾。
+                            outcome.error = Some(error);
+                        } else {
+                            let message = "Agent 回合已结束，自动完成本轮".to_string();
+                            outcome.completed = true;
+                            outcome.warning = Some(match outcome.warning.take() {
+                                Some(existing) => format!("{existing}；{message}"),
+                                None => message,
+                            });
+                        }
+                        if let Ok(mut runtime) = runtime.lock() {
+                            runtime.kill();
+                        }
+                        // Reap the process so the PTY reader sees EOF.
+                        if let Ok(status) = child.wait() {
+                            outcome.exit_code = Some(status.exit_code() as i32);
+                        }
+                        break;
+                    }
                 }
             }
 
