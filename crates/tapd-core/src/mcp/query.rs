@@ -29,7 +29,7 @@ pub(super) const TAPD_LIST_PROJECTS: ToolSpec = ToolSpec {
 
 pub(super) const TAPD_LIST_BUGS: ToolSpec = ToolSpec {
     name: r#"tapd_list_bugs"#,
-    description: r#"查询 TAPD 缺陷。默认只返回分配给自己的未解决缺陷；支持按项目、处理人、状态、优先级、严重程度、关键词与时间过滤。"#,
+    description: r#"查询 TAPD 缺陷。默认只返回分配给自己的未解决缺陷；支持按项目、处理人、状态、优先级、严重程度、关键词/ID 与时间过滤。"#,
     schema: r#"{
   "type": "object",
   "properties": {
@@ -68,7 +68,7 @@ pub(super) const TAPD_LIST_BUGS: ToolSpec = ToolSpec {
     },
     "keyword": {
       "type": "string",
-      "description": "标题关键词"
+      "description": "标题关键词；纯数字按缺陷 ID 精确匹配（完整 ID 或短 ID，可带 #）"
     },
     "only_unresolved": {
       "type": "boolean",
@@ -135,7 +135,7 @@ pub(super) const TAPD_LIST_MY_BUGS: ToolSpec = ToolSpec {
     },
     "keyword": {
       "type": "string",
-      "description": "标题关键词"
+      "description": "标题关键词；纯数字按缺陷 ID 精确匹配（完整 ID 或短 ID，可带 #）"
     },
     "only_unresolved": {
       "type": "boolean",

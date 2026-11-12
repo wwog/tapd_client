@@ -9,6 +9,7 @@
 
 ## 修改
 
+- 缺陷列表搜索支持缺陷 ID：输入完整 ID 或列表里的短 ID（可带 `#`）直接定位；纯数字关键词按 ID 精确匹配，其他关键词仍按标题模糊搜索，离线缓存与「处理中」本地筛选同步生效。
 - 移除独立工具 `tapd_get_bug_prompt`（工具数 16 → 15）：修复提示词并入 `tapd_export_bug_md`，`tapdIntegration.prompt` 改为指向导出工具；自定义模板 / `kind` / `refresh` 参数一并移除。
 - 外部 AI 的交付流程从提示词移到 `tapd_get_bug` 的 `tapdIntegration`：新增 `simple` / `complex` 两段复核条件（简单改动直接 commit 回写；复杂改动先请用户复核测试、确认后再 commit 与回写），`writeBack` 明确「先 commit、再评论、最后改状态」，`claim` 说明 conflict 时停止。`prompt.md` 只保留任务本身与一句指向 `tapdIntegration` 的说明，避免模型把埋在正文里的流程整段跳过。
 - 运行信息弹窗改为挂载到窗口根节点，蒙层覆盖整个应用窗口。

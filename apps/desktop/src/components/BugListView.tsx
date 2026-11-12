@@ -211,6 +211,11 @@ function BugListViewImpl(props: Props) {
       const statusMap: Record<string, string> = {};
       for (const bug of source) statusMap[bug.status] = bug.statusLabel;
       const needle = debouncedKeyword.toLowerCase();
+      // Mirrors the server-side filter: digits are an id lookup (full or short
+      // id, optional `#`), everything else matches the title.
+      const keywordId = /^#?\d+$/.test(debouncedKeyword)
+        ? debouncedKeyword.replace(/^#/, "")
+        : null;
       const bugs = source.filter(
         (bug) =>
           (statusFilter.length === 0 || statusFilter.includes(bug.status)) &&
@@ -218,7 +223,10 @@ function BugListViewImpl(props: Props) {
           (!severity || bug.severity === severity) &&
           (ownerFilter.length === 0 || ownerFilter.includes(bug.owner)) &&
           (!creatorFilter || bug.creator === creatorFilter) &&
-          (!needle || bug.title.toLowerCase().includes(needle)),
+          (!needle ||
+            (keywordId
+              ? bug.id === keywordId || bug.shortId === keywordId
+              : bug.title.toLowerCase().includes(needle))),
       );
       if (sort) {
         const direction = sort.order === "asc" ? 1 : -1;
