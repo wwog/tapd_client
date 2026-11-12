@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot, ExternalLink, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
+import { Bot, ExternalLink, Fingerprint, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
 import clsx from "clsx";
 
 import type { BugSummary } from "../lib/api";
+import { bugRef } from "../lib/bug";
 import { DEV_SIM, clearDevSim, setDevSim, type DevSimKind } from "../lib/devSim";
 import { useDismiss } from "../hooks/useDismiss";
 
@@ -11,7 +12,7 @@ export type BugRowMenu = { x: number; y: number; bug: BugSummary };
 
 /** Approximate row context menu box, used to keep it inside the window. */
 const MENU_WIDTH = 168;
-const MENU_HEIGHT = DEV_SIM ? 320 : 100;
+const MENU_HEIGHT = DEV_SIM ? 352 : 132;
 
 type Props = {
   menu: BugRowMenu;
@@ -23,7 +24,7 @@ type Props = {
 /** Right-click menu for a bug row; dismisses like a native popup menu. */
 export function BugRowContextMenu(props: Props) {
   const { menu, onClose, onCopy, onOpenWeb } = props;
-  const [copiedKey, setCopiedKey] = useState<"id" | "title" | null>(null);
+  const [copiedKey, setCopiedKey] = useState<"id" | "longId" | "title" | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
 
@@ -37,7 +38,7 @@ export function BugRowContextMenu(props: Props) {
     [],
   );
 
-  const copyFromMenu = (key: "id" | "title", text: string) => {
+  const copyFromMenu = (key: "id" | "longId" | "title", text: string) => {
     onCopy?.(text);
     setCopiedKey(key);
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
@@ -64,7 +65,13 @@ export function BugRowContextMenu(props: Props) {
         icon={<Hash size={12} />}
         label={copiedKey === "id" ? "已复制 ID" : "复制 ID"}
         done={copiedKey === "id"}
-        onClick={() => copyFromMenu("id", menu.bug.shortId || menu.bug.id)}
+        onClick={() => copyFromMenu("id", bugRef(menu.bug))}
+      />
+      <RowMenuItem
+        icon={<Fingerprint size={12} />}
+        label={copiedKey === "longId" ? "已复制长 ID" : "复制长 ID"}
+        done={copiedKey === "longId"}
+        onClick={() => copyFromMenu("longId", menu.bug.id)}
       />
       <RowMenuItem
         icon={<Type size={12} />}

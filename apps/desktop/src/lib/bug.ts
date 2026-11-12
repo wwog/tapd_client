@@ -1,5 +1,16 @@
 /** Ownership helpers shared by the list and the detail panel. */
 
+/**
+ * The bug id as the UI shows and copies it.
+ *
+ * TAPD's short id (the long id's trailing digits) is what the list, the detail
+ * header and the right-click menu all display. The detail endpoint omits it, so
+ * fall back to the id tail — one helper keeps the label and the clipboard from
+ * disagreeing (19-digit id copied under a `#1010792` label).
+ */
+export const bugRef = (bug: { id: string; shortId: string }): string =>
+  bug.shortId || bug.id.slice(-7);
+
 /** TAPD stores user fields as `nick;nick;` (older data may use `|` or `,`). */
 export const ownerNames = (value: string | null | undefined): string[] => {
   if (!value) return [];

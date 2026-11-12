@@ -16,7 +16,7 @@ import {
   type BugListPage,
   type BugSummary,
 } from "../lib/api";
-import { bugTitle, isMyBug } from "../lib/bug";
+import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { useCurrentAgent } from "../lib/useCurrentAgent";
 import {
   agentBugKey,
@@ -339,7 +339,7 @@ export function BugTable(props: Props) {
                       "shrink-0 font-mono transition-colors",
                       active && "text-sky-600",
                     )}
-                  >#{bug.shortId || bug.id.slice(-7)}</span>
+                  >#{bugRef(bug)}</span>
                   {bug.versionReport ? (
                     <span className="shrink-0">发现版本 {bug.versionReport}</span>
                   ) : null}

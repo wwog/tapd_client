@@ -19,7 +19,7 @@ import {
   type OpenMediaMode,
   type WorkspaceMember,
 } from "../lib/api";
-import { bugTitle, isMyBug } from "../lib/bug";
+import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
 import { showToast } from "../lib/toast";
@@ -252,9 +252,9 @@ function BugDetailDrawerImpl(props: Props) {
     }
   };
 
-  /** Copies the short id, matching the project-ID feedback (no toast). */
+  /** Copies the same short id the header renders (no toast). */
   const copyBugId = async (target: BugDetail) => {
-    const value = target.shortId || target.id;
+    const value = bugRef(target);
     if (!(await copyText(value))) {
       showToast("error", "复制失败");
       return;
@@ -295,12 +295,10 @@ function BugDetailDrawerImpl(props: Props) {
                     size={10}
                     className={clsx(
                       "text-emerald-600 transition-opacity",
-                      copiedId === (detail.shortId || detail.id)
-                        ? "opacity-100"
-                        : "opacity-0",
+                      copiedId === bugRef(detail) ? "opacity-100" : "opacity-0",
                     )}
                   />
-                  #{detail.shortId || detail.id.slice(-7)}
+                  #{bugRef(detail)}
                 </button>
               ) : (
                 <span className="font-mono">—</span>

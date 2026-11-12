@@ -336,7 +336,7 @@ fn parse_summary(
     let story_name = first_text(bug, &["story_name", "BugStoryRelation_story_name"]);
 
     Some(BugSummary {
-        short_id: text(bug, "short_id"),
+        short_id: short_id(bug, &id),
         title: text(bug, "title"),
         status_label: status_label(&status, status_map),
         priority_label: priority_label(&priority),
@@ -360,6 +360,25 @@ fn parse_summary(
         workspace_id,
         id,
     })
+}
+
+/// TAPD's short id, falling back to the long id's trailing 7 digits.
+///
+/// The list endpoint returns `short_id` (it is in
+/// [`super::LIST_SHOW_FIELDS`]) but the detail endpoint omits it. Without the
+/// fallback the detail header shows `id.slice(-7)` while copy-to-clipboard
+/// hands out the full 19-digit id, so the two disagree. TAPD's short id is the
+/// tail of the numeric long id, which makes the fallback exact rather than
+/// cosmetic.
+fn short_id(bug: &Value, id: &str) -> String {
+    let short = text(bug, "short_id");
+    if !short.is_empty() {
+        return short;
+    }
+    if id.len() > 7 && id.chars().all(|ch| ch.is_ascii_digit()) {
+        return id[id.len() - 7..].to_string();
+    }
+    id.to_string()
 }
 
 fn parse_comment(value: &Value) -> Option<Comment> {

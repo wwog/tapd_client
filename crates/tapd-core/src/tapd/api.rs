@@ -306,6 +306,8 @@ mod tests {
         });
         let detail = parse_bug_detail(&root).expect("detail");
         assert_eq!(detail.summary.title, "示例");
+        // The detail payload omits `short_id`; it is derived from the id tail.
+        assert_eq!(detail.summary.short_id, "1010606");
         assert_eq!(detail.description_text, "hello world");
         assert_eq!(detail.comments.len(), 1);
         assert_eq!(detail.attachments.len(), 1);

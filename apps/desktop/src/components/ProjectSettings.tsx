@@ -156,7 +156,7 @@ export function ProjectSettings(props: {
   const pickerProject = pickerFor ? projects[pickerFor] ?? emptyProject() : null;
 
   return (
-    <section className={cardClass}>
+    <section className={`${cardClass} @container`}>
       <h2
         className="flex items-center gap-2 text-ui-base text-slate-900"
         title="每个项目可设置本地文件夹、项目规则和是否显示在左侧列表；改动自动保存。"
@@ -165,7 +165,10 @@ export function ProjectSettings(props: {
         项目列表
       </h2>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      {/* Container query, not viewport: the detail pane can squeeze this column
+          while the window itself stays wide. One column until a card can hold
+          its whole header row without clipping "规则". */}
+      <div className="mt-3 grid grid-cols-1 gap-2 @[560px]:grid-cols-2">
         {workspaces.map((workspace) => {
           const project = projects[workspace.id] ?? emptyProject();
           const open = expanded[workspace.id] ?? false;
@@ -187,7 +190,10 @@ export function ProjectSettings(props: {
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
                   style={{ backgroundColor: workspace.logoColor || "#0ea5e9" }}
                 />
-                <span className="min-w-0 flex-1 truncate text-ui-caption font-normal text-slate-800">
+                <span
+                  className="min-w-0 flex-1 truncate text-ui-caption font-normal text-slate-800"
+                  title={workspace.name}
+                >
                   {workspace.name}
                 </span>
                 <button
