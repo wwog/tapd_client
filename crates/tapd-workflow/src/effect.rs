@@ -30,6 +30,9 @@ pub struct RecoveryReport {
     pub awaiting_approval: usize,
     pub awaiting_merge: usize,
     pub failed: usize,
+    /// The queue was restored but is paused: queued tasks are kept and wait
+    /// for an explicit user resume instead of continuing automatically.
+    pub queue_paused: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +45,15 @@ pub enum Effect {
     /// Upsert only the tasks that changed. Host applies by `id`.
     PersistChanged {
         tasks: Vec<Task>,
+    },
+    /// The task record is gone; the host removes it from its store.
+    PersistDeleted {
+        task_id: TaskId,
+    },
+    /// The queue pause flag changed (or is being reported at shutdown). The
+    /// host persists it next to the task snapshot.
+    PersistPaused {
+        paused: bool,
     },
     PersistConfig {
         config: WorkflowConfig,

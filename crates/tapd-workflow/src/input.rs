@@ -109,9 +109,14 @@ pub enum Input {
         task_id: TaskId,
         now: Timestamp,
     },
+    /// The user stopped a review. The host performs the git stash first and
+    /// passes the resulting reference (if any) plus an optional reason; the
+    /// core only moves the task to `Canceled` and records both.
     StopReview {
         task_id: TaskId,
         now: Timestamp,
+        stash: Option<String>,
+        error: Option<String>,
     },
     StartMerge {
         task_id: TaskId,
@@ -136,6 +141,25 @@ pub enum Input {
     },
 
     // -- host facts ---------------------------------------------------------
+    /// The host finished preparing a fix run: it rendered the prompt, exported
+    /// the bug package and captured the repository baseline. Accepted only
+    /// while the task is `Preparing` (i.e. after the scheduler emitted the
+    /// worktree/start effect and before [`Input::AgentStarted`]). It only
+    /// records the facts; starting the run stays the scheduler's job.
+    TaskPrepared {
+        task_id: TaskId,
+        prompt: String,
+        json_path: String,
+        baseline_dirty: Vec<String>,
+        baseline_head: Option<String>,
+    },
+    /// The host observed the agent session id for a live task. Late
+    /// observations for terminal or unknown tasks are ignored: they carry no
+    /// state transition and must not rewrite history.
+    SessionObserved {
+        task_id: TaskId,
+        session_id: String,
+    },
     AgentStarted {
         task_id: TaskId,
     },

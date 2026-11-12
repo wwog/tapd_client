@@ -166,6 +166,21 @@ export function AgentExecutionCard({ toast }: Props) {
               className={`${inputClass} mt-1.5 font-mono disabled:cursor-not-allowed disabled:opacity-50`}
             />
           </label>
+
+          <div
+            className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5 sm:col-span-2"
+            title="客户端重启后，之前排队的任务自动继续；关闭则保留队列但暂停，等你手动继续。"
+          >
+            <span className="text-ui-sm text-slate-600">启动恢复排队</span>
+            <Switch
+              checked={config.restoreQueuedTasks}
+              label="启动恢复排队"
+              disabled={saving}
+              onChange={(value) => {
+                void save({ restoreQueuedTasks: value });
+              }}
+            />
+          </div>
         </div>
       )}
 

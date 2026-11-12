@@ -25,6 +25,68 @@ fn queued_tasks_are_retained_and_counted() {
 }
 
 #[test]
+fn default_policy_restores_queued_tasks_and_continues() {
+    let config = paused_config();
+    assert!(config.recovery_policy.restore_queued);
+
+    let mut queued = task_with_status("q", "bug-q", TaskStatus::Queued);
+    queued.interrupted = true;
+    let mut tasks = vec![queued];
+    let outcome = tapd_workflow::recovery::recover(&mut tasks, &config, &now(30));
+
+    // Kept as-is (interrupted is not a recovery decision) and not paused.
+    assert_eq!(tasks[0].status, TaskStatus::Queued);
+    assert!(tasks[0].interrupted);
+    assert_eq!(outcome.queued, 1);
+    assert!(!outcome.pause_queue);
+}
+
+#[test]
+fn disabled_restore_keeps_queued_tasks_but_pauses_the_queue() {
+    let mut config = paused_config();
+    config.recovery_policy.restore_queued = false;
+
+    let mut queued = task_with_status("q", "bug-q", TaskStatus::Queued);
+    queued.finished_at = None;
+    let mut running = task_with_status("r", "bug-r", TaskStatus::Running);
+    running.attempt = 0;
+    let mut tasks = vec![queued, running];
+    let outcome = tapd_workflow::recovery::recover(&mut tasks, &config, &now(30));
+
+    // Queued is untouched; other recovery rules still apply.
+    assert_eq!(tasks[0].status, TaskStatus::Queued);
+    assert!(!tasks[0].interrupted);
+    assert_eq!(tasks[1].status, TaskStatus::Queued);
+    assert!(tasks[1].interrupted);
+    assert_eq!(tasks[1].attempt, 1);
+    assert_eq!(outcome.queued, 1);
+    assert_eq!(outcome.retried, 1);
+    assert!(outcome.pause_queue);
+}
+
+#[test]
+fn report_queue_paused_follows_the_outcome() {
+    let queued = task_with_status("q", "bug-q", TaskStatus::Queued);
+    let (mut workflow, _) = boot_with(paused_config(), vec![queued.clone()], false);
+    assert!(!workflow.recovery_report().unwrap().queue_paused);
+    assert!(!workflow.paused());
+    // The default policy lets the queue continue: the task is scheduled at once.
+    assert_eq!(status(&workflow, "q"), TaskStatus::Preparing);
+
+    let mut config = paused_config();
+    config.recovery_policy.restore_queued = false;
+    let (mut paused, _) = boot_with(config, vec![queued], false);
+    assert!(paused.recovery_report().unwrap().queue_paused);
+    assert!(paused.paused());
+    // Paused means no automatic continue; the task is kept, not dropped.
+    assert_eq!(status(&paused, "q"), TaskStatus::Queued);
+
+    // An explicit resume releases the queue.
+    paused.apply(Input::ResumeQueue { now: now(40) });
+    assert!(!paused.paused());
+}
+
+#[test]
 fn running_task_is_requeued_with_attempt_and_interrupted_flag() {
     let mut running = task_with_status("r", "bug-r", TaskStatus::Running);
     running.started_at = Some(now(1));

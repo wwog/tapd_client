@@ -51,6 +51,7 @@ export function RecoveryBanner(props: {
       />
       <p className="min-w-0 flex-1 text-ui-caption leading-5">
         已恢复 {total} 个任务：{details.join("，")}。
+        {report.queuePaused ? "队列已暂停，可到 Agent 页继续。" : null}
       </p>
       <div className="flex shrink-0 items-center gap-1">
         <Button variant="ghost" size="sm" onClick={onOpenTasks}>

@@ -105,6 +105,65 @@ impl Workflow {
         self.tasks.iter().find(|task| &task.id == id)
     }
 
+    /// The task the console should display: the first running/preparing/merging
+    /// task, then the next review or merge decision, then the next queued task,
+    /// then the most recently inserted terminal task. Mirrors the historical
+    /// host helper so the console does not change behaviour.
+    pub fn active_task_id(&self) -> Option<&TaskId> {
+        self.tasks
+            .iter()
+            .find(|task| task.status.is_active())
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.status == TaskStatus::AwaitingApproval)
+            })
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.status == TaskStatus::AwaitingMerge)
+            })
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.status == TaskStatus::Queued)
+            })
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .rev()
+                    .find(|task| task.status.is_terminal())
+            })
+            .map(|task| &task.id)
+    }
+
+    /// Terminal tasks cloned out of the live list, newest first by
+    /// `finished_at`, then `created_at`, then insertion order (later wins).
+    /// The host may re-sort or paginate; this is just a stable default.
+    pub fn history(&self) -> Vec<Task> {
+        let mut history: Vec<(usize, Task)> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| task.status.is_terminal())
+            .map(|(index, task)| (index, task.clone()))
+            .collect();
+        history.sort_by(|(left_index, left), (right_index, right)| {
+            let left_key = (
+                left.finished_at.as_deref().unwrap_or_default(),
+                left.created_at.as_str(),
+            );
+            let right_key = (
+                right.finished_at.as_deref().unwrap_or_default(),
+                right.created_at.as_str(),
+            );
+            right_key
+                .cmp(&left_key)
+                .then_with(|| right_index.cmp(left_index))
+        });
+        history.into_iter().map(|(_, task)| task).collect()
+    }
+
     pub fn counts(&self) -> TaskCounts {
         task_counts(&self.tasks)
     }
@@ -135,7 +194,11 @@ impl Workflow {
         if effects.iter().any(|effect| {
             matches!(
                 effect,
-                Effect::PersistChanged { .. } | Effect::PersistConfig { .. } | Effect::StateChanged
+                Effect::PersistChanged { .. }
+                    | Effect::PersistDeleted { .. }
+                    | Effect::PersistPaused { .. }
+                    | Effect::PersistConfig { .. }
+                    | Effect::StateChanged
             )
         }) {
             self.generation = self.generation.wrapping_add(1);
@@ -160,17 +223,40 @@ impl Workflow {
                 now,
             } => self.on_retry(task_id, new_id, now, effects),
             Input::ApproveReview { task_id, now } => self.on_approve_review(task_id, now, effects),
-            Input::StopReview { task_id, now } => self.on_stop_review(task_id, now, effects),
+            Input::StopReview {
+                task_id,
+                now,
+                stash,
+                error,
+            } => self.on_stop_review(task_id, now, stash, error, effects),
             Input::StartMerge { task_id, now } => self.on_start_merge(task_id, now, effects),
             Input::VerifyMerge { task_id, now } => self.on_verify_merge(task_id, now, effects),
             Input::Cancel { task_id, now } => self.on_cancel(task_id, now, effects),
             Input::DeleteTerminal { task_id } => self.on_delete_terminal(task_id, effects),
             Input::ResumeQueue { now } => {
                 self.clock = now;
-                self.paused = false;
+                self.set_paused(false, effects);
                 effects.push(Effect::StateChanged);
             }
             Input::SetConfig { config } => self.on_set_config(config, effects),
+            Input::TaskPrepared {
+                task_id,
+                prompt,
+                json_path,
+                baseline_dirty,
+                baseline_head,
+            } => self.on_task_prepared(
+                task_id,
+                prompt,
+                json_path,
+                baseline_dirty,
+                baseline_head,
+                effects,
+            ),
+            Input::SessionObserved {
+                task_id,
+                session_id,
+            } => self.on_session_observed(task_id, session_id, effects),
             Input::AgentStarted { task_id } => self.on_agent_started(task_id, effects),
             Input::AgentStartFailed { task_id, error } => {
                 self.on_agent_start_failed(task_id, error, effects)
@@ -237,6 +323,9 @@ impl Workflow {
 
         let restored_at = self.entered_at.clone();
         let outcome = recover(&mut self.tasks, &self.config, &restored_at);
+        // Restoration never discards queued tasks; a disabled auto-continue
+        // only parks the queue so the user can resume it explicitly.
+        self.paused = self.paused || outcome.pause_queue;
         let changed: Vec<Task> = outcome
             .changed
             .iter()
@@ -263,6 +352,7 @@ impl Workflow {
             awaiting_approval: outcome.awaiting_approval,
             awaiting_merge: outcome.awaiting_merge,
             failed: outcome.failed.len(),
+            queue_paused: self.paused,
         };
         self.next_report_id = self.next_report_id.wrapping_add(1);
         self.recovery = Some(report.clone());
@@ -286,6 +376,11 @@ impl Workflow {
         self.pending_merge_errors.clear();
         self.pending_verifications.clear();
         effects.push(Effect::PersistChanged { tasks: changed });
+        // Shutdown is the host's last chance to persist the flag, so report it
+        // even when the value itself did not change during this suspend.
+        effects.push(Effect::PersistPaused {
+            paused: self.paused,
+        });
     }
 
     // -- admission ----------------------------------------------------------
@@ -477,7 +572,14 @@ impl Workflow {
         self.push_persist(effects, &changed);
     }
 
-    fn on_stop_review(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
+    fn on_stop_review(
+        &mut self,
+        task_id: TaskId,
+        now: Timestamp,
+        stash: Option<String>,
+        error: Option<String>,
+        effects: &mut Vec<Effect>,
+    ) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id) else {
             effects.push(Effect::rejected("任务不存在"));
@@ -487,10 +589,20 @@ impl Workflow {
             effects.push(Effect::rejected("任务不在待审核状态"));
             return;
         }
-        self.stop_review(task_id, now, effects);
+        self.stop_review(task_id, now, stash, error, effects);
     }
 
-    fn stop_review(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
+    /// Shared by `StopReview` and `Cancel` on a reviewed task. The host has
+    /// already stashed the working tree; the core records the reference and
+    /// halts the queue until the user resumes it.
+    fn stop_review(
+        &mut self,
+        task_id: TaskId,
+        now: Timestamp,
+        stash: Option<String>,
+        error: Option<String>,
+        effects: &mut Vec<Effect>,
+    ) {
         let Some(index) = self.task_index(&task_id) else {
             return;
         };
@@ -501,13 +613,16 @@ impl Workflow {
         task.status = TaskStatus::Canceled;
         task.finished_at = Some(now);
         task.exit_code = None;
-        task.error = Some(STOPPED_REVIEW_ERROR.to_string());
+        task.error = Some(error.unwrap_or_else(|| STOPPED_REVIEW_ERROR.to_string()));
         task.commit_only = false;
         task.interrupted = false;
-        // Stopping keeps the queue halted until the user explicitly resumes.
-        self.paused = true;
+        task.approval
+            .get_or_insert_with(TaskApproval::default)
+            .stash = stash;
         let changed = task.clone();
+        // Stopping keeps the queue halted until the user explicitly resumes.
         self.push_persist(effects, &changed);
+        self.set_paused(true, effects);
         self.push_history(effects, &changed);
     }
 
@@ -863,7 +978,7 @@ impl Workflow {
             return;
         };
         match task.status {
-            TaskStatus::AwaitingApproval => self.stop_review(task_id, now, effects),
+            TaskStatus::AwaitingApproval => self.stop_review(task_id, now, None, None, effects),
             TaskStatus::AwaitingMerge => {
                 let Some(index) = self.task_index(&task_id) else {
                     return;
@@ -920,6 +1035,9 @@ impl Workflow {
             return;
         }
         let task = self.tasks.remove(index);
+        effects.push(Effect::PersistDeleted {
+            task_id: task.id.clone(),
+        });
         if let Some(path) = task
             .worktree_path
             .clone()
@@ -953,6 +1071,57 @@ impl Workflow {
     }
 
     // -- host facts ---------------------------------------------------------
+
+    /// Records the host's preparation facts without starting anything. The
+    /// scheduler already emitted the worktree/start effect when it moved the
+    /// task to `Preparing`; `AgentStarted` follows once the host really spawns
+    /// the agent.
+    fn on_task_prepared(
+        &mut self,
+        task_id: TaskId,
+        prompt: String,
+        json_path: String,
+        baseline_dirty: Vec<String>,
+        baseline_head: Option<String>,
+        effects: &mut Vec<Effect>,
+    ) {
+        let Some(index) = self.task_index(&task_id) else {
+            effects.push(Effect::rejected("任务不存在"));
+            return;
+        };
+        if self.tasks[index].status != TaskStatus::Preparing {
+            effects.push(Effect::rejected("任务不在准备状态"));
+            return;
+        }
+        let task = &mut self.tasks[index];
+        task.prompt = prompt;
+        task.json_path = json_path;
+        task.baseline_dirty = baseline_dirty;
+        task.baseline_head = baseline_head;
+        let changed = task.clone();
+        self.push_persist(effects, &changed);
+    }
+
+    /// Session ids are diagnostics only. A late observation for an unknown or
+    /// finished task is silently dropped: rejecting would spam the host for a
+    /// fact that can no longer change anything.
+    fn on_session_observed(
+        &mut self,
+        task_id: TaskId,
+        session_id: String,
+        effects: &mut Vec<Effect>,
+    ) {
+        let Some(index) = self.task_index(&task_id) else {
+            return;
+        };
+        if self.tasks[index].status.is_terminal() || session_id.trim().is_empty() {
+            return;
+        }
+        let task = &mut self.tasks[index];
+        task.agent_session_id = Some(session_id);
+        let changed = task.clone();
+        self.push_persist(effects, &changed);
+    }
 
     fn on_agent_started(&mut self, task_id: TaskId, effects: &mut Vec<Effect>) {
         let Some(index) = self.task_index(&task_id) else {
@@ -1293,6 +1462,15 @@ impl Workflow {
         effects.push(Effect::PersistChanged {
             tasks: vec![task.clone()],
         });
+    }
+
+    /// Sets the queue pause flag and tells the host only when it changed.
+    fn set_paused(&mut self, paused: bool, effects: &mut Vec<Effect>) {
+        if self.paused == paused {
+            return;
+        }
+        self.paused = paused;
+        effects.push(Effect::PersistPaused { paused });
     }
 
     fn push_history(&self, effects: &mut Vec<Effect>, task: &Task) {

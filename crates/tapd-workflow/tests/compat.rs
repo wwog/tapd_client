@@ -195,4 +195,19 @@ fn config_defaults_match_the_desktop_settings() {
     assert_eq!(config.execution_units, 2);
     assert!(config.recovery_policy.auto_retry_interrupted);
     assert_eq!(config.recovery_policy.max_auto_retry, 3);
+    assert!(config.recovery_policy.restore_queued);
+}
+
+#[test]
+fn legacy_recovery_policy_without_restore_queued_defaults_to_true() {
+    let policy: tapd_workflow::RecoveryPolicy =
+        serde_json::from_str(r#"{"autoRetryInterrupted":false,"maxAutoRetry":1}"#)
+            .expect("legacy policy loads");
+    assert!(!policy.auto_retry_interrupted);
+    assert_eq!(policy.max_auto_retry, 1);
+    assert!(policy.restore_queued);
+
+    let explicit: tapd_workflow::RecoveryPolicy =
+        serde_json::from_str(r#"{"restoreQueued":false}"#).expect("explicit policy loads");
+    assert!(!explicit.restore_queued);
 }

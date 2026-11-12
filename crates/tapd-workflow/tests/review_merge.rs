@@ -245,6 +245,8 @@ fn stop_review_cancels_and_pauses_the_queue() {
     let effects = workflow.apply(Input::StopReview {
         task_id: id("a"),
         now: now(20),
+        stash: None,
+        error: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::Canceled);
     assert!(workflow.paused());

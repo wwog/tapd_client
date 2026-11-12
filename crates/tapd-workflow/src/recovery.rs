@@ -19,13 +19,23 @@ pub struct RecoveryOutcome {
     pub retried: usize,
     pub awaiting_approval: usize,
     pub awaiting_merge: usize,
+    /// Restored queued tasks must be kept, but the queue should stay paused
+    /// (no automatic continue) until the user resumes it.
+    pub pause_queue: bool,
 }
 
 pub fn recover(tasks: &mut [Task], config: &WorkflowConfig, restored_at: &str) -> RecoveryOutcome {
     let mut outcome = RecoveryOutcome::default();
     for (index, task) in tasks.iter_mut().enumerate() {
         match task.status {
-            TaskStatus::Queued => outcome.queued += 1,
+            TaskStatus::Queued => {
+                // Queued tasks are never dropped; the policy only decides
+                // whether they continue automatically.
+                outcome.queued += 1;
+                if !config.recovery_policy.restore_queued {
+                    outcome.pause_queue = true;
+                }
+            }
             TaskStatus::Preparing | TaskStatus::Running => {
                 let next_attempt = task.attempt.saturating_add(1);
                 task.attempt = next_attempt;

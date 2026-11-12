@@ -26,12 +26,15 @@ pub(super) const NOT_ENTERED: &str = "工作流尚未初始化，请先进入系
 
 /// Workflow configuration derived from the desktop Agent settings. The
 /// recovery policy keeps the crate defaults (auto retry interrupted runs, at
-/// most three attempts) until the host exposes its own settings.
+/// most three attempts) and maps the "resume queued tasks on startup" setting.
 pub(super) fn workflow_config(config: &AgentConfig) -> WorkflowConfig {
     WorkflowConfig {
         worktree_enabled: config.worktree_enabled,
         execution_units: config.execution_units,
-        recovery_policy: RecoveryPolicy::default(),
+        recovery_policy: RecoveryPolicy {
+            restore_queued: config.restore_queued_tasks,
+            ..RecoveryPolicy::default()
+        },
     }
 }
 
@@ -86,6 +89,7 @@ pub(super) fn recover_tasks(
         awaiting_approval: outcome.awaiting_approval,
         awaiting_merge: outcome.awaiting_merge,
         failed: outcome.failed.len(),
+        queue_paused: outcome.pause_queue,
     }))
 }
 

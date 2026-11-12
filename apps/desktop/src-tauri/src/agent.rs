@@ -289,11 +289,20 @@ pub struct AgentConfig {
     /// 同时运行的任务数；仅在开启 worktree 时生效。
     #[serde(default = "default_execution_units")]
     pub execution_units: u32,
+    /// 客户端重启后，之前排队（Queued）的任务自动继续执行。关闭时队列仍然
+    /// 保留，但保持暂停，等用户手动继续，不丢任务。
+    #[serde(default = "default_restore_queued_tasks")]
+    pub restore_queued_tasks: bool,
 }
 
 /// Worktree 开启后默认并行两个任务：再多会让 TUI 抢占交互终端，也不利于排查。
 fn default_execution_units() -> u32 {
     2
+}
+
+/// 恢复排队默认开启：用户重启客户端时期待队列继续跑下去。
+fn default_restore_queued_tasks() -> bool {
+    true
 }
 
 impl Default for AgentConfig {
@@ -310,6 +319,7 @@ impl Default for AgentConfig {
             idle_complete_ms: DEFAULT_IDLE_COMPLETE_MS,
             worktree_enabled: false,
             execution_units: default_execution_units(),
+            restore_queued_tasks: default_restore_queued_tasks(),
         }
     }
 }
@@ -1256,6 +1266,49 @@ struct AgentConfigPatch {
     idle_complete_ms: Option<u64>,
     worktree_enabled: Option<bool>,
     execution_units: Option<u32>,
+    restore_queued_tasks: Option<bool>,
+}
+
+impl AgentConfigPatch {
+    /// Applies the given fields; omitted ones keep their current value.
+    fn apply(self, config: &mut AgentConfig) {
+        if let Some(runtime_id) = self.runtime_id {
+            config.runtime_id = runtime_id;
+        }
+        if let Some(path) = self.binary_path {
+            config.binary_path = path;
+        }
+        if let Some(mappings) = self.repo_mappings {
+            config.repo_mappings = mappings;
+        }
+        if let Some(projects) = self.projects {
+            config.projects = projects;
+        }
+        if let Some(template) = self.prompt_template {
+            config.prompt_template = template;
+        }
+        if let Some(ids) = self.coworker_ids {
+            config.coworker_ids = ids;
+        }
+        if let Some(value) = self.ready_quiet_ms {
+            config.ready_quiet_ms = value;
+        }
+        if let Some(value) = self.ready_timeout_ms {
+            config.ready_timeout_ms = value;
+        }
+        if let Some(value) = self.idle_complete_ms {
+            config.idle_complete_ms = value;
+        }
+        if let Some(value) = self.worktree_enabled {
+            config.worktree_enabled = value;
+        }
+        if let Some(value) = self.execution_units {
+            config.execution_units = value;
+        }
+        if let Some(value) = self.restore_queued_tasks {
+            config.restore_queued_tasks = value;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2233,6 +2286,15 @@ impl AgentCore {
             }
         };
 
+        // Queued tasks are always restored; when automatic continuation is
+        // disabled the queue is parked instead of dropped, so the worker waits
+        // for an explicit user resume. The pause flag is persisted below.
+        let queue_paused = report.as_ref().is_some_and(|report| report.queue_paused);
+        if queue_paused {
+            self.set_paused(true);
+        }
+
+        let mut state_written = false;
         if !live_ids.is_empty() {
             let changed: Vec<AgentTask> = {
                 let tasks = self.tasks.lock().expect("agent tasks lock");
@@ -2246,7 +2308,15 @@ impl AgentCore {
                 self.mark_tasks_dirty(changed);
                 self.persist_tasks();
                 self.emit_state();
+                state_written = true;
             }
+        }
+
+        if queue_paused && !state_written {
+            // Queued tasks are not "active", so the block above may have been
+            // skipped; persist the pause flag itself and refresh the capsule.
+            self.persist_tasks();
+            self.emit_state();
         }
 
         if let Some(report) = report.as_ref() {
@@ -2256,6 +2326,7 @@ impl AgentCore {
                 awaiting_approval = report.awaiting_approval,
                 awaiting_merge = report.awaiting_merge,
                 failed = report.failed,
+                queue_paused = report.queue_paused,
                 "agent workflow recovery completed"
             );
             if !workflow_bridge::report_is_empty(report) {
@@ -2672,39 +2743,7 @@ impl AgentCore {
 
         let next = {
             let mut config = self.config.lock().expect("agent config lock");
-            if let Some(runtime_id) = patch.runtime_id {
-                config.runtime_id = runtime_id;
-            }
-            if let Some(path) = patch.binary_path {
-                config.binary_path = path;
-            }
-            if let Some(mappings) = patch.repo_mappings {
-                config.repo_mappings = mappings;
-            }
-            if let Some(projects) = patch.projects {
-                config.projects = projects;
-            }
-            if let Some(template) = patch.prompt_template {
-                config.prompt_template = template;
-            }
-            if let Some(ids) = patch.coworker_ids {
-                config.coworker_ids = ids;
-            }
-            if let Some(value) = patch.ready_quiet_ms {
-                config.ready_quiet_ms = value;
-            }
-            if let Some(value) = patch.ready_timeout_ms {
-                config.ready_timeout_ms = value;
-            }
-            if let Some(value) = patch.idle_complete_ms {
-                config.idle_complete_ms = value;
-            }
-            if let Some(value) = patch.worktree_enabled {
-                config.worktree_enabled = value;
-            }
-            if let Some(value) = patch.execution_units {
-                config.execution_units = value;
-            }
+            patch.apply(&mut config);
             config.clone().sanitized()
         };
 
@@ -4991,6 +5030,7 @@ mod tests {
         assert_eq!(config.idle_complete_ms, DEFAULT_IDLE_COMPLETE_MS);
         assert!(!config.worktree_enabled);
         assert_eq!(config.execution_units, 2);
+        assert!(config.restore_queued_tasks);
         assert_eq!(config.effective_execution_units(), 1);
         assert!(config.prompt_template.contains("{{json_path}}"));
         assert!(config.prompt_template.contains("{{title}}"));
@@ -5026,6 +5066,98 @@ mod tests {
     }
 
     #[test]
+    fn config_patch_updates_restore_queued_tasks() {
+        let mut config = AgentConfig::default();
+        assert!(config.restore_queued_tasks);
+
+        AgentConfigPatch {
+            restore_queued_tasks: Some(false),
+            ..AgentConfigPatch::default()
+        }
+        .apply(&mut config);
+        assert!(!config.restore_queued_tasks);
+
+        // An omitted field keeps the current value.
+        AgentConfigPatch {
+            execution_units: Some(3),
+            ..AgentConfigPatch::default()
+        }
+        .apply(&mut config);
+        assert!(!config.restore_queued_tasks);
+        assert_eq!(config.execution_units, 3);
+    }
+
+    #[test]
+    fn legacy_config_json_defaults_restore_queued_tasks_to_true() {
+        let legacy: AgentConfig =
+            serde_json::from_str(r#"{"worktreeEnabled":true,"executionUnits":3}"#)
+                .expect("legacy config loads");
+        assert!(legacy.restore_queued_tasks);
+        assert!(legacy.worktree_enabled);
+        assert_eq!(legacy.execution_units, 3);
+
+        let explicit: AgentConfig =
+            serde_json::from_str(r#"{"restoreQueuedTasks":false}"#).expect("explicit config loads");
+        assert!(!explicit.restore_queued_tasks);
+    }
+
+    #[test]
+    fn bridge_maps_restore_queued_tasks_into_the_recovery_policy() {
+        let mapped = workflow_bridge::workflow_config(&AgentConfig::default());
+        assert!(mapped.recovery_policy.restore_queued);
+
+        let config = AgentConfig {
+            restore_queued_tasks: false,
+            worktree_enabled: true,
+            execution_units: 4,
+            ..AgentConfig::default()
+        };
+        let mapped = workflow_bridge::workflow_config(&config);
+        assert!(!mapped.recovery_policy.restore_queued);
+        assert!(mapped.worktree_enabled);
+        assert_eq!(mapped.execution_units, 4);
+        // Unrelated recovery fields stay at the crate defaults.
+        assert!(mapped.recovery_policy.auto_retry_interrupted);
+        assert_eq!(
+            mapped.recovery_policy.max_auto_retry,
+            tapd_workflow::DEFAULT_MAX_AUTO_RETRY
+        );
+    }
+
+    #[test]
+    fn recovery_report_carries_the_queue_pause_flag() {
+        let mut tasks = vec![
+            sample_task("queued", TaskStatus::Queued),
+            sample_task("running", TaskStatus::Running),
+        ];
+        let config = AgentConfig {
+            restore_queued_tasks: false,
+            ..AgentConfig::default()
+        };
+        let report = workflow_bridge::recover_tasks(&mut tasks, &config, "2026-11-10T01:00:00Z")
+            .expect("bridge")
+            .expect("report");
+
+        // The queued task is kept, the running one is requeued, and the queue
+        // is paused rather than resumed automatically.
+        assert_eq!(tasks[0].status, TaskStatus::Queued);
+        assert_eq!(tasks[1].status, TaskStatus::Queued);
+        assert_eq!(report.queued, 1);
+        assert_eq!(report.retried, 1);
+        assert!(report.queue_paused);
+
+        let mut tasks = vec![sample_task("queued", TaskStatus::Queued)];
+        let report = workflow_bridge::recover_tasks(
+            &mut tasks,
+            &AgentConfig::default(),
+            "2026-11-10T01:00:00Z",
+        )
+        .expect("bridge")
+        .expect("report");
+        assert!(!report.queue_paused);
+    }
+
+    #[test]
     fn config_is_sanitized() {
         let config = AgentConfig {
             runtime_id: "  ".to_string(),
@@ -5042,6 +5174,7 @@ mod tests {
             idle_complete_ms: 9_999_999,
             worktree_enabled: true,
             execution_units: 99,
+            restore_queued_tasks: true,
         }
         .sanitized();
 

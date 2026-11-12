@@ -35,6 +35,11 @@ export type AgentConfig = {
   worktreeEnabled: boolean;
   /** 开启 worktree 后的并行任务数；关闭时固定为 1。 */
   executionUnits: number;
+  /**
+   * 客户端重启后，之前排队（Queued）的任务自动继续。关闭时队列仍然保留，
+   * 但保持暂停，等用户手动继续。
+   */
+  restoreQueuedTasks: boolean;
 };
 
 /** A stage every runtime declares in its catalog entry. */
@@ -241,6 +246,8 @@ export type RecoveryReport = {
   awaitingApproval: number;
   awaitingMerge: number;
   failed: number;
+  /** 恢复的排队任务被保留，但队列暂停，等待用户手动继续。 */
+  queuePaused: boolean;
 };
 
 /** Lightweight agent state for the island capsule. */

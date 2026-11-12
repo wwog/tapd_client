@@ -42,6 +42,18 @@ pub struct RecoveryPolicy {
     /// Maximum number of automatic retries after interruptions. A task whose
     /// next attempt would exceed this fails on startup.
     pub max_auto_retry: u32,
+    /// Keep tasks that were `Queued` when the client exited and let them run
+    /// again after recovery. When false the queue is kept either way, but it
+    /// stays paused until the user resumes it.
+    #[serde(default = "default_true")]
+    pub restore_queued: bool,
+}
+
+/// Field-level `serde(default = ...)`: the container default would otherwise
+/// deserialize a missing `restore_queued` as `false` for a hand-written
+/// snapshot.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for RecoveryPolicy {
@@ -49,6 +61,7 @@ impl Default for RecoveryPolicy {
         Self {
             auto_retry_interrupted: true,
             max_auto_retry: DEFAULT_MAX_AUTO_RETRY,
+            restore_queued: true,
         }
     }
 }
