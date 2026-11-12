@@ -73,6 +73,40 @@ body {
   padding-left: env(safe-area-inset-left);
 }
 
+/* Fixed chrome (tab bar, bottom sheet panel) escapes #root padding, so it
+   keeps its own home-indicator clearance. */
+.tab-bar,
+.sheet-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Bottom sheet motion: scrim fades, panel slides up. No shadows anywhere. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.sheet-backdrop {
+  animation: fade-in 0.18s ease-out;
+}
+
+.sheet-panel {
+  animation: sheet-up 0.2s ease-out;
+}
+
 /* Desktop-app selection policy carried over: chrome and metadata are not
    meant to be copied; the bug body and comments opt back in with select-text.
    Form controls always keep native selection. */

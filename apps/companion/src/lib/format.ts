@@ -66,3 +66,19 @@ export const ownerNames = (value: string | null | undefined): string[] => {
     .map((name) => name.trim())
     .filter((name) => name.length > 0);
 };
+
+/** Task wall-clock duration from start (fallback: creation) to finish. */
+export const taskDuration = (task: {
+  startedAt?: string;
+  createdAt: string;
+  finishedAt?: string;
+}): string => {
+  const start = Date.parse(task.startedAt ?? task.createdAt);
+  const end = task.finishedAt ? Date.parse(task.finishedAt) : Number.NaN;
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return "—";
+  const secs = Math.max(1, Math.round((end - start) / 1000));
+  if (secs < 60) return `${secs} 秒`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} 分 ${secs % 60} 秒`;
+  return `${Math.floor(mins / 60)} 时 ${mins % 60} 分`;
+};

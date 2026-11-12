@@ -4,6 +4,10 @@ export type Route =
   | { name: "pair"; query: URLSearchParams }
   | { name: "bugs" }
   | { name: "bug"; id: string; workspaceId: string | null }
+  | { name: "agent" }
+  | { name: "agent-history" }
+  | { name: "agent-task"; id: string }
+  | { name: "coworkers" }
   | { name: "settings" };
 
 const parse = (hash: string): Route => {
@@ -20,6 +24,12 @@ const parse = (hash: string): Route => {
       return parts[1]
         ? { name: "bug", id: parts[1], workspaceId: query.get("w") }
         : { name: "bugs" };
+    case "agent":
+      if (parts[1] === "history") return { name: "agent-history" };
+      if (parts[1] === "task" && parts[2]) return { name: "agent-task", id: parts[2] };
+      return { name: "agent" };
+    case "coworkers":
+      return { name: "coworkers" };
     case "settings":
       return { name: "settings" };
     default:

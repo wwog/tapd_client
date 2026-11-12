@@ -186,6 +186,285 @@ export type CompanionNotification = {
   detectedAt: string;
 };
 
+/* -------------------------------------------------------------------------
+   Agent workflow types, copied from `apps/desktop/src/lib/agent.ts` (the
+   serde contract lives there). Fields the companion never renders are made
+   optional defensively, so a new desktop field can never break this app.
+   ------------------------------------------------------------------------- */
+
+export type AgentTaskStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "awaiting_approval"
+  | "awaiting_merge"
+  | "merging"
+  | "succeeded"
+  | "failed"
+  | "canceled";
+
+export type AgentApproval = {
+  summary: string;
+  files: string[];
+  risk?: string;
+  requestedAt: string;
+  approvedAt?: string;
+  /** Stash reference recorded when the user stops instead of approving. */
+  stash?: string;
+};
+
+export type AgentMerge = {
+  error?: string | null;
+  instructions?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+};
+
+export type AgentRuntimePhase =
+  | "idle"
+  | "working"
+  | "waiting_permission"
+  | "waiting_question"
+  | "error";
+
+export type AgentRuntimeStatus = {
+  phase: AgentRuntimePhase;
+  /** 后端生成的中文摘要，例如「等待权限确认」。 */
+  label: string;
+  /** 当前工具名，例如 Bash / Edit。 */
+  tool?: string;
+  detail?: string;
+  message?: string;
+  model?: string;
+  sessionId?: string;
+  subagents?: number;
+  updatedAt: string;
+};
+
+export type AgentTask = {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  bugId: string;
+  title: string;
+  severity?: string;
+  priority?: string;
+  jsonPath?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  status: AgentTaskStatus;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number;
+  error?: string;
+  prompt?: string;
+  source?: string;
+  runtimeId?: string;
+  agentSessionId?: string | null;
+  approval?: AgentApproval | null;
+  merge?: AgentMerge | null;
+  commitOnly?: boolean;
+  extraPrompt?: string;
+  attachments?: string[];
+};
+
+export type AgentTasksState = {
+  tasks: AgentTask[];
+  activeTaskId?: string | null;
+  queuedCount?: number;
+  awaitingApprovalCount?: number;
+  awaitingMergeCount?: number;
+  queuePaused?: boolean;
+  storageError?: string | null;
+  /** 运行中 Agent 的状态，key 是 task id。 */
+  runtimeStatus?: Record<string, AgentRuntimeStatus>;
+};
+
+/** Paginated terminal-task history (`agent_tasks_history`). */
+export type HistoryPage = {
+  tasks: AgentTask[];
+  total: number;
+  hasMore: boolean;
+};
+
+export type AgentHistoryQuery = {
+  workspaceId?: string;
+  status?: AgentTaskStatus;
+  keyword?: string;
+  taskId?: string;
+  offset?: number;
+  limit?: number;
+};
+
+export type ProjectAgentConfig = {
+  repoPath: string;
+  rule: string;
+};
+
+export type AgentConfig = {
+  /** Selected runtime id from the catalog. */
+  runtimeId: string;
+  binaryPath?: string;
+  repoMappings?: Record<string, string>;
+  projects?: Record<string, ProjectAgentConfig>;
+  promptTemplate?: string;
+  coworkerIds?: string[];
+  readyQuietMs?: number;
+  readyTimeoutMs?: number;
+  idleCompleteMs?: number;
+  /** 每个任务在独立 git worktree 中运行。 */
+  worktreeEnabled: boolean;
+  /** 开启 worktree 后的并行任务数；关闭时固定为 1。 */
+  executionUnits: number;
+  /** 客户端重启后，之前排队（Queued）的任务自动继续。 */
+  restoreQueuedTasks: boolean;
+};
+
+export type AgentRuntimeCapabilities = {
+  interactiveTerminal?: boolean;
+  permissionPrompt?: boolean;
+  externalDecision?: boolean;
+  commitReview?: boolean;
+};
+
+export type AgentRuntimeDescriptor = {
+  id: string;
+  name: string;
+  vendor?: string;
+  description?: string;
+  binary?: string;
+  aliases?: string[];
+  args?: string[];
+  promptInjection?: string;
+  promptFlag?: string | null;
+  argvSeparator?: string | null;
+  sessionHook?: boolean;
+  available: boolean;
+  capabilities?: AgentRuntimeCapabilities;
+  limitations?: string[];
+  fallback?: string;
+};
+
+/** Result of starting a merge: the agent took over, or the user must merge. */
+export type AgentMergeStart = {
+  mode: "agent" | "manual";
+  task: AgentTask;
+  /** Manual steps; also written to `task.merge.instructions`. */
+  instructions?: string | null;
+};
+
+export type AgentEnqueueRequest = {
+  workspaceId: string;
+  bugId: string;
+  workspaceName?: string | null;
+  title?: string | null;
+  severity?: string | null;
+  priority?: string | null;
+  /** Markdown instructions typed in the compose sheet. */
+  extraPrompt?: string | null;
+  runtimeId?: string | null;
+  /** Marks the task as raised from the phone. */
+  source?: string;
+};
+
+export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
+  queued: "排队中",
+  preparing: "准备中",
+  running: "运行中",
+  awaiting_approval: "待审核",
+  awaiting_merge: "待合并",
+  merging: "合并中",
+  succeeded: "已完成",
+  failed: "失败",
+  canceled: "已取消",
+};
+
+export const AGENT_STATUS_TONES: Record<AgentTaskStatus, "neutral" | "blue" | "green" | "amber" | "red" | "cyan"> = {
+  queued: "neutral",
+  preparing: "blue",
+  running: "amber",
+  awaiting_approval: "amber",
+  awaiting_merge: "cyan",
+  merging: "blue",
+  succeeded: "green",
+  failed: "red",
+  canceled: "neutral",
+};
+
+/** Statuses that still own the bug inside the agent pipeline. */
+const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
+  "queued",
+  "preparing",
+  "running",
+  "awaiting_approval",
+  "awaiting_merge",
+  "merging",
+];
+
+export const isAgentInFlight = (task: AgentTask): boolean =>
+  IN_FLIGHT_STATUSES.includes(task.status);
+
+/* -------------------------------------------------------------------------
+   Notification settings, copied from `apps/desktop/src/lib/notification.ts`.
+   ------------------------------------------------------------------------- */
+
+export type QuietHours = {
+  enabled: boolean;
+  start: string;
+  end: string;
+};
+
+export type NotificationSettings = {
+  enabled: boolean;
+  /** "mine" | "project"; rendered read-only on the phone. */
+  scope?: string;
+  includeNew: boolean;
+  includeTransferred: boolean;
+  includeReopened: boolean;
+  pollIntervalSecs: number;
+  quietHours: QuietHours;
+  maxVisible: number;
+  aiEnabled?: boolean;
+};
+
+/* -------------------------------------------------------------------------
+   Coworker packages, copied from `apps/desktop/src/lib/coworker.ts`.
+   ------------------------------------------------------------------------- */
+
+export type CoworkerSkill = {
+  name: string;
+  description: string;
+  /** Absolute path to SKILL.md, injected into the prompt. */
+  path: string;
+};
+
+/** A bundled coworker package as shown on the 同事 page. */
+export type Coworker = {
+  /** Folder name; the only stable id. */
+  id: string;
+  name: string;
+  role: string;
+  title?: string;
+  description?: string;
+  /** `#rrggbb`, or empty when the package did not set one. */
+  accent?: string;
+  /** Data URL, or null when the avatar could not be read. */
+  avatar?: string | null;
+  skills: CoworkerSkill[];
+};
+
+export type CoworkerList = {
+  coworkers: Coworker[];
+  /** Enabled ids in selection order. */
+  selectedIds: string[];
+  /** Exact block appended to the task prompt; empty when nobody is enabled. */
+  promptSection?: string;
+  /** Packages/skills that failed validation; surfaced on the page. */
+  warnings?: string[];
+};
+
 export class ApiError extends Error {
   code: string;
 
@@ -267,6 +546,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return envelope.data;
 }
 
+/**
+ * Generic feature command (desktop twin of Tauri `feature_command`): the
+ * desktop executes it locally and returns the same serde shape its own UI
+ * consumes. The typed helpers on `api` wrap it.
+ */
+export const feature = <T>(name: string, payload: Record<string, unknown> = {}): Promise<T> =>
+  request<T>("/companion/api/feature", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, payload }),
+  });
+
 export const api = {
   state: () => request<CompanionState>("/companion/api/state"),
 
@@ -294,6 +585,81 @@ export const api = {
   },
 
   notifications: () => request<CompanionNotification[]>("/companion/api/notifications"),
+
+  feature,
+
+  /* -- Agent tasks ------------------------------------------------------- */
+
+  agentTasks: () => feature<AgentTasksState>("agent_tasks_list"),
+
+  agentHistory: (query: AgentHistoryQuery = {}) =>
+    feature<HistoryPage>("agent_tasks_history", { ...query }),
+
+  agentApprove: (taskId: string) =>
+    feature<{ task?: AgentTask }>("agent_review_approve", { taskId }),
+
+  /** 停止审核：stash 改动、取消任务并暂停队列（恢复在桌面端进行）。 */
+  agentStop: (taskId: string) =>
+    feature<{ task?: AgentTask }>("agent_review_stop", { taskId }),
+
+  agentDiff: async (taskId: string): Promise<string> => {
+    const data = await feature<unknown>("agent_review_diff", { taskId });
+    if (typeof data === "string") return data;
+    if (data && typeof data === "object" && "diff" in data) {
+      const diff = (data as { diff?: unknown }).diff;
+      if (typeof diff === "string") return diff;
+    }
+    return "";
+  },
+
+  agentMergeStart: (taskId: string) =>
+    feature<AgentMergeStart>("agent_merge_start", { taskId }),
+
+  agentCancel: (taskId: string) =>
+    feature<{ task?: AgentTask }>("agent_task_cancel", { taskId }),
+
+  agentRetry: async (taskId: string): Promise<AgentTask | null> => {
+    const data = await feature<unknown>("agent_task_retry", { taskId });
+    if (data && typeof data === "object" && "task" in data) {
+      return ((data as { task?: AgentTask | null }).task ?? null);
+    }
+    return (data as AgentTask) ?? null;
+  },
+
+  /** Enqueue a fix task for one bug, raised from the phone. */
+  agentEnqueueBug: (req: AgentEnqueueRequest) =>
+    feature<{ task?: AgentTask }>("agent_enqueue_bug", { ...req }),
+
+  /* -- Agent / notification / coworker settings --------------------------- */
+
+  agentConfig: async (): Promise<AgentConfig> => {
+    const data = await feature<unknown>("agent_config_get", {});
+    const inner = (data as { config?: AgentConfig } | null)?.config;
+    return inner ?? (data as AgentConfig);
+  },
+
+  agentConfigSet: async (patch: Partial<AgentConfig>): Promise<AgentConfig> => {
+    const data = await feature<unknown>("agent_config_set", { ...patch });
+    const inner = (data as { config?: AgentConfig } | null)?.config;
+    return inner ?? (data as AgentConfig);
+  },
+
+  agentRuntimes: async (): Promise<AgentRuntimeDescriptor[]> => {
+    const data = await feature<unknown>("agent_runtimes", {});
+    if (Array.isArray(data)) return data as AgentRuntimeDescriptor[];
+    return (data as { runtimes?: AgentRuntimeDescriptor[] } | null)?.runtimes ?? [];
+  },
+
+  notificationSettings: () =>
+    feature<{ settings: NotificationSettings }>("notification_settings_get", {}),
+
+  notificationSettingsSet: (patch: Partial<NotificationSettings>) =>
+    feature<{ settings: NotificationSettings }>("notification_settings_set", { ...patch }),
+
+  coworkerList: () => feature<CoworkerList>("coworker_list", {}),
+
+  coworkerSelect: (ids: string[]) =>
+    feature<{ selectedIds: string[] }>("coworker_select", { ids }),
 };
 
 /** Reactive connection state for full-screen gates. */
