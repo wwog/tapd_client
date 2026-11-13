@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 // import { bugTitle } from "../lib/bug"; // 调试通知
 import {
   // AI_TONE_LABELS, // 调试通知
@@ -144,22 +145,26 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
   //   .filter((item) => item.source === "ai")
   //   .slice(0, 4);
 
+  const pendingCount = (snapshot?.items ?? []).filter(
+    (item) => item.state === "pending",
+  ).length;
+
   return (
     <section className={cardClass}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
             <Bell size={15} className="text-slate-400" />
-            新缺陷通知
+            {t("settings.notify.title")}
           </h2>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {loading ? (
-            <Badge tone="neutral">读取中</Badge>
+            <Badge tone="neutral">{t("settings.notify.reading")}</Badge>
           ) : snapshot?.running ? (
-            <Badge tone="green">轮询中</Badge>
+            <Badge tone="green">{t("settings.notify.polling")}</Badge>
           ) : (
-            <Badge tone="amber">已暂停</Badge>
+            <Badge tone="amber">{t("settings.notify.paused")}</Badge>
           )}
         </div>
       </div>
@@ -169,54 +174,54 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
           <div>
             <div
               className="text-ui-caption text-slate-800"
-              title="关闭后停止轮询与弹窗，已有待处理通知仍保留。"
+              title={t("settings.notify.enableTooltip")}
             >
-              启用新缺陷通知
+              {t("settings.notify.enable")}
             </div>
           </div>
           <Switch
             checked={settings.enabled}
             onChange={(value) => patch({ enabled: value })}
-            label="启用新缺陷通知"
+            label={t("settings.notify.enable")}
           />
         </div>
 
         <div>
-          <div className="text-ui-sm font-normal text-slate-600">通知范围</div>
+          <div className="text-ui-sm font-normal text-slate-600">{t("settings.notify.scope")}</div>
           <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
             <ScopeOption
               active={settings.scope === "mine"}
-              title="只通知分配给我的"
-              description="处理人等于当前 TAPD 用户"
+              title={t("settings.notify.scopeMine")}
+              description={t("settings.notify.scopeMineDesc")}
               onClick={() => patch({ scope: "mine" })}
             />
             <ScopeOption
               active={settings.scope === "project"}
-              title="项目内所有新缺陷"
-              description="当前项目内的新分配与重开"
+              title={t("settings.notify.scopeProject")}
+              description={t("settings.notify.scopeProjectDesc")}
               onClick={() => patch({ scope: "project" })}
             />
           </div>
         </div>
 
         <div>
-          <div className="text-ui-sm font-normal text-slate-600">通知类型</div>
+          <div className="text-ui-sm font-normal text-slate-600">{t("settings.notify.types")}</div>
           <div className="mt-1.5 divide-y divide-slate-100 rounded-xl border border-slate-100">
             <SwitchRow
-              label="纯新建"
-              description="本轮新创建且分配给我的缺陷"
+              label={t("settings.notify.typeNew")}
+              description={t("settings.notify.typeNewDesc")}
               checked={settings.includeNew}
               onChange={(value) => patch({ includeNew: value })}
             />
             <SwitchRow
-              label="转派给我"
-              description="非新建，但处理人刚刚变成我"
+              label={t("settings.notify.typeTransferred")}
+              description={t("settings.notify.typeTransferredDesc")}
               checked={settings.includeTransferred}
               onChange={(value) => patch({ includeTransferred: value })}
             />
             <SwitchRow
-              label="重新打开"
-              description="状态从其它值变为重新打开"
+              label={t("settings.notify.typeReopened")}
+              description={t("settings.notify.typeReopenedDesc")}
               checked={settings.includeReopened}
               onChange={(value) => patch({ includeReopened: value })}
             />
@@ -228,16 +233,16 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
             <div>
               <div
                 className="flex items-center gap-1.5 text-ui-caption text-slate-800"
-                title="opencode、Claude Code 等可调用 tapd_notify_user，在胶囊里提示成功、失败或等待确认。"
+                title={t("settings.notify.aiTooltip")}
               >
                 <Bot size={12} className="text-slate-400" />
-                允许 AI / MCP 唤起通知
+                {t("settings.notify.aiEnable")}
               </div>
             </div>
             <Switch
               checked={settings.aiEnabled}
               onChange={(value) => patch({ aiEnabled: value })}
-              label="允许 AI 通知"
+              label={t("settings.notify.aiEnableLabel")}
             />
           </div>
 
@@ -266,7 +271,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
                       : "opacity-70 hover:opacity-100",
                   )}
                 >
-                  {AI_TONE_LABELS[tone]}
+                  {t(AI_TONE_LABELS[tone])}
                 </button>
               ))}
             </div>
@@ -326,11 +331,11 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
         <div className="grid gap-3 sm:grid-cols-2">
           <label
             className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-            title="允许 20–600 秒，默认 30。"
+            title={t("settings.notify.pollTooltip")}
           >
             <span className="flex items-center gap-1.5 text-ui-sm text-slate-600">
               <RefreshCw size={11} className="text-slate-400" />
-              轮询间隔（秒）
+              {t("settings.notify.pollInterval")}
             </span>
             <input
               type="number"
@@ -354,9 +359,9 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
 
           <label
             className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-            title="超出部分保持待处理，处理一条后自动补位。"
+            title={t("settings.notify.maxVisibleTooltip")}
           >
-            <span className="text-ui-sm text-slate-600">同时展示数量</span>
+            <span className="text-ui-sm text-slate-600">{t("settings.notify.maxVisible")}</span>
             <select
               value={settings.maxVisible}
               onChange={(event) =>
@@ -366,7 +371,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
             >
               {[1, 2, 3, 4, 5].map((value) => (
                 <option key={value} value={value}>
-                  {value} 条
+                  {t("settings.notify.count", { n: value })}
                 </option>
               ))}
             </select>
@@ -377,15 +382,15 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
           <div className="flex items-center justify-between">
             <div
               className="flex items-center gap-1.5 text-ui-caption text-slate-800"
-              title="时段内只累计待处理通知，不弹窗；时段结束后自动显示未处理通知。"
+              title={t("settings.notify.quietTooltip")}
             >
               <Clock size={12} className="text-slate-400" />
-              免打扰
+              {t("settings.notify.quiet")}
             </div>
             <Switch
               checked={settings.quietHours.enabled}
               onChange={(value) => patchQuietHours({ enabled: value })}
-              label="启用免打扰"
+              label={t("settings.notify.quietEnable")}
             />
           </div>
 
@@ -399,7 +404,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               }
               className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 focus:outline-2 focus:outline-sky-200"
             />
-            <span className="text-ui-sm text-slate-400">至</span>
+            <span className="text-ui-sm text-slate-400">{t("settings.notify.quietTo")}</span>
             <input
               type="time"
               value={settings.quietHours.end}
@@ -413,20 +418,15 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5">
           <div className="grid gap-1 text-ui-sm text-slate-500 sm:grid-cols-2">
             <div>
-              上次轮询：
+              {t("settings.notify.lastPoll")}
               <span className="ml-1 font-mono text-slate-700">
                 {formatPollTime(snapshot?.lastPollAt ?? null)}
               </span>
             </div>
             <div className="min-w-0 truncate">
-              待处理：
+              {t("settings.notify.pending")}
               <span className="ml-1 text-slate-700">
-                {
-                  (snapshot?.items ?? []).filter(
-                    (item) => item.state === "pending",
-                  ).length
-                }{" "}
-                条
+                {t("settings.notify.count", { n: pendingCount })}
               </span>
             </div>
           </div>

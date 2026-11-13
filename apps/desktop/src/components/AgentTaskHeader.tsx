@@ -9,6 +9,7 @@ import {
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
+import { t } from "../lib/i18n";
 import { ActivityGlyph } from "./ActivityGlyph";
 import { AgentIcon } from "./AgentIcon";
 import { Segmented } from "./Segmented";
@@ -87,10 +88,10 @@ export function AgentTaskHeader(props: Props) {
               className="truncate text-ui-base font-normal text-slate-900"
               title={bugTitle(task.title)}
             >
-              {bugTitle(task.title) || "（无标题）"}
+              {bugTitle(task.title) || t("agent.untitled")}
             </h2>
             <Badge tone={AGENT_STATUS_TONES[task.status]}>
-              {AGENT_STATUS_LABELS[task.status]}
+              {t(AGENT_STATUS_LABELS[task.status])}
             </Badge>
             {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}
             {model ? (
@@ -121,16 +122,16 @@ export function AgentTaskHeader(props: Props) {
                 className="min-w-0 max-w-full truncate font-mono"
                 title={task.repoPath}
               >
-                {task.repoPath || "未配置仓库"}
+                {task.repoPath || t("agent.noRepo")}
               </span>
             )}
             {task.startedAt ? (
               <span className="shrink-0">
-                开始于 {relativeTime(task.startedAt)}
+                {t("agent.header.startedAt", { time: relativeTime(task.startedAt) })}
               </span>
             ) : null}
             {live ? (
-              <span className="shrink-0">Option+拖动选中文本</span>
+              <span className="shrink-0">{t("agent.header.selectionHint")}</span>
             ) : null}
             {task.exitCode !== undefined ? (
               <span className="shrink-0">exit {task.exitCode}</span>
@@ -148,7 +149,9 @@ export function AgentTaskHeader(props: Props) {
               ) : null}
               {runtimeStatus.subagents > 0 ? (
                 <span className="text-slate-500">
-                  {runtimeStatus.subagents} 个子 Agent
+                  {t("agent.header.subagents", {
+                    count: runtimeStatus.subagents,
+                  })}
                 </span>
               ) : null}
               {runtimeStatus.model ? (
@@ -177,13 +180,13 @@ export function AgentTaskHeader(props: Props) {
               options={[
                 {
                   value: "chat",
-                  label: "对话",
+                  label: t("agent.view.chat"),
                   icon: <MessagesSquare size={11} />,
                   disabled: !chatSupported,
                 },
                 {
                   value: "terminal",
-                  label: "终端",
+                  label: t("agent.view.terminal"),
                   icon: <Terminal size={11} />,
                 },
               ]}
@@ -202,7 +205,7 @@ export function AgentTaskHeader(props: Props) {
             disabled={!canCancel || actionBusy !== null}
             onClick={onCancel}
           >
-            中断
+            {t("agent.header.stop")}
           </Button>
           <Button
             size="sm"
@@ -211,7 +214,7 @@ export function AgentTaskHeader(props: Props) {
             disabled={!task.jsonPath}
             onClick={onOpenExportDir}
           >
-            打开导出目录
+            {t("agent.header.openExport")}
           </Button>
           <Button
             size="sm"
@@ -219,7 +222,7 @@ export function AgentTaskHeader(props: Props) {
             icon={<Bug size={11} />}
             onClick={onOpenBug}
           >
-            打开缺陷
+            {t("agent.openBug")}
           </Button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 //! TAPD write-back tools: transitions, comments and status changes.
 
 use serde_json::{json, Value};
+use tapd_i18n::tr_args;
 use tauri::AppHandle;
 
 use crate::{
@@ -83,9 +84,8 @@ pub(super) async fn update_bug_status(
         && !policy.allows_status(&target)
         && !policy.allows_status(&target_input)
     {
-        return Err(format!(
-            "状态「{}」不在 MCP 策略的状态白名单中",
-            target_input
+        return Err(tr_args("app.mcp.status.allowed",
+            &[&target_input],
         ));
     }
 

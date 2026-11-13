@@ -10,6 +10,7 @@ import {
 } from "../lib/api";
 import { cacheApi } from "../lib/cache";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { useTauriEvent } from "../lib/tauriEvent";
 import type { View } from "../components/NavRail";
 
@@ -258,7 +259,7 @@ export function useWorkspaceData({
     }
 
     if (visibleWorkspaces.length <= 1) {
-      showToast("error", "至少保留一个项目");
+      showToast("error", t("app.projects.keepOne"));
       return;
     }
     if (hiddenWorkspaceIds.includes(id)) return;

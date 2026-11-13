@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MDEditor, { type ICommand } from "@uiw/react-md-editor";
+import { getCommands } from "@uiw/react-md-editor/commands";
 import { getCommands as getChineseCommands } from "@uiw/react-md-editor/commands-cn";
 import {
   FileText,
@@ -18,6 +19,7 @@ import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/
 import { useAgentScan } from "../lib/agentScan";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
+import { getLocale, t } from "../lib/i18n";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { AgentPicker } from "./AgentPicker";
@@ -144,16 +146,16 @@ export function AgentComposeSheet(props: Props) {
       const selected = await openDialog({
         multiple: true,
         directory: false,
-        title: "选择图片、视频或其他资源",
+        title: t("chat.attachTitle"),
         filters: [
-          { name: "图片与视频", extensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "mp4", "mov", "webm", "m4v"] },
-          { name: "所有文件", extensions: ["*"] },
+          { name: t("chat.imagesAndVideos"), extensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "mp4", "mov", "webm", "m4v"] },
+          { name: t("chat.allFiles"), extensions: ["*"] },
         ],
       });
       if (!selected) return;
       addPaths(Array.isArray(selected) ? selected : [selected]);
     } catch (error) {
-      toast?.("error", `打开文件选择器失败：${String(error)}`);
+      toast?.("error", t("chat.pickerFailed", { error: String(error) }));
     }
   }, [addPaths, toast]);
 
@@ -173,7 +175,7 @@ export function AgentComposeSheet(props: Props) {
         }
         addPaths(saved);
       } catch (error) {
-        toast?.("error", `保存粘贴资源失败：${String(error)}`);
+        toast?.("error", t("chat.pasteFailed", { error: String(error) }));
       } finally {
         setSaving(false);
       }
@@ -236,18 +238,24 @@ export function AgentComposeSheet(props: Props) {
     [addPaths, open],
   );
 
+  const locale = getLocale();
   const commands = useMemo<ICommand[]>(
     () =>
-      getChineseCommands()
+      // The Markdown toolbar ships its own localized command set; pick the one
+      // matching the UI language (there is no runtime language switch inside).
+      (getLocale() === "en" ? getCommands() : getChineseCommands())
         .filter((command) => command.name !== "image")
         .concat({
           name: "attach-resource",
           keyCommand: "attach-resource",
-          buttonProps: { "aria-label": "添加资源", title: "添加资源（传本地路径）" },
+          buttonProps: {
+            "aria-label": t("chat.addResource"),
+            title: t("chat.addResourceHint"),
+          },
           icon: <Paperclip size={12} />,
           execute: () => void pickFiles(),
         }),
-    [pickFiles],
+    [pickFiles, locale],
   );
 
   if (!open) return null;
@@ -260,7 +268,7 @@ export function AgentComposeSheet(props: Props) {
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="用 Agent 修复"
+        aria-label={t("chat.fixWithAgent")}
         data-agent-compose
         className={clsx(
           "agent-sheet-up absolute inset-x-0 bottom-0 flex h-[min(64vh,560px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface ",
@@ -277,7 +285,7 @@ export function AgentComposeSheet(props: Props) {
           </span>
           <div className="min-w-0" data-tauri-drag-region>
             <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
-              用 Agent 修复
+              {t("chat.fixWithAgent")}
             </h2>
             <p className="truncate text-ui-sm text-slate-500" title={bugTitle(title)}>
               {bugTitle(title)}
@@ -285,7 +293,7 @@ export function AgentComposeSheet(props: Props) {
           </div>
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("common.close")}
             onClick={onClose}
             disabled={submitting}
             className="ml-auto grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"
@@ -304,7 +312,7 @@ export function AgentComposeSheet(props: Props) {
               visibleDragbar={false}
               commands={commands}
               textareaProps={{
-                placeholder: "补充说明（Markdown）…  可写复现步骤、期望行为、注意事项",
+                placeholder: t("chat.contextPlaceholder"),
                 onPaste: (event) => {
                   const files = Array.from(event.clipboardData?.files ?? []).filter(
                     (file) => file.type.startsWith("image/"),
@@ -330,7 +338,7 @@ export function AgentComposeSheet(props: Props) {
 
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <span className="shrink-0 text-ui-xs text-slate-400">本次任务使用</span>
+            <span className="shrink-0 text-ui-xs text-slate-400">{t("chat.forThisTask")}</span>
             <AgentPicker
               compact
               placement="up"
@@ -348,8 +356,8 @@ export function AgentComposeSheet(props: Props) {
               list={selectedRuntime ? `agent-model-${selectedRuntime.id}` : undefined}
               disabled={submitting}
               spellCheck={false}
-              title="本次任务的模型；留空使用运行时的默认模型"
-              placeholder="默认模型"
+              title={t("chat.modelHint")}
+              placeholder={t("chat.defaultModel")}
               className="h-[30px] w-[170px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
             />
             {selectedRuntime ? (
@@ -364,7 +372,7 @@ export function AgentComposeSheet(props: Props) {
                 value={permissionMode || permissionOptions[0]?.id || "default"}
                 onChange={(event) => setPermissionMode(event.target.value)}
                 disabled={submitting}
-                title="本次任务的访问权限"
+                title={t("chat.permissionHint")}
                 className="h-[30px] w-[150px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
               >
                 {permissionOptions.map((option) => (
@@ -377,7 +385,7 @@ export function AgentComposeSheet(props: Props) {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
@@ -387,7 +395,7 @@ export function AgentComposeSheet(props: Props) {
               disabled={saving}
               onClick={submit}
             >
-              加入队列
+              {t("chat.addToQueue")}
             </Button>
           </div>
         </footer>
@@ -407,7 +415,7 @@ function AttachmentTray(props: {
 
   return (
     <div
-      title="也可以拖入或粘贴截图"
+      title={t("chat.dropOrPaste")}
       className={clsx(
         "flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-dashed px-2 py-1.5 transition",
         dragging
@@ -425,7 +433,7 @@ function AttachmentTray(props: {
           <span className="truncate">{fileName(path)}</span>
           <button
             type="button"
-            aria-label={`移除 ${fileName(path)}`}
+            aria-label={t("chat.removeAttachment", { name: fileName(path) })}
             onClick={() => onRemove(path)}
             className="grid h-4 w-4 shrink-0 place-items-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-600"
           >
@@ -441,7 +449,7 @@ function AttachmentTray(props: {
         className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-ui-xs text-slate-500 transition hover:bg-surface hover:text-slate-700 disabled:opacity-50"
       >
         {saving ? <Loader2 size={11} className="animate-spin" /> : <Paperclip size={11} />}
-        {saving ? "保存中" : paths.length > 0 ? "继续添加" : "添加图片 / 视频"}
+        {saving ? t("common.saving") : paths.length > 0 ? t("chat.addMore") : t("chat.addImageVideo")}
       </button>
     </div>
   );

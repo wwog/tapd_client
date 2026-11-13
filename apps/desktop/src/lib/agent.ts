@@ -1,4 +1,5 @@
 import { featureCommand } from "./feature";
+import { t, type MessageKey } from "./i18n";
 
 export type AgentTaskStatus =
   | "queued"
@@ -478,19 +479,21 @@ export function agentActiveBugIds(
 export function agentInFlightLabel(info: AgentInFlight): string {
   switch (info.task.status) {
     case "queued":
-      return info.position ? `排队中 #${info.position}` : "排队中";
+      return info.position
+        ? t("agent.status.queuedPosition", { position: info.position })
+        : t("agent.status.queued");
     case "preparing":
-      return "准备中";
+      return t("agent.status.preparing");
     case "running":
-      return "修复中";
+      return t("agent.status.fixing");
     case "awaiting_approval":
-      return "待审核";
+      return t("agent.status.awaitingApproval");
     case "awaiting_merge":
-      return "待合并";
+      return t("agent.status.awaitingMerge");
     case "merging":
-      return "合并中";
+      return t("agent.status.merging");
     default:
-      return AGENT_STATUS_LABELS[info.task.status];
+      return t(AGENT_STATUS_LABELS[info.task.status]);
   }
 }
 
@@ -518,16 +521,16 @@ export type AgentOutputPayload = {
   data: string;
 };
 
-export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
-  queued: "排队中",
-  preparing: "准备中",
-  running: "运行中",
-  awaiting_approval: "待审核",
-  awaiting_merge: "待合并",
-  merging: "合并中",
-  succeeded: "已完成",
-  failed: "失败",
-  canceled: "已取消",
+export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, MessageKey> = {
+  queued: "agent.status.queued",
+  preparing: "agent.status.preparing",
+  running: "agent.status.running",
+  awaiting_approval: "agent.status.awaitingApproval",
+  awaiting_merge: "agent.status.awaitingMerge",
+  merging: "agent.status.merging",
+  succeeded: "agent.status.succeeded",
+  failed: "common.failed",
+  canceled: "agent.status.canceled",
 };
 
 export const AGENT_STATUS_TONES: Record<

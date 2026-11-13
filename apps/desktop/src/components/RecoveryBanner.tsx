@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 
 import type { RecoveryReport } from "../lib/agent";
+import { getLocale, t } from "../lib/i18n";
 import { Button } from "./ui";
 
 /**
@@ -27,10 +28,12 @@ export function RecoveryBanner(props: {
   // ask the user to distinguish how a restored task got there.
   const requeued = report.queued + report.retried;
   const details: string[] = [];
-  if (requeued > 0) details.push(`${requeued} 个已重新排队`);
-  if (report.awaitingApproval > 0) details.push(`${report.awaitingApproval} 个待审核`);
-  if (report.awaitingMerge > 0) details.push(`${report.awaitingMerge} 个待合并`);
-  if (report.failed > 0) details.push(`${report.failed} 个失败`);
+  if (requeued > 0) details.push(t("settings.recovery.requeued", { n: requeued }));
+  if (report.awaitingApproval > 0)
+    details.push(t("settings.recovery.review", { n: report.awaitingApproval }));
+  if (report.awaitingMerge > 0)
+    details.push(t("settings.recovery.merge", { n: report.awaitingMerge }));
+  if (report.failed > 0) details.push(t("settings.recovery.failed", { n: report.failed }));
 
   const hasFailures = report.failed > 0;
   const Icon = hasFailures ? AlertTriangle : RotateCcw;
@@ -50,15 +53,18 @@ export function RecoveryBanner(props: {
         className={clsx("shrink-0", hasFailures ? "text-amber-500" : "text-sky-500")}
       />
       <p className="min-w-0 flex-1 text-ui-caption leading-5">
-        已恢复 {total} 个任务：{details.join("，")}。
-        {report.queuePaused ? "队列已暂停，可到 Agent 页继续。" : null}
+        {t("settings.recovery.summary", {
+          total,
+          details: details.join(getLocale() === "en" ? ", " : "，"),
+        })}
+        {report.queuePaused ? t("settings.recovery.paused") : null}
       </p>
       <div className="flex shrink-0 items-center gap-1">
         <Button variant="ghost" size="sm" onClick={onOpenTasks}>
-          查看任务
+          {t("settings.recovery.viewTasks")}
         </Button>
         <Button variant="ghost" size="sm" onClick={onDismiss}>
-          知道了
+          {t("common.gotIt")}
         </Button>
       </div>
     </div>

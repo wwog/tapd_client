@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde::Serialize;
+use tapd_i18n::tr;
 
 mod candidates;
 mod icons;
@@ -81,7 +82,7 @@ pub fn target_set(kind: &str, cache_dir: &Path, open_with: &BTreeMap<String, Str
 
     targets.push(OpenTarget {
         id: SYSTEM_TARGET.to_string(),
-        label: system_label(kind).to_string(),
+        label: tr(system_label(kind)).to_string(),
         icon: icon_for(Path::new(system_app_path(kind)), cache_dir),
     });
 
@@ -90,7 +91,7 @@ pub fn target_set(kind: &str, cache_dir: &Path, open_with: &BTreeMap<String, Str
         if let Some(browser) = browser_app_path() {
             targets.push(OpenTarget {
                 id: BROWSER_TARGET.to_string(),
-                label: "默认浏览器".to_string(),
+                label: tr("app.openwith.default").to_string(),
                 icon: icon_for(Path::new(browser), cache_dir),
             });
         }
@@ -107,7 +108,7 @@ pub fn target_set(kind: &str, cache_dir: &Path, open_with: &BTreeMap<String, Str
         }
         targets.push(OpenTarget {
             id: candidate.id.to_string(),
-            label: candidate.label.to_string(),
+            label: tr(candidate.label).to_string(),
             icon: icon_for(path, cache_dir),
         });
     }

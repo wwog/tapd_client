@@ -1,5 +1,7 @@
 //! Git safety net: dirty-file snapshots, HEAD checks, and review stashing.
 
+use tapd_i18n::{tr, tr_args};
+
 use super::AgentTask;
 
 /// The empty tree object, used as the diff base for a repository's first
@@ -40,11 +42,11 @@ pub(super) fn uncommitted_files(repo_path: &str) -> Result<Vec<String>, String> 
         .arg(repo_path)
         .args(["status", "--porcelain"])
         .output()
-        .map_err(|error| format!("无法执行 git status：{error}"))?;
+        .map_err(|error| tr_args("agent.git.status.exec.failed", &[&error]))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            "git status 失败".to_string()
+            tr("agent.git.status.failed").to_string()
         } else {
             stderr
         });
@@ -66,7 +68,7 @@ pub(super) fn git_head(repo_path: &str) -> Result<Option<String>, String> {
         .arg(repo_path)
         .args(["rev-parse", "HEAD"])
         .output()
-        .map_err(|error| format!("无法执行 git rev-parse：{error}"))?;
+        .map_err(|error| tr_args("agent.git.revparse.exec.failed", &[&error]))?;
     if !output.status.success() {
         // A fresh repository has no HEAD yet; that is a valid state, not a git
         // failure. Real failures surface through `uncommitted_files`.
@@ -106,11 +108,11 @@ pub(super) fn changed_files_since(
         .arg(repo_path)
         .args(["diff", "--name-only", baseline])
         .output()
-        .map_err(|error| format!("无法执行 git diff：{error}"))?;
+        .map_err(|error| tr_args("agent.git.diff.exec.failed", &[&error]))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            "git diff 失败".to_string()
+            tr("agent.git.diff.failed").to_string()
         } else {
             stderr
         });
@@ -137,7 +139,7 @@ pub(super) fn branch_merged(repo_path: &str, branch: &str) -> Result<bool, Strin
         .arg(repo_path)
         .args(["merge-base", "--is-ancestor", branch, "HEAD"])
         .output()
-        .map_err(|error| format!("无法执行 git merge-base：{error}"))?;
+        .map_err(|error| tr_args("agent.git.mergeBase.exec.failed", &[&error]))?;
     if output.status.success() {
         return Ok(true);
     }
@@ -148,7 +150,7 @@ pub(super) fn branch_merged(repo_path: &str, branch: &str) -> Result<bool, Strin
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(if stderr.is_empty() {
-        "git merge-base 校验失败".to_string()
+        tr("agent.git.mergeBase.failed").to_string()
     } else {
         stderr
     })
@@ -181,11 +183,11 @@ pub(super) fn stash_changes(
     }
     let output = command
         .output()
-        .map_err(|error| format!("无法执行 git：{error}"))?;
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            "git stash 失败".to_string()
+            tr("agent.git.stash.failed").to_string()
         } else {
             stderr
         });
@@ -193,7 +195,7 @@ pub(super) fn stash_changes(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.contains("No local changes") {
-        return Ok("无未提交改动".to_string());
+        return Ok(tr("agent.git.clean").to_string());
     }
 
     let reference = std::process::Command::new("git")

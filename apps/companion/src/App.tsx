@@ -8,6 +8,7 @@ import {
   useAgentTasks,
 } from "./lib/agentTasks";
 import { startHeartbeat } from "./lib/heartbeat";
+import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
@@ -33,7 +34,7 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
             className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
           >
             <RefreshCw size={14} />
-            重试
+            {t("common.retry")}
           </button>
         ) : null}
       </div>
@@ -43,10 +44,11 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
 
 type TabKey = "bugs" | "agent" | "settings";
 
-const TABS: ReadonlyArray<{ key: TabKey; label: string; hash: string }> = [
-  { key: "bugs", label: "缺陷", hash: "#/bugs" },
-  { key: "agent", label: "Agent", hash: "#/agent" },
-  { key: "settings", label: "设置", hash: "#/settings" },
+/** Tab labels store keys and resolve through `t()` at render time. */
+const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
+  { key: "bugs", label: "common.bugs", hash: "#/bugs" },
+  { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
+  { key: "settings", label: "common.settings", hash: "#/settings" },
 ];
 
 /** Which tab owns the current route (pushed pages keep their parent tab). */
@@ -70,7 +72,7 @@ const tabOf = (route: Route): TabKey => {
 function TabBar(props: { active: TabKey; badge: number }) {
   return (
     <nav
-      aria-label="主导航"
+      aria-label={t("mobile.nav.main")}
       className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-canvas"
     >
       <div className="flex h-14 items-stretch">
@@ -92,14 +94,14 @@ function TabBar(props: { active: TabKey; badge: number }) {
                 {tab.key === "settings" ? <Settings size={18} /> : null}
                 {tab.key === "agent" && props.badge > 0 ? (
                   <span
-                    aria-label={`${props.badge} 个待处理任务`}
+                    aria-label={t("mobile.nav.pendingTasks", { n: props.badge })}
                     className="absolute -top-1.5 -right-2.5 min-w-4 rounded-full bg-rose-500 px-1 py-px text-center text-ui-2xs leading-3.5 text-white"
                   >
                     {props.badge > 99 ? "99+" : props.badge}
                   </span>
                 ) : null}
               </span>
-              <span className="text-ui-2xs">{tab.label}</span>
+              <span className="text-ui-2xs">{t(tab.label)}</span>
             </button>
           );
         })}
@@ -153,12 +155,23 @@ export default function App() {
   }
 
   if (connection.kind === "offline") {
-    return <GateScreen title="桌面端掉线" hint="无法连接桌面端，恢复网络后重试。" retry />;
+    return (
+      <GateScreen
+        title={t("mobile.gate.offlineTitle")}
+        hint={t("mobile.gate.offlineHint")}
+        retry
+      />
+    );
   }
   if (connection.kind === "not_logged_in") {
     // The hidden poller keeps running, so this clears itself once the
     // desktop logs back in.
-    return <GateScreen title="桌面端未登录" hint="桌面端登录后本页会自动恢复。" />;
+    return (
+      <GateScreen
+        title={t("mobile.desktop.notLoggedIn")}
+        hint={t("mobile.gate.notLoggedInHint")}
+      />
+    );
   }
 
   // awaiting_approval wins over queued for the Agent tab badge.

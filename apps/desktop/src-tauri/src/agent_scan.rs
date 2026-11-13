@@ -16,6 +16,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tapd_core::store::{read_json, write_json_atomic};
+use tapd_i18n::{tr, tr_args};
 
 use crate::{
     agent::{resolve_executable, runtime_catalog, AgentRuntimeDescriptor},
@@ -145,9 +146,9 @@ pub fn scan_runtimes(runtimes: &[AgentRuntimeDescriptor]) -> Vec<AgentScanResult
             handles
                 .into_iter()
                 .map(|(index, handle)| {
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| (index, Err("版本探测线程崩溃".to_string())))
+                    handle.join().unwrap_or_else(|_| {
+                        (index, Err(tr("agent.scan.thread.crashed").to_string()))
+                    })
                 })
                 .collect()
         });
@@ -186,7 +187,7 @@ pub(crate) fn probe_version(path: &Path) -> Result<String, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("无法启动 {display}：{error}"))?;
+        .map_err(|error| tr_args("agent.scan.start.failed", &[&display, &error]))?;
 
     let started = Instant::now();
     loop {
@@ -196,11 +197,16 @@ pub(crate) fn probe_version(path: &Path) -> Result<String, String> {
                 if started.elapsed() >= VERSION_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("{display} --version 超时（5 秒）"));
+                    return Err(tr_args("agent.scan.version.timeout", &[&display]));
                 }
                 thread::sleep(Duration::from_millis(80));
             }
-            Err(error) => return Err(format!("等待 {display} --version 失败：{error}")),
+            Err(error) => {
+                return Err(tr_args(
+                    "agent.scan.version.wait.failed",
+                    &[&display, &error],
+                ))
+            }
         }
     }
 
@@ -217,7 +223,7 @@ pub(crate) fn probe_version(path: &Path) -> Result<String, String> {
 
     version
         .map(str::to_string)
-        .ok_or_else(|| format!("{display} --version 没有输出"))
+        .ok_or_else(|| tr_args("agent.scan.version.noOutput", &[&display]))
 }
 
 #[cfg(test)]

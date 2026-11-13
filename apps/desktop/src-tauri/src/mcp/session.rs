@@ -19,6 +19,7 @@ use tapd_core::{
         Workspace,
     },
 };
+use tapd_i18n::{tr, tr_args};
 use tauri::AppHandle;
 
 use crate::{agent, commands::auth::session_request_json, state::SharedState};
@@ -110,7 +111,9 @@ pub(super) fn resolve_workspace(
     if let Some(workspace_id) = string_arg(arguments, "workspace_id") {
         if !workspace_id.is_empty() {
             if !policy.allows_workspace(&workspace_id) {
-                return Err(format!("项目 {workspace_id} 不在 MCP 策略允许的项目范围内"));
+                return Err(tr_args("app.mcp.project.allowed",
+                    &[&workspace_id],
+                ));
             }
             return Ok(workspace_id);
         }
@@ -124,20 +127,20 @@ pub(super) fn resolve_workspace(
                     .iter()
                     .any(|workspace| workspace.id == workspace_id)
                 {
-                    return Err(format!(
-                        "目录 {root} 匹配到项目 {workspace_id}，但当前账号无法访问该项目"
+                    return Err(tr_args("app.mcp.project.access",
+                        &[&root, &workspace_id],
                     ));
                 }
                 if !policy.allows_workspace(&workspace_id) {
-                    return Err(format!(
-                        "目录 {root} 匹配到项目 {workspace_id}，但该项目不在 MCP 策略允许的项目范围内"
+                    return Err(tr_args("app.mcp.project.folder",
+                        &[&root, &workspace_id],
                     ));
                 }
                 return Ok(workspace_id);
             }
             None if !root_is_cwd_hint(arguments) => {
-                return Err(format!(
-                    "无法根据目录 {root} 匹配 TAPD 项目：请在对应项目的「本地文件夹」中配置该目录，或显式传 workspace_id"
+                return Err(tr_args("app.mcp.folder.unmatched",
+                    &[&root],
                 ));
             }
             None => {}
@@ -158,7 +161,7 @@ pub(super) fn resolve_workspace(
         .iter()
         .find(|workspace| policy.allows_workspace(&workspace.id))
         .map(|workspace| workspace.id.clone())
-        .ok_or_else(|| "没有符合 MCP 策略的可用项目".to_string())
+        .ok_or_else(|| tr("app.mcp.no.project").to_string())
 }
 
 /// Default project reported by `tapd_whoami`: the last selected one when it is

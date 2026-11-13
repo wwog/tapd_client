@@ -44,6 +44,7 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::json;
+use tapd_i18n::tr;
 use tauri::AppHandle;
 
 use crate::{server::opaque_token, state::SharedState};
@@ -414,25 +415,25 @@ pub struct PairingCodeInfo {
 /// dialog) or `lan` (test fallback); the tunnel URL must already be live.
 pub(crate) fn pairing_code(state: &SharedState, mode: &str) -> Result<PairingCodeInfo, String> {
     if !state.config_snapshot().companion.enabled {
-        return Err("请先启用移动端伴侣".to_string());
+        return Err(tr("companion.disabled").to_string());
     }
     let (port, tunnel_url) = {
         let runtime = state.companion.lock().expect("companion lock");
         if runtime.task.is_none() {
-            return Err("伴侣服务未运行".to_string());
+            return Err(tr("companion.notrunning").to_string());
         }
         (
             runtime
                 .port
-                .ok_or_else(|| "伴侣服务尚未就绪".to_string())?,
+                .ok_or_else(|| tr("companion.notready").to_string())?,
             runtime.tunnel.snapshot.url.clone(),
         )
     };
     let base = if mode == "tunnel" {
-        tunnel_url.ok_or_else(|| "外网隧道尚未就绪".to_string())?
+        tunnel_url.ok_or_else(|| tr("companion.tunnel.notready").to_string())?
     } else {
         let lan_ip =
-            lan_ipv4().ok_or_else(|| "未能获取局域网地址，请检查网络连接".to_string())?;
+            lan_ipv4().ok_or_else(|| tr("companion.lan.missing").to_string())?;
         format!("http://{lan_ip}:{port}")
     };
 

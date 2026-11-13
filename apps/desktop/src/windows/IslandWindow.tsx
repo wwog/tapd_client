@@ -53,6 +53,7 @@ import {
   type UpdateState,
 } from "../lib/update";
 import { useTauriEvent, useTauriSubscription } from "../lib/tauriEvent";
+import { getLocale, t, type MessageKey } from "../lib/i18n";
 
 const PILL_LAYOUT: IslandLayout = { expanded: false, width: 210, height: 34, count: 0 };
 
@@ -233,48 +234,59 @@ export function IslandWindow() {
   /** 权限 / 提问优先于通用运行中文案，胶囊与 peek 共用。 */
   const agentPromptLabel = agentSummary?.prompt
     ? agentSummary.prompt.kind === "approval"
-      ? "Agent 等待权限"
-      : "Agent 等待回答"
+      ? t("app.island.waitingPermission")
+      : t("app.island.waitingAnswer")
     : null;
   /** Capsule wording: review first, then merge, then running. */
   const agentStatusLabel =
     agentAwaiting > 0
-      ? "Agent 待审核"
+      ? t("app.island.awaitingReview")
       : agentMerging > 0
-        ? "Agent 待合并"
-        : (agentPromptLabel ?? `${agentRuntimeLabel} 修复中`);
+        ? t("app.island.awaitingMerge")
+        : (agentPromptLabel ?? t("app.island.fixing", { runtime: agentRuntimeLabel }));
 
+  // The label is translated copy, so the memo must re-run after a language
+  // switch; `locale` is only here for that dependency.
+  const locale = getLocale();
   const { label: statusLabel, tone } = useMemo(() => {
     if (updateState?.available) {
-      return { label: `可更新 v${updateState.available.version}`, tone: "alert" as const };
+      return {
+        label: t("app.island.updateAvailable", { version: updateState.available.version }),
+        tone: "alert" as const,
+      };
     }
     if ((agentSummary?.awaitingApproval ?? 0) > 0) {
-      return { label: "Agent 待审核", tone: "review" as const };
+      return { label: t("app.island.awaitingReview"), tone: "review" as const };
     }
     if ((agentSummary?.awaitingMerge ?? 0) > 0) {
-      return { label: "Agent 待合并", tone: "review" as const };
+      return { label: t("app.island.awaitingMerge"), tone: "review" as const };
     }
     if (agentSummary?.prompt) {
       return {
-        label: agentPromptLabel ?? "Agent 等待确认",
+        label: agentPromptLabel ?? t("app.island.waitingConfirm"),
         tone: "agent" as const,
       };
     }
     if (agentSummary?.running) {
       return {
-        label: `${agentSummary.runtimeName?.trim() || "Agent"} 修复中`,
+        label: t("app.island.fixing", {
+          runtime: agentSummary.runtimeName?.trim() || "Agent",
+        }),
         tone: "agent" as const,
       };
     }
-    if (!snapshot) return { label: "连接中", tone: "idle" as const };
-    if (!snapshot.running) return { label: "通知已暂停", tone: "paused" as const };
-    if (snapshot.lastError) return { label: "同步异常", tone: "error" as const };
-    if (items.length > 0) return { label: "待处理", tone: "alert" as const };
-    return { label: "待命", tone: "ok" as const };
+    if (!snapshot) return { label: t("app.island.connecting"), tone: "idle" as const };
+    if (!snapshot.running)
+      return { label: t("app.island.notificationsPaused"), tone: "paused" as const };
+    if (snapshot.lastError)
+      return { label: t("app.island.syncError"), tone: "error" as const };
+    if (items.length > 0) return { label: t("app.island.pending"), tone: "alert" as const };
+    return { label: t("app.island.standby"), tone: "ok" as const };
   }, [
     agentSummary,
     agentPromptLabel,
     items.length,
+    locale,
     snapshot,
     updateState?.available,
   ]);
@@ -289,7 +301,7 @@ export function IslandWindow() {
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
   // own the island, so expanded notifications are never hidden mid-interaction.
-  const idle = statusLabel === "待命";
+  const idle = tone === "ok";
   const lastVisible = useRef<boolean | null>(null);
   useEffect(() => {
     if (updateActive) return;
@@ -379,10 +391,12 @@ export function IslandWindow() {
               peeking
                 ? undefined
                 : agentTaskId
-                  ? `${agentStatusLabel} · 单击打开任务 · 可拖动`
+                  ? t("app.island.tipTask", {
+                      status: agentStatusLabel,
+                    })
                   : items.length > 0
-                    ? "单击展开通知 · 双击打开客户端 · 可拖动"
-                    : "双击打开客户端 · 可拖动"
+                    ? t("app.island.tipNotifications")
+                    : t("app.island.tipOpen")
             }
             className={clsx(
               "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
@@ -424,7 +438,7 @@ export function IslandWindow() {
     <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
       {items.length === 0 ? (
         <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line backdrop-blur-xl">
-          暂无待处理通知
+          {t("app.island.empty")}
         </div>
       ) : (
         <>
@@ -454,8 +468,8 @@ export function IslandWindow() {
             >
               <button
                 type="button"
-                aria-label="关闭（忽略）"
-                title="关闭（忽略）"
+                aria-label={t("app.island.dismiss")}
+                title={t("app.island.dismiss")}
                 disabled={Boolean(busy)}
                 onClick={() => void run(item, "ignore")}
                 className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
@@ -492,11 +506,11 @@ export function IslandWindow() {
                 ) : null}
                 {item.priority ? (
                   <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-                    {item.priority}优先级
+                    {t("app.island.priority", { priority: item.priority })}
                   </span>
                 ) : null}
                 <span className="min-w-0 flex-1 truncate text-right">
-                  创建人 {item.creator || "—"}
+                  {t("app.island.creator", { creator: item.creator || "—" })}
                 </span>
               </div>
 
@@ -512,7 +526,7 @@ export function IslandWindow() {
                   ) : (
                     <Check size={12} />
                   )}
-                  处理
+                  {t("app.island.handle")}
                 </button>
                 <button
                   type="button"
@@ -525,7 +539,7 @@ export function IslandWindow() {
                   ) : (
                     <Eye size={12} />
                   )}
-                  查看缺陷
+                  {t("app.island.viewBug")}
                 </button>
               </div>
 
@@ -546,7 +560,8 @@ export function IslandWindow() {
 const AI_TONE_META: Record<
   AiTone,
   {
-    label: string;
+    /** Catalogue key so `t()` runs at render, not at module scope. */
+    label: MessageKey;
     icon: typeof Info;
     iconBg: string;
     iconColor: string;
@@ -554,35 +569,35 @@ const AI_TONE_META: Record<
   }
 > = {
   info: {
-    label: "提示",
+    label: "app.aiTone.info",
     icon: Info,
     iconBg: "bg-sky-500/15",
     iconColor: "text-sky-700",
     badge: "bg-sky-400/15 text-sky-700",
   },
   success: {
-    label: "成功",
+    label: "common.success",
     icon: CheckCircle2,
     iconBg: "bg-emerald-500/15",
     iconColor: "text-emerald-700",
     badge: "bg-emerald-400/15 text-emerald-700",
   },
   warning: {
-    label: "警告",
+    label: "app.aiTone.warning",
     icon: AlertTriangle,
     iconBg: "bg-amber-500/15",
     iconColor: "text-amber-700",
     badge: "bg-amber-400/15 text-amber-700",
   },
   error: {
-    label: "失败",
+    label: "common.failed",
     icon: AlertTriangle,
     iconBg: "bg-rose-500/15",
     iconColor: "text-rose-700",
     badge: "bg-rose-400/15 text-rose-700",
   },
   progress: {
-    label: "进行中",
+    label: "app.aiTone.progress",
     icon: Loader2,
     iconBg: "bg-sky-500/15",
     iconColor: "text-sky-700",
@@ -615,8 +630,8 @@ function AiCard(props: {
     <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
       <button
         type="button"
-        aria-label="关闭"
-        title="关闭"
+        aria-label={t("common.close")}
+        title={t("common.close")}
         disabled={Boolean(busyAction)}
         onClick={onDismiss}
         className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
@@ -635,7 +650,7 @@ function AiCard(props: {
           {payload.client || item.workspaceName || "AI"}
         </span>
         <span className={clsx("shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal", meta.badge)}>
-          {meta.label}
+          {t(meta.label)}
         </span>
         <span className="ml-auto shrink-0 tabular-nums">
           {formatNotificationTime(item.created)}
@@ -660,7 +675,7 @@ function AiCard(props: {
             className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2.5 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-            知道了
+            {t("common.gotIt")}
           </button>
         ) : (
           payload.actions.map((action) => (
@@ -753,7 +768,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             return (
               <div key={index} className="space-y-1">
                 <div className="flex items-center justify-between text-ui-xs text-island-muted">
-                  <span className="truncate">{block.label ?? "进度"}</span>
+                  <span className="truncate">{block.label ?? t("app.island.progress")}</span>
                   {block.percent != null ? (
                     <span className="ml-2 shrink-0 tabular-nums">
                       {Math.round(block.percent)}%
@@ -811,19 +826,19 @@ function AgentPeekCard({
   // label per state so 300px stays readable.
   const status = prompt
     ? prompt.kind === "approval"
-      ? "等待权限确认"
-      : "等待回答"
+      ? t("app.peek.permission")
+      : t("app.peek.answer")
     : review > 0 && merge > 0
-      ? `待审核 ${review} · 待合并 ${merge}`
+      ? t("app.peek.reviewAndMerge", { n: review, m: merge })
       : review > 0
         ? review > 1
-          ? `待审核 ${review}`
-          : "待审核"
+          ? t("app.peek.reviewCount", { n: review })
+          : t("app.peek.review")
         : merge > 0
           ? merge > 1
-            ? `待合并 ${merge}`
-            : "待合并"
-          : "修复中";
+            ? t("app.peek.mergeCount", { n: merge })
+            : t("app.peek.merge")
+          : t("app.peek.fixing");
   const elapsed = formatElapsed(summary.startedAt ?? undefined, Date.now());
   // peek 高度固定 112px，最多放 3 个按钮，其余引导回任务页处理。
   const options = (prompt?.options ?? []).slice(0, 3);
@@ -864,7 +879,7 @@ function AgentPeekCard({
       </div>
 
       <p className="mt-1 line-clamp-1 text-ui-sm" title={title || undefined}>
-        {title || "正在准备任务…"}
+        {title || t("app.peek.preparing")}
       </p>
 
       {prompt ? (
@@ -873,7 +888,7 @@ function AgentPeekCard({
             className="line-clamp-1 text-ui-xs text-island-muted"
             title={prompt.question ?? prompt.summary ?? undefined}
           >
-            {prompt.question ?? prompt.summary ?? "Agent 正在等待你的确认。"}
+            {prompt.question ?? prompt.summary ?? t("app.peek.awaitingConfirm")}
           </p>
           {prompt.canAnswer && options.length > 0 ? (
             <div className="mt-1 flex items-center gap-1">
@@ -902,7 +917,7 @@ function AgentPeekCard({
             </div>
           ) : (
             <p className="mt-1 truncate text-ui-2xs text-amber-700">
-              在 Agent 终端中回答
+              {t("app.peek.answerInTerminal")}
             </p>
           )}
         </div>
@@ -915,7 +930,7 @@ function AgentPeekCard({
           ) : null}
           {summary.priority ? (
             <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-              {summary.priority}优先级
+              {t("app.island.priority", { priority: summary.priority })}
             </span>
           ) : null}
           {canOpen ? (
@@ -925,7 +940,7 @@ function AgentPeekCard({
               className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
             >
               <Eye size={11} />
-              打开详情
+              {t("app.peek.openDetail")}
             </button>
           ) : null}
         </div>
@@ -1002,12 +1017,12 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
           <AlertTriangle size={16} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-ui-sm font-normal">更新失败</p>
+          <p className="text-ui-sm font-normal">{t("app.update.failed")}</p>
           <p
             className="mt-0.5 truncate text-ui-xs text-island-muted"
             title={state?.error ?? undefined}
           >
-            {state?.error ?? "下载或安装过程中出现错误。"}
+            {state?.error ?? t("app.update.failedDetail")}
           </p>
         </div>
         <button
@@ -1016,7 +1031,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-island-soft px-3 py-1.5 text-ui-xs font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover"
         >
           <Download size={12} />
-          手动下载
+          {t("app.update.manual")}
         </button>
         <button
           type="button"
@@ -1025,7 +1040,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-island-soft px-3 py-1.5 text-ui-xs font-normal text-island-muted border border-island-line transition hover:bg-island-soft-hover disabled:opacity-50"
         >
           {cancelling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-          取消
+          {t("common.cancel")}
         </button>
       </div>
     );
@@ -1033,24 +1048,24 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
   const title =
     phase === "installing"
-      ? "正在解包并安装"
+      ? t("app.update.unpacking")
       : phase === "ready"
-        ? "更新完成"
-        : "正在下载更新";
+        ? t("app.update.done")
+        : t("app.update.downloading");
   const right =
     phase === "downloading" && percent != null
       ? `${percent.toFixed(0)}%`
       : phase === "installing"
-        ? "安装中"
-        : "完成";
+        ? t("app.update.installing")
+        : t("common.done");
   const detail =
     phase === "downloading"
       ? progress?.total
         ? `${formatBytes(progress.received)} / ${formatBytes(progress.total)}`
         : formatBytes(progress?.received)
       : phase === "ready"
-        ? "应用即将重启…"
-        : "校验更新包并写入应用目录…";
+        ? t("app.update.restartSoon")
+        : t("app.update.verifying");
 
   return (
     <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line backdrop-blur-xl">
@@ -1088,7 +1103,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
       <div className="flex items-center justify-between text-ui-2xs text-island-muted">
         <span className="tabular-nums">{detail}</span>
-        <span>更新期间主窗口不可打开</span>
+        <span>{t("app.update.mainWindowLocked")}</span>
       </div>
     </div>
   );
@@ -1105,7 +1120,7 @@ function KindBadge({ kind }: { kind: NotificationItem["kind"] }) {
         kind === "ai" && "bg-island-soft text-island-muted",
       )}
     >
-      {NOTIFICATION_KIND_LABELS[kind]}
+      {t(NOTIFICATION_KIND_LABELS[kind])}
     </span>
   );
 }

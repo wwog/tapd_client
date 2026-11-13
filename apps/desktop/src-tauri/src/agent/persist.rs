@@ -4,6 +4,8 @@
 //! views it hands over. Every write is serialized so an older batch can never
 //! land after a newer one.
 
+use tapd_i18n::tr;
+
 use super::{AgentCore, AgentTask};
 
 impl AgentCore {
@@ -27,7 +29,7 @@ impl AgentCore {
         let persisted = self.state.cache.save_agent_tasks(tasks, paused, removed);
         if !persisted {
             tracing::error!("failed to persist agent tasks; the store is unavailable");
-            self.set_storage_error(Some("任务状态保存失败，重启后可能丢失".to_string()));
+            self.set_storage_error(Some(tr("agent.persist.failed").to_string()));
             return false;
         }
         self.set_storage_error(None);

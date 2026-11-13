@@ -50,6 +50,7 @@ use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, Master
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tapd_core::store::{read_json, write_json_atomic};
+use tapd_i18n::{tr, tr_args};
 use tapd_workflow::{
     Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSpec,
     TaskStatus as WorkflowStatus, Workflow,
@@ -189,7 +190,7 @@ export default function tapdSessionMonitor(pi) {
       if (message.errorMessage) return clip(message.errorMessage, 400);
       const reason = message.stopReason;
       if (reason && !["stop", "toolUse", "length", "aborted", "end_turn"].includes(reason)) {
-        return clip(`Agent 结束：${reason}`, 200);
+        return clip(`Agent 结束：${reason}`, 200); // i18n-exempt: hook script body
       }
     }
     return "";
@@ -203,11 +204,11 @@ export default function tapdSessionMonitor(pi) {
   const settle = (ctx, error) => {
     clearSettle();
     if (error) post(ctx, "StopFailure", { error });
-    else post(ctx, "agent_end", { message: "回合结束" });
+    else post(ctx, "agent_end", { message: "回合结束" }); // i18n-exempt: hook script body
   };
 
   pi.on("session_start", (event, ctx) =>
-    post(ctx, "SessionStart", { message: "会话已启动", reason: event?.reason }),
+    post(ctx, "SessionStart", { message: "会话已启动", reason: event?.reason }), // i18n-exempt: hook script body
   );
   pi.on("before_agent_start", (event, ctx) => {
     clearSettle();
@@ -268,19 +269,19 @@ const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
 /// Cap the diff preview so a huge refactor cannot freeze the review panel.
 const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
 
-pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.json 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_PROMPT_KEY: &str = "agent.prompt.default";
 
 /// Follow-up prompt injected after the user approves a paused review. The
 /// working tree still holds the reviewed changes, so the agent only commits
 /// and writes back to TAPD instead of redoing the fix.
-pub const DEFAULT_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请继续完成 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与缺陷相关。\n3. 提交代码（git commit，不要 push）。\n4. 提交成功后，用 tapd_add_bug_comment 追加评论并说明原因、方案与影响范围，再用 tapd_update_bug_status 更新缺陷状态。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接更新 TAPD，不要重复提交。\n6. 绝对不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_COMMIT_PROMPT_KEY: &str = "agent.prompt.commit";
 
 /// Worktree 任务审核通过后的提交阶段。TAPD 回写统一留到合并阶段，避免任务
 /// 还没并入主仓库就把缺陷标记为已解决。
-pub const DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请在当前 worktree 提交上一轮审核过的修改。\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建。\n3. 提交代码（git commit，不要 push）。\n4. 不要评论或更新 TAPD；合并阶段会统一回写。\n5. 如果工作区已经没有未提交改动，说明已提交，直接结束。";
+pub const DEFAULT_WORKTREE_COMMIT_PROMPT_KEY: &str = "agent.prompt.worktree.commit";
 
 /// 追加到 Worktree 修复阶段的交付说明：修复轮不写 TAPD。
-const WORKTREE_FIX_NOTE: &str = "本轮在独立 worktree 中运行：不要评论或更新 TAPD。简单任务只提交；复杂任务保留未提交改动。审核与合并完成后，由合并阶段统一写回 TAPD。";
+const WORKTREE_FIX_NOTE_KEY: &str = "agent.prompt.worktree.note";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -362,7 +363,7 @@ impl Default for AgentConfig {
             binary_path: DEFAULT_BINARY.to_string(),
             repo_mappings: BTreeMap::new(),
             projects: BTreeMap::new(),
-            prompt_template: DEFAULT_PROMPT_TEMPLATE.to_string(),
+            prompt_template: tr(DEFAULT_PROMPT_KEY).to_string(),
             coworker_ids: Vec::new(),
             ready_quiet_ms: 900,
             ready_timeout_ms: 15_000,
@@ -395,7 +396,7 @@ impl AgentConfig {
         if self.prompt_template.trim().is_empty()
             || template_uses_removed_contract(&self.prompt_template)
         {
-            self.prompt_template = DEFAULT_PROMPT_TEMPLATE.to_string();
+            self.prompt_template = tr(DEFAULT_PROMPT_KEY).to_string();
         }
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
@@ -526,8 +527,8 @@ pub struct AgentPermissionOption {
 fn default_permissions() -> Vec<AgentPermissionOption> {
     vec![AgentPermissionOption {
         id: "default",
-        label: "默认权限",
-        description: "沿用 CLI 自己的权限与沙箱配置。",
+        label: tr("agent.permission.default"),
+        description: tr("agent.permission.default.cli.desc"),
     }]
 }
 
@@ -575,64 +576,64 @@ fn runtime_lifecycle() -> Vec<AgentLifecycleStage> {
     vec![
         AgentLifecycleStage {
             key: "queued",
-            label: "入队",
-            description: "按 FIFO 排队，等待串行 worker 取出。",
+            label: tr("agent.lifecycle.queued"),
+            description: tr("agent.lifecycle.queued.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "preparing",
-            label: "启动",
-            description: "导出缺陷包并在项目仓库中启动运行时。",
+            label: tr("agent.lifecycle.starting"),
+            description: tr("agent.lifecycle.starting.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "running",
-            label: "执行中",
-            description: "Agent 修改代码；终端可随时接管操作。",
+            label: tr("agent.lifecycle.running"),
+            description: tr("agent.lifecycle.running.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "awaiting_approval",
-            label: "改动待审核",
-            description: "Worktree 任务改动或非 Worktree 复杂改动暂停，等待通过或停止。",
+            label: tr("agent.lifecycle.awaitingReview"),
+            description: tr("agent.lifecycle.awaitingReview.desc"),
             needs_human: true,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "awaiting_merge",
-            label: "待合并",
-            description: "审核已通过，等待确认用原 Agent 或手动把任务分支合并到主仓库。",
+            label: tr("agent.lifecycle.awaitingMerge"),
+            description: tr("agent.lifecycle.awaitingMerge.desc"),
             needs_human: true,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "merging",
-            label: "合并中",
-            description: "原 Agent 正在主仓库合并任务分支，并校验分支是否已并入 HEAD。",
+            label: tr("agent.lifecycle.merging"),
+            description: tr("agent.lifecycle.merging.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "succeeded",
-            label: "任务完成",
-            description: "合并校验通过（或非 Worktree 提交）并完成 TAPD 回写。",
+            label: tr("agent.lifecycle.succeeded"),
+            description: tr("agent.lifecycle.succeeded.desc"),
             needs_human: false,
             terminal: true,
         },
         AgentLifecycleStage {
             key: "failed",
-            label: "任务失败",
-            description: "启动、执行或回写失败，错误保留在历史记录中。",
+            label: tr("agent.lifecycle.failed"),
+            description: tr("agent.lifecycle.failed.desc"),
             needs_human: false,
             terminal: true,
         },
         AgentLifecycleStage {
             key: "canceled",
-            label: "已取消",
-            description: "用户中断任务或取消排队。",
+            label: tr("agent.lifecycle.canceled"),
+            description: tr("agent.lifecycle.canceled.desc"),
             needs_human: false,
             terminal: true,
         },
@@ -652,15 +653,11 @@ fn tui_capabilities() -> AgentRuntimeCapabilities {
 /// 通用 TUI 的互通限制；`mcp_auto` 表示该客户端是否已有自动注入支持。
 fn tui_limitations(mcp_auto: bool) -> Vec<&'static str> {
     let mcp = if mcp_auto {
-        "启动前会尝试把 tapd MCP 写入该客户端的用户级配置。"
+        tr("agent.limits.mcp.auto")
     } else {
-        "尚未自动注入 tapd MCP，需要手动配置后才能回写 TAPD。"
+        tr("agent.limits.mcp.manual")
     };
-    vec![
-        "权限确认在右侧嵌入式终端内完成，桌面不会代为回执。",
-        "本轮结束以进程退出为准；未退出时按会话 hook 或输出静默兜底。",
-        mcp,
-    ]
+    vec![tr("agent.limits.permission"), tr("agent.limits.turn"), mcp]
 }
 
 /// 目录里只有少数运行时需要别名、子命令或参数终止符，其余用空扩展。
@@ -743,7 +740,7 @@ fn tui_runtime_with(
         capabilities: tui_capabilities(),
         lifecycle: runtime_lifecycle(),
         limitations: tui_limitations(mcp_auto),
-        fallback: "权限确认和交互操作都在嵌入式终端内完成；桌面只在任务结束后收集状态。",
+        fallback: tr("agent.limits.fallback"),
     }
 }
 
@@ -758,20 +755,20 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "opencode",
             "OpenCode",
             "SST",
-            "OpenCode 交互式终端，启动后写入提示词。",
+            tr("agent.runtime.opencode.desc"),
             DEFAULT_BINARY,
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::OpenCode,
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 OpenCode 自己的权限配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.opencode.desc"),
                     },
                     AgentPermissionOption {
                         id: "auto",
-                        label: "自动批准",
-                        description: "自动批准未被显式拒绝的权限请求。",
+                        label: tr("agent.permission.auto"),
+                        description: tr("agent.permission.auto.desc"),
                     },
                 ],
                 ..TuiRuntimeExtra::default()
@@ -784,30 +781,30 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "claude",
             "Claude Code",
             "Anthropic",
-            "Claude Code 交互式终端，提示词作为启动参数传入。",
+            tr("agent.runtime.claude.desc"),
             "claude",
             TuiRuntimeExtra {
                 models: vec!["sonnet", "opus", "haiku", "fable"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "按 Claude 自己的设置询问。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.claude.desc"),
                     },
                     AgentPermissionOption {
                         id: "accept_edits",
-                        label: "自动接受编辑",
-                        description: "文件编辑不再逐次确认，命令仍按默认策略询问。",
+                        label: tr("agent.permission.acceptEdits"),
+                        description: tr("agent.permission.acceptEdits.claude.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过所有权限检查，仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.desc"),
                     },
                     AgentPermissionOption {
                         id: "plan",
-                        label: "只读计划",
-                        description: "只读分析并给出计划，不修改文件。",
+                        label: tr("agent.permission.plan"),
+                        description: tr("agent.permission.plan.desc"),
                     },
                 ],
                 session_hook: SessionHookKind::ClaudeSettings {
@@ -825,25 +822,25 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "codex",
             "Codex",
             "OpenAI",
-            "Codex CLI 交互式终端，提示词作为启动参数传入。",
+            tr("agent.runtime.codex.desc"),
             "codex",
             TuiRuntimeExtra {
                 models: vec!["gpt-5-codex", "gpt-5", "o3", "o4-mini"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 Codex 自己的审批与沙箱配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.codex.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_auto",
-                        label: "自动执行",
-                        description: "在工作区内自动执行，不逐条确认。",
+                        label: tr("agent.permission.fullAuto"),
+                        description: tr("agent.permission.fullAuto.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过审批与沙箱，仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.codex.desc"),
                     },
                 ],
                 session_hook: SessionHookKind::Codex,
@@ -857,7 +854,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "cursor",
             "Cursor Agent",
             "Anysphere",
-            "Cursor 命令行 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.cursor.desc"),
             "cursor-agent",
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::Cursor,
@@ -871,7 +868,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "zcode",
             "ZCode",
             "ZCode",
-            "ZCode 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.zcode.desc"),
             "zcode",
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::Zcode,
@@ -885,7 +882,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "gemini",
             "Gemini CLI",
             "Google",
-            "Gemini CLI 交互式终端，使用 -i 传入提示词。",
+            tr("agent.runtime.gemini.desc"),
             "gemini",
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::Gemini,
@@ -899,7 +896,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "qwen",
             "Qwen Code",
             "Alibaba",
-            "Qwen Code 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.qwen.desc"),
             "qwen",
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::ClaudeSettings {
@@ -917,7 +914,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "copilot",
             "GitHub Copilot",
             "GitHub",
-            "Copilot CLI 交互式终端，使用 -i 传入提示词。",
+            tr("agent.runtime.copilot.desc"),
             "copilot",
             Vec::new(),
             PromptInjection::Flag,
@@ -928,7 +925,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "cline",
             "Cline",
             "Cline",
-            "Cline CLI 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.cline.desc"),
             "cline",
             Vec::new(),
             PromptInjection::Stdin,
@@ -939,7 +936,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "aider",
             "Aider",
             "Aider",
-            "Aider 交互式终端，启动后写入提示词。",
+            tr("agent.runtime.aider.desc"),
             "aider",
             Vec::new(),
             PromptInjection::Stdin,
@@ -950,7 +947,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "goose",
             "Goose",
             "Block",
-            "Goose 交互式终端，启动后写入提示词。",
+            tr("agent.runtime.goose.desc"),
             "goose",
             Vec::new(),
             PromptInjection::Stdin,
@@ -961,7 +958,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "amp",
             "Amp",
             "Sourcegraph",
-            "Amp 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.amp.desc"),
             "amp",
             Vec::new(),
             PromptInjection::Stdin,
@@ -972,7 +969,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "antigravity",
             "Antigravity",
             "Google",
-            "Antigravity CLI（agy），启动后写入提示词。",
+            tr("agent.runtime.antigravity.desc"),
             "agy",
             Vec::new(),
             PromptInjection::Stdin,
@@ -983,7 +980,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "aug",
             "Auggie",
             "Augment Code",
-            "Augment 的 auggie CLI，启动后写入提示词。",
+            tr("agent.runtime.aug.desc"),
             "auggie",
             Vec::new(),
             PromptInjection::Stdin,
@@ -994,7 +991,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "autohand",
             "Autohand Code",
             "Autohand",
-            "Autohand Code 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.autohand.desc"),
             "autohand",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1005,7 +1002,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "codebuddy",
             "CodeBuddy",
             "Tencent",
-            "CodeBuddy CLI，提示词作为启动参数传入。",
+            tr("agent.runtime.codebuddy.desc"),
             "codebuddy",
             TuiRuntimeExtra {
                 aliases: vec!["cbc"],
@@ -1024,7 +1021,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "codebuff",
             "Codebuff",
             "Codebuff",
-            "Codebuff 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.codebuff.desc"),
             "codebuff",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1035,7 +1032,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "command-code",
             "Command Code",
             "Command Code",
-            "Command Code 终端 Agent，跳过首次信任提示后写入提示词。",
+            tr("agent.runtime.commandCode.desc"),
             "command-code",
             TuiRuntimeExtra {
                 args: vec!["--trust"],
@@ -1049,7 +1046,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "continue",
             "Continue",
             "Continue",
-            "Continue CLI（cn），启动后写入提示词。",
+            tr("agent.runtime.continue.desc"),
             "cn",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1060,7 +1057,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "crush",
             "Charm",
             "Charm",
-            "Charm 的 crush 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.crush.desc"),
             "crush",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1071,7 +1068,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "devin",
             "Devin",
             "Cognition",
-            "Devin CLI，提示词作为启动参数传入。",
+            tr("agent.runtime.devin.desc"),
             "devin",
             TuiRuntimeExtra {
                 argv_separator: Some("--"),
@@ -1085,7 +1082,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "droid",
             "Droid",
             "Factory",
-            "Factory Droid 终端 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.droid.desc"),
             "droid",
             Vec::new(),
             PromptInjection::Argv,
@@ -1096,7 +1093,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "freebuff",
             "Freebuff",
             "Freebuff",
-            "Freebuff 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.freebuff.desc"),
             "freebuff",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1107,7 +1104,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "grok",
             "Grok",
             "xAI",
-            "Grok CLI，提示词作为启动参数传入。",
+            tr("agent.runtime.grok.desc"),
             "grok",
             TuiRuntimeExtra {
                 argv_separator: Some("--"),
@@ -1121,7 +1118,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "hermes",
             "Hermes",
             "Nous Research",
-            "Hermes 全屏 TUI，启动后写入提示词。",
+            tr("agent.runtime.hermes.desc"),
             "hermes",
             TuiRuntimeExtra {
                 args: vec!["--tui"],
@@ -1135,7 +1132,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "jcode",
             "Jcode",
             "Jcode",
-            "Jcode 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.jcode.desc"),
             "jcode",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1146,7 +1143,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "kilo",
             "Kilocode",
             "Kilocode",
-            "Kilocode 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.kilo.desc"),
             "kilo",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1157,7 +1154,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "kimi",
             "Kimi",
             "Moonshot",
-            "Kimi CLI，启动后写入提示词。",
+            tr("agent.runtime.kimi.desc"),
             "kimi",
             TuiRuntimeExtra {
                 aliases: vec!["kimi-code"],
@@ -1172,7 +1169,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "kiro",
             "Kiro",
             "AWS",
-            "Kiro CLI 的 chat TUI，启动后写入提示词。",
+            tr("agent.runtime.kiro.desc"),
             "kiro-cli",
             TuiRuntimeExtra {
                 args: vec!["chat", "--tui"],
@@ -1186,7 +1183,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "mimo-code",
             "MiMo Code",
             "Xiaomi",
-            "MiMo Code 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.mimoCode.desc"),
             "mimo",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1197,7 +1194,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "mistral-vibe",
             "Mistral Vibe",
             "Mistral",
-            "Mistral Vibe CLI（vibe），启动后写入提示词。",
+            tr("agent.runtime.mistralVibe.desc"),
             "vibe",
             TuiRuntimeExtra {
                 aliases: vec!["mistral-vibe"],
@@ -1211,7 +1208,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "muse",
             "Muse",
             "Meta",
-            "Muse CLI，跳过工作区信任后写入提示词。",
+            tr("agent.runtime.muse.desc"),
             "muse",
             TuiRuntimeExtra {
                 args: vec!["--trust-workspace"],
@@ -1225,7 +1222,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "omp",
             "OMP",
             "OMP",
-            "OMP 终端 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.omp.desc"),
             "omp",
             TuiRuntimeExtra {
                 // TUI 会持续重绘，静默兜底无法触发；用会话 hook 收尾并记录 session id。
@@ -1233,18 +1230,18 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 OMP 自己的审批配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.omp.desc"),
                     },
                     AgentPermissionOption {
                         id: "write",
-                        label: "自动执行写操作",
-                        description: "自动批准写文件等操作，危险命令仍会询问。",
+                        label: tr("agent.permission.writeAuto"),
+                        description: tr("agent.permission.writeAuto.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过所有工具批准（yolo），仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.omp.desc"),
                     },
                 ],
                 ..TuiRuntimeExtra::default()
@@ -1257,25 +1254,25 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "openclaude",
             "OpenClaude",
             "OpenClaude",
-            "OpenClaude 终端 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.openclaude.desc"),
             "openclaude",
             TuiRuntimeExtra {
                 models: vec!["sonnet", "opus", "haiku", "fable"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "按 OpenClaude 自己的设置询问。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.openclaude.desc"),
                     },
                     AgentPermissionOption {
                         id: "accept_edits",
-                        label: "自动接受编辑",
-                        description: "文件编辑不再逐次确认。",
+                        label: tr("agent.permission.acceptEdits"),
+                        description: tr("agent.permission.acceptEdits.openclaude.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过所有权限检查，仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.desc"),
                     },
                 ],
                 session_hook: SessionHookKind::ClaudeSettings {
@@ -1293,7 +1290,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "openclaw",
             "OpenClaw",
             "OpenClaw",
-            "OpenClaw 终端 Agent，启动后写入提示词。",
+            tr("agent.runtime.openclaw.desc"),
             "openclaw",
             Vec::new(),
             PromptInjection::Stdin,
@@ -1304,20 +1301,20 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "opencode2",
             "OpenCode 2",
             "SST",
-            "OpenCode 2 独立 TUI，启动后写入提示词。",
+            tr("agent.runtime.opencode2.desc"),
             "opencode2",
             TuiRuntimeExtra {
                 args: vec!["--standalone"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 OpenCode 2 自己的权限配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.opencode2.desc"),
                     },
                     AgentPermissionOption {
                         id: "auto",
-                        label: "自动批准",
-                        description: "自动批准未被显式拒绝的权限请求。",
+                        label: tr("agent.permission.auto"),
+                        description: tr("agent.permission.auto.desc"),
                     },
                 ],
                 ..TuiRuntimeExtra::default()
@@ -1330,7 +1327,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "pi",
             "Pi",
             "Pi",
-            "Pi 终端 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.pi.desc"),
             "pi",
             Vec::new(),
             PromptInjection::Argv,
@@ -1341,7 +1338,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "prime-agent",
             "Prime Agent",
             "Prime Intellect",
-            "Prime Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.primeAgent.desc"),
             "prime-agent",
             TuiRuntimeExtra {
                 argv_separator: Some("--"),
@@ -1355,7 +1352,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "qoder",
             "Qoder CLI",
             "Alibaba",
-            "Qoder CLI，启动后写入提示词。",
+            tr("agent.runtime.qoder.desc"),
             "qodercli",
             TuiRuntimeExtra {
                 aliases: vec!["qoder"],
@@ -1374,7 +1371,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "qoder-cn",
             "Qoder CLI China",
             "Alibaba",
-            "Qoder 国内版 CLI，启动后写入提示词。",
+            tr("agent.runtime.qoderCn.desc"),
             "qoderclicn",
             TuiRuntimeExtra {
                 aliases: vec!["qodercn"],
@@ -1393,7 +1390,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "rovo",
             "Rovo Dev",
             "Atlassian",
-            "Rovo Dev（acli rovodev run），启动后写入提示词。",
+            tr("agent.runtime.rovo.desc"),
             "acli",
             TuiRuntimeExtra {
                 args: vec!["rovodev", "run"],
@@ -1407,7 +1404,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "trae",
             "Trae",
             "ByteDance",
-            "Trae CLI（traecli），提示词作为启动参数传入。",
+            tr("agent.runtime.trae.desc"),
             "traecli",
             TuiRuntimeExtra {
                 argv_separator: Some("--"),
@@ -1421,7 +1418,7 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "dsh",
             "DeepSeek Harness",
             "DeepSeek",
-            "DeepSeek Harness TUI，启动后写入提示词。",
+            tr("agent.runtime.dsh.desc"),
             "dsh-tui",
             TuiRuntimeExtra {
                 aliases: vec!["dst"],
@@ -1434,9 +1431,9 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
         ),
         tui_runtime(
             "custom",
-            "自定义命令",
-            "本地",
-            "任意 TUI Agent：把可执行路径改成你的命令，启动后写入提示词。",
+            tr("agent.runtime.custom.label"),
+            tr("agent.runtime.custom.vendor"),
+            tr("agent.runtime.custom.desc"),
             "my-agent",
             Vec::new(),
             PromptInjection::Stdin,
@@ -2132,11 +2129,11 @@ pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     // no explicit slot, append its sections instead of dropping the user input.
     let user_prompt = vars.user_prompt.trim();
     if !has_prompt_slot && !user_prompt.is_empty() {
-        rendered.push_str("\n\n用户补充说明：\n");
+        rendered.push_str(tr("agent.prompt.user.notes"));
         rendered.push_str(user_prompt);
     }
     if !has_attachments_slot && !attachments.is_empty() {
-        rendered.push_str("\n\n用户附加资源（本地路径，请直接读取）：\n");
+        rendered.push_str(tr("agent.prompt.attachments.header"));
         rendered.push_str(&attachments);
     }
     rendered
@@ -2147,7 +2144,12 @@ fn render_attachments(paths: &[String]) -> String {
     paths
         .iter()
         .filter(|path| !path.trim().is_empty())
-        .map(|path| format!("- {}：{}", attachment_kind(path), path.trim()))
+        .map(|path| {
+            tr_args(
+                "agent.prompt.attachment.line",
+                &[&attachment_kind(path), &path.trim()],
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -2159,9 +2161,11 @@ fn attachment_kind(path: &str) -> &'static str {
         .unwrap_or("")
         .to_ascii_lowercase();
     match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "svg" => "图片",
-        "mp4" | "mov" | "webm" | "m4v" | "avi" | "mkv" => "视频",
-        _ => "文件",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "svg" => {
+            tr("agent.attachment.image")
+        }
+        "mp4" | "mov" | "webm" | "m4v" | "avi" | "mkv" => tr("agent.attachment.video"),
+        _ => tr("agent.attachment.file"),
     }
 }
 
@@ -2192,7 +2196,7 @@ fn task_spec_from_request(
     let workspace_id = request.workspace_id.trim();
     let bug_id = request.bug_id.trim();
     if workspace_id.is_empty() || bug_id.is_empty() {
-        return Err("缺少 workspaceId 或 bugId".to_string());
+        return Err(tr("agent.enqueue.missing.ids").to_string());
     }
 
     let runtime_id = request
@@ -2236,7 +2240,7 @@ fn task_spec_from_request(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("缺陷 {bug_id}"));
+        .unwrap_or_else(|| tr_args("agent.task.title.fallback", &[&bug_id]));
     let extra_prompt = request
         .extra_prompt
         .as_deref()
@@ -2370,12 +2374,13 @@ fn launch_system_terminal(cwd: &Path, binary: &str, args: &[&str]) -> Result<(),
         "tapd-agent-{}.command",
         uuid::Uuid::new_v4().simple()
     ));
-    std::fs::write(&path, script).map_err(|error| format!("写入终端启动脚本失败：{error}"))?;
+    std::fs::write(&path, script)
+        .map_err(|error| tr_args("agent.terminal.script.write.failed", &[&error]))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("设置终端启动脚本权限失败：{error}"))?;
+            .map_err(|error| tr_args("agent.terminal.script.chmod.failed", &[&error]))?;
     }
 
     let status = std::process::Command::new("open")
@@ -2383,9 +2388,9 @@ fn launch_system_terminal(cwd: &Path, binary: &str, args: &[&str]) -> Result<(),
         .arg("Terminal")
         .arg(&path)
         .status()
-        .map_err(|error| format!("打开系统终端失败：{error}"))?;
+        .map_err(|error| tr_args("agent.terminal.open.failed", &[&error]))?;
     if !status.success() {
-        return Err("打开系统终端失败".to_string());
+        return Err(tr("agent.terminal.open.denied").to_string());
     }
     Ok(())
 }
@@ -2523,11 +2528,9 @@ impl AgentCore {
                 tracing::error!(
                     "failed to load agent tasks from SQLite; refusing to fake an empty queue"
                 );
-                self.set_storage_error(Some(
-                    "本地任务存储不可用，队列未恢复；请检查本地数据后重试".to_string(),
-                ));
+                self.set_storage_error(Some(tr("agent.queue.storage.unavailable").to_string()));
                 let _ = self.apply_input(Input::Suspend { now: now() });
-                return Err("无法读取本地任务存储，队列未恢复".to_string());
+                return Err(tr("agent.queue.storage.unreadable").to_string());
             }
         };
         let mut tasks = Vec::with_capacity(views.len());
@@ -2536,9 +2539,12 @@ impl AgentCore {
                 Ok(task) => tasks.push(task),
                 Err(error) => {
                     tracing::error!(%error, task_id = %view.id, "failed to load a persisted agent task");
-                    self.set_storage_error(Some(format!("任务记录无法解析：{error}")));
+                    self.set_storage_error(Some(tr_args(
+                        "agent.queue.record.parse.failed",
+                        &[&error],
+                    )));
                     let _ = self.apply_input(Input::Suspend { now: now() });
-                    return Err(format!("恢复任务失败：{error}"));
+                    return Err(tr_args("agent.queue.restore.failed", &[&error]));
                 }
             }
         }
@@ -2557,7 +2563,7 @@ impl AgentCore {
                 // login can retry the recovery instead of waiting forever.
                 let _ = self.apply_input(Input::Suspend { now: now() });
                 tracing::error!(%error, "failed to recover agent tasks on system entry");
-                return Err(format!("恢复任务失败：{error}"));
+                return Err(tr_args("agent.queue.restore.failed", &[&error]));
             }
         };
 
@@ -2615,7 +2621,7 @@ impl AgentCore {
             .find(|effect| matches!(effect, Effect::Rejected { .. }))
         {
             let message = if message == "system not entered" {
-                workflow_bridge::NOT_ENTERED.to_string()
+                workflow_bridge::not_entered().to_string()
             } else {
                 message.clone()
             };
@@ -3113,7 +3119,7 @@ impl AgentCore {
         // prompts must keep the old config instead of diverging from disk.
         write_json_atomic(&self.config_path(), &next).map_err(|error| {
             tracing::warn!(%error, "failed to persist agent config");
-            format!("保存 Agent 配置失败：{error}")
+            tr_args("agent.config.save.failed", &[&error])
         })?;
         *self.config.lock().expect("agent config lock") = next.clone();
         Ok(next)
@@ -3282,7 +3288,7 @@ impl AgentCore {
 
         tracing::info!(task_id = %task_id, source, "agent task queued");
         self.workflow_view(task_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// The live workflow task that already owns a bug, if any.
@@ -3315,7 +3321,7 @@ impl AgentCore {
         })?;
         self.dispatch_effects(effects).await;
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Kills the TUI process group and closes its PTY handles. Idempotent.
@@ -3417,12 +3423,12 @@ impl AgentCore {
     async fn approve_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
+            return Err(tr("agent.review.notAwaiting").to_string());
         }
         if !Path::new(task.work_dir().trim()).is_dir() {
-            return Err(format!("工作目录不存在：{}", task.work_dir()));
+            return Err(tr_args("agent.workdir.missing", &[&task.work_dir()]));
         }
 
         let mut effects = self.apply_input(Input::ApproveReview {
@@ -3444,7 +3450,7 @@ impl AgentCore {
                 let changes = self
                     .inspect_workspace(&inspect_id, &path)
                     .await
-                    .map_err(|error| format!("检查工作区失败：{error}"))?;
+                    .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?;
                 let receipts = self.apply_input(Input::WorkspaceInspected {
                     task_id: inspect_id,
                     changes,
@@ -3456,7 +3462,7 @@ impl AgentCore {
 
         tracing::info!(task_id, "agent review approved");
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Stops a paused review: the uncommitted diff is stashed (including
@@ -3465,9 +3471,9 @@ impl AgentCore {
     async fn stop_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
+            return Err(tr("agent.review.notAwaiting").to_string());
         }
         let repo = task.work_dir().trim().to_string();
         let dir_exists = !repo.is_empty() && Path::new(&repo).is_dir();
@@ -3494,8 +3500,8 @@ impl AgentCore {
                 })
             })
             .await
-            .map_err(|error| format!("检查工作区失败：{error}"))?
-            .map_err(|error| format!("检查工作区失败：{error}"))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
         } else {
             reviewed
         };
@@ -3505,17 +3511,17 @@ impl AgentCore {
             let files = files.clone();
             tokio::task::spawn_blocking(move || stash_changes(&repo, &label, &files))
                 .await
-                .map_err(|error| format!("储藏改动失败：{error}"))?
-                .map_err(|error| format!("储藏改动失败：{error}"))?
+                .map_err(|error| tr_args("agent.workspace.stash.failed", &[&error]))?
+                .map_err(|error| tr_args("agent.workspace.stash.failed", &[&error]))?
         } else {
-            "工作目录不存在，未储藏改动".to_string()
+            tr("agent.workspace.unstashed").to_string()
         };
 
         self.teardown_task(task_id);
-        let mut message = if !dir_exists || stash.contains("无未提交改动") {
-            format!("已停止：{stash}")
+        let mut message = if !dir_exists || stash.contains(tr("agent.git.clean")) {
+            tr_args("agent.review.stopped", &[&stash])
         } else {
-            format!("已停止，改动已储藏：{stash}")
+            tr_args("agent.review.stopped.stashed", &[&stash])
         };
         // Files the model did not list stay in the worktree; say so instead of
         // claiming the whole change was stashed.
@@ -3531,16 +3537,16 @@ impl AgentCore {
                 })
             })
             .await
-            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
+            .unwrap_or_else(|error| Err(tr_args("agent.workspace.check.failed", &[&error])))
         } else {
             Ok(0)
         };
         match remaining {
-            Ok(count) if count > 0 => message.push_str(&format!(
-                "；另有 {count} 个文件未列入本次审核，仍保留在工作区"
-            )),
+            Ok(count) if count > 0 => {
+                message.push_str(&tr_args("agent.review.remaining", &[&count]))
+            }
             Ok(_) => {}
-            Err(error) => message.push_str(&format!("；无法检查剩余文件：{error}")),
+            Err(error) => message.push_str(&tr_args("agent.review.remaining.failed", &[&error])),
         }
         let effects = self.apply_input(Input::StopReview {
             task_id: TaskId::new(task_id),
@@ -3552,7 +3558,7 @@ impl AgentCore {
 
         tracing::info!(task_id, stash = %stash, "agent review stopped and changes stashed");
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Unified diff of the reviewed change. Uses the run's `baseline_head` when
@@ -3562,12 +3568,12 @@ impl AgentCore {
     fn review_diff(&self, task_id: &str) -> Result<String, String> {
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
+            return Err(tr("agent.review.notAwaiting").to_string());
         }
         if !Path::new(task.work_dir().trim()).is_dir() {
-            return Err(format!("工作目录不存在：{}", task.work_dir()));
+            return Err(tr_args("agent.workdir.missing", &[&task.work_dir()]));
         }
         let baseline = task
             .baseline_head
@@ -3580,11 +3586,11 @@ impl AgentCore {
             .arg(task.work_dir().trim())
             .args(["diff", "--no-color", baseline])
             .output()
-            .map_err(|error| format!("无法执行 git：{error}"))?;
+            .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(if stderr.is_empty() {
-                "git diff 失败".to_string()
+                tr("agent.git.diff.failed").to_string()
             } else {
                 stderr
             });
@@ -3592,12 +3598,12 @@ impl AgentCore {
 
         let text = String::from_utf8_lossy(&output.stdout);
         if text.trim().is_empty() {
-            return Ok("没有未提交的差异（可能已提交，或只有未跟踪文件）。".to_string());
+            return Ok(tr("agent.review.diff.empty").to_string());
         }
         let count = text.chars().count();
         if count > MAX_REVIEW_DIFF_CHARS {
             let prefix: String = text.chars().take(MAX_REVIEW_DIFF_CHARS).collect();
-            return Ok(format!("{prefix}\n\n… diff 共 {count} 字符，已截断"));
+            return Ok(tr_args("agent.review.diff.truncated", &[&prefix, &count]));
         }
         Ok(text.into_owned())
     }
@@ -3630,7 +3636,7 @@ impl AgentCore {
         })?;
         self.dispatch_effects(effects).await;
         self.workflow_view(new_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     fn write_input(&self, task_id: &str, data: &str) -> Result<(), String> {
@@ -3640,7 +3646,7 @@ impl AgentCore {
             .expect("agent runtimes lock")
             .get(task_id)
             .cloned()
-            .ok_or_else(|| "任务未在运行".to_string())?;
+            .ok_or_else(|| tr("agent.task.not.running").to_string())?;
         let mut runtime = runtime.lock().expect("agent runtime lock");
         runtime
             .writer
@@ -3665,7 +3671,7 @@ impl AgentCore {
     /// 读取 transcript 并按任务缓存。文件未变化时不重复解析。
     fn chat_payload(&self, task_id: &str, known_fingerprint: Option<&str>) -> AgentChatPayload {
         let Some(task) = self.workflow_view(task_id) else {
-            return chat_empty(task_id, "", "", Some("任务不存在".to_string()));
+            return chat_empty(task_id, "", "", Some(tr("agent.task.missing").to_string()));
         };
         let runtime_id = task.runtime_id.clone();
         let session_id = task.agent_session_id.clone().unwrap_or_default();
@@ -3674,7 +3680,7 @@ impl AgentCore {
                 task_id,
                 &runtime_id,
                 &session_id,
-                Some("该运行时暂不支持对话视图，请使用终端".to_string()),
+                Some(tr("agent.chat.unsupported").to_string()),
             );
         };
         if session_id.trim().is_empty() {
@@ -3682,7 +3688,7 @@ impl AgentCore {
                 task_id,
                 &runtime_id,
                 &session_id,
-                Some("等待会话 id".to_string()),
+                Some(tr("agent.chat.awaiting.session").to_string()),
             );
         }
 
@@ -3808,13 +3814,13 @@ impl AgentCore {
     /// 从 Chat 发送一条消息：写入当前 PTY，由各 CLI 自己排队/打断。
     fn send_message(&self, task_id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() {
-            return Err("消息为空".to_string());
+            return Err(tr("agent.chat.message.empty").to_string());
         }
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
-            return Err("任务未在运行".to_string());
+            return Err(tr("agent.task.not.running").to_string());
         }
         let waiting = self
             .runtime_status
@@ -3824,7 +3830,7 @@ impl AgentCore {
             .and_then(|status| status.prompt)
             .is_some_and(|prompt| prompt.can_answer);
         if waiting {
-            return Err("请先处理当前的权限确认或提问".to_string());
+            return Err(tr("agent.chat.prompt.pending").to_string());
         }
         // bracketed paste 保证多行文本不会在第一个换行处提交。
         let payload = format!("\x1b[200~{text}\x1b[201~\r");
@@ -3844,18 +3850,18 @@ impl AgentCore {
             .ok()
             .and_then(|status| status.get(task_id).cloned())
             .and_then(|status| status.prompt)
-            .ok_or_else(|| "当前没有待处理的请求".to_string())?;
+            .ok_or_else(|| tr("agent.chat.prompt.none").to_string())?;
         if current.prompt_id != prompt_id {
-            return Err("该请求已处理，请刷新后重试".to_string());
+            return Err(tr("agent.chat.prompt.stale").to_string());
         }
         if !current.can_answer {
-            return Err("请在 Agent 终端中回答".to_string());
+            return Err(tr("agent.chat.prompt.terminal").to_string());
         }
         let runtime_id = self
             .stored_runtime_id(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let keys = prompt::answer_keys(&runtime_id, &current.kind, option_id)
-            .ok_or_else(|| "该选项无法自动回答，请在终端中操作".to_string())?;
+            .ok_or_else(|| tr("agent.chat.prompt.unsupported").to_string())?;
         for (index, key) in keys.iter().enumerate() {
             if index > 0 {
                 // 连续按键之间留出间隔，避免被 TUI 识别成组合键。
@@ -3863,7 +3869,7 @@ impl AgentCore {
             }
             self.write_input(task_id, key)?;
         }
-        Ok(format!("已发送 {}", keys.join(" ")))
+        Ok(tr_args("agent.chat.keys.sent", &[&keys.join(" ")]))
     }
 
     /// 在系统终端里接着跑这个任务的 Agent（尽量续接上次会话），用来在任务
@@ -3872,16 +3878,16 @@ impl AgentCore {
     fn open_system_terminal(&self, task_id: &str) -> Result<(), String> {
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status.is_active() {
-            return Err("任务仍在运行，请先在嵌入式终端里操作".to_string());
+            return Err(tr("agent.terminal.task.running").to_string());
         }
         if task.work_dir().trim().is_empty() {
-            return Err("该任务没有本地仓库".to_string());
+            return Err(tr("agent.task.no.repo").to_string());
         }
         let repo = Path::new(task.work_dir());
         if !repo.is_dir() {
-            return Err(format!("本地仓库不存在：{}", task.work_dir()));
+            return Err(tr_args("agent.repo.missing", &[&task.work_dir()]));
         }
 
         let config = self.config_snapshot();
@@ -4033,14 +4039,14 @@ impl AgentCore {
                 tracing::warn!(task_id = %task_id, %error, "failed to create agent worktree");
                 self.feed(Input::WorktreeCreateFailed {
                     task_id,
-                    error: format!("创建任务 worktree 失败：{error}"),
+                    error: tr_args("agent.worktree.create.failed", &[&error]),
                 });
             }
             Err(error) => {
                 tracing::warn!(task_id = %task_id, %error, "worktree create task failed");
                 self.feed(Input::WorktreeCreateFailed {
                     task_id,
-                    error: format!("创建任务 worktree 失败：{error}"),
+                    error: tr_args("agent.worktree.create.failed", &[&error]),
                 });
             }
         }
@@ -4072,7 +4078,7 @@ impl AgentCore {
                     );
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some("worktree 仍有未提交改动，已保留".to_string()),
+                        error: Some(tr("agent.worktree.dirty.kept").to_string()),
                     });
                     return;
                 }
@@ -4081,7 +4087,7 @@ impl AgentCore {
                     tracing::warn!(task_id = %task_id, %error, "worktree status check failed; keeping it");
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                        error: Some(tr_args("agent.worktree.status.failed", &[&error])),
                     });
                     return;
                 }
@@ -4089,7 +4095,7 @@ impl AgentCore {
                     tracing::warn!(task_id = %task_id, %error, "worktree status task failed; keeping it");
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                        error: Some(tr_args("agent.worktree.status.failed", &[&error])),
                     });
                     return;
                 }
@@ -4119,7 +4125,7 @@ impl AgentCore {
     ) -> Result<tapd_workflow::ChangeSet, String> {
         let task = self
             .workflow_view(task_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let work_dir = if path.trim().is_empty() {
             task.work_dir().to_string()
         } else {
@@ -4127,7 +4133,7 @@ impl AgentCore {
         };
         tokio::task::spawn_blocking(move || inspect_changes(&task, &work_dir))
             .await
-            .map_err(|error| format!("检查工作区失败：{error}"))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
     }
 
     /// Refuses a merge when the repository is busy, dirty or the runtime is
@@ -4171,12 +4177,12 @@ impl AgentCore {
             }
             Ok(Err(error)) => {
                 return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
-                    error: format!("无法检查主仓库状态：{error}"),
+                    error: tr_args("agent.repo.status.failed", &[&error]),
                 })
             }
             Err(error) => {
                 return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
-                    error: format!("无法检查主仓库状态：{error}"),
+                    error: tr_args("agent.repo.status.failed", &[&error]),
                 })
             }
         }
@@ -4223,7 +4229,7 @@ impl AgentCore {
             Err(error) => {
                 self.feed(Input::AgentStartFailed {
                     task_id,
-                    error: format!("导出缺陷失败：{error}"),
+                    error: tr_args("agent.bug.export.failed", &[&error]),
                 });
                 return;
             }
@@ -4245,14 +4251,14 @@ impl AgentCore {
         if work_dir.trim().is_empty() {
             self.feed(Input::AgentStartFailed {
                 task_id,
-                error: "未配置项目仓库路径，请在 设置 → Agent 修复 中配置".to_string(),
+                error: tr("agent.repo.unconfigured").to_string(),
             });
             return;
         }
         if !Path::new(work_dir.trim()).is_dir() {
             self.feed(Input::AgentStartFailed {
                 task_id,
-                error: format!("工作目录不存在或不是目录：{work_dir}"),
+                error: tr_args("agent.workdir.invalid", &[&work_dir]),
             });
             return;
         }
@@ -4283,9 +4289,9 @@ impl AgentCore {
             vars.user_prompt.clear();
             vars.attachments.clear();
             if is_worktree {
-                DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE
+                tr(DEFAULT_WORKTREE_COMMIT_PROMPT_KEY)
             } else {
-                DEFAULT_COMMIT_PROMPT_TEMPLATE
+                tr(DEFAULT_COMMIT_PROMPT_KEY)
             }
         } else {
             config.prompt_template.as_str()
@@ -4293,7 +4299,7 @@ impl AgentCore {
         let mut prompt = render_prompt(template, &vars);
         if is_worktree && !view.commit_only {
             prompt.push_str("\n\n");
-            prompt.push_str(WORKTREE_FIX_NOTE);
+            prompt.push_str(tr(WORKTREE_FIX_NOTE_KEY));
         }
         view.prompt = prompt.clone();
 
@@ -4307,14 +4313,14 @@ impl AgentCore {
                 Ok::<_, String>((uncommitted_files(&dir)?, git_head(&dir)?))
             })
             .await
-            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
+            .unwrap_or_else(|error| Err(tr_args("agent.workspace.check.failed", &[&error])))
         };
         let (baseline_dirty, baseline_head) = match baseline {
             Ok(values) => values,
             Err(error) => {
                 self.feed(Input::AgentStartFailed {
                     task_id,
-                    error: format!("无法读取工作区状态：{error}"),
+                    error: tr_args("agent.workspace.read.failed", &[&error]),
                 });
                 return;
             }
@@ -4390,7 +4396,7 @@ impl AgentCore {
                             return tapd_workflow::RunOutcome {
                                 canceled,
                                 success: false,
-                                error: Some(format!("无法检查工作区状态：{error}")),
+                                error: Some(tr_args("agent.workspace.status.failed", &[&error])),
                                 changes: None,
                                 exit_code: outcome.exit_code,
                             }
@@ -4399,7 +4405,7 @@ impl AgentCore {
                             return tapd_workflow::RunOutcome {
                                 canceled,
                                 success: false,
-                                error: Some(format!("无法检查工作区状态：{error}")),
+                                error: Some(tr_args("agent.workspace.status.failed", &[&error])),
                                 changes: None,
                                 exit_code: outcome.exit_code,
                             }
@@ -4449,7 +4455,7 @@ impl AgentCore {
             self.feed(Input::MergeAgentFinished {
                 task_id,
                 outcome: tapd_workflow::RunOutcome::failure(
-                    format!("主仓库路径不存在或不是目录：{repo}"),
+                    tr_args("agent.repo.invalid", &[&repo]),
                     None,
                 ),
                 now: now(),
@@ -4516,8 +4522,8 @@ impl AgentCore {
         let checked = tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
         let (merged, error) = match checked {
             Ok(Ok(merged)) => (merged, None),
-            Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
-            Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
+            Ok(Err(error)) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
+            Err(error) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
         };
         self.feed(Input::BranchMergeVerified {
             task_id,
@@ -4627,7 +4633,7 @@ impl AgentCore {
         match receiver.await {
             Ok(outcome) => outcome,
             Err(_) => PtyOutcome {
-                error: Some("Agent 终端线程意外结束".to_string()),
+                error: Some(tr("agent.terminal.thread.ended").to_string()),
                 ..PtyOutcome::default()
             },
         }
@@ -4672,7 +4678,7 @@ impl AgentCore {
 
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let mode = if task.status == TaskStatus::Merging {
             "agent"
         } else {
@@ -4728,8 +4734,8 @@ impl AgentCore {
                 tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
             let (merged, error) = match checked {
                 Ok(Ok(merged)) => (merged, None),
-                Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
-                Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
+                Ok(Err(error)) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
+                Err(error) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
             };
             let receipts = self.apply_input(Input::BranchMergeVerified {
                 task_id: verify_id,
@@ -4741,12 +4747,12 @@ impl AgentCore {
         self.dispatch_effects(effects).await;
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::Succeeded {
             if let Some(error) = task.merge.as_ref().and_then(|merge| merge.error.clone()) {
                 return Err(error);
             }
-            return Err("分支尚未合并到主仓库当前 HEAD".to_string());
+            return Err(tr("agent.merge.not.landed").to_string());
         }
         Ok(task)
     }
@@ -4904,17 +4910,17 @@ fn truncate_text(text: &str, max: usize) -> String {
 fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     let binary = binary.trim();
     if binary.is_empty() {
-        return Err("未配置 Agent 可执行文件路径".to_string());
+        return Err(tr("agent.binary.unconfigured").to_string());
     }
 
     let path = Path::new(binary);
     let looks_like_path = path.is_absolute() || binary.contains('/') || binary.contains('\\');
     if looks_like_path {
         if !path.is_file() {
-            return Err(format!("Agent 可执行文件不存在：{binary}"));
+            return Err(tr_args("agent.binary.missing", &[&binary]));
         }
         if !shell_path::is_executable(path) {
-            return Err(format!("Agent 可执行文件没有执行权限：{binary}"));
+            return Err(tr_args("agent.binary.notExec", &[&binary]));
         }
         return Ok(path.to_path_buf());
     }
@@ -4922,9 +4928,7 @@ fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     // Not the inherited `PATH`: a bundled macOS app started from Finder only
     // sees `/usr/bin:/bin:/usr/sbin:/sbin`, so `opencode` installed by Homebrew
     // or npm would never be found there.
-    resolve_on_user_path(binary).ok_or_else(|| {
-        format!("在 PATH 中找不到 Agent 可执行文件：{binary}（可在 Agent 设置里填写绝对路径）")
-    })
+    resolve_on_user_path(binary).ok_or_else(|| tr_args("agent.binary.notFound", &[&binary]))
 }
 
 /// 在用户 shell 的 `PATH` 中查找裸命令名。
@@ -5087,17 +5091,18 @@ fn save_resource(data_dir: &Path, name: &str, data: &str) -> Result<String, Stri
         .unwrap_or(data)
         .trim();
     if encoded.is_empty() {
-        return Err("资源内容为空".to_string());
+        return Err(tr("agent.resource.empty").to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|error| format!("资源解码失败：{error}"))?;
+        .map_err(|error| tr_args("agent.resource.decode.failed", &[&error]))?;
     if bytes.is_empty() {
-        return Err("资源内容为空".to_string());
+        return Err(tr("agent.resource.empty").to_string());
     }
 
     let dir = data_dir.join(RESOURCE_DIR);
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建资源目录失败：{error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| tr_args("agent.resource.dir.failed", &[&error]))?;
 
     let stem: String = Path::new(name)
         .file_stem()
@@ -5129,7 +5134,8 @@ fn save_resource(data_dir: &Path, name: &str, data: &str) -> Result<String, Stri
         format!("{id}-{stem}.{extension}")
     };
     let path = dir.join(file_name);
-    std::fs::write(&path, bytes).map_err(|error| format!("写入资源失败：{error}"))?;
+    std::fs::write(&path, bytes)
+        .map_err(|error| tr_args("agent.resource.write.failed", &[&error]))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -5251,7 +5257,7 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
         let merged = tokio::task::spawn_blocking(move || branch_merged(&repo, &branch)).await;
         return match merged {
             Ok(Ok(true)) => None,
-            _ => Some("合并尚未完成，请先完成合并再更新 TAPD".to_string()),
+            _ => Some(tr("agent.merge.pending.writeback").to_string()),
         };
     }
 
@@ -5272,16 +5278,13 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
     .await;
     let pending = match pending {
         Ok(Ok(pending)) => pending,
-        Ok(Err(error)) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
-        Err(error) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
+        Ok(Err(error)) => return Some(tr_args("agent.writeback.uncommitted.failed", &[&error])),
+        Err(error) => return Some(tr_args("agent.writeback.uncommitted.failed", &[&error])),
     };
     if pending.is_empty() {
         return None;
     }
-    Some(format!(
-        "Agent 任务尚未提交（{} 个文件有未提交改动），请先 git commit，再评论或更新 TAPD 状态",
-        pending.len()
-    ))
+    Some(tr_args("agent.writeback.uncommitted", &[&pending.len()]))
 }
 
 pub async fn command(
@@ -5292,7 +5295,7 @@ pub async fn command(
 ) -> Result<Value, String> {
     let registered = app
         .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+        .ok_or_else(|| tr("agent.module.uninitialized").to_string())?;
     let core = registered.inner().clone();
 
     match name {
@@ -5303,13 +5306,13 @@ pub async fn command(
         }
         "agent_config_set" => {
             let patch: AgentConfigPatch = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的 Agent 配置：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.config", &[&error]))?;
             let config = core.update_config(patch).await?;
             Ok(json!({ "config": config }))
         }
         "agent_enqueue_bug" => {
             let request: EnqueueRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的入队参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.enqueue", &[&error]))?;
             let task = core
                 .enqueue(&request, request.source.as_deref().unwrap_or("manual"))
                 .await?;
@@ -5320,7 +5323,7 @@ pub async fn command(
         "agent_enter_system" => Ok(json!({ "report": core.enter_system().await? })),
         "agent_save_resource" => {
             let request: SaveResourceRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的资源参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.resource", &[&error]))?;
             let path = save_resource(&state.paths.data_dir, &request.name, &request.data)?;
             Ok(json!({ "path": path }))
         }
@@ -5332,13 +5335,13 @@ pub async fn command(
         "agent_summary" => Ok(json!(core.summary())),
         "agent_open_task" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的任务参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.task", &[&error]))?;
             let task_id = request.task_id.trim();
             if task_id.is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             if core.workflow_view(task_id).is_none() {
-                return Err("任务不存在".to_string());
+                return Err(tr("agent.task.missing").to_string());
             }
             focus_main_window(app);
             let _ = app.emit("agent://focus", json!({ "taskId": task_id }));
@@ -5346,45 +5349,45 @@ pub async fn command(
         }
         "agent_task_cancel" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的取消参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.cancel", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.cancel(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_task_retry" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的重试参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.retry", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.retry(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_task_delete" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的删除参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.delete", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             core.delete_task(request.task_id.trim()).await?;
             Ok(json!({ "deleted": true }))
         }
         "agent_review_approve" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的审核参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.approve", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.approve_review(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_merge_start" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的合并参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.merge", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let core = core.clone();
             let result = core.start_merge(request.task_id.trim()).await?;
@@ -5396,18 +5399,18 @@ pub async fn command(
         }
         "agent_merge_verify" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的合并参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.merge", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.verify_merge(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_review_stop" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的停止参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.stop", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.stop_review(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
@@ -5415,39 +5418,39 @@ pub async fn command(
         "agent_queue_resume" => Ok(json!(core.resume_queue().await)),
         "agent_review_diff" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的差异参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.diff", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task_id = request.task_id.trim().to_string();
             let core = core.clone();
             let diff = tokio::task::spawn_blocking(move || core.review_diff(&task_id))
                 .await
-                .map_err(|error| format!("读取差异失败：{error}"))??;
+                .map_err(|error| tr_args("agent.request.diff.read.failed", &[&error]))??;
             Ok(json!({ "diff": diff }))
         }
         "agent_open_terminal" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的终端参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.terminal", &[&error]))?;
             let core = core.clone();
             let task_id = request.task_id.trim().to_string();
             tokio::task::spawn_blocking(move || core.open_system_terminal(&task_id))
                 .await
-                .map_err(|error| format!("打开终端失败：{error}"))??;
+                .map_err(|error| tr_args("agent.request.terminal.open.failed", &[&error]))??;
             Ok(json!({ "ok": true }))
         }
         "agent_input" => {
             let request: TaskInputRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的输入参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.input", &[&error]))?;
             core.write_input(request.task_id.trim(), &request.data)?;
             Ok(json!({ "ok": true }))
         }
         "agent_chat" => {
             let request: ChatRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的对话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.chat", &[&error]))?;
             let task_id = request.task_id.trim().to_string();
             if task_id.is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let known = request
                 .fingerprint
@@ -5457,18 +5460,18 @@ pub async fn command(
             let payload =
                 tokio::task::spawn_blocking(move || core.chat_payload(&task_id, known.as_deref()))
                     .await
-                    .map_err(|error| format!("读取对话失败：{error}"))?;
+                    .map_err(|error| tr_args("agent.request.chat.read.failed", &[&error]))?;
             Ok(json!(payload))
         }
         "agent_send_message" => {
             let request: SendMessageRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的消息参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.message", &[&error]))?;
             core.send_message(request.task_id.trim(), &request.text)?;
             Ok(json!({ "sent": true }))
         }
         "agent_prompt_answer" => {
             let request: PromptAnswerRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的回答参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.answer", &[&error]))?;
             let message = core
                 .prompt_answer(
                     request.task_id.trim(),
@@ -5480,7 +5483,7 @@ pub async fn command(
         }
         "agent_resize" => {
             let request: TaskResizeRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的尺寸参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.size", &[&error]))?;
             core.resize(request.task_id.trim(), request.cols, request.rows)?;
             Ok(json!({ "ok": true }))
         }
@@ -5499,7 +5502,7 @@ pub async fn command(
             let core = core.clone();
             let snapshot = tokio::task::spawn_blocking(move || core.ensure_scan(request.force))
                 .await
-                .map_err(|error| format!("Agent 检测失败：{error}"))?;
+                .map_err(|error| tr_args("agent.scan.failed", &[&error]))?;
             Ok(json!(snapshot))
         }
         other => Err(format!("unknown agent command: {other}")),
@@ -5589,7 +5592,7 @@ mod tests {
                 ..AgentConfig::default()
             }
             .sanitized();
-            assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE, "{marker}");
+            assert_eq!(config.prompt_template, tr(DEFAULT_PROMPT_KEY), "{marker}");
         }
 
         let custom = AgentConfig {
@@ -5696,7 +5699,7 @@ mod tests {
                 .map(|project| project.repo_path.as_str()),
             Some("/repo")
         );
-        assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE);
+        assert_eq!(config.prompt_template, tr(DEFAULT_PROMPT_KEY));
     }
 
     #[test]

@@ -19,6 +19,7 @@ import {
 import { useAgentScan } from "../lib/agentScan";
 import { formatDateTime } from "../lib/format";
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { AgentExecutionCard } from "./AgentExecutionCard";
 import { AgentPicker } from "./AgentPicker";
 import { AgentSettings } from "./AgentSettings";
@@ -149,16 +150,18 @@ export function AgentConfigPane({ toast }: Props) {
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
               <h3 className="text-ui-caption font-normal text-slate-800">
-                默认 Agent
+                {t("agent.config.defaultAgent")}
               </h3>
               <p className="mt-0.5 text-ui-xs leading-4 text-slate-400">
-                缺陷详情的「用 Agent 修复」与修复队列默认使用这个运行时。
+                {t("agent.config.defaultAgentHint")}
               </p>
             </div>
             <span className="text-ui-xs text-slate-400">
               {snapshot?.checkedAt
-                ? `上次检测 ${formatDateTime(snapshot.checkedAt)}`
-                : "尚未检测本机 Agent"}
+                ? t("agent.config.lastChecked", {
+                    time: formatDateTime(snapshot.checkedAt),
+                  })
+                : t("agent.config.neverChecked")}
               <span>&nbsp;&nbsp;</span>
               <Button
                 size="sm"
@@ -167,7 +170,7 @@ export function AgentConfigPane({ toast }: Props) {
                 loading={scanning}
                 onClick={() => void refresh(true)}
               >
-                检测
+                {t("agent.config.check")}
               </Button>
             </span>
           </div>
@@ -176,7 +179,7 @@ export function AgentConfigPane({ toast }: Props) {
             {!config || !selectedRuntime ? (
               <span className="flex items-center gap-2 text-ui-caption text-slate-400">
                 <Spinner />
-                正在读取运行时…
+                {t("agent.config.readingRuntimes")}
               </span>
             ) : (
               <AgentPicker
@@ -201,8 +204,7 @@ export function AgentConfigPane({ toast }: Props) {
                 size={13}
                 className="mt-0.5 shrink-0 text-amber-600"
               />
-              该 Agent 未在本机 PATH
-              中检测到。安装后点「刷新检测」，或把下方的可执行路径改成绝对路径。
+              {t("agent.config.notFound")}
             </p>
           ) : null}
         </section>
@@ -211,13 +213,17 @@ export function AgentConfigPane({ toast }: Props) {
 
         {config && selectedRuntime ? (
           <section className={cardClass}>
-            <h3 className="text-ui-caption font-normal text-slate-800">运行参数</h3>
+            <h3 className="text-ui-caption font-normal text-slate-800">
+              {t("agent.config.runtimeOptions")}
+            </h3>
             <p className="mt-0.5 text-ui-xs leading-4 text-slate-400">
-              默认模型与访问权限；提交任务时仍可按任务覆盖，留空表示用 CLI 默认值。
+              {t("agent.config.runtimeOptionsHint")}
             </p>
             <div className="mt-3 flex flex-wrap items-end gap-3">
               <label className="min-w-[240px] flex-1">
-                <span className="mb-1 block text-ui-xs text-slate-500">默认模型</span>
+                <span className="mb-1 block text-ui-xs text-slate-500">
+                  {t("agent.config.model")}
+                </span>
                 <input
                   value={modelDraft}
                   list={`settings-agent-model-${selectedRuntime.id}`}
@@ -229,7 +235,7 @@ export function AgentConfigPane({ toast }: Props) {
                       event.currentTarget.blur();
                     }
                   }}
-                  placeholder="留空使用运行时的默认模型"
+                  placeholder={t("agent.config.modelPlaceholder")}
                   spellCheck={false}
                   className="h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
                 />
@@ -241,7 +247,9 @@ export function AgentConfigPane({ toast }: Props) {
               </label>
               {selectedRuntime.permissions.length > 1 ? (
                 <label className="min-w-[190px]">
-                  <span className="mb-1 block text-ui-xs text-slate-500">访问权限</span>
+                  <span className="mb-1 block text-ui-xs text-slate-500">
+                    {t("agent.config.permission")}
+                  </span>
                   <select
                     value={optionsFor(selectedRuntime.id).permissionMode}
                     onChange={(event) =>
@@ -271,7 +279,7 @@ export function AgentConfigPane({ toast }: Props) {
         {!config || !selectedRuntime ? (
           <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
             <Spinner />
-            读取 Agent 运行时…
+            {t("agent.config.loadingRuntimes")}
           </div>
         ) : (
           <>
@@ -314,7 +322,7 @@ function Lifecycle({
     <section>
       <h3 className="flex items-center gap-1.5 text-ui-caption font-normal text-slate-800">
         <Workflow size={13} className="text-slate-400" />
-        生命周期
+        {t("agent.config.lifecycle")}
       </h3>
       <ol className="mt-2 space-y-1.5">
         {stages.map((stage, index) => (
@@ -328,8 +336,12 @@ function Lifecycle({
             <div className="min-w-0 flex-1" title={stage.description}>
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-ui-sm text-slate-700">{stage.label}</span>
-                {stage.needsHuman ? <Badge tone="amber">需人工</Badge> : null}
-                {stage.terminal ? <Badge tone="neutral">终态</Badge> : null}
+                {stage.needsHuman ? (
+                  <Badge tone="amber">{t("agent.config.needsHuman")}</Badge>
+                ) : null}
+                {stage.terminal ? (
+                  <Badge tone="neutral">{t("agent.config.terminalStage")}</Badge>
+                ) : null}
               </div>
             </div>
           </li>
@@ -342,24 +354,32 @@ function Lifecycle({
 function Capabilities({ runtime }: { runtime: AgentRuntimeDescriptor }) {
   const items: Array<[string, boolean, string]> = [
     [
-      "终端交互",
+      t("agent.config.interactiveTerminal"),
       runtime.capabilities.interactiveTerminal,
-      "PTY 输出与键盘输入",
+      t("agent.config.interactiveTerminalHint"),
     ],
-    ["权限请求", runtime.capabilities.permissionPrompt, "运行时可暂停等待授权"],
     [
-      "桌面回执",
-      runtime.capabilities.externalDecision,
-      "桌面/通知窗口的确认能被运行时接受",
+      t("agent.config.permissionPrompt"),
+      runtime.capabilities.permissionPrompt,
+      t("agent.config.permissionPromptHint"),
     ],
-    ["提交前审核", runtime.capabilities.commitReview, "复杂改动可暂停等待审核"],
+    [
+      t("agent.config.desktopReply"),
+      runtime.capabilities.externalDecision,
+      t("agent.config.desktopReplyHint"),
+    ],
+    [
+      t("agent.config.commitReview"),
+      runtime.capabilities.commitReview,
+      t("agent.config.commitReviewHint"),
+    ],
   ];
 
   return (
     <section>
       <h3 className="flex items-center gap-1.5 text-ui-caption font-normal text-slate-800">
         <Check size={13} className="text-slate-400" />
-        能力声明
+        {t("agent.config.capabilities")}
       </h3>
       <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
         {items.map(([label, supported, hint]) => (
@@ -389,7 +409,7 @@ function Limitations({ runtime }: { runtime: AgentRuntimeDescriptor }) {
     <section>
       <h3 className="flex items-center gap-1.5 text-ui-caption font-normal text-slate-800">
         <AlertTriangle size={13} className="text-amber-500" />
-        互通限制
+        {t("agent.config.limitations")}
       </h3>
       <ul className="mt-2 space-y-1.5">
         {runtime.limitations.map((limitation) => (
@@ -406,7 +426,7 @@ function Limitations({ runtime }: { runtime: AgentRuntimeDescriptor }) {
       <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5">
         <div className="flex items-center gap-1.5 text-ui-sm font-normal text-amber-900">
           <ShieldAlert size={13} className="text-amber-600" />
-          无法互操作时
+          {t("agent.config.fallback")}
         </div>
         <p className="mt-1 text-ui-sm leading-5 text-amber-800">
           {runtime.fallback}

@@ -21,6 +21,7 @@ import { pickExportDir } from "../lib/exportDir";
 import { formatBytes } from "../lib/format";
 import { copyText } from "../lib/desktop";
 import { usePoll } from "../hooks/usePoll";
+import { t } from "../lib/i18n";
 import { Button, EmptyState } from "./ui";
 
 type Props = {
@@ -105,10 +106,10 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
 
   const copy = async (text: string) => {
     if (await copyText(text)) {
-      toast("ok", "已复制");
+      toast("ok", t("common.copied"));
       return;
     }
-    toast("error", "复制失败");
+    toast("error", t("common.copyFailed"));
   };
 
   return (
@@ -119,7 +120,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索 URL"
+            placeholder={t("capture.searchUrl")}
             className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
           />
         </div>
@@ -129,7 +130,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
           onChange={(event) => setMethod(event.target.value)}
           className="rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
         >
-          <option value="ALL">全部方法</option>
+          <option value="ALL">{t("capture.allMethods")}</option>
           {methods.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -144,12 +145,12 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             onChange={(event) => setOnlyApi(event.target.checked)}
             className="h-3.5 w-3.5 accent-sky-600"
           />
-          只看 /api/
+          {t("capture.onlyApi")}
         </label>
 
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" onClick={() => void load()} loading={busy} icon={<RefreshCw size={13} />}>
-            刷新
+            {t("common.refresh")}
           </Button>
           <Button
             size="sm"
@@ -158,7 +159,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             disabled={busy || captures.length === 0}
             icon={<FileJson size={13} />}
           >
-            导出 JSON
+            {t("capture.exportJson")}
           </Button>
           <Button
             size="sm"
@@ -167,7 +168,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             disabled={busy || captures.length === 0}
             icon={<Trash2 size={13} />}
           >
-            清空
+            {t("common.clear")}
           </Button>
         </div>
       </div>
@@ -182,7 +183,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-300 bg-surface px-2 py-1 text-ui-sm"
           >
             <FolderOpen size={12} />
-            打开
+            {t("common.open")}
           </button>
         </div>
       ) : null}
@@ -190,19 +191,22 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
       <div className="overflow-hidden rounded-xl border border-border bg-surface ">
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5 text-ui-sm text-slate-500">
           <span>
-            显示 {filtered.length} / 共 {captures.length} 条 · 上限 150 条、单条响应 512KB
+            {t("capture.countSummary", {
+              shown: filtered.length,
+              total: captures.length,
+            })}
           </span>
-          <span className="hidden sm:inline">每 4 秒自动刷新</span>
+          <span className="hidden sm:inline">{t("capture.autoRefresh")}</span>
         </div>
 
         {filtered.length === 0 ? (
           <EmptyState
             icon={loaded ? <Search size={22} /> : <Loader2 size={22} className="animate-spin" />}
-            title={loaded ? "还没有匹配的请求" : "正在读取抓包…"}
+            title={loaded ? t("capture.emptyMatch") : t("capture.loadingTitle")}
             description={
               loaded
-                ? "在 TAPD 中操作时，这里会记录接口请求。"
-                : "正在读取请求记录…"
+                ? t("capture.emptyHint")
+                : t("capture.loadingHint")
             }
           />
         ) : (
@@ -212,22 +216,22 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
                 <tr>
                   <th className="sticky top-0 z-10 w-8 bg-slate-50 px-3 py-2" />
                   <th className="sticky top-0 z-10 w-16 bg-slate-50 px-3 py-2">
-                    时间
+                    {t("capture.time")}
                   </th>
                   <th className="sticky top-0 z-10 w-16 bg-slate-50 px-3 py-2">
-                    方法
+                    {t("capture.method")}
                   </th>
                   <th className="sticky top-0 z-10 w-14 bg-slate-50 px-3 py-2">
-                    状态
+                    {t("common.status")}
                   </th>
                   <th className="sticky top-0 z-10 bg-slate-50 px-3 py-2">
                     URL
                   </th>
                   <th className="sticky top-0 z-10 w-20 bg-slate-50 px-3 py-2 text-right">
-                    大小
+                    {t("capture.size")}
                   </th>
                   <th className="sticky top-0 z-10 w-16 bg-slate-50 px-3 py-2 text-right">
-                    耗时
+                    {t("capture.duration")}
                   </th>
                 </tr>
               </thead>
@@ -313,13 +317,13 @@ function CaptureRow(props: {
           <td colSpan={7} className="px-4 pb-4 pt-1">
             <div className="grid gap-3 lg:grid-cols-2">
               <BodyPanel
-                title="请求体"
+                title={t("capture.requestBody")}
                 value={entry.requestBody}
                 truncated={entry.truncated && Boolean(entry.requestBody)}
                 onCopy={onCopy}
               />
               <BodyPanel
-                title="响应体"
+                title={t("capture.responseBody")}
                 value={entry.responseBody}
                 truncated={entry.truncated && Boolean(entry.responseBody)}
                 onCopy={onCopy}
@@ -335,7 +339,7 @@ function CaptureRow(props: {
                 className="inline-flex items-center gap-1 rounded border border-border bg-surface px-2 py-1 transition hover:border-slate-300"
               >
                 <Copy size={11} />
-                复制 URL
+                {t("capture.copyUrl")}
               </button>
             </div>
           </td>
@@ -358,7 +362,7 @@ function BodyPanel(props: {
       <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-ui-sm text-slate-500">
         <span>
           {title}
-          {truncated ? <span className="ml-2 text-amber-600">已截断</span> : null}
+          {truncated ? <span className="ml-2 text-amber-600">{t("capture.truncated")}</span> : null}
         </span>
         {value ? (
           <button
@@ -367,12 +371,12 @@ function BodyPanel(props: {
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition hover:bg-slate-100"
           >
             <Copy size={11} />
-            复制
+            {t("common.copy")}
           </button>
         ) : null}
       </div>
       <pre className="select-text max-h-72 overflow-auto whitespace-pre-wrap break-all bg-slate-50/60 p-3 font-mono text-ui-sm leading-5 text-slate-700">
-        {value || <span className="text-slate-400">无内容</span>}
+        {value || <span className="text-slate-400">{t("capture.empty")}</span>}
       </pre>
     </div>
   );

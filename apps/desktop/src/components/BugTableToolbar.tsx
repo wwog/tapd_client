@@ -17,6 +17,7 @@ import {
 import clsx from "clsx";
 
 import { useDismiss } from "../hooks/useDismiss";
+import { t } from "../lib/i18n";
 import { Segmented, type SegmentedOption } from "./Segmented";
 import {
   COLUMN_LABELS,
@@ -133,13 +134,13 @@ export function BugTableToolbar(props: Props) {
   // 处理中 is a live view over agent activity, so the segment only exists while
   // the local agent queue is working on this project.
   const scopeOptions: SegmentedOption<BugScope>[] = [
-    { value: "mine", label: "我负责的", icon: <UserRound size={12} /> },
-    { value: "all", label: "全部", icon: <Users size={12} /> },
+    { value: "mine", label: t("bugs.scopeMine"), icon: <UserRound size={12} /> },
+    { value: "all", label: t("common.all"), icon: <Users size={12} /> },
   ];
   if (showProcessing) {
     scopeOptions.push({
       value: "processing",
-      label: "处理中",
+      label: t("bugs.scopeProcessing"),
       icon: <Activity size={12} />,
     });
   }
@@ -154,7 +155,9 @@ export function BugTableToolbar(props: Props) {
       />
 
       {scope === "mine" && !me ? (
-        <span className="text-ui-sm text-amber-600">未能识别当前用户，暂按全部查询</span>
+        <span className="text-ui-sm text-amber-600">
+          {t("bugs.noCurrentUser")}
+        </span>
       ) : null}
 
       <div className="relative ml-auto w-64">
@@ -162,8 +165,8 @@ export function BugTableToolbar(props: Props) {
         <input
           value={keyword}
           onChange={(event) => onKeywordChange(event.target.value)}
-          placeholder="搜索标题或 ID"
-          title="支持标题关键词、完整 ID 或列表里的短 ID"
+          placeholder={t("bugs.searchPlaceholder")}
+          title={t("bugs.searchHint")}
           className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
         />
       </div>
@@ -174,15 +177,15 @@ export function BugTableToolbar(props: Props) {
           onClick={onClearFilters}
           className="text-ui-sm text-slate-400 transition hover:text-slate-700"
         >
-          清除筛选
+          {t("bugs.clearFilters")}
         </button>
       ) : null}
 
       <div ref={columnsRef} className="relative">
         <button
           type="button"
-          title="显示列与排序"
-          aria-label="显示列与排序"
+          title={t("bugs.columnsAndSort")}
+          aria-label={t("bugs.columnsAndSort")}
           aria-expanded={columnsOpen}
           onClick={() => setColumnsOpen((current) => !current)}
           className={clsx(
@@ -198,13 +201,15 @@ export function BugTableToolbar(props: Props) {
         {columnsOpen ? (
           <div className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-border bg-surface p-1.5">
             <div className="flex items-center justify-between px-1.5 pb-1 pt-0.5">
-              <span className="text-ui-xs text-slate-400">显示列 · 拖动排序</span>
+              <span className="text-ui-xs text-slate-400">
+                {t("bugs.columnsTitle")}
+              </span>
               <button
                 type="button"
                 onClick={resetColumns}
                 className="text-ui-xs text-slate-400 transition hover:text-slate-700"
               >
-                恢复默认
+                {t("common.restoreDefaults")}
               </button>
             </div>
             <div className="space-y-0.5">
@@ -212,6 +217,7 @@ export function BugTableToolbar(props: Props) {
                 .filter((column) => !(hideOwner && column.key === "owner"))
                 .map((column) => {
                   const dragging = draggingColumn === column.key;
+                  const columnLabel = t(COLUMN_LABELS[column.key]);
                   return (
                     <div
                       key={column.key}
@@ -224,8 +230,10 @@ export function BugTableToolbar(props: Props) {
                     >
                       <button
                         type="button"
-                        title="拖动排序"
-                        aria-label={`拖动排序${COLUMN_LABELS[column.key]}`}
+                        title={t("bugs.dragToReorder")}
+                        aria-label={t("bugs.reorderColumn", {
+                          label: columnLabel,
+                        })}
                         onPointerDown={(event) =>
                           startColumnDrag(event, column.key)
                         }
@@ -236,7 +244,11 @@ export function BugTableToolbar(props: Props) {
                       <button
                         type="button"
                         onClick={() => toggleColumn(column.key)}
-                        aria-label={`${column.visible ? "隐藏" : "显示"}${COLUMN_LABELS[column.key]}`}
+                        aria-label={
+                          column.visible
+                            ? t("bugs.hideColumn", { label: columnLabel })
+                            : t("bugs.showColumn", { label: columnLabel })
+                        }
                         className={clsx(
                           "grid h-4 w-4 shrink-0 place-items-center rounded border transition",
                           column.visible
@@ -247,7 +259,7 @@ export function BugTableToolbar(props: Props) {
                         <Check size={11} />
                       </button>
                       <span className="min-w-0 flex-1 truncate text-slate-600">
-                        {COLUMN_LABELS[column.key]}
+                        {columnLabel}
                       </span>
                     </div>
                   );

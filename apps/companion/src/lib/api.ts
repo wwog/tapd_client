@@ -8,6 +8,7 @@
  */
 import { useSyncExternalStore } from "react";
 
+import { t, type MessageKey } from "./i18n";
 import { navigate } from "./router";
 import { clearSession, getSession } from "./session";
 
@@ -395,16 +396,17 @@ export type AgentEnqueueRequest = {
   source?: string;
 };
 
-export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
-  queued: "排队中",
-  preparing: "准备中",
-  running: "运行中",
-  awaiting_approval: "待审核",
-  awaiting_merge: "待合并",
-  merging: "合并中",
-  succeeded: "已完成",
-  failed: "失败",
-  canceled: "已取消",
+/** Status keys; callers resolve them with `t()` at render time. */
+export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, MessageKey> = {
+  queued: "mobile.status.queued",
+  preparing: "mobile.status.preparing",
+  running: "mobile.status.running",
+  awaiting_approval: "mobile.status.awaitingApproval",
+  awaiting_merge: "mobile.status.awaitingMerge",
+  merging: "mobile.status.merging",
+  succeeded: "mobile.status.succeeded",
+  failed: "mobile.status.failed",
+  canceled: "mobile.status.canceled",
 };
 
 export const AGENT_STATUS_TONES: Record<AgentTaskStatus, "neutral" | "blue" | "green" | "amber" | "red" | "cyan"> = {
@@ -501,7 +503,7 @@ export class ApiError extends Error {
 }
 
 export function asApiError(err: unknown): ApiError {
-  return err instanceof ApiError ? err : new ApiError("error", "请求失败");
+  return err instanceof ApiError ? err : new ApiError("error", t("mobile.api.requestFailed"));
 }
 
 /** Global desktop-side connection state, shared by every page. */
@@ -539,7 +541,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     setConnection("offline");
-    throw new ApiError("offline", "无法连接桌面端");
+    throw new ApiError("offline", t("mobile.desktop.offline"));
   }
 
   let envelope: { ok: true; data: T } | { ok: false; code: string; error: string } | null =
@@ -551,7 +553,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!envelope) {
     setConnection("offline");
-    throw new ApiError("offline", "桌面端响应异常");
+    throw new ApiError("offline", t("mobile.api.badResponse"));
   }
 
   if (!envelope.ok) {
@@ -564,13 +566,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (!(hash.includes("/pair") && hash.includes("t="))) {
         navigate("#/pair");
       }
-      throw new ApiError("unauthorized", "配对已失效，请重新扫码");
+      throw new ApiError("unauthorized", t("mobile.api.pairingExpired"));
     }
     if (envelope.code === "not_logged_in") {
       setConnection("not_logged_in");
-      throw new ApiError("not_logged_in", "桌面端未登录");
+      throw new ApiError("not_logged_in", t("mobile.desktop.notLoggedIn"));
     }
-    throw new ApiError(envelope.code || "error", envelope.error || "请求失败");
+    throw new ApiError(envelope.code || "error", envelope.error || t("mobile.api.requestFailed"));
   }
 
   // Any success recovers the app automatically (desktop logged back in etc.).

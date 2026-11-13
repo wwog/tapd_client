@@ -30,13 +30,13 @@ pub(super) const CANDIDATES: &[Candidate] = &[
     // System apps
     Candidate {
         id: "preview",
-        label: "预览",
+        label: "app.openwith.preview",
         path: "/System/Applications/Preview.app",
         kinds: IMAGE_AND_FILE,
     },
     Candidate {
         id: "photos",
-        label: "照片",
+        label: "app.openwith.photos",
         path: "/System/Applications/Photos.app",
         kinds: IMAGE,
     },
@@ -48,13 +48,13 @@ pub(super) const CANDIDATES: &[Candidate] = &[
     },
     Candidate {
         id: "textedit",
-        label: "文本编辑",
+        label: "app.openwith.textedit",
         path: "/System/Applications/TextEdit.app",
         kinds: FILE,
     },
     Candidate {
         id: "music",
-        label: "音乐",
+        label: "app.openwith.music",
         path: "/System/Applications/Music.app",
         kinds: VIDEO,
     },
@@ -171,9 +171,9 @@ pub(super) fn finder_app_path() -> &'static str {
 /// The system target is Finder for folders; everything else is a document.
 pub(super) fn system_label(kind: &str) -> &'static str {
     if kind == "directory" {
-        "访达"
+        "app.openwith.finder"
     } else {
-        "系统默认应用"
+        "app.openwith.system"
     }
 }
 

@@ -74,9 +74,9 @@ export function devSimTask(entry: DevSimEntry): AgentTask {
   return {
     id: devSimTaskId(entry),
     workspaceId: entry.workspaceId,
-    workspaceName: "开发模拟",
+    workspaceName: "开发模拟", // i18n-exempt: dev-only mock data
     bugId: entry.bugId,
-    title: "开发模拟任务",
+    title: "开发模拟任务", // i18n-exempt: dev-only mock data
     severity: "",
     priority: "",
     jsonPath: "",

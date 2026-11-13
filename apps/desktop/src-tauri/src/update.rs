@@ -32,6 +32,7 @@ use std::{
 };
 
 use chrono::Local;
+use tapd_i18n::tr;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -371,7 +372,7 @@ pub fn update_install() -> Result<UpdateState, String> {
             return Ok(service.snapshot_locked(&inner));
         }
         if inner.available.is_none() {
-            return Err("当前没有可用的更新".to_string());
+            return Err(tr("app.update.none").to_string());
         }
     }
 
@@ -408,7 +409,7 @@ async fn install(service: &Arc<UpdateService>) -> Result<(), String> {
         .check()
         .await
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "当前没有可用的更新".to_string())?;
+        .ok_or_else(|| tr("app.update.none").to_string())?;
 
     // 0 means "unknown" for the total; the manifest usually sends a length.
     let received = Arc::new(AtomicU64::new(0));

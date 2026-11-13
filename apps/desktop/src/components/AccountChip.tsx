@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { ChevronRight } from "lucide-react";
 
 import { avatarSrc } from "../lib/api";
+import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
 
 type Props = {
@@ -38,8 +39,8 @@ export function AccountChip({
     return (
       <button
         type="button"
-        title="账户与会话"
-        aria-label="账户与会话"
+        title={t("settings.account.title")}
+        aria-label={t("settings.account.title")}
         onClick={onClick}
         className="relative h-8 w-8 rounded-full transition hover:brightness-105"
       >
@@ -62,7 +63,7 @@ export function AccountChip({
     <button
       type="button"
       onClick={onClick}
-      title="账户与会话"
+      title={t("settings.account.title")}
       className={clsx(
         "group flex w-full items-center gap-2.5 border-t border-border px-3 py-2.5 text-left transition",
         active ? "bg-overlay" : "hover:bg-overlay-soft",

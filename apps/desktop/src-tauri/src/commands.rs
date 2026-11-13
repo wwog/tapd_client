@@ -21,6 +21,7 @@ use tapd_core::{
         BugDetail, BugListPage, BugSummary, Workspace, WorkspaceMember,
     },
 };
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Manager, State};
 
 use crate::{
@@ -176,16 +177,16 @@ pub async fn session_login_state(
     }
 
     let Some(window) = app.get_webview_window(session::SESSION_LABEL) else {
-        return Ok(LoginQrState::loading("正在启动隐藏会话窗口"));
+        return Ok(LoginQrState::loading(tr("app.login.starting")));
     };
 
     let expression = "(window.__TAPDCB__ && typeof window.__TAPDCB__.loginState === 'function') ? window.__TAPDCB__.loginState() : null";
     let state = match session::eval_sync_json_once(&window, expression, Duration::from_millis(1500))
         .await
     {
-        Ok(Value::Null) => LoginQrState::loading("正在连接 TAPD 登录页"),
+        Ok(Value::Null) => LoginQrState::loading(tr("app.login.connecting")),
         Ok(value) => LoginQrState::from_bridge(value),
-        Err(_) => LoginQrState::loading("正在等待登录页响应"),
+        Err(_) => LoginQrState::loading(tr("app.login.waiting")),
     };
     Ok(state)
 }
@@ -394,7 +395,7 @@ pub async fn workspace_members_core(
 ) -> Result<Vec<WorkspaceMember>, String> {
     let workspace_id = workspace_id.trim();
     if workspace_id.is_empty() {
-        return Err("缺少项目 id".to_string());
+        return Err(tr("app.workspace.missing").to_string());
     }
 
     // Primary source; a 404/older project simply falls through to the chooser.
@@ -440,7 +441,7 @@ pub async fn bug_add_comment_core(
 ) -> Result<(), String> {
     let text = comment.trim();
     if text.is_empty() {
-        return Err("评论不能为空".to_string());
+        return Err(tr("app.comment.empty").to_string());
     }
     bug_write::add_comment(app, workspace_id.trim(), bug_id.trim(), text).await?;
     Ok(())
@@ -474,11 +475,11 @@ pub async fn bug_update_field_core(
 ) -> Result<(), String> {
     let field = field.trim();
     if !EDITABLE_USER_FIELDS.contains(&field) {
-        return Err("只支持修改处理人与开发人员".to_string());
+        return Err(tr("app.field.only").to_string());
     }
     let value = normalize_user_value(value);
     if value.is_empty() {
-        return Err("请选择人员".to_string());
+        return Err(tr("app.member.select").to_string());
     }
 
     bug_write::update_field(app, workspace_id.trim(), bug_id.trim(), field, &value).await?;
@@ -797,7 +798,7 @@ pub async fn mcp_config(state: State<'_, SharedState>) -> Result<McpConfigInfo, 
         read_only: !state.config_snapshot().mcp_policy.writes_enabled,
         // The sidecar's manifest is the single source of truth for names,
         // descriptions and input schemas.
-        tools: tapd_core::mcp::TOOLS
+        tools: tapd_core::mcp::tools()
             .iter()
             .map(|tool| McpToolInfo {
                 name: tool.name,
@@ -814,7 +815,7 @@ pub async fn mcp_config(state: State<'_, SharedState>) -> Result<McpConfigInfo, 
 pub fn ensure_window_width(app: AppHandle, min_width: f64) -> Result<f64, String> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "主窗口尚未创建".to_string())?;
+        .ok_or_else(|| tr("app.window.main").to_string())?;
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
     let size = window.inner_size().map_err(|error| error.to_string())?;
     let current_width = size.width as f64 / scale;
@@ -991,10 +992,10 @@ pub async fn open_directory(
 ) -> Result<(), String> {
     let dir = tapd_core::paths::expand_home(path.trim());
     if dir.as_os_str().is_empty() {
-        return Err("还没有绑定项目目录".to_string());
+        return Err(tr("app.project.unbound").to_string());
     }
     if !dir.is_dir() {
-        return Err(format!("项目目录不存在：{}", dir.display()));
+        return Err(tr_args("app.project.missing", &[&dir.display()]));
     }
 
     let selected = selected_open_target(state.inner(), target, "directory");
@@ -1022,7 +1023,7 @@ pub async fn open_media(
     target: Option<String>,
 ) -> Result<String, String> {
     if !is_tapd_media_url(&url) {
-        return Err("只支持 TAPD 站内资源地址".to_string());
+        return Err(tr("app.resource.tapd").to_string());
     }
 
     match mode.as_str() {
@@ -1052,7 +1053,7 @@ pub async fn open_media(
             let path = download_media(&app, &state.paths, &url).await?;
             Ok(path.to_string_lossy().to_string())
         }
-        other => Err(format!("不支持的打开方式：{other}")),
+        other => Err(tr_args("app.open.mode", &[&other])),
     }
 }
 
@@ -1097,7 +1098,7 @@ pub fn list_dirs(path: Option<String>) -> Result<DirListing, String> {
     };
     base = base.canonicalize().unwrap_or(base);
     if !base.is_dir() {
-        return Err(format!("目录不存在：{}", base.display()));
+        return Err(tr_args("app.dir.missing", &[&base.display()]));
     }
 
     let mut entries: Vec<DirEntryInfo> = Vec::new();
@@ -1138,7 +1139,7 @@ pub struct MediaEndpoint {
 pub fn media_endpoint(state: State<'_, SharedState>) -> Result<MediaEndpoint, String> {
     let runtime = state
         .runtime_info()
-        .ok_or_else(|| "本地服务尚未就绪".to_string())?;
+        .ok_or_else(|| tr("app.service.notready").to_string())?;
     Ok(MediaEndpoint {
         port: runtime.port,
         token: runtime.media_token,

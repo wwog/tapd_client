@@ -23,6 +23,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tauri::Emitter;
 use tapd_core::config::CompanionDevice;
+use tapd_i18n::tr;
 
 use crate::{server::opaque_token, state::SharedState};
 
@@ -32,7 +33,7 @@ use super::{err_data, ok_data, CompanionCtx, Presence, PAIRED_EVENT, PRESENCE_EV
 const PAIR_MAX_ATTEMPTS: usize = 10;
 const PAIR_WINDOW: Duration = Duration::from_secs(60);
 /// Fallback device name when the phone sends none.
-const DEFAULT_DEVICE_NAME: &str = "移动设备";
+const DEFAULT_DEVICE_NAME: &str = "companion.pairing.device";
 /// Device names are display text; keep them short.
 const MAX_DEVICE_NAME_CHARS: usize = 24;
 
@@ -105,7 +106,7 @@ pub(super) fn authorize_token(state: &SharedState, token: Option<String>) -> Opt
         err_data(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "会话已失效，请重新配对",
+            tr("companion.pairing.expired"),
         )
     };
     let paired = token.is_some_and(|token| {
@@ -148,7 +149,7 @@ pub(super) fn require_logged_in(state: &SharedState) -> Option<Response> {
         err_data(
             StatusCode::FORBIDDEN,
             "not_logged_in",
-            "桌面端尚未登录 TAPD",
+            tr("companion.pairing.notloggedin"),
         )
     })
 }
@@ -206,7 +207,7 @@ pub(super) async fn pair(
         return err_data(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "配对请求过于频繁，请稍后再试",
+            tr("companion.pairing.frequent"),
         );
     }
 
@@ -223,7 +224,7 @@ pub(super) async fn pair(
             return err_data(
                 StatusCode::UNAUTHORIZED,
                 "pairing_invalid",
-                "配对码无效或已过期",
+                tr("companion.pairing.invalid"),
             );
         }
     }
@@ -263,7 +264,7 @@ pub(super) async fn pair(
             err_data(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "save_failed",
-                "配对信息保存失败",
+                tr("companion.pairing.save"),
             )
         }
     }
@@ -280,14 +281,14 @@ pub(super) async fn heartbeat(
         return err_data(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "会话已失效，请重新配对",
+            tr("companion.pairing.expired"),
         );
     };
     let Some(device) = device_for_token(&ctx.state, &token) else {
         return err_data(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "会话已失效，请重新配对",
+            tr("companion.pairing.expired"),
         );
     };
     let now = chrono::Utc::now();
@@ -314,7 +315,7 @@ pub(super) async fn heartbeat(
 fn normalize_device_name(raw: Option<&str>) -> String {
     let trimmed = raw.unwrap_or_default().trim();
     if trimmed.is_empty() {
-        return DEFAULT_DEVICE_NAME.to_string();
+        return tr(DEFAULT_DEVICE_NAME).to_string();
     }
     trimmed.chars().take(MAX_DEVICE_NAME_CHARS).collect()
 }
@@ -499,8 +500,8 @@ mod tests {
 
     #[test]
     fn blank_device_name_falls_back_to_default() {
-        assert_eq!(normalize_device_name(None), DEFAULT_DEVICE_NAME);
-        assert_eq!(normalize_device_name(Some("   ")), DEFAULT_DEVICE_NAME);
+        assert_eq!(normalize_device_name(None), tr(DEFAULT_DEVICE_NAME));
+        assert_eq!(normalize_device_name(Some("   ")), tr(DEFAULT_DEVICE_NAME));
     }
 
     #[test]

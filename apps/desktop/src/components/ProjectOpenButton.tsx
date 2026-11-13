@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { agentApi } from "../lib/agent";
 import { api, type OpenTarget, type OpenTargetSet } from "../lib/api";
 import { useDismiss } from "../hooks/useDismiss";
+import { t } from "../lib/i18n";
 
 type Props = {
   workspaceId: string;
@@ -95,7 +96,10 @@ export function ProjectOpenButton({ workspaceId, onError }: Props) {
           type="button"
           onClick={() => void open()}
           disabled={busy}
-          title={`用${selected?.label ?? "默认应用"}打开 ${repoPath}`}
+          title={t("app.open.with", {
+            app: selected?.label ?? t("app.open.defaultApp"),
+            path: repoPath,
+          })}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-60"
         >
           {busy ? (
@@ -103,11 +107,11 @@ export function ProjectOpenButton({ workspaceId, onError }: Props) {
           ) : (
             <TargetIcon target={selected} />
           )}
-          打开
+          {t("common.open")}
         </button>
         <button
           type="button"
-          aria-label="选择打开项目的应用"
+          aria-label={t("app.open.chooseApp")}
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((current) => !current)}
           className="border-l border-border px-1 transition hover:bg-slate-50"
@@ -118,7 +122,7 @@ export function ProjectOpenButton({ workspaceId, onError }: Props) {
 
       {menuOpen ? (
         <div className="absolute right-0 z-50 mt-1 w-52 overflow-hidden rounded-lg border border-border bg-surface py-1 ">
-          <p className="px-3 py-1 text-ui-xs text-slate-400">用以下应用打开</p>
+          <p className="px-3 py-1 text-ui-xs text-slate-400">{t("app.open.withList")}</p>
           {(targets?.targets ?? []).map((target) => {
             const active = target.id === targets?.selected;
             return (
@@ -138,7 +142,7 @@ export function ProjectOpenButton({ workspaceId, onError }: Props) {
             );
           })}
           {targets && targets.targets.length === 0 ? (
-            <p className="px-3 py-2 text-ui-sm text-slate-400">没有可用的应用</p>
+            <p className="px-3 py-2 text-ui-sm text-slate-400">{t("app.open.noApps")}</p>
           ) : null}
         </div>
       ) : null}

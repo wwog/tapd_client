@@ -8,6 +8,7 @@ use chrono::Local;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tapd_core::tapd::api::user_workspace_url;
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{bug_write, commands::auth::session_request_json, notification_db, state::SharedState};
@@ -152,7 +153,7 @@ pub async fn command(
                 .get("client")
                 .and_then(Value::as_str)
                 .filter(|client| !client.trim().is_empty())
-                .unwrap_or("调试面板");
+                .unwrap_or(tr("notify.debug.client"));
             let (title, ai) = ai_payload_from_arguments(&payload, client)?;
             // Debug cards must show even when AI notifications are disabled.
             let item = service.raise_ai(title, ai, true)?;
@@ -230,7 +231,7 @@ fn simulate_notification(
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| "simulated".to_string());
     let workspace_name = if workspace_id == "simulated" {
-        "模拟项目".to_string()
+        tr("notify.simulated.workspace").to_string()
     } else {
         service.workspace_name(&workspace_id)
     };
@@ -255,7 +256,7 @@ fn simulate_notification(
         .get("title")
         .and_then(Value::as_str)
         .filter(|title| !title.trim().is_empty())
-        .unwrap_or("【模拟】新缺陷通知")
+        .unwrap_or(tr("notify.simulated.title"))
         .to_string();
 
     let item = NotificationItem {
@@ -265,10 +266,10 @@ fn simulate_notification(
         bug_id,
         title,
         kind,
-        owner: config.me.unwrap_or_else(|| "我".to_string()),
-        creator: "模拟用户".to_string(),
-        severity: "严重".to_string(),
-        priority: "高".to_string(),
+        owner: config.me.unwrap_or_else(|| tr("notify.simulated.me").to_string()),
+        creator: tr("notify.simulated.creator").to_string(),
+        severity: "严重".to_string(), // i18n-exempt: mock TAPD field value
+        priority: "高".to_string(), // i18n-exempt: mock TAPD field value
         created: format_tapd_time(Local::now().naive_local()),
         detected_at: Local::now().to_rfc3339(),
         state: NotificationState::Pending,
@@ -303,7 +304,7 @@ async fn build_accept_plan(
 ) -> Result<AcceptPlan, String> {
     let me = resolve_me(app, state, &item.workspace_id).await?;
     if me.trim().is_empty() {
-        return Err("无法确定当前 TAPD 用户，请先在设置页刷新账户信息".to_string());
+        return Err(tr("notify.user.unknown").to_string());
     }
 
     let detail = fetch_bug(app, &item.workspace_id, &item.bug_id).await?;
@@ -358,10 +359,10 @@ async fn handle_notification(
 ) -> Result<Value, String> {
     let item = service.find_item(id)?;
     if item.state == NotificationState::Handled {
-        return Err("该通知已处理".to_string());
+        return Err(tr("notify.already.handled").to_string());
     }
     if is_simulated(&item) {
-        return Err("模拟通知不能执行处理，请用真实缺陷验证".to_string());
+        return Err(tr("notify.simulated.handle").to_string());
     }
 
     let plan = build_accept_plan(app, state, &item).await?;
@@ -375,7 +376,7 @@ async fn handle_notification(
             &bug_write::normalize_user_value(&plan.me),
         )
         .await
-        .map_err(|error| format!("改派处理人失败：{error}"))?;
+        .map_err(|error| tr_args("notify.claim.failed", &[&error]))?;
         // The card's own "处理" just assigned the bug to us: the next poll
         // must not surface that as a transfer notification.
         suppress_transfer(&item.workspace_id, &item.bug_id);
@@ -385,7 +386,7 @@ async fn handle_notification(
     // key is read from the workflow itself, so no project-specific guessing.
     let step = bug_write::accept_into_processing(app, &item.workspace_id, &item.bug_id)
         .await
-        .map_err(|error| format!("状态流转失败：{error}"))?;
+        .map_err(|error| tr_args("notify.transition.failed", &[&error]))?;
     let transitioned = step.is_some();
 
     service.set_state(id, NotificationState::Handled)?;
@@ -452,7 +453,7 @@ fn apply_settings_patch(
         .cloned()
         .unwrap_or_else(|| payload.clone());
     let patch: SettingsPatch = serde_json::from_value(patch_value)
-        .map_err(|error| format!("通知设置格式不正确：{error}"))?;
+        .map_err(|error| tr_args("notify.settings.invalid", &[&error]))?;
 
     let mut settings = service.settings();
     if let Some(enabled) = patch.enabled {
@@ -485,13 +486,13 @@ fn apply_settings_patch(
         }
         if let Some(start) = quiet.start {
             if !is_hhmm(&start) {
-                return Err("免打扰开始时间格式应为 HH:MM".to_string());
+                return Err(tr("notify.quiet.start").to_string());
             }
             settings.quiet_hours.start = start;
         }
         if let Some(end) = quiet.end {
             if !is_hhmm(&end) {
-                return Err("免打扰结束时间格式应为 HH:MM".to_string());
+                return Err(tr("notify.quiet.end").to_string());
             }
             settings.quiet_hours.end = end;
         }
@@ -512,7 +513,7 @@ fn payload_str(payload: &Value, key: &str) -> Result<String, String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| format!("缺少参数 {key}"))
+        .ok_or_else(|| tr_args("notify.param.missing", &[&key]))
 }
 
 /// Brings the main window to the front (capsule click without pending items).

@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 
 use serde_json::Value;
+use tapd_i18n::tr;
 
 use super::{AgentPendingPrompt, AgentPromptOption};
 
@@ -66,12 +67,12 @@ pub(super) fn approval(
         options: vec![
             AgentPromptOption {
                 id: "allow_once".to_string(),
-                label: "允许一次".to_string(),
+                label: tr("agent.prompt.allow.once").to_string(),
                 description: None,
             },
             AgentPromptOption {
                 id: "reject".to_string(),
-                label: "拒绝".to_string(),
+                label: tr("agent.prompt.reject").to_string(),
                 description: None,
             },
         ],
@@ -177,16 +178,16 @@ pub(super) fn can_answer(runtime_id: &str, prompt: &AgentPendingPrompt) -> bool 
 /// 卡片下方的按键提示；不支持回执时明确要求回终端。
 pub(super) fn answer_hint(runtime_id: &str, prompt: &AgentPendingPrompt) -> Option<String> {
     if !can_answer(runtime_id, prompt) {
-        return Some("在 Agent 终端中回答".to_string());
+        return Some(tr("agent.prompt.answer.terminal").to_string());
     }
     let family = family(runtime_id)?;
     Some(match prompt.kind.as_str() {
         "approval" => match family {
-            KeyFamily::Claude => "按 1 允许 · Esc 拒绝".to_string(),
-            KeyFamily::Codex => "按 y 允许 · n 拒绝".to_string(),
-            KeyFamily::OpenCode => "回车允许 · Esc 拒绝".to_string(),
+            KeyFamily::Claude => tr("agent.prompt.keys.claude").to_string(),
+            KeyFamily::Codex => tr("agent.prompt.keys.codex").to_string(),
+            KeyFamily::OpenCode => tr("agent.prompt.keys.opencode").to_string(),
         },
-        _ => "按选项序号回答".to_string(),
+        _ => tr("agent.prompt.keys.options").to_string(),
     })
 }
 

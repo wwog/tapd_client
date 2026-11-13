@@ -5,6 +5,7 @@
 //! 这里只做名称归一和字段提取，不依赖具体客户端。
 
 use serde_json::Value;
+use tapd_i18n::tr;
 
 use super::{prompt, truncate_text, AgentPendingPrompt, AgentRuntimePhase, AgentRuntimeStatus};
 
@@ -50,7 +51,7 @@ pub(super) fn normalize(
             activity.status = Some(base(
                 previous,
                 AgentRuntimePhase::Idle,
-                "会话已启动",
+                tr("agent.status.session.started"),
                 session_id,
                 model,
                 now,
@@ -60,7 +61,7 @@ pub(super) fn normalize(
             activity.status = Some(base(
                 previous,
                 AgentRuntimePhase::Working,
-                "正在处理",
+                tr("agent.status.working"),
                 session_id,
                 model,
                 now,
@@ -70,7 +71,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "开始处理",
+                tr("agent.status.starting"),
                 session_id,
                 model,
                 now,
@@ -82,7 +83,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "正在处理",
+                tr("agent.status.working"),
                 session_id,
                 model,
                 now,
@@ -115,20 +116,20 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "正在处理",
+                tr("agent.status.working"),
                 session_id,
                 model,
                 now,
             );
             status.tool = tool.or_else(|| previous.and_then(|status| status.tool.clone()));
-            status.detail = Some("工具已完成".to_string());
+            status.detail = Some(tr("agent.status.tool.done").to_string());
             activity.status = Some(status);
         }
         "posttoolusefailure" | "toolfailure" => {
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "工具执行失败",
+                tr("agent.status.tool.failed"),
                 session_id,
                 model,
                 now,
@@ -141,7 +142,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::WaitingPermission,
-                "等待权限确认",
+                tr("agent.status.waiting.permission"),
                 session_id,
                 model,
                 now,
@@ -164,9 +165,9 @@ pub(super) fn normalize(
                     AgentRuntimePhase::WaitingQuestion
                 },
                 if waiting_permission {
-                    "等待权限确认"
+                    tr("agent.status.waiting.permission")
                 } else {
-                    "等待用户回答"
+                    tr("agent.status.waiting.answer")
                 },
                 session_id,
                 model,
@@ -202,7 +203,7 @@ pub(super) fn normalize(
             activity.status = Some(base(
                 previous,
                 AgentRuntimePhase::Working,
-                "继续处理",
+                tr("agent.status.resuming"),
                 session_id,
                 model,
                 now,
@@ -212,7 +213,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "子 Agent 启动",
+                tr("agent.status.subagent.started"),
                 session_id,
                 model,
                 now,
@@ -226,7 +227,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "子 Agent 结束",
+                tr("agent.status.subagent.stopped"),
                 session_id,
                 model,
                 now,
@@ -243,7 +244,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "正在处理",
+                tr("agent.status.working"),
                 session_id,
                 model,
                 now,
@@ -255,7 +256,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "正在收尾",
+                tr("agent.status.wrapping.up"),
                 session_id,
                 model,
                 now,
@@ -267,7 +268,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Working,
-                "收到回复",
+                tr("agent.status.reply.received"),
                 session_id,
                 model,
                 now,
@@ -282,9 +283,9 @@ pub(super) fn normalize(
                     previous,
                     AgentRuntimePhase::Working,
                     if will_continue {
-                        "继续处理"
+                        tr("agent.status.resuming")
                     } else {
-                        "等待后台任务"
+                        tr("agent.status.waiting.background")
                     },
                     session_id,
                     model,
@@ -297,7 +298,7 @@ pub(super) fn normalize(
                 let mut status = base(
                     previous,
                     AgentRuntimePhase::Idle,
-                    "回合结束",
+                    tr("agent.status.turn.ended"),
                     session_id,
                     model,
                     now,
@@ -311,11 +312,11 @@ pub(super) fn normalize(
         "stopfailure" => {
             let error = message
                 .clone()
-                .unwrap_or_else(|| "Agent 回合失败".to_string());
+                .unwrap_or_else(|| tr("agent.status.turn.failed.detail").to_string());
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Error,
-                "回合失败",
+                tr("agent.status.turn.failed"),
                 session_id,
                 model,
                 now,
@@ -329,7 +330,7 @@ pub(super) fn normalize(
             let mut status = base(
                 previous,
                 AgentRuntimePhase::Error,
-                "执行出错",
+                tr("agent.status.error"),
                 session_id,
                 model,
                 now,
@@ -341,7 +342,7 @@ pub(super) fn normalize(
             activity.status = Some(base(
                 previous,
                 AgentRuntimePhase::Idle,
-                "会话结束",
+                tr("agent.status.session.ended"),
                 session_id,
                 model,
                 now,
@@ -351,7 +352,7 @@ pub(super) fn normalize(
             activity.status = Some(base(
                 previous,
                 AgentRuntimePhase::Idle,
-                "已中断",
+                tr("agent.status.interrupted"),
                 session_id,
                 model,
                 now,
@@ -395,8 +396,8 @@ fn base(
 
 fn tool_label(tool: Option<&str>) -> &'static str {
     match tool {
-        Some(_) => "正在执行工具",
-        None => "正在处理",
+        Some(_) => tr("agent.status.tool.running"),
+        None => tr("agent.status.working"),
     }
 }
 

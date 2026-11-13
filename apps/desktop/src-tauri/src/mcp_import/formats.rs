@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde_json::{json, Value};
+use tapd_i18n::{tr, tr_args};
 use toml_edit::{value as toml_value, DocumentMut, Item, Table};
 
 use super::{
@@ -82,9 +83,8 @@ pub(super) fn ensure_codex_in_file(
     let existing = read_existing(path, "Codex")?;
     let mut document = match &existing {
         Some(raw) => raw.parse::<DocumentMut>().map_err(|error| {
-            format!(
-                "无法解析 {}：{error}。为避免破坏已有内容，未做任何修改。",
-                path.display()
+            tr_args("app.mcp.import.toml",
+                &[&path.display(), &error],
             )
         })?,
         None => DocumentMut::new(),
@@ -103,11 +103,13 @@ pub(super) fn ensure_codex_in_file(
         .or_insert(Item::Table(Table::new()));
     let servers = servers
         .as_table_mut()
-        .ok_or_else(|| "Codex 配置中的 mcp_servers 不是表，未做任何修改".to_string())?;
+        .ok_or_else(|| tr("app.mcp.import.codex.servers").to_string())?;
     let tapd = servers.entry("tapd").or_insert(Item::Table(Table::new()));
     let tapd = tapd
         .as_table_mut()
-        .ok_or_else(|| "Codex 配置中的 mcp_servers.tapd 不是表，未做任何修改".to_string())?;
+        .ok_or_else(|| {
+            tr("app.mcp.import.codex.tapd").to_string()
+        })?;
     tapd.insert("command", toml_value(command_path));
 
     let backup_path = backup_existing(path, existing.is_some())?;
@@ -176,7 +178,11 @@ pub(super) fn ensure_claude_mcp(
         ])
         .stdin(Stdio::null())
         .output()
-        .map_err(|error| format!("未找到 claude 命令（需要安装 Claude Code CLI）：{error}"))?;
+        .map_err(|error| {
+            tr_args("app.mcp.import.claude.missing",
+                &[&error],
+            )
+        })?;
     if !output.status.success() {
         // Restore the exact file we saw before `remove`/`add` ran.
         if let Some(backup) = &backup_path {
@@ -184,14 +190,12 @@ pub(super) fn ensure_claude_mcp(
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
-        return Err(format!(
-            "claude mcp add 失败：{}",
-            if stderr.is_empty() {
-                "未知错误"
-            } else {
-                stderr
-            }
-        ));
+        let reason = if stderr.is_empty() {
+            tr("app.mcp.import.unknown.error")
+        } else {
+            stderr
+        };
+        return Err(tr_args("app.mcp.import.claude.failed", &[&reason]));
     }
 
     Ok(MergeOutcome {

@@ -8,12 +8,13 @@ import {
   CircleExclamationPoint,
 } from "lucide-react";
 
-import { api, type AgentTask } from "../lib/api";
+import { AGENT_STATUS_LABELS, api, type AgentTask } from "../lib/api";
 import { bugTitle } from "../lib/format";
+import { t } from "../lib/i18n";
 import { Badge } from "./Badge";
 
 /** Task title with the tester punctuation normalized; empty-safe. */
-const titleOf = (task: AgentTask): string => bugTitle(task.title) || "（无标题）";
+const titleOf = (task: AgentTask): string => bugTitle(task.title) || t("magent.untitled");
 
 /** Small push-page affordance in a card footer. */
 function DetailLink(props: { onOpen: () => void }) {
@@ -23,7 +24,7 @@ function DetailLink(props: { onOpen: () => void }) {
       onClick={props.onOpen}
       className="shrink-0 rounded-md px-2 py-1.5 text-ui-sm text-slate-400 transition active:bg-overlay-soft"
     >
-      详情
+      {t("common.details")}
     </button>
   );
 }
@@ -82,19 +83,21 @@ export function ReviewCard(props: {
             {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
           </p>
         </div>
-        <Badge tone="amber">待审核</Badge>
+        <Badge tone="amber">{t(AGENT_STATUS_LABELS.awaiting_approval)}</Badge>
       </div>
 
       <p
         className="mt-3 select-text break-words rounded-lg bg-overlay-soft px-3 py-2 text-ui-sm leading-5 text-slate-600"
         title={approval?.summary}
       >
-        {approval?.summary || "Agent 已完成修改，等待审核。"}
+        {approval?.summary || t("magent.awaitingReviewHint")}
       </p>
 
       {files.length > 0 ? (
         <div className="mt-2">
-          <div className="text-ui-xs text-slate-400">涉及文件 {files.length} 个</div>
+          <div className="text-ui-xs text-slate-400">
+            {t("magent.files.count", { n: files.length })}
+          </div>
           <div className="mt-1 flex flex-wrap gap-1">
             {files.slice(0, 12).map((file) => (
               <span
@@ -119,19 +122,19 @@ export function ReviewCard(props: {
           className="select-text mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-ui-sm leading-5 text-amber-800"
           title={approval.risk}
         >
-          风险：{approval.risk}
+          {t("magent.risk", { risk: approval.risk })}
         </p>
       ) : null}
 
       {diffOpen ? (
         <div className="mt-2 rounded-lg bg-zinc-950 p-2.5">
           <div className="mb-1.5 text-ui-2xs text-zinc-400">
-            <span className="font-mono">相对任务起点的差异（只读）</span>
+            <span className="font-mono">{t("magent.diffTitle")}</span>
           </div>
           {diffBusy ? (
             <div className="flex items-center gap-1.5 py-3 text-ui-sm text-zinc-400">
               <LoaderCircle size={12} className="animate-spin" />
-              正在读取差异…
+              {t("magent.diffLoading")}
             </div>
           ) : diffError ? (
             <div className="select-text break-all py-2 text-ui-sm text-rose-300">{diffError}</div>
@@ -147,22 +150,22 @@ export function ReviewCard(props: {
         <button
           type="button"
           disabled={busy}
-          title="通过后 Agent 继续核对、提交并回写 TAPD。"
+          title={t("magent.approveHint")}
           onClick={() => props.onApprove(task)}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
         >
           {busy ? <LoaderCircle size={12} className="animate-spin" /> : <Check size={12} />}
-          通过
+          {t("magent.approve")}
         </button>
         <button
           type="button"
           disabled={busy}
-          title="搁置：本次改动存入 git stash，任务取消，队列暂停（在桌面端恢复）。代码不会丢。"
+          title={t("magent.shelveHint")}
           onClick={() => props.onStop(task)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
         >
           <Archive size={12} />
-          搁置
+          {t("magent.shelve")}
         </button>
         <button
           type="button"
@@ -171,7 +174,7 @@ export function ReviewCard(props: {
           className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-ui-sm text-slate-500 transition active:bg-overlay-soft disabled:opacity-50"
         >
           <Eye size={12} />
-          {diffOpen ? "收起改动" : "查看改动"}
+          {diffOpen ? t("magent.hideDiff") : t("magent.viewDiff")}
         </button>
         {props.onOpen ? <DetailLink onOpen={props.onOpen} /> : null}
       </div>
@@ -209,14 +212,14 @@ export function MergeCard(props: {
             {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
           </p>
         </div>
-        <Badge tone="cyan">待合并</Badge>
+        <Badge tone="cyan">{t(AGENT_STATUS_LABELS.awaiting_merge)}</Badge>
       </div>
 
       <p
         className="mt-3 text-ui-sm leading-5 text-slate-600"
-        title="合并由原 Agent 在主仓库执行，合并成功才算完成。"
+        title={t("magent.mergeHint")}
       >
-        审核已通过。确认后使用原 Agent 把分支合并到主仓库。
+        {t("magent.mergeReady")}
       </p>
 
       {task.worktreeBranch ? (
@@ -236,7 +239,7 @@ export function MergeCard(props: {
 
       {instructions ? (
         <div className="mt-2">
-          <div className="text-ui-xs text-slate-400">手动合并步骤</div>
+          <div className="text-ui-xs text-slate-400">{t("magent.manualMergeSteps")}</div>
           <pre className="select-text mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-overlay-soft px-3 py-2 font-mono text-ui-xs leading-5 text-slate-600">
             {instructions}
           </pre>
@@ -251,7 +254,7 @@ export function MergeCard(props: {
           className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
         >
           {busy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
-          用原 Agent 合并
+          {t("magent.mergeStart")}
         </button>
         {props.onOpen ? <DetailLink onOpen={props.onOpen} /> : null}
       </div>

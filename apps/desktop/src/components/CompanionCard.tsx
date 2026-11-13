@@ -9,6 +9,7 @@ import {
   setCompanionEnabledLocal,
 } from "../lib/companion";
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { Button, Switch, cardClass } from "./ui";
 
 const STATE_LINE = "mt-4 text-ui-caption";
@@ -80,50 +81,54 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
       <div className="flex items-start justify-between gap-3">
         <h2
           className="flex items-center gap-2 text-ui-base font-normal text-slate-900"
-          title="开启后，左侧栏「设置」上方出现手机扫码入口；手机扫码即可查看桌面端数据。"
+          title={t("settings.companion.tooltip")}
         >
           <Smartphone size={15} className="text-slate-400" />
-          移动端伴侣
+          {t("settings.companion.title")}
         </h2>
         <Switch
           checked={enabled}
           onChange={(value) => void toggleEnabled(value)}
           disabled={switching || status === null}
-          label="启用移动端伴侣"
+          label={t("settings.companion.enable")}
         />
       </div>
 
       {status === null ? (
         <div className={clsx(STATE_LINE, "flex items-center gap-3")}>
           <span className={statusError ? "text-rose-600" : "text-slate-400"}>
-            {statusError ? "状态读取失败" : "读取状态中…"}
+            {statusError ? t("settings.companion.statusFailed") : t("settings.companion.statusReading")}
           </span>
           {statusError ? (
             <Button size="sm" variant="ghost" onClick={() => void loadStatus(false)}>
-              重试
+              {t("common.retry")}
             </Button>
           ) : null}
         </div>
       ) : !enabled ? (
-        <p className={clsx(STATE_LINE, "text-slate-400")}>开启后显示手机扫码入口</p>
+        <p className={clsx(STATE_LINE, "text-slate-400")}>
+          {t("settings.companion.enabledHint")}
+        </p>
       ) : (
         <>
           <div className="mt-4 flex items-center justify-between gap-3">
             <span
               className="text-ui-sm text-slate-700"
-              title="关闭后，手机打开伴侣地址即可直接配对，无需扫码；仅建议测试阶段使用。"
+              title={t("settings.companion.pairingTooltip")}
             >
-              配对码
+              {t("settings.companion.pairingCode")}
             </span>
             <Switch
               checked={status.requirePairingCode}
               onChange={(value) => void toggleRequireCode(value)}
               disabled={switchingCode}
-              label="要求配对码"
+              label={t("settings.companion.requireCode")}
             />
           </div>
           {!status.running ? (
-            <p className={clsx(STATE_LINE, "text-rose-600")}>服务未运行，可关闭后重新开启</p>
+            <p className={clsx(STATE_LINE, "text-rose-600")}>
+              {t("settings.companion.notRunning")}
+            </p>
           ) : null}
         </>
       )}

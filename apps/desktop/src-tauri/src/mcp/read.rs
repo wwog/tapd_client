@@ -156,11 +156,11 @@ pub(super) async fn get_bug(
 fn project_rule_text(has_skills: bool, rule: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if has_skills {
-        parts.push("技能规则：按需使用 skills 对象。".to_string());
+        parts.push("技能规则：按需使用 skills 对象。".to_string()); // i18n-exempt: prompt text
     }
     let rule = rule.trim();
     if !rule.is_empty() {
-        parts.push(format!("项目规则：\n{rule}"));
+        parts.push(format!("项目规则：\n{rule}")); // i18n-exempt: prompt text
     }
     parts.join("\n\n")
 }

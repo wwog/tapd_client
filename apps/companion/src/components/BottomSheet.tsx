@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
+import { t } from "../lib/i18n";
+
 /**
  * Mobile bottom sheet for filters, forms and row actions: fixed scrim + a
  * panel that slides up from the bottom edge. Tapping the scrim or the X
@@ -27,7 +29,7 @@ export function BottomSheet(props: {
           <h2 className="min-w-0 truncate text-ui-caption text-slate-900">{props.title}</h2>
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("common.close")}
             onClick={props.onClose}
             className="shrink-0 rounded-md p-1 text-slate-400 transition active:bg-overlay-soft"
           >

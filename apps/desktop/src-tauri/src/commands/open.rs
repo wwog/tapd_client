@@ -5,6 +5,8 @@ use std::time::Duration;
 use tapd_core::export::MediaKind;
 use tauri::{AppHandle, Manager};
 
+use tapd_i18n::{tr, tr_args};
+
 use crate::{media, open_with, session, state::SharedState};
 
 /// An explicit `target`, or the saved choice for `kind`.
@@ -30,7 +32,8 @@ pub(super) fn open_local(path: &std::path::Path, target: &str) -> Result<(), Str
     }
 
     let app =
-        open_with::app_path_for(target).ok_or_else(|| format!("找不到要使用的应用：{target}"))?;
+        open_with::app_path_for(target)
+            .ok_or_else(|| tr_args("app.open.app", &[&target]))?;
     run_open(&["-a", &app.to_string_lossy(), path.as_str()])
 }
 
@@ -40,11 +43,11 @@ pub(super) fn run_open(args: &[&str]) -> Result<(), String> {
     let status = std::process::Command::new("open")
         .args(args)
         .status()
-        .map_err(|error| format!("启动打开命令失败：{error}"))?;
+        .map_err(|error| tr_args("app.open.launch", &[&error]))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("打开失败（open 退出码 {status}）"))
+        Err(tr_args("app.open.exit", &[&status]))
     }
 }
 
@@ -69,7 +72,7 @@ pub(crate) async fn download_media(
 
     let window = app
         .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建".to_string())?;
+        .ok_or_else(|| tr("app.session.window").to_string())?;
     let cookie = session::cookie_header(&window)?;
 
     let response = reqwest::Client::builder()
@@ -86,10 +89,10 @@ pub(crate) async fn download_media(
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("下载失败（HTTP {status}）"));
+        return Err(tr_args("app.download.failed", &[&status]));
     }
     if response.content_length().unwrap_or(0) > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
+        return Err(tr("app.file.large").to_string());
     }
 
     let content_type = response
@@ -100,10 +103,10 @@ pub(crate) async fn download_media(
         .to_string();
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     if bytes.len() as u64 > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
+        return Err(tr("app.file.large").to_string());
     }
     if media::content_type_is_html(&content_type) && !bytes.starts_with(b"\x89PNG") {
-        return Err(format!("下载被拒绝（{content_type}）"));
+        return Err(tr_args("app.download.rejected", &[&content_type]));
     }
 
     // `MediaKind::File` keeps the old cache-name behavior: an unknown content

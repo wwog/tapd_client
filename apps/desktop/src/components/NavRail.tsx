@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { AccountChip } from "./AccountChip";
+import { t, type MessageKey } from "../lib/i18n";
 
 export type View = "bugs" | "projects" | "agent" | "coworker" | "mcp" | "settings" | "account";
 
@@ -24,13 +25,17 @@ const RAIL_ANIM: Record<string, string> = {
   account: "rail-avatar-pop",
 };
 
-const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
-  { id: "bugs", label: "缺陷", icon: <Bug size={15} /> },
-  { id: "projects", label: "项目", icon: <FolderGit2 size={15} /> },
-  { id: "agent", label: "Agent", icon: <Bot size={15} /> },
-  { id: "coworker", label: "同事", icon: <Users size={15} /> },
-  { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
-  { id: "settings", label: "设置", icon: <SettingsIcon size={15} /> },
+/**
+ * Rail tabs. Labels are catalogue keys rendered with `t()` at render time, so a
+ * language switch never keeps the startup language.
+ */
+const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
+  { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
+  { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
+  { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
+  { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
+  { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
+  { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
 ];
 
 export type RailAnimation = { id: string; token: number } | null;
@@ -71,8 +76,8 @@ export function NavRail({
           <button
             key={item.id}
             type="button"
-            title={item.label}
-            aria-label={item.label}
+            title={t(item.label)}
+            aria-label={t(item.label)}
             onClick={() => onActivate(item.id)}
             className={clsx(
               "grid h-9 w-9 place-items-center rounded-xl transition",
@@ -116,8 +121,8 @@ export function NavRail({
       {showCompanion ? (
         <button
           type="button"
-          title="移动端伴侣"
-          aria-label="移动端伴侣"
+          title={t("app.nav.companion")}
+          aria-label={t("app.nav.companion")}
           onClick={onOpenCompanion}
           className={clsx(
             "mb-1 grid h-9 w-9 place-items-center rounded-xl transition",
@@ -131,8 +136,8 @@ export function NavRail({
       ) : null}
       <button
         type="button"
-        title="设置"
-        aria-label="设置"
+        title={t("common.settings")}
+        aria-label={t("common.settings")}
         onClick={() => onActivate("settings")}
         className={clsx(
           "grid h-9 w-9 place-items-center rounded-xl transition",

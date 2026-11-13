@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import { cacheApi } from "../lib/cache";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { ensureMembers, useMembers } from "../lib/members";
 import {
   DETAIL_MAX_WIDTH,
@@ -203,7 +204,7 @@ export function useDetailPane({
     async (targetWorkspaceId: string, bugId: string) => {
       const currentUser = me;
       if (!currentUser) {
-        showToast("error", "未能识别当前用户，无法认领");
+        showToast("error", t("app.claim.noUser"));
         throw new Error("current user is unknown");
       }
       try {
@@ -214,7 +215,7 @@ export function useDetailPane({
           currentUser,
           true,
         );
-        showToast("ok", "已认领");
+        showToast("ok", t("app.claim.done"));
         bumpList();
         const open = detailRef.current;
         if (open?.id === bugId && open.workspaceId === targetWorkspaceId) {
@@ -242,7 +243,7 @@ export function useDetailPane({
     async (target: BugDetail, comment: string) => {
       try {
         await api.bugAddComment(target.workspaceId, target.id, comment);
-        showToast("ok", "评论已发表");
+        showToast("ok", t("app.comment.posted"));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -257,7 +258,10 @@ export function useDetailPane({
     async (target: BugDetail, field: string, value: string) => {
       try {
         await api.bugUpdateField(target.workspaceId, target.id, field, value);
-        showToast("ok", field === "de" ? "开发人员已更新" : "处理人已更新");
+        showToast(
+          "ok",
+          field === "de" ? t("app.detail.developerUpdated") : t("app.detail.ownerUpdated"),
+        );
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -281,7 +285,7 @@ export function useDetailPane({
           status,
           fields,
         );
-        showToast("ok", `状态已流转为「${result.label}」`);
+        showToast("ok", t("app.detail.statusChanged", { label: result.label }));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {

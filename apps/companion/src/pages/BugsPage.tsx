@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import { refreshAgentTasks } from "../lib/agentTasks";
 import { bugTitle, ownerNames, relativeTime } from "../lib/format";
+import { t, type MessageKey } from "../lib/i18n";
 import { loadMembers, subscribeMembers } from "../lib/members";
 import {
   cached,
@@ -74,11 +75,11 @@ const EMPTY_FILTER: BugFilter = {
   sortOrder: "desc",
 };
 
-const SORT_OPTIONS: ReadonlyArray<{ value: `${BugFilter["sortName"]}:${BugFilter["sortOrder"]}`; label: string }> = [
-  { value: "created:desc", label: "创建时间 ↓" },
-  { value: "created:asc", label: "创建时间 ↑" },
-  { value: "modified:desc", label: "更新时间 ↓" },
-  { value: "modified:asc", label: "更新时间 ↑" },
+const SORT_OPTIONS: ReadonlyArray<{ value: `${BugFilter["sortName"]}:${BugFilter["sortOrder"]}`; label: MessageKey }> = [
+  { value: "created:desc", label: "mobile.sort.createdDesc" },
+  { value: "created:asc", label: "mobile.sort.createdAsc" },
+  { value: "modified:desc", label: "mobile.sort.updatedDesc" },
+  { value: "modified:asc", label: "mobile.sort.updatedAsc" },
 ];
 
 const asStringArray = (value: unknown): string[] =>
@@ -154,7 +155,7 @@ function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) =>
   return (
     <div
       role="tablist"
-      aria-label="范围"
+      aria-label={t("mobile.bugs.scope")}
       className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
     >
       {(["mine", "all"] as const).map((value) => {
@@ -170,7 +171,7 @@ function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) =>
               active ? "bg-slate-100 text-slate-900" : "text-slate-500"
             }`}
           >
-            {value === "mine" ? "我的" : "全部"}
+            {value === "mine" ? t("mobile.bugs.mine") : t("common.all")}
           </button>
         );
       })}
@@ -494,12 +495,12 @@ export function BugsPage() {
     <div>
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center px-4 pt-3 pb-2">
-          <h1 className="text-ui-base text-slate-900">缺陷</h1>
+          <h1 className="text-ui-base text-slate-900">{t("common.bugs")}</h1>
         </div>
         <div className="flex items-center gap-2 px-4 pb-2">
           {workspaces.length > 1 ? (
             <select
-              aria-label="项目"
+              aria-label={t("common.projects")}
               value={workspaceId ?? ""}
               onChange={(event) => setWorkspaceId(event.target.value)}
               className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
@@ -519,7 +520,7 @@ export function BugsPage() {
             <input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索缺陷"
+              placeholder={t("mobile.bugs.search")}
               className="w-full rounded-lg border border-border bg-surface py-1.5 pr-2.5 pl-7 text-ui-caption text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
             />
           </div>
@@ -537,7 +538,7 @@ export function BugsPage() {
               onlyOpen ? "border-sky-200 bg-sky-50 text-sky-700" : "border-border text-slate-500"
             }`}
           >
-            仅未解决
+            {t("mobile.bugs.unresolvedOnly")}
           </button>
           <button
             type="button"
@@ -550,11 +551,13 @@ export function BugsPage() {
             }`}
           >
             <SlidersHorizontal size={12} />
-            筛选{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
+            {activeFilterCount > 0
+              ? t("mobile.bugs.filterCount", { n: activeFilterCount })
+              : t("mobile.bugs.filter")}
           </button>
           <select
-            aria-label="排序"
-            title="服务端排序：更新时间/创建时间，升/降序。"
+            aria-label={t("mobile.bugs.sort")}
+            title={t("mobile.bugs.sortHint")}
             value={`${filter.sortName}:${filter.sortOrder}`}
             onChange={(event) => {
               const [sortName, sortOrder] = event.target.value.split(":");
@@ -570,7 +573,7 @@ export function BugsPage() {
           >
             {SORT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </option>
             ))}
           </select>
@@ -584,9 +587,9 @@ export function BugsPage() {
       {!loading && !error && result && result.bugs.length === 0 ? (
         <p
           className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title="调整关键词或筛选后再试。"
+          title={t("mobile.bugs.emptyHint")}
         >
-          没有符合条件的缺陷
+          {t("mobile.bugs.empty")}
         </p>
       ) : null}
 
@@ -608,7 +611,7 @@ export function BugsPage() {
                     {bug.statusLabel || bug.status}
                   </Badge>
                   <PriorityDot priority={bug.priority} />
-                  <span className="truncate">{ownerNames(bug.owner)[0] || "未指派"}</span>
+                  <span className="truncate">{ownerNames(bug.owner)[0] || t("mobile.bugs.unassigned")}</span>
                   <span className="ml-auto shrink-0 text-slate-400">
                     {relativeTime(bug.modified)}
                   </span>
@@ -616,9 +619,9 @@ export function BugsPage() {
               </button>
               <button
                 type="button"
-                aria-label="更多操作"
+                aria-label={t("common.moreActions")}
                 aria-haspopup="dialog"
-                title="查看详情 / 用 Agent 修复"
+                title={t("mobile.bugs.actionsHint")}
                 onClick={() => setActionBug(bug)}
                 className="flex shrink-0 items-center px-3 text-slate-400 transition active:bg-overlay-soft"
               >
@@ -636,10 +639,10 @@ export function BugsPage() {
             onClick={() => setPage((value) => Math.max(1, value - 1))}
             className="rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
           >
-            上一页
+            {t("mobile.bugs.prevPage")}
           </button>
-          <span className="text-ui-xs text-slate-500" title={`共 ${totalPages} 页`}>
-            第 {page} 页
+          <span className="text-ui-xs text-slate-500" title={t("mobile.bugs.totalPages", { n: totalPages })}>
+            {t("mobile.bugs.page", { n: page })}
           </span>
           <button
             type="button"
@@ -647,7 +650,7 @@ export function BugsPage() {
             onClick={() => setPage((value) => value + 1)}
             className="rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
           >
-            下一页
+            {t("mobile.bugs.nextPage")}
           </button>
         </div>
       ) : null}
@@ -655,7 +658,7 @@ export function BugsPage() {
       {/* -- 筛选 sheet：草稿态多选，应用后才生效并持久化 ----------------- */}
       <BottomSheet
         open={filterOpen}
-        title="筛选"
+        title={t("mobile.bugs.filter")}
         onClose={() => setFilterOpen(false)}
         footer={
           <div className="flex items-center gap-2">
@@ -664,7 +667,7 @@ export function BugsPage() {
               onClick={() => setFilterDraft(EMPTY_FILTER)}
               className="rounded-lg border border-border bg-surface px-3 py-2 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
             >
-              重置
+              {t("common.reset")}
             </button>
             <button
               type="button"
@@ -674,13 +677,17 @@ export function BugsPage() {
               }}
               className="min-w-0 flex-1 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover"
             >
-              应用
+              {t("mobile.bugs.apply")}
             </button>
           </div>
         }
       >
         <FilterGroup
-          label={`状态${filterDraft.statuses.length ? `（已选 ${filterDraft.statuses.length}）` : ""}`}
+          label={
+            filterDraft.statuses.length
+              ? t("mobile.bugs.statusSelected", { n: filterDraft.statuses.length })
+              : t("common.status")
+          }
         >
           {statusOptions.map((key) => (
             <FilterChip
@@ -698,7 +705,11 @@ export function BugsPage() {
         </FilterGroup>
         {filterDraft.scope === "all" && memberNicks.length > 0 ? (
           <FilterGroup
-            label={`处理人${filterDraft.owners.length ? `（已选 ${filterDraft.owners.length}）` : ""}`}
+            label={
+              filterDraft.owners.length
+                ? t("mobile.bugs.ownerSelected", { n: filterDraft.owners.length })
+                : t("common.owner")
+            }
           >
             {memberNicks.map((nick) => (
               <FilterChip
@@ -716,7 +727,7 @@ export function BugsPage() {
           </FilterGroup>
         ) : null}
         {priorityOptions.length > 0 ? (
-          <FilterGroup label="优先级">
+          <FilterGroup label={t("common.priority")}>
             {priorityOptions.map((key) => (
               <FilterChip
                 key={key}
@@ -733,7 +744,7 @@ export function BugsPage() {
           </FilterGroup>
         ) : null}
         {severityOptions.length > 0 ? (
-          <FilterGroup label="严重程度">
+          <FilterGroup label={t("common.severity")}>
             {severityOptions.map((key) => (
               <FilterChip
                 key={key}
@@ -750,7 +761,7 @@ export function BugsPage() {
           </FilterGroup>
         ) : null}
         {memberNicks.length > 0 ? (
-          <FilterGroup label="创建人">
+          <FilterGroup label={t("common.creator")}>
             {memberNicks.map((nick) => (
               <FilterChip
                 key={nick}
@@ -771,9 +782,9 @@ export function BugsPage() {
         ) : (
           <p
             className="mt-4 text-ui-xs text-slate-400"
-            title="处理人/创建人来自项目成员目录；「我的」范围固定为当前账号，处理人筛选仅在「全部」下生效。"
+            title={t("mobile.bugs.membersHint")}
           >
-            选项来自项目成员
+            {t("mobile.bugs.membersSource")}
           </p>
         )}
       </BottomSheet>
@@ -781,7 +792,7 @@ export function BugsPage() {
       {/* -- 行操作 sheet：查看详情 / 用 Agent 修复 ------------------------ */}
       <BottomSheet
         open={actionBug !== null}
-        title={actionBug ? bugTitle(actionBug.title) : "操作"}
+        title={actionBug ? bugTitle(actionBug.title) : t("common.actions")}
         onClose={() => setActionBug(null)}
       >
         {actionBug ? (
@@ -806,7 +817,7 @@ export function BugsPage() {
                 }}
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft"
               >
-                查看详情
+                {t("mobile.bugs.viewDetail")}
               </button>
               <button
                 type="button"
@@ -818,7 +829,7 @@ export function BugsPage() {
                 className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft"
               >
                 <Bot size={14} className="shrink-0 text-slate-400" />
-                用 Agent 修复
+                {t("mobile.bugs.fixWithAgent")}
               </button>
             </div>
           </>
@@ -828,7 +839,7 @@ export function BugsPage() {
       {/* -- 用 Agent 修复 sheet：附加说明 + 运行时 ------------------------ */}
       <BottomSheet
         open={composeBug !== null}
-        title="用 Agent 修复"
+        title={t("mobile.bugs.fixWithAgent")}
         onClose={() => setComposeBug(null)}
         footer={
           <button
@@ -838,7 +849,7 @@ export function BugsPage() {
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
           >
             {enqueueBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}
-            {enqueueBusy ? "正在入队…" : "入队"}
+            {enqueueBusy ? t("mobile.bugs.enqueueing") : t("mobile.bugs.enqueue")}
           </button>
         }
       >
@@ -848,26 +859,26 @@ export function BugsPage() {
               {bugTitle(composeBug.title)}
             </p>
             <p className="mt-1 flex items-center gap-3 text-ui-xs text-slate-500">
-              <span title={`严重程度 ${composeBug.severityLabel || composeBug.severity || "—"}`}>
-                严重程度 {composeBug.severityLabel || composeBug.severity || "—"}
+              <span title={t("mobile.bugs.severityValue", { value: composeBug.severityLabel || composeBug.severity || "—" })}>
+                {t("mobile.bugs.severityValue", { value: composeBug.severityLabel || composeBug.severity || "—" })}
               </span>
-              <span title={`处理人 ${ownerNames(composeBug.owner)[0] || "未指派"}`}>
-                {ownerNames(composeBug.owner)[0] || "未指派"}
+              <span title={t("mobile.bugs.ownerValue", { owner: ownerNames(composeBug.owner)[0] || t("mobile.bugs.unassigned") })}>
+                {ownerNames(composeBug.owner)[0] || t("mobile.bugs.unassigned")}
               </span>
             </p>
             <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500">附加说明</span>
+              <span className="text-ui-sm text-slate-500">{t("mobile.bugs.extraPrompt")}</span>
               <textarea
                 value={extraPrompt}
                 onChange={(event) => setExtraPrompt(event.target.value)}
                 rows={4}
-                placeholder="给 Agent 的补充说明（可选，支持 Markdown）"
+                placeholder={t("mobile.bugs.extraPromptPlaceholder")}
                 className="mt-1.5 w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
               />
             </label>
             <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500" title="默认跟随桌面端设置。">
-                运行时
+              <span className="text-ui-sm text-slate-500" title={t("mobile.bugs.runtimeHint")}>
+                {t("mobile.bugs.runtime")}
               </span>
               <select
                 value={runtimeId}
@@ -887,7 +898,7 @@ export function BugsPage() {
             {enqueueError ? (
               <p
                 className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-                title="入队失败，表单保留可重试。"
+                title={t("mobile.bugs.enqueueFailedHint")}
               >
                 {enqueueError}
               </p>

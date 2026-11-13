@@ -1,6 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { readPref, writePref } from "./uiPrefs";
+import { t } from "./i18n";
 
 /** Last directory picked for any export; shared by diagnostics and captures. */
 const PREF_KEY = "export.lastDir";
@@ -22,7 +23,7 @@ export async function pickExportDir(
   const selected = await openDialog({
     directory: true,
     multiple: false,
-    title: "选择导出目录",
+    title: t("app.export.chooseDir"),
     defaultPath: lastExportDir(fallback),
   });
   const path = Array.isArray(selected) ? selected[0] : selected;

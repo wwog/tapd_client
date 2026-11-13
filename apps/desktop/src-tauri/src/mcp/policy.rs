@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use tapd_core::config::McpPolicy;
+use tapd_i18n::{tr, tr_args};
 
 /// Tools that change TAPD state. Both the policy write switch and the local
 /// agent's commit-before-write rule key off this set, so it is defined once.
@@ -19,12 +20,14 @@ pub(super) fn policy_violation(
     arguments: &Value,
 ) -> Option<String> {
     if is_write_tool(tool) && !policy.writes_enabled {
-        return Some("MCP 写操作已在「MCP 策略」中关闭".to_string());
+        return Some(tr("app.mcp.writes.off").to_string());
     }
 
     if let Some(workspace_id) = super::args::string_arg(arguments, "workspace_id") {
         if !policy.allows_workspace(&workspace_id) {
-            return Some(format!("项目 {workspace_id} 不在 MCP 策略允许的项目范围内"));
+            return Some(tr_args("app.mcp.project.allowed",
+                &[&workspace_id],
+            ));
         }
     }
 

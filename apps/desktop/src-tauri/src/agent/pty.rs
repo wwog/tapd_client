@@ -1,5 +1,7 @@
 //! PTY runtime: spawn the TUI, batch output, and apply the finish outcome.
 
+use tapd_i18n::{tr, tr_args};
+
 use super::*;
 
 pub(super) struct PtyHandles {
@@ -225,7 +227,7 @@ impl AgentCore {
             Ok(handles) => handles,
             Err(error) => {
                 return PtyOutcome {
-                    error: Some(format!("启动 Agent 终端失败：{error}")),
+                    error: Some(tr_args("agent.pty.start.failed", &[&error])),
                     ..PtyOutcome::default()
                 }
             }
@@ -388,9 +390,9 @@ impl AgentCore {
             if !canceled.load(Ordering::SeqCst) {
                 if !ready {
                     warning = Some(if has_output.load(Ordering::SeqCst) {
-                        "TUI 就绪检测超时，已强制注入任务".to_string()
+                        tr("agent.pty.ready.timeout").to_string()
                     } else {
-                        "未检测到 TUI 输出，已按超时注入任务".to_string()
+                        tr("agent.pty.ready.noOutput").to_string()
                     });
                     tracing::warn!(task_id = %task.id, warning = ?warning, "agent ready detection timed out");
                 }
@@ -415,8 +417,10 @@ impl AgentCore {
                     }
                     Err(error) => {
                         warning = Some(match warning {
-                            Some(existing) => format!("{existing}；注入任务失败：{error}"),
-                            None => format!("注入任务失败：{error}"),
+                            Some(existing) => {
+                                tr_args("agent.pty.inject.prepend.failed", &[&existing, &error])
+                            }
+                            None => tr_args("agent.pty.inject.failed", &[&error]),
                         });
                     }
                 }
@@ -441,13 +445,13 @@ impl AgentCore {
                 Ok(Some(status)) => {
                     outcome.exit_code = Some(status.exit_code() as i32);
                     if let Some(signal) = status.signal() {
-                        outcome.error = Some(format!("Agent 进程被信号终止：{signal}"));
+                        outcome.error = Some(tr_args("agent.pty.signal", &[&signal]));
                     }
                     break;
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    outcome.error = Some(format!("等待 Agent 进程失败：{error}"));
+                    outcome.error = Some(tr_args("agent.pty.wait.failed", &[&error]));
                     break;
                 }
             }
@@ -474,10 +478,12 @@ impl AgentCore {
                             );
                             outcome.error = Some(error);
                         } else {
-                            let message = "Agent 回合已结束，自动完成本轮".to_string();
+                            let message = tr("agent.pty.turn.completed").to_string();
                             outcome.completed = true;
                             outcome.warning = Some(match outcome.warning.take() {
-                                Some(existing) => format!("{existing}；{message}"),
+                                Some(existing) => {
+                                    tr_args("agent.pty.warning.join", &[&existing, &message])
+                                }
                                 None => message,
                             });
                         }
@@ -512,11 +518,13 @@ impl AgentCore {
                         );
                         outcome.error = Some(error);
                     } else {
-                        let message = format!("Agent 输出静默 {}s，已结束本轮", idle.as_secs());
+                        let message = tr_args("agent.pty.idle.completed", &[&idle.as_secs()]);
                         tracing::warn!(task_id = %task.id, %message, "agent idle completion");
                         outcome.completed = true;
                         outcome.warning = Some(match outcome.warning.take() {
-                            Some(existing) => format!("{existing}；{message}"),
+                            Some(existing) => {
+                                tr_args("agent.pty.warning.join", &[&existing, &message])
+                            }
                             None => message,
                         });
                     }
@@ -535,10 +543,7 @@ impl AgentCore {
                 // instead of blocking the serial queue forever.
                 let no_output_for = injected_at.map(|at| at.elapsed()).unwrap_or_default();
                 if prompt_started && !produced_output && no_output_for >= idle {
-                    outcome.error = Some(format!(
-                        "Agent 启动后 {}s 没有任何输出，请检查命令、登录态或首次启动的信任提示",
-                        idle.as_secs()
-                    ));
+                    outcome.error = Some(tr_args("agent.pty.nooutput", &[&idle.as_secs()]));
                     if let Ok(mut runtime) = runtime.lock() {
                         runtime.kill();
                     }
@@ -555,7 +560,7 @@ impl AgentCore {
         // 的记录。hook 已判定完成时进程是被我们杀掉的，不看退出码。
         if !outcome.canceled && outcome.error.is_none() && !outcome.completed {
             if let Some(code) = outcome.exit_code.filter(|code| *code != 0) {
-                outcome.error = Some(format!("Agent 进程异常退出（exit {code}）"));
+                outcome.error = Some(tr_args("agent.pty.exit.failed", &[&code]));
             }
         }
 

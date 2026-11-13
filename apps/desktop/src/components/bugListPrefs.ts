@@ -5,22 +5,23 @@
  * effects that write them back.
  */
 
+import type { MessageKey } from "../lib/i18n";
 import { readPref, writePref } from "../lib/uiPrefs";
 
-export const PRIORITIES = [
-  ["urgent", "紧急"],
-  ["high", "高"],
-  ["medium", "中"],
-  ["low", "低"],
-  ["insignificant", "无关紧要"],
+export const PRIORITIES: ReadonlyArray<readonly [string, MessageKey]> = [
+  ["urgent", "bugs.priority.urgent"],
+  ["high", "bugs.priority.high"],
+  ["medium", "bugs.priority.medium"],
+  ["low", "bugs.priority.low"],
+  ["insignificant", "bugs.priority.insignificant"],
 ];
 
-export const SEVERITIES = [
-  ["fatal", "致命"],
-  ["serious", "严重"],
-  ["normal", "一般"],
-  ["prompt", "提示"],
-  ["advice", "建议"],
+export const SEVERITIES: ReadonlyArray<readonly [string, MessageKey]> = [
+  ["fatal", "bugs.severity.fatal"],
+  ["serious", "bugs.severity.serious"],
+  ["normal", "bugs.severity.normal"],
+  ["prompt", "bugs.severity.prompt"],
+  ["advice", "bugs.severity.advice"],
 ];
 
 /**
@@ -41,13 +42,13 @@ export type ColumnPref = { key: ColumnKey; visible: boolean };
 
 export const COLUMN_KEY = "tapd.bug-columns.v1";
 
-export const COLUMN_LABELS: Record<ColumnKey, string> = {
-  status: "状态",
-  priority: "优先级",
-  severity: "严重程度",
-  owner: "处理人",
-  creator: "创建人",
-  created: "创建时间",
+export const COLUMN_LABELS: Record<ColumnKey, MessageKey> = {
+  status: "common.status",
+  priority: "common.priority",
+  severity: "common.severity",
+  owner: "common.owner",
+  creator: "common.creator",
+  created: "common.created",
 };
 
 export const COLUMN_WIDTHS: Record<ColumnKey, number> = {

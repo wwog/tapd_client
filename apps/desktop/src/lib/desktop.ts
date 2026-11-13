@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { exportDirFor, type AgentTask } from "./agent";
 import type { ToastFn } from "./feature";
+import { t } from "./i18n";
 
 /**
  * Copies text with the async clipboard API and falls back to a hidden
@@ -37,7 +38,7 @@ export async function copyText(text: string): Promise<boolean> {
 export const openTaskExportDir = (task: AgentTask, toast: ToastFn): void => {
   const dir = exportDirFor(task.jsonPath);
   if (!dir) {
-    toast("error", "该任务还没有导出目录");
+    toast("error", t("app.export.noDir"));
     return;
   }
   void invoke("open_path", { path: dir }).catch((error) =>

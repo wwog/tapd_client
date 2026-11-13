@@ -28,6 +28,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tapd_i18n::tr;
 use tauri::AppHandle;
 
 use crate::{feature_router, state::SharedState};
@@ -105,7 +106,7 @@ pub(super) async fn api_feature(
         return err_data(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "请求过于频繁，请稍后再试",
+            tr("companion.rate.limited"),
         );
     }
     feature_response(&ctx.app, &ctx.state, &request.name, request.payload).await
@@ -129,7 +130,11 @@ async fn feature_response(
 /// names pass through (`None`).
 fn whitelist_rejection(name: &str) -> Option<Response> {
     (!ALLOWED_FEATURES.contains(&name)).then(|| {
-        err_data(StatusCode::FORBIDDEN, "forbidden", "该功能未对移动端开放")
+        err_data(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            tr("companion.forbidden"),
+        )
     })
 }
 

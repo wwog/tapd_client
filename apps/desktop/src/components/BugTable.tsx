@@ -17,6 +17,7 @@ import {
   type BugSummary,
 } from "../lib/api";
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
+import { t } from "../lib/i18n";
 import { useCurrentAgent } from "../lib/useCurrentAgent";
 import {
   agentBugKey,
@@ -149,15 +150,21 @@ export function BugTable(props: Props) {
     visibleColumns.reduce((sum, column) => sum + COLUMN_WIDTHS[column.key], 0);
 
   const statusOptions = getStatusEntries(page).map(([value, label]) => ({ value, label }));
-  const priorityOptions = PRIORITIES.map(([value, label]) => ({ value, label }));
-  const severityOptions = SEVERITIES.map(([value, label]) => ({ value, label }));
+  const priorityOptions = PRIORITIES.map(([value, label]) => ({
+    value,
+    label: t(label),
+  }));
+  const severityOptions = SEVERITIES.map(([value, label]) => ({
+    value,
+    label: t(label),
+  }));
 
   const renderColumnHeader = (key: ColumnKey) => {
     switch (key) {
       case "status":
         return (
           <TableFilter
-            label="状态"
+            label={t("common.status")}
             className="px-3 py-2.5"
             options={statusOptions}
             selected={statusFilter}
@@ -171,7 +178,7 @@ export function BugTable(props: Props) {
       case "priority":
         return (
           <TableFilter
-            label="优先级"
+            label={t("common.priority")}
             className="px-3 py-2.5"
             options={priorityOptions}
             selected={priority ? [priority] : []}
@@ -182,7 +189,7 @@ export function BugTable(props: Props) {
       case "severity":
         return (
           <TableFilter
-            label="严重程度"
+            label={t("common.severity")}
             className="px-3 py-2.5"
             options={severityOptions}
             selected={severity ? [severity] : []}
@@ -193,7 +200,7 @@ export function BugTable(props: Props) {
       case "owner":
         return (
           <TableFilter
-            label="处理人"
+            label={t("common.owner")}
             className="px-3 py-2.5"
             options={peopleOptions}
             selected={ownerFilter}
@@ -203,7 +210,7 @@ export function BugTable(props: Props) {
       case "creator":
         return (
           <TableFilter
-            label="创建人"
+            label={t("common.creator")}
             className="px-3 py-2.5"
             options={peopleOptions}
             selected={creatorFilter ? [creatorFilter] : []}
@@ -214,7 +221,7 @@ export function BugTable(props: Props) {
       case "created":
         return (
           <SortHeader
-            label="创建时间"
+            label={t("common.created")}
             className="px-4 py-2.5"
             direction={sort?.name === "created" ? sort.order : null}
             onToggle={() => onToggleSort("created")}
@@ -222,7 +229,7 @@ export function BugTable(props: Props) {
         );
       default:
         return (
-          <span className="block px-3 py-2.5">{COLUMN_LABELS[key]}</span>
+          <span className="block px-3 py-2.5">{t(COLUMN_LABELS[key])}</span>
         );
     }
   };
@@ -261,7 +268,7 @@ export function BugTable(props: Props) {
               className="sticky top-0 z-20 bg-slate-50 px-4 py-2.5 text-left font-normal"
               style={{ minWidth: TITLE_MIN_WIDTH }}
             >
-              标题
+              {t("common.title")}
             </th>
             {visibleColumns.map((column) => (
               <th
@@ -279,7 +286,7 @@ export function BugTable(props: Props) {
               className="sticky top-0 right-0 z-30 bg-slate-50 px-2 py-2.5 text-right font-normal"
               style={{ width: ACTION_WIDTH }}
             >
-              操作
+              {t("common.actions")}
             </th>
           </tr>
         </thead>
@@ -327,7 +334,9 @@ export function BugTable(props: Props) {
                     )}
                   >#{bugRef(bug)}</span>
                   {bug.versionReport ? (
-                    <span className="shrink-0">发现版本 {bug.versionReport}</span>
+                    <span className="shrink-0">
+                      {t("bugs.foundVersion", { version: bug.versionReport })}
+                    </span>
                   ) : null}
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
@@ -356,8 +365,8 @@ export function BugTable(props: Props) {
                     {onOpenAgentTask ? (
                       <button
                         type="button"
-                        title="查看 Agent 任务"
-                        aria-label="查看 Agent 任务"
+                        title={t("bugs.viewAgentTask")}
+                        aria-label={t("bugs.viewAgentTask")}
                         onClick={(event) => {
                           event.stopPropagation();
                           onOpenAgentTask(agent.task.id);
@@ -372,10 +381,10 @@ export function BugTable(props: Props) {
                       disabled={cancelingId === agent.task.id}
                       title={
                         agent.task.status === "queued"
-                          ? "从 Agent 队列中移除这个任务"
-                          : "中断当前 Agent 任务"
+                          ? t("bugs.removeFromQueue")
+                          : t("bugs.interruptAgentTask")
                       }
-                      aria-label="取消 Agent 任务"
+                      aria-label={t("bugs.cancelAgentTask")}
                       onClick={(event) => {
                         event.stopPropagation();
                         void cancelActivity(agent);
@@ -398,7 +407,7 @@ export function BugTable(props: Props) {
                   <div className="flex items-center justify-center">
                     <button
                       type="button"
-                      title="认领后可以修改处理人/开发人员与流转状态，评论不受限制"
+                      title={t("bugs.claimHint")}
                       disabled={claimingId !== null}
                       onClick={() => onClaim(bug)}
                       className={clsx(
@@ -413,7 +422,7 @@ export function BugTable(props: Props) {
                       ) : (
                         <UserPlus size={12} />
                       )}
-                      {claimingId === bug.id ? "认领中" : "认领"}
+                      {claimingId === bug.id ? t("bugs.claiming") : t("bugs.claim")}
                     </button>
                   </div>
                 ) : (
@@ -444,7 +453,9 @@ function AgentRowAction(props: {
   onFix: () => void;
   onCompose?: () => void;
 }) {
-  const label = props.agentName ? `用 ${props.agentName} 修复` : "用 Agent 修复";
+  const label = props.agentName
+    ? t("bugs.fixWith", { agent: props.agentName })
+    : t("bugs.fixWithAgent");
   return (
     <div className="flex items-center justify-end whitespace-nowrap">
       <div className="inline-flex shrink-0 overflow-hidden rounded-lg border border-border bg-surface">
@@ -463,8 +474,8 @@ function AgentRowAction(props: {
         {props.onCompose ? (
           <button
             type="button"
-            title="添加补充说明或资源后启动"
-            aria-label="添加补充说明或资源后启动"
+            title={t("bugs.startWithNote")}
+            aria-label={t("bugs.startWithNote")}
             onClick={(event) => {
               event.stopPropagation();
               props.onCompose?.();
@@ -547,11 +558,11 @@ function getStatusEntries(page: BugListPage | null): Array<[string, string]> {
   if (entries.length > 0) return entries;
 
   return [
-    ["new", "新"],
-    ["in_progress", "接受/处理"],
-    ["resolved", "已解决"],
-    ["verified", "已验证"],
-    ["reopened", "重新打开"],
+    ["new", t("bugs.status.new")],
+    ["in_progress", t("bugs.status.inProgress")],
+    ["resolved", t("bugs.status.resolved")],
+    ["verified", t("bugs.status.verified")],
+    ["reopened", t("bugs.status.reopened")],
   ];
 }
 
@@ -569,12 +580,12 @@ function SortHeader(props: {
         type="button"
         title={
           props.direction === "asc"
-            ? `改为${props.label}降序`
+            ? t("bugs.sortDescending", { label: props.label })
             : props.direction === "desc"
-              ? `取消${props.label}排序`
-              : `按${props.label}升序`
+              ? t("bugs.sortClear", { label: props.label })
+              : t("bugs.sortAscending", { label: props.label })
         }
-        aria-label={`按${props.label}排序`}
+        aria-label={t("bugs.sortBy", { label: props.label })}
         onClick={props.onToggle}
         className={clsx(
           "grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",

@@ -1,5 +1,6 @@
 //! Creation and cookie access for the TAPD session webview.
 
+use tapd_i18n::tr;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use super::{SESSION_LABEL, TAPD_HOME, TAPD_LOGIN};
@@ -29,7 +30,7 @@ pub fn ensure_session_window(
     let url = tauri::Url::parse(target).map_err(|e| e.to_string())?;
 
     let window = WebviewWindowBuilder::new(app, SESSION_LABEL, WebviewUrl::External(url))
-        .title("登录 TAPD")
+        .title(tr("app.session.login"))
         .inner_size(1120.0, 760.0)
         .min_inner_size(900.0, 600.0)
         .center()
@@ -68,7 +69,7 @@ pub fn cookie_header(window: &WebviewWindow) -> Result<String, String> {
     }
 
     if pairs.is_empty() {
-        Err("没有可用的 TAPD 会话 Cookie".to_string())
+        Err(tr("app.session.cookie").to_string())
     } else {
         Ok(pairs.join("; "))
     }

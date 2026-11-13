@@ -3,6 +3,7 @@ import { ArrowUp, Check, Folder, FolderOpen, Loader2, X } from "lucide-react";
 import clsx from "clsx";
 
 import { api, type DirListing } from "../lib/api";
+import { t } from "../lib/i18n";
 import { Button, ModalDragStrip } from "./ui";
 
 /**
@@ -22,9 +23,9 @@ export function FolderPicker(props: {
   const {
     open,
     initialPath,
-    title = "选择项目文件夹",
+    title = t("folder.pickTitle"),
     description,
-    confirmLabel = "使用此文件夹",
+    confirmLabel = t("folder.useThis"),
     onCancel,
     onSelect,
   } = props;
@@ -86,7 +87,7 @@ export function FolderPicker(props: {
           </div>
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("common.close")}
             onClick={onCancel}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
           >
@@ -97,8 +98,8 @@ export function FolderPicker(props: {
         <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
           <button
             type="button"
-            aria-label="上一级"
-            title="上一级"
+            aria-label={t("folder.parent")}
+            title={t("folder.parent")}
             disabled={!listing?.parent || loading}
             onClick={() => void load(listing?.parent ?? undefined)}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 disabled:opacity-40"
@@ -115,7 +116,7 @@ export function FolderPicker(props: {
             className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
           />
           <Button size="sm" variant="secondary" onClick={() => void load(pathInput)}>
-            前往
+            {t("folder.go")}
           </Button>
         </div>
 
@@ -123,7 +124,7 @@ export function FolderPicker(props: {
           {loading ? (
             <div className="flex h-24 items-center justify-center gap-2 text-ui-caption text-slate-400">
               <Loader2 size={14} className="animate-spin" />
-              读取目录…
+              {t("folder.reading")}
             </div>
           ) : error ? (
             <div className="m-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-ui-sm leading-5 text-rose-700">
@@ -145,7 +146,7 @@ export function FolderPicker(props: {
               ))}
               {listing && listing.entries.length === 0 ? (
                 <li className="px-3 py-6 text-center text-ui-sm text-slate-400">
-                  这里没有子文件夹
+                  {t("folder.empty")}
                 </li>
               ) : null}
             </ul>
@@ -160,7 +161,7 @@ export function FolderPicker(props: {
             </span>
           </div>
           <Button size="sm" variant="ghost" onClick={onCancel}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button
             size="sm"

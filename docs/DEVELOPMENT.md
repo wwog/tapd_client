@@ -16,6 +16,7 @@
 pnpm install
 pnpm dev              # 启动 Tauri 开发窗口
 pnpm typecheck        # 前端类型检查
+pnpm i18n:check       # 中英文案覆盖率（未翻译/缺失/重复）
 pnpm check:rust       # Rust 编译检查
 cargo test -p tapd-core
 cargo build -p tapd-mcp
@@ -90,6 +91,7 @@ opencode mcp list     # ✓ tapd connected
 - [AGENT.md](AGENT.md)：修复队列与任务状态
 - [MULTI_AGENT.md](MULTI_AGENT.md)：多 Agent TUI 适配与完成判定
 - [MCP.md](MCP.md)：工具、策略、客户端接入
+- [I18N.md](I18N.md)：中英文案目录、翻译约定与覆盖检查
 - [RELEASE.md](RELEASE.md)：打包、签名与发版
 - [PLAN.md](PLAN.md)：阶段计划与验收
 - [spike.md](spike.md)：TAPD 内部接口验证

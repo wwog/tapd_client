@@ -28,6 +28,7 @@ mod test_support;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
+use tapd_i18n::{tr, tr_args};
 
 use crate::state::SharedState;
 
@@ -92,7 +93,7 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         id: CLIENT_OPENCODE,
         label: "opencode",
         path: opencode_config_path,
-        missing_path_error: "无法定位 opencode 配置目录（未设置 XDG_CONFIG_HOME 或 HOME）",
+        missing_path_error: "app.mcp.import.opencode.path",
         format: Format::Json {
             segments: &["mcp", "tapd"],
             entry: formats::tapd_entry,
@@ -105,7 +106,7 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         id: CLIENT_ZCODE,
         label: "ZCode",
         path: paths::zcode_config_path,
-        missing_path_error: "无法定位 ZCode 配置目录（未设置 HOME 或 USERPROFILE）",
+        missing_path_error: "app.mcp.import.zcode.path",
         format: Format::Json {
             segments: &["mcp", "servers", "tapd"],
             entry: formats::zcode_entry,
@@ -119,14 +120,14 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         label: "Claude Code",
         path: paths::claude_config_path,
         missing_path_error:
-            "无法定位 Claude Code 配置（未设置 CLAUDE_CONFIG_DIR、HOME 或 USERPROFILE）",
+            "app.mcp.import.claude.path",
         format: Format::ClaudeCli,
     },
     ClientSpec {
         id: CLIENT_CURSOR,
         label: "Cursor",
         path: paths::cursor_config_path,
-        missing_path_error: "无法定位 Cursor 配置目录（未设置 HOME 或 USERPROFILE）",
+        missing_path_error: "app.mcp.import.cursor.path",
         format: Format::Json {
             segments: &["mcpServers", "tapd"],
             entry: formats::cursor_entry,
@@ -139,14 +140,14 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         id: CLIENT_CODEX,
         label: "Codex",
         path: paths::codex_config_path,
-        missing_path_error: "无法定位 Codex 配置目录（未设置 CODEX_HOME、HOME 或 USERPROFILE）",
+        missing_path_error: "app.mcp.import.codex.path",
         format: Format::Toml,
     },
     ClientSpec {
         id: CLIENT_OMP,
         label: "OMP",
         path: paths::omp_config_path,
-        missing_path_error: "无法定位 OMP 配置目录（未设置 PI_CONFIG_DIR 或 HOME）",
+        missing_path_error: "app.mcp.import.omp.path",
         format: Format::Json {
             segments: &["mcpServers", "tapd"],
             entry: formats::omp_entry,
@@ -160,7 +161,7 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         label: "Kimi Code",
         path: paths::kimi_config_path,
         missing_path_error:
-            "无法定位 Kimi Code 配置目录（未设置 KIMI_CODE_HOME、HOME 或 USERPROFILE）",
+            "app.mcp.import.kimi.path",
         format: Format::Json {
             segments: &["mcpServers", "tapd"],
             entry: formats::stdio_entry,
@@ -173,7 +174,7 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         id: CLIENT_GEMINI,
         label: "Gemini CLI",
         path: paths::gemini_config_path,
-        missing_path_error: "无法定位 Gemini CLI 配置目录（未设置 HOME 或 USERPROFILE）",
+        missing_path_error: "app.mcp.import.gemini.path",
         format: Format::Json {
             segments: &["mcpServers", "tapd"],
             entry: formats::stdio_entry,
@@ -186,7 +187,7 @@ const CLIENT_SPECS: &[ClientSpec] = &[
         id: CLIENT_QWEN,
         label: "Qwen Code",
         path: paths::qwen_config_path,
-        missing_path_error: "无法定位 Qwen Code 配置目录（未设置 HOME 或 USERPROFILE）",
+        missing_path_error: "app.mcp.import.qwen.path",
         format: Format::Json {
             segments: &["mcpServers", "tapd"],
             entry: formats::stdio_entry,
@@ -207,7 +208,7 @@ fn client_spec(client: &str) -> Option<&'static ClientSpec> {
 /// `McpImportResult` contract.
 pub fn ensure_opencode_mcp(command_path: &str) -> Result<Value, String> {
     if command_path.trim().is_empty() {
-        return Err("sidecar 路径为空，无法写入 opencode 配置".to_string());
+        return Err(tr("app.mcp.import.opencode.empty").to_string());
     }
 
     let spec = client_spec(CLIENT_OPENCODE).expect("opencode spec is present");
@@ -230,15 +231,15 @@ pub fn imported_in_path(client: &str, path: &Path, command_path: &str) -> bool {
 /// `McpImportResult` contract.
 pub fn ensure_client_mcp(client: &str, command_path: &str) -> Result<Value, String> {
     if command_path.trim().is_empty() {
-        return Err("sidecar 路径为空，无法写入客户端配置".to_string());
+        return Err(tr("app.mcp.import.client.empty").to_string());
     }
 
-    let spec = client_spec(client).ok_or_else(|| format!("未知的 MCP 客户端：{client}"))?;
+    let spec = client_spec(client).ok_or_else(|| tr_args("app.mcp.import.client.unknown", &[&client]))?;
     ensure_client_at(spec, command_path)
 }
 
 fn ensure_client_at(spec: &ClientSpec, command_path: &str) -> Result<Value, String> {
-    let path = (spec.path)().ok_or_else(|| spec.missing_path_error.to_string())?;
+    let path = (spec.path)().ok_or_else(|| tr(spec.missing_path_error).to_string())?;
     let outcome = ensure_in_file(spec, &path, command_path)?;
     Ok(import_result(&path, outcome))
 }
@@ -302,12 +303,12 @@ pub async fn command(_state: &SharedState, name: &str, payload: Value) -> Result
                 .unwrap_or_default()
                 .to_string();
             if !CLIENTS.contains(&client.as_str()) {
-                return Err(format!("未知的 MCP 客户端：{client}"));
+                return Err(tr_args("app.mcp.import.client.unknown", &[&client]));
             }
             let command_path = crate::commands::sidecar_command_path();
             tokio::task::spawn_blocking(move || ensure_client_mcp(&client, &command_path))
                 .await
-                .map_err(|error| format!("导入任务中断：{error}"))?
+                .map_err(|error| tr_args("app.mcp.import.interrupted", &[&error]))?
         }
         other => Err(format!("unknown mcp command: {other}")),
     }

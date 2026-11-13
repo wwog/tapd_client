@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 
 import type { Workspace, WorkspaceContext } from "../lib/api";
 import type { ProjectMenu } from "../hooks/useWorkspaceData";
+import { t } from "../lib/i18n";
 import { AccountChip } from "./AccountChip";
 import { ScrollingName } from "./ScrollingName";
 import { SkeletonRows } from "./Skeleton";
@@ -73,7 +74,7 @@ export function ProjectSidebar({
             data-tauri-drag-region
           >
             <span className="min-w-0 flex-1 truncate px-2 text-ui-base font-normal text-slate-800">
-              项目
+              {t("common.projects")}
             </span>
             {visibleWorkspaces.length ? (
               <span className="shrink-0 text-ui-sm tabular-nums text-slate-400">
@@ -92,7 +93,7 @@ export function ProjectSidebar({
                   className="mt-2 inline-flex items-center gap-1 rounded-md bg-surface px-2 py-1 text-ui-xs text-rose-700 border border-rose-200 transition hover:bg-rose-100"
                 >
                   <RefreshCw size={10} />
-                  重试
+                  {t("common.retry")}
                 </button>
               </div>
             ) : null}
@@ -103,13 +104,13 @@ export function ProjectSidebar({
                 columns={["w-2/3", "w-6"]}
                 className="pt-1"
                 rowClassName="px-3 py-2.5"
-                label="正在读取项目…"
+                label={t("settings.sidebar.reading")}
               />
             ) : null}
 
             {context && visibleWorkspaces.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-2.5 py-3 text-ui-sm leading-5 text-slate-400">
-                项目已全部隐藏，可在「项目」tab 中恢复显示。
+                {t("settings.sidebar.allHidden")}
               </div>
             ) : null}
 
@@ -160,8 +161,8 @@ export function ProjectSidebar({
 
         <button
           type="button"
-          aria-label="调整项目列表宽度"
-          title="拖动调整宽度，拖到很窄会自动收起"
+          aria-label={t("settings.sidebar.resizeLabel")}
+          title={t("settings.sidebar.resizeTooltip")}
           onMouseDown={onResizeStart}
           className={clsx(
             "absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize",
@@ -186,18 +187,20 @@ export function ProjectSidebar({
             onClick={() => onHideWorkspace(projectMenu.id)}
             disabled={visibleWorkspaces.length <= 1}
             title={
-              visibleWorkspaces.length <= 1 ? "至少保留一个项目" : "只影响本机显示"
+              visibleWorkspaces.length <= 1
+                ? t("settings.projects.keepOne")
+                : t("settings.sidebar.localOnly")
             }
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            在本地隐藏「{projectMenu.name}」
+            {t("settings.sidebar.hideName", { name: projectMenu.name })}
           </button>
           <button
             type="button"
             onClick={onManageProjects}
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition hover:bg-slate-100"
           >
-            管理项目
+            {t("settings.sidebar.manage")}
           </button>
         </div>
       ) : null}

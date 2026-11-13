@@ -16,6 +16,7 @@ import {
 } from "../lib/agentStore";
 import { useAgentChat } from "../hooks/useAgentChat";
 import { openTaskExportDir } from "../lib/desktop";
+import { t } from "../lib/i18n";
 import { AgentApproval, type ManualMerge } from "./AgentApproval";
 import { AgentChatPane } from "./AgentChatPane";
 import { AgentConfigPane } from "./AgentConfigPane";
@@ -135,7 +136,7 @@ export function AgentPage({
       setTab("approval");
     } else if (watched.status === "failed") {
       setMergeWatchId(null);
-      toast("error", watched.error ?? "提交轮失败，请查看执行记录");
+      toast("error", watched.error ?? t("agent.merge.commitFailed"));
     } else if (
       watched.status === "succeeded" ||
       watched.status === "canceled"
@@ -370,7 +371,7 @@ export function AgentPage({
     try {
       const { task: stopped } = await agentApi.stopReview(task.id);
       // The stash ref is only visible in history otherwise; keep it in reach.
-      toast("ok", stopped.error ?? "已停止并储藏改动");
+      toast("ok", stopped.error ?? t("agent.review.stoppedStashed"));
       await refresh();
     } catch (error) {
       toast("error", String(error));
@@ -459,7 +460,7 @@ export function AgentPage({
       {tasksState?.storageError ? (
         <div
           role="alert"
-          title="任务变更会保留在内存中并在下次写入时重试，但重启前可能丢失。"
+          title={t("agent.storage.warning")}
           className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-ui-sm text-rose-700"
         >
           {tasksState.storageError}
@@ -528,9 +529,9 @@ export function AgentPage({
                   </div>
                   <h3
                     className="mt-3 text-ui-base text-slate-800"
-                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」里可以打开系统终端继续处理。"
+                    title={t("agent.page.emptyHint")}
                   >
-                    当前没有运行中的任务
+                    {t("agent.page.noRunning")}
                   </h3>
                   {counts.awaiting > 0 ? (
                     <Button
@@ -539,7 +540,7 @@ export function AgentPage({
                       className="mt-3"
                       onClick={() => setTab("approval")}
                     >
-                      有 {counts.awaiting} 个任务待处理
+                      {t("agent.page.pendingCount", { count: counts.awaiting })}
                     </Button>
                   ) : null}
                 </div>
@@ -632,9 +633,9 @@ export function AgentPage({
                     <div>
                       <p
                         className="text-ui-base text-slate-700"
-                        title="任务开始后，opencode TUI 会直接显示在这里，可以像命令行一样操作。"
+                        title={t("agent.page.stdinHint")}
                       >
-                        任务尚未开始
+                        {t("agent.page.notStarted")}
                       </p>
                     </div>
                   </div>

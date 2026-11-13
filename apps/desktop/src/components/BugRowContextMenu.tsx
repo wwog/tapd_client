@@ -5,6 +5,7 @@ import clsx from "clsx";
 import type { BugSummary } from "../lib/api";
 import { bugRef } from "../lib/bug";
 import { DEV_SIM, clearDevSim, setDevSim, type DevSimKind } from "../lib/devSim";
+import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 
 /** Anchor + target for the row's right-click menu. */
@@ -53,7 +54,7 @@ export function BugRowContextMenu(props: Props) {
     <div
       ref={menuRef}
       role="menu"
-      aria-label="缺陷快捷操作"
+      aria-label={t("bugs.quickActions")}
       style={{
         left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
         top: Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8)),
@@ -63,26 +64,26 @@ export function BugRowContextMenu(props: Props) {
     >
       <RowMenuItem
         icon={<Hash size={12} />}
-        label={copiedKey === "id" ? "已复制 ID" : "复制 ID"}
+        label={copiedKey === "id" ? t("bugs.copiedShortId") : t("bugs.copyShortId")}
         done={copiedKey === "id"}
         onClick={() => copyFromMenu("id", bugRef(menu.bug))}
       />
       <RowMenuItem
         icon={<Fingerprint size={12} />}
-        label={copiedKey === "longId" ? "已复制长 ID" : "复制长 ID"}
+        label={copiedKey === "longId" ? t("bugs.copiedLongId") : t("bugs.copyLongId")}
         done={copiedKey === "longId"}
         onClick={() => copyFromMenu("longId", menu.bug.id)}
       />
       <RowMenuItem
         icon={<Type size={12} />}
-        label={copiedKey === "title" ? "已复制标题" : "复制标题"}
+        label={copiedKey === "title" ? t("bugs.copiedTitle") : t("bugs.copyTitle")}
         done={copiedKey === "title"}
         onClick={() => copyFromMenu("title", menu.bug.title)}
       />
       {onOpenWeb ? (
         <RowMenuItem
           icon={<ExternalLink size={12} />}
-          label="在 TAPD 中打开"
+          label={t("bugs.openInTapd")}
           onClick={() => {
             onOpenWeb(menu.bug.bugUrl);
             onClose();
@@ -113,21 +114,21 @@ function DevSimSection(props: { bug: BugSummary; onClose: () => void }) {
       <div className="my-1 border-t border-border" />
       <div className="flex items-center gap-1 px-3 py-1 text-ui-2xs text-slate-400">
         <FlaskConical size={10} />
-        开发测试
+        {t("bugs.devTest")}
       </div>
       <RowMenuItem
         icon={<Hourglass size={12} />}
-        label="模拟本地排队 #1"
+        label={t("bugs.simQueued")}
         onClick={() => apply("agent-queued")}
       />
       <RowMenuItem
         icon={<Play size={12} />}
-        label="模拟队头执行"
+        label={t("bugs.simRunning")}
         onClick={() => apply("agent-running")}
       />
       <RowMenuItem
         icon={<Trash2 size={12} />}
-        label="清除模拟状态"
+        label={t("bugs.simClear")}
         onClick={() => apply(null)}
       />
     </>

@@ -3,6 +3,7 @@
 //! [`crate::Input`].
 
 use serde::{Deserialize, Serialize};
+use tapd_i18n::tr_args;
 
 use crate::config::WorkflowConfig;
 use crate::history::HistoryRecord;
@@ -135,7 +136,7 @@ impl Effect {
     pub fn merge_block_notice(task_id: &TaskId, block: &MergeBlock) -> Self {
         Self::EmitNotice {
             level: NoticeLevel::Warning,
-            message: format!("任务 {task_id} 无法自动合并：{}", block.message()),
+            message: tr_args("flow.task.mergeblocked", &[task_id, &block.message()]),
         }
     }
 }

@@ -4123,6 +4123,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tapd-core",
+ "tapd-i18n",
  "tapd-workflow",
  "tauri",
  "tauri-build",
@@ -4142,8 +4143,13 @@ version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tapd-i18n",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "tapd-i18n"
+version = "1.2.0"
 
 [[package]]
 name = "tapd-mcp"
@@ -4153,6 +4159,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tapd-core",
+ "tapd-i18n",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4164,6 +4171,7 @@ version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tapd-i18n",
 ]
 
 [[package]]

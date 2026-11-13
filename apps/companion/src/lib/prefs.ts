@@ -1,11 +1,15 @@
 import { useSyncExternalStore } from "react";
 
+import { applyLocale, resolveLocaleMode, type LocaleMode } from "./i18n";
+
 export type ThemeMode = "system" | "light" | "dark";
 
 export type Prefs = {
   theme: ThemeMode;
   /** Base UI font size in px; every text token derives from it. */
   fontSize: number;
+  /** UI language; `system` follows the phone's language (Chinese: zh). */
+  locale: LocaleMode;
 };
 
 /** Companion prefs live only on the phone; never synced with the desktop. */
@@ -14,7 +18,7 @@ const KEY = "companion.prefs";
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 17;
 
-const DEFAULTS: Prefs = { theme: "system", fontSize: 14 };
+const DEFAULTS: Prefs = { theme: "system", fontSize: 14, locale: "system" };
 
 let current: Prefs = DEFAULTS;
 let media: MediaQueryList | null = null;
@@ -30,7 +34,13 @@ function normalize(parsed: Partial<Prefs>): Prefs {
     parsed.theme === "light" || parsed.theme === "dark" || parsed.theme === "system"
       ? parsed.theme
       : DEFAULTS.theme;
-  return { theme, fontSize: clampSize(parsed.fontSize ?? DEFAULTS.fontSize) };
+  const locale: LocaleMode =
+    parsed.locale === "zh" || parsed.locale === "en" ? parsed.locale : "system";
+  return {
+    theme,
+    fontSize: clampSize(parsed.fontSize ?? DEFAULTS.fontSize),
+    locale,
+  };
 }
 
 function load(): Prefs {
@@ -62,6 +72,7 @@ function apply() {
   if (typeof document === "undefined") return;
   document.documentElement.dataset.theme = resolvedTheme();
   document.documentElement.style.setProperty("--ui-font-size", `${current.fontSize}px`);
+  applyLocale(resolveLocaleMode(current.locale));
 }
 
 function emit() {

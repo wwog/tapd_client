@@ -22,6 +22,7 @@ import {
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
+import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { SkeletonBlock } from "./Skeleton";
@@ -256,7 +257,7 @@ function BugDetailDrawerImpl(props: Props) {
   const copyBugId = async (target: BugDetail) => {
     const value = bugRef(target);
     if (!(await copyText(value))) {
-      showToast("error", "复制失败");
+      showToast("error", t("common.copyFailed"));
       return;
     }
     setCopiedId(value);
@@ -286,8 +287,8 @@ function BugDetailDrawerImpl(props: Props) {
               {detail ? (
                 <button
                   type="button"
-                  title="复制缺陷 ID"
-                  aria-label="复制缺陷 ID"
+                  title={t("bugs.copyId")}
+                  aria-label={t("bugs.copyId")}
                   onClick={() => void copyBugId(detail)}
                   className="inline-flex items-center gap-1 rounded px-0.5 font-mono transition hover:bg-slate-100 hover:text-slate-600"
                 >
@@ -325,8 +326,8 @@ function BugDetailDrawerImpl(props: Props) {
                 <button
                   type="button"
                   onClick={() => onOpenWeb(detail.bugUrl)}
-                  title="在 TAPD 中打开"
-                  aria-label="在 TAPD 中打开"
+                  title={t("bugs.openInTapd")}
+                  aria-label={t("bugs.openInTapd")}
                   className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                 >
                   <ArrowUpRight size={14} />
@@ -336,15 +337,15 @@ function BugDetailDrawerImpl(props: Props) {
               <SkeletonBlock className="mt-3 h-4 w-3/4 rounded" />
             ) : (
               <h2 className="mt-2 text-base font-normal leading-6 text-slate-900">
-                缺陷详情
+                {t("bugs.detailTitle")}
               </h2>
             )}
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭详情"
-            title="关闭详情"
+            aria-label={t("bugs.closeDetail")}
+            title={t("bugs.closeDetail")}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
           >
             <X size={16} />
@@ -377,28 +378,35 @@ function BugDetailDrawerImpl(props: Props) {
               {!mine ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-800">
                   <p className="font-normal">
-                    当前处理人：{detail.owner || "未分配"}
+                    {t("bugs.currentOwner", {
+                      owner: detail.owner || t("bugs.unassigned"),
+                    })}
                   </p>
                   <p className="mt-0.5">
-                    认领后才能修改处理人与开发人员、流转状态。
+                    {t("bugs.claimFirst")}
                   </p>
                 </div>
               ) : (
                 <section>
-                  <BugSectionTitle icon={<GitBranch size={14} />} title="状态流转" />
+                  <BugSectionTitle
+                    icon={<GitBranch size={14} />}
+                    title={t("bugs.transitions")}
+                  />
                   <div className="mt-2">
                     {transitionsLoading ? (
                       <p className="inline-flex items-center gap-1.5 text-ui-sm text-slate-400">
                         <Loader2 size={12} className="animate-spin" />
-                        正在读取可流转状态…
+                        {t("bugs.loadingTransitions")}
                       </p>
                     ) : transitionsError ? (
                       <div className="break-all rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-700">
-                        流转状态读取失败：{transitionsError}
+                        {t("bugs.transitionsFailed", {
+                          error: transitionsError,
+                        })}
                       </div>
                     ) : (transitions?.transitions.length ?? 0) === 0 ? (
                       <p className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-                        当前状态没有可执行的流转
+                        {t("bugs.noTransitions")}
                       </p>
                     ) : (
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -426,21 +434,25 @@ function BugDetailDrawerImpl(props: Props) {
               )}
 
               <section>
-                <BugSectionTitle icon={<FileText size={14} />} title="缺陷描述" />
+                <BugSectionTitle
+                  icon={<FileText size={14} />}
+                  title={t("bugs.description")}
+                />
                 {detail.descriptionText ? (
                   <div className="select-text mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-ui-base leading-6 text-slate-700">
                     {detail.descriptionText}
                   </div>
                 ) : (
                   <div className="mt-2 rounded-xl border border-dashed border-border p-4 text-ui-caption text-slate-400">
-                    暂无文字描述
-                    {detail.descriptionHtml.includes("<video") ? "（包含视频，见资源）" : ""}
+                    {detail.descriptionHtml.includes("<video")
+                      ? t("bugs.noDescriptionVideo")
+                      : t("bugs.noDescription")}
                   </div>
                 )}
                 {detail.descriptionHtml.includes("<img") ||
                 detail.descriptionHtml.includes("<video") ? (
                   <p className="mt-2 text-ui-sm text-slate-400">
-                    描述中包含内嵌图片/视频，已在下方「资源」列出；导出时会下载到 assets 目录。
+                    {t("bugs.embeddedNotice")}
                   </p>
                 ) : null}
               </section>
@@ -516,7 +528,7 @@ export const BugDetailDrawer = memo(BugDetailDrawerImpl);
 function DetailSkeleton() {
   return (
     <div role="status" aria-busy="true" className="space-y-5">
-      <span className="sr-only">正在加载缺陷详情</span>
+      <span className="sr-only">{t("bugs.loadingDetail")}</span>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-100 bg-surface p-3 sm:grid-cols-4">
         {Array.from({ length: 8 }, (_, index) => (

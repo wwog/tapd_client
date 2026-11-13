@@ -20,6 +20,7 @@ serde_json.workspace = true
 chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tapd-i18n.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 axum = "0.8"

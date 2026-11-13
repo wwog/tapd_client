@@ -1,13 +1,21 @@
 //! Startup recovery rules. Pure mutation over the loaded snapshot; the
 //! workflow turns the outcome into a report and history effects.
 
+use tapd_i18n::tr;
+
 use crate::config::WorkflowConfig;
 use crate::policy::manual_merge_instructions;
 use crate::task::{Task, TaskMerge, TaskStatus};
 
-pub const RESTARTED_MERGE_ERROR: &str = "客户端重启，合并已中止";
-pub const RETRY_EXHAUSTED_ERROR: &str = "客户端重启，自动重试次数已用尽";
-pub const RETRY_DISABLED_ERROR: &str = "客户端重启，已停止自动重试";
+/// Rendered Chinese text kept public because hosts and tests compare the stored
+/// error verbatim; the locale-aware rendering goes through [`RESTARTED_MERGE_KEY`].
+pub const RESTARTED_MERGE_ERROR: &str = "客户端重启，合并已中止"; // i18n-exempt: rendered value of RESTARTED_MERGE_KEY
+pub const RETRY_EXHAUSTED_ERROR: &str = "客户端重启，自动重试次数已用尽"; // i18n-exempt: rendered value of RETRY_EXHAUSTED_KEY
+pub const RETRY_DISABLED_ERROR: &str = "客户端重启，已停止自动重试"; // i18n-exempt: rendered value of RETRY_DISABLED_KEY
+
+const RESTARTED_MERGE_KEY: &str = "flow.recovery.mergerestarted";
+const RETRY_EXHAUSTED_KEY: &str = "flow.recovery.retryexhausted";
+const RETRY_DISABLED_KEY: &str = "flow.recovery.retrydisabled";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecoveryOutcome {
@@ -53,9 +61,9 @@ pub fn recover(tasks: &mut [Task], config: &WorkflowConfig, restored_at: &str) -
                 } else {
                     task.status = TaskStatus::Failed;
                     task.error = Some(if config.recovery_policy.auto_retry_interrupted {
-                        RETRY_EXHAUSTED_ERROR.to_string()
+                        tr(RETRY_EXHAUSTED_KEY).to_string()
                     } else {
-                        RETRY_DISABLED_ERROR.to_string()
+                        tr(RETRY_DISABLED_KEY).to_string()
                     });
                     task.finished_at = Some(restored_at.to_string());
                     outcome.failed.push(index);
@@ -71,7 +79,7 @@ pub fn recover(tasks: &mut [Task], config: &WorkflowConfig, restored_at: &str) -
                 let repo = task.spec.repo_path.clone();
                 let branch = task.branch().unwrap_or("").to_string();
                 let merge = task.merge.get_or_insert_with(Default::default);
-                merge.error = Some(RESTARTED_MERGE_ERROR.to_string());
+                merge.error = Some(tr(RESTARTED_MERGE_KEY).to_string());
                 merge.started_at = None;
                 merge.finished_at = None;
                 merge.instructions = Some(manual_merge_instructions(&repo, &branch));
@@ -120,7 +128,7 @@ pub fn suspend(tasks: &mut [Task], now: &str) -> Vec<usize> {
                 let repo = task.spec.repo_path.clone();
                 let branch = task.branch().unwrap_or("").to_string();
                 let merge = task.merge.get_or_insert_with(TaskMerge::default);
-                merge.error = Some(RESTARTED_MERGE_ERROR.to_string());
+                merge.error = Some(tr(RESTARTED_MERGE_KEY).to_string());
                 merge.started_at = None;
                 merge.finished_at = None;
                 merge.instructions = Some(manual_merge_instructions(&repo, &branch));

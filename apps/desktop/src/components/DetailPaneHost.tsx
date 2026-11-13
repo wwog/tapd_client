@@ -9,6 +9,7 @@ import type {
 } from "../lib/api";
 import type { AgentInFlight } from "../lib/agent";
 import { BugDetailDrawer } from "./BugDetailDrawer";
+import { t } from "../lib/i18n";
 
 type Props = {
   rendered: boolean;
@@ -132,8 +133,8 @@ export function DetailPaneHost({
       {open ? (
         <button
           type="button"
-          aria-label="调整详情面板宽度"
-          title="拖动调整详情面板宽度"
+          aria-label={t("app.detail.resize")}
+          title={t("app.detail.resizeHint")}
           onMouseDown={onResizeStart}
           className={clsx(
             "absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize",

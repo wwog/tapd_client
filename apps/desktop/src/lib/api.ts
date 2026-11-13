@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import { localeTag, t } from "./i18n";
+
 export type AppPaths = {
   dataDir: string;
   logsDir: string;
@@ -576,8 +578,14 @@ export const relativeTime = (iso: string): string => {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
   const delta = Date.now() - timestamp;
-  if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))} 秒前`;
-  if (delta < 3_600_000) return `${Math.round(delta / 60_000)} 分钟前`;
-  if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)} 小时前`;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  if (delta < 60_000) {
+    return t("bugs.secondsAgo", { n: Math.max(1, Math.round(delta / 1000)) });
+  }
+  if (delta < 3_600_000) {
+    return t("bugs.minutesAgo", { n: Math.round(delta / 60_000) });
+  }
+  if (delta < 86_400_000) {
+    return t("bugs.hoursAgo", { n: Math.round(delta / 3_600_000) });
+  }
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };

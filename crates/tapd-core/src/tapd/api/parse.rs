@@ -14,7 +14,7 @@ use crate::tapd::model::{
 use super::endpoints::{attachment_download_url, bug_web_url};
 use super::html::html_to_text;
 use super::labels::{
-    default_status_map, priority_label, severity_label, status_label, STATUS_LABELS,
+    default_status_map, priority_label, severity_label, status_label, status_labels,
 };
 use super::media::collect_embedded_media;
 use super::value::{api_error, first_text, number, opt_text, text};
@@ -216,9 +216,9 @@ fn parse_status_order(
     // status order, kept only for keys this workspace actually uses.
     if ordered.is_empty() {
         ordered.extend(
-            STATUS_LABELS
-                .iter()
-                .map(|(key, _)| *key)
+            status_labels()
+                .into_iter()
+                .map(|(key, _)| key)
                 .filter(|key| status_map.contains_key(*key))
                 .map(str::to_string),
         );

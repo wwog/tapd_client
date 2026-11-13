@@ -9,6 +9,7 @@ mod diagnostics;
 mod export;
 mod feature_router;
 mod island_window;
+mod locale;
 mod mcp;
 mod mcp_audit;
 mod mcp_import;
@@ -58,6 +59,9 @@ pub fn run() {
 
     let config_store = ConfigStore::new(paths.config_file.clone());
     let config = config_store.load();
+    // Backend messages (errors, notifications, agent lifecycle) share the UI
+    // language. An explicit preference wins; `system` follows the OS.
+    tapd_i18n::set_locale(locale::initial_from_prefs(&config.ui_prefs));
     let state = Arc::new(AppState::new(paths, config_store, config));
     let setup_state = state.clone();
 
@@ -99,6 +103,7 @@ pub fn run() {
             commands::set_hidden_workspaces,
             commands::ui_prefs_get,
             commands::ui_prefs_set,
+            locale::set_locale,
             commands::capture_snapshot,
             commands::capture_clear,
             commands::capture_export,

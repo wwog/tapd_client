@@ -4,6 +4,7 @@ import { Activity, Loader2, X } from "lucide-react";
 
 import type { AgentChat, AgentRuntimeStatus } from "../lib/agent";
 import { projectTimeline, statusTimelineRow, type TimelineRow } from "../lib/agentChat";
+import { localeTag, t } from "../lib/i18n";
 
 type Props = {
   chat: AgentChat | null;
@@ -32,9 +33,11 @@ export function AgentTimeline({ chat, error, status, live }: Props) {
     <section className="flex min-h-0 shrink-0 flex-col border-t border-slate-100">
       <div className="flex shrink-0 items-center gap-1.5 px-3 py-1.5">
         <Activity size={12} className="text-slate-400" />
-        <span className="text-ui-xs text-slate-500">执行流程</span>
+        <span className="text-ui-xs text-slate-500">{t("agent.timeline.title")}</span>
         {chat?.truncated ? (
-          <span className="ml-auto text-ui-2xs text-amber-600">已截断</span>
+          <span className="ml-auto text-ui-2xs text-amber-600">
+            {t("agent.timeline.truncated")}
+          </span>
         ) : null}
       </div>
       <div
@@ -48,7 +51,7 @@ export function AgentTimeline({ chat, error, status, live }: Props) {
       >
         {all.length === 0 ? (
           <div className="grid h-24 place-items-center px-3 text-center text-ui-xs text-slate-400">
-            {error ?? (live ? "等待 Agent 输出…" : "暂无执行记录")}
+            {error ?? (live ? t("agent.timeline.waiting") : t("agent.timeline.empty"))}
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -128,7 +131,7 @@ function clock(at: string): string {
   if (!at) return "";
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("zh-CN", {
+  return date.toLocaleTimeString(localeTag(), {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",

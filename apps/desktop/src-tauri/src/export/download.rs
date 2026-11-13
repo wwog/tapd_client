@@ -7,6 +7,7 @@ use std::{
 };
 
 use tapd_core::export::{download_url_for, MediaAsset, MediaKind, MediaRef};
+use tapd_i18n::{tr, tr_args};
 
 use crate::media;
 
@@ -42,7 +43,7 @@ pub(super) async fn download_one(
 
     let length = response.content_length().unwrap_or(0);
     if length > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
+        return Err(tr("app.file.large").to_string());
     }
 
     let bytes = response
@@ -51,14 +52,14 @@ pub(super) async fn download_one(
         .map_err(|error| error.to_string())?;
 
     if bytes.len() as u64 > media::MAX_FILE_BYTES {
-        return Err("文件超过 300MB，已跳过".to_string());
+        return Err(tr("app.file.large").to_string());
     }
 
     // TAPD returns a short placeholder instead of the file when the URL or
     // permissions are wrong.
     let body_head = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).to_lowercase();
     if media::content_type_is_html(&content_type) && body_head.contains("error") {
-        return Err(format!("下载被拒绝（{content_type}）"));
+        return Err(tr_args("app.download.rejected", &[&content_type]));
     }
 
     let filename = unique_filename(

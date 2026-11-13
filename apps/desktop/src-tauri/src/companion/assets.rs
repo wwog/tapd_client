@@ -70,10 +70,10 @@ fn content_type_for(name: &str) -> &'static str {
 fn unbuilt_placeholder() -> Response {
     let html = r#"<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TAPD 伴侣</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TAPD 伴侣</title><!-- i18n-exempt: static fallback page --></head>
 <body style="font-family:-apple-system,sans-serif;padding:24px;line-height:1.6">
-<h1 style="font-size:18px">伴侣前端未构建</h1>
-<p>在仓库根目录运行 <code>pnpm -C apps/companion build</code>，然后刷新本页。</p>
+<h1 style="font-size:18px">伴侣前端未构建</h1><!-- i18n-exempt: static fallback page -->
+<p>在仓库根目录运行 <code>pnpm -C apps/companion build</code>，然后刷新本页。</p><!-- i18n-exempt: static fallback page -->
 </body>
 </html>"#;
     (

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, asApiError } from "../lib/api";
+import { t } from "../lib/i18n";
 import { setSession } from "../lib/session";
 
 /** Short device label for the desktop's paired-device list. */
@@ -10,7 +11,7 @@ const deviceName = (): string => {
   if (/iPad/i.test(ua)) return "iPad";
   if (/Android/i.test(ua)) return "Android";
   if (/Macintosh/i.test(ua)) return "Mac";
-  return "移动设备";
+  return t("mobile.pair.deviceFallback");
 };
 
 /**
@@ -57,7 +58,7 @@ export function PairPage() {
           setError(
             code
               ? asApiError(err).message
-              : "需要配对码：请在桌面端左侧栏「移动端伴侣」重新扫码，或先关闭配对码开关",
+              : t("mobile.pair.needCode"),
           );
         }
       }
@@ -70,17 +71,17 @@ export function PairPage() {
   return (
     <div className="grid min-h-full place-items-center p-6">
       {pairing ? (
-        <p className="text-ui-base text-slate-500">配对中…</p>
+        <p className="text-ui-base text-slate-500">{t("mobile.pair.pairing")}</p>
       ) : (
         <div className="w-full max-w-sm text-center">
-          <h1 className="text-ui-lg text-slate-900">TAPD 伴侣</h1>
+          <h1 className="text-ui-lg text-slate-900">{t("mobile.pair.title")}</h1>
           <p className="mt-3 text-ui-caption text-rose-600">{error}</p>
           <button
             type="button"
             onClick={() => setAttempt((value) => value + 1)}
               className="mt-5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
             >
-              重新配对
+              {t("mobile.pair.retry")}
             </button>
         </div>
       )}

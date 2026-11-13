@@ -10,6 +10,7 @@ import {
   type RecoveryReport,
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
+import { t, type MessageKey } from "./lib/i18n";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -73,14 +74,17 @@ type AgentTarget = {
   workspaceName?: string;
 };
 
-/** Header title for every view whose title is static. */
-const VIEW_TITLES: Record<Exclude<View, "bugs">, string> = {
-  projects: "项目管理",
-  agent: "Agent",
-  coworker: "同事",
-  mcp: "MCP",
-  account: "账户与会话",
-  settings: "设置",
+/**
+ * Header title key for every view whose title is static. Keys render through
+ * `t()` at render time, never at module scope.
+ */
+const VIEW_TITLES: Record<Exclude<View, "bugs">, MessageKey> = {
+  projects: "app.projects.title",
+  agent: "app.nav.agent",
+  coworker: "app.nav.coworker",
+  mcp: "app.nav.mcp",
+  account: "app.account.title",
+  settings: "common.settings",
 };
 
 export default function App() {
@@ -484,9 +488,8 @@ export default function App() {
     async (text: string) => {
       try {
         await navigator.clipboard.writeText(text);
-        showToast("ok", "已复制");
       } catch (error) {
-        showToast("error", `复制失败：${String(error)}`);
+        showToast("error", t("app.copy.failed", { error: String(error) }));
       }
     },
     [showToast],
@@ -497,7 +500,7 @@ export default function App() {
       <>
         <div className="flex h-full items-center justify-center gap-2 bg-slate-50 text-ui-caption text-slate-400">
           <Loader2 size={16} className="animate-spin" />
-          正在启动客户端…
+          {t("app.startup.loading")}
         </div>
         <ForceUpdateModal />
       </>
@@ -519,12 +522,12 @@ export default function App() {
   }
 
   const title =
-    view === "bugs" ? (workspace?.name ?? "缺陷") : VIEW_TITLES[view];
+    view === "bugs" ? (workspace?.name ?? t("common.bugs")) : t(VIEW_TITLES[view]);
   const subtitle =
     view === "bugs" && !workspace
       ? projectsKnown
-        ? "选择左侧项目开始"
-        : "正在读取项目…"
+        ? t("app.projects.empty")
+        : t("app.projects.loading")
       : "";
 
   const renderView = () => {
@@ -533,7 +536,7 @@ export default function App() {
         return contextError ? (
           <div className="p-5">
             <div className="rounded-xl bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700 border border-rose-100">
-              <div className="font-normal">项目列表加载失败</div>
+              <div className="font-normal">{t("app.projects.loadFailed")}</div>
               <div className="mt-1 break-all">{contextError}</div>
               <Button
                 size="sm"
@@ -541,7 +544,7 @@ export default function App() {
                 onClick={() => void loadContext()}
                 icon={<RefreshCw size={13} />}
               >
-                重新加载
+                {t("app.projects.reload")}
               </Button>
             </div>
           </div>
@@ -575,7 +578,7 @@ export default function App() {
             <SkeletonRows
               rows={10}
               columns={["w-2/5", "w-16", "w-12", "w-16", "w-20", "w-16", "w-24"]}
-              label="正在加载项目…"
+              label={t("app.projects.skeleton")}
             />
           </div>
         );
@@ -692,8 +695,8 @@ export default function App() {
           view={view}
           account={{
             meAvatar: info.meAvatar,
-            name: context?.user.nick || info.me || "已登录",
-            company: context?.user.company || "账户与会话",
+            name: context?.user.nick || info.me || t("app.account.signedIn"),
+            company: context?.user.company || t("app.account.title"),
           }}
           autoCollapse={sidebar.autoCollapse}
           resizing={sidebar.resizing}
@@ -717,15 +720,17 @@ export default function App() {
             {!projectListHidden ? (
               <button
                 type="button"
-                aria-label={sidebar.hidden ? "展开项目列表" : "收起项目列表"}
+                aria-label={
+                  sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
+                }
                 title={
                   sidebar.autoCollapse
                     ? sidebar.peek
-                      ? "收起项目列表"
-                      : "展开项目列表（窗口过窄，会自动收起）"
+                      ? t("app.sidebar.collapse")
+                      : t("app.sidebar.expandNarrow")
                     : sidebar.hidden
-                      ? "展开项目列表"
-                      : "收起项目列表"
+                      ? t("app.sidebar.expand")
+                      : t("app.sidebar.collapse")
                 }
                 onClick={sidebar.toggle}
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
@@ -809,11 +814,11 @@ export default function App() {
       {pendingAgent ? (
         <FolderPicker
           open
-          title="没有配置项目目录"
-          description={`${
-            pendingAgent.target.workspaceName || pendingAgent.target.workspaceId
-          } 还没有设置本地仓库目录。选择后会自动加入 Agent 队列。`}
-          confirmLabel="使用并继续"
+          title={t("app.agent.noFolder")}
+          description={t("app.agent.noFolderHint", {
+            name: pendingAgent.target.workspaceName || pendingAgent.target.workspaceId,
+          })}
+          confirmLabel={t("app.agent.useAndContinue")}
           onCancel={() => setPendingAgent(null)}
           onSelect={(path) => void applyAgentFolder(pendingAgent, path)}
         />

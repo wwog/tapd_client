@@ -17,6 +17,8 @@
 //!
 //! 这里用一个很小的标签扫描器把两层表格读出来，不引入 DOM 依赖。
 
+use tapd_i18n::tr;
+
 use crate::tapd::api::TAPD_BASE;
 use crate::tapd::model::{ChangeEntry, ChangeField, ChangeHistory};
 
@@ -132,7 +134,7 @@ pub fn parse_changes_html(html: &str) -> Result<ChangeHistory, String> {
                 if let (Some(cell_index), Some(row)) = (cell, rows.last_mut()) {
                     if row.depth == depth {
                         if let Some(target) = row.cells.get_mut(cell_index) {
-                            target.push_str("[图片]");
+                            target.push_str(tr("core.changes.image"));
                         }
                     }
                 }
@@ -192,7 +194,8 @@ fn inner_row(row: &Row) -> Option<ChangeField> {
 }
 
 fn total_count(html: &str) -> Option<u32> {
-    for needle in ["var _revisionsCount = ", "序号("] {
+    // Tokens the legacy page emits; `序号(` is a page header, not display text.
+    for needle in ["var _revisionsCount = ", "序号("] { // i18n-exempt: markup token in TAPD's change-history HTML
         let Some(position) = html.find(needle) else {
             continue;
         };

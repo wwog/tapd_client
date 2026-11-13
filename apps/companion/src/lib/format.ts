@@ -1,20 +1,23 @@
 /** Display formatting shared by list and detail. */
 
+import { localeTag, t } from "./i18n";
+
 export const relativeTime = (iso: string): string => {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
   const delta = Date.now() - timestamp;
-  if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))} 秒前`;
-  if (delta < 3_600_000) return `${Math.round(delta / 60_000)} 分钟前`;
-  if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)} 小时前`;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  if (delta < 60_000)
+    return t("mobile.time.secondsAgo", { n: Math.max(1, Math.round(delta / 1000)) });
+  if (delta < 3_600_000) return t("mobile.time.minutesAgo", { n: Math.round(delta / 60_000) });
+  if (delta < 86_400_000) return t("mobile.time.hoursAgo", { n: Math.round(delta / 3_600_000) });
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };
 
 /** Absolute timestamp for fields that must not drift (创建时间 etc.). */
 export const absoluteTime = (iso: string): string => {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };
 
 /** TAPD titles come from testers and usually carry full-width punctuation. */
@@ -77,8 +80,8 @@ export const taskDuration = (task: {
   const end = task.finishedAt ? Date.parse(task.finishedAt) : Number.NaN;
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return "—";
   const secs = Math.max(1, Math.round((end - start) / 1000));
-  if (secs < 60) return `${secs} 秒`;
+  if (secs < 60) return t("mobile.time.seconds", { n: secs });
   const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins} 分 ${secs % 60} 秒`;
-  return `${Math.floor(mins / 60)} 时 ${mins % 60} 分`;
+  if (mins < 60) return t("mobile.time.minutesSeconds", { m: mins, s: secs % 60 });
+  return t("mobile.time.hoursMinutes", { h: Math.floor(mins / 60), m: mins % 60 });
 };

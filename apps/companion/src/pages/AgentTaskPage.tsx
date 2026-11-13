@@ -10,6 +10,7 @@ import {
   type AgentTask,
 } from "../lib/api";
 import { getAgentTasks, refreshAgentTasks, useAgentTasks } from "../lib/agentTasks";
+import { t } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { absoluteTime, bugTitle, taskDuration } from "../lib/format";
 import { Badge } from "../components/Badge";
@@ -130,18 +131,20 @@ export function AgentTaskPage(props: { id: string }) {
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
-          aria-label="返回"
+          aria-label={t("mobile.nav.back")}
           onClick={back}
           className="rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-500">任务详情</span>
+        <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-500">
+          {t("magent.taskDetail")}
+        </span>
         {task && !isAgentInFlight(task) ? (
           <button
             type="button"
-            aria-label="重试"
-            title="用同样内容创建一个新任务。"
+            aria-label={t("common.retry")}
+            title={t("magent.retryHint")}
             disabled={busy}
             onClick={retry}
             className="shrink-0 rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
@@ -156,7 +159,7 @@ export function AgentTaskPage(props: { id: string }) {
       ) : null}
 
       {actionError ? (
-        <p className="px-4 py-3 text-ui-caption text-rose-600" title="上一次操作失败的结果。">
+        <p className="px-4 py-3 text-ui-caption text-rose-600" title={t("magent.lastActionFailed")}>
           {actionError}
         </p>
       ) : null}
@@ -164,20 +167,23 @@ export function AgentTaskPage(props: { id: string }) {
       {task === undefined && !resolveError ? (
         <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
           <LoaderCircle size={14} className="animate-spin" />
-          正在读取任务…
+          {t("magent.taskLoading")}
         </div>
       ) : null}
 
       {task === null ? (
-        <p className="px-4 py-10 text-center text-ui-base text-slate-400" title="任务可能已被删除。">
-          未找到该任务
+        <p
+          className="px-4 py-10 text-center text-ui-base text-slate-400"
+          title={t("magent.taskDeletedHint")}
+        >
+          {t("magent.taskNotFound")}
         </p>
       ) : null}
 
       {task ? (
         <div className="pb-6">
           <h1 className="px-4 pt-3 text-ui-base leading-6 text-slate-900" title={bugTitle(task.title)}>
-            {bugTitle(task.title) || "（无标题）"}
+            {bugTitle(task.title) || t("magent.untitled")}
           </h1>
 
           {task.status === "awaiting_approval" ? (
@@ -198,10 +204,12 @@ export function AgentTaskPage(props: { id: string }) {
           ) : null}
 
           <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-            <MetaRow label="状态">
-              <Badge tone={AGENT_STATUS_TONES[task.status]}>{AGENT_STATUS_LABELS[task.status]}</Badge>
+            <MetaRow label={t("common.status")}>
+              <Badge tone={AGENT_STATUS_TONES[task.status]}>
+                {t(AGENT_STATUS_LABELS[task.status])}
+              </Badge>
             </MetaRow>
-            <MetaRow label="缺陷">
+            <MetaRow label={t("common.bugs")}>
               <button
                 type="button"
                 onClick={() =>
@@ -212,30 +220,34 @@ export function AgentTaskPage(props: { id: string }) {
                 #{task.bugId.slice(-7)}
               </button>
             </MetaRow>
-            <MetaRow label="项目">{task.workspaceName || task.workspaceId}</MetaRow>
-            <MetaRow label="仓库">
-              <span className="font-mono">{task.worktreePath || task.repoPath || "未配置仓库"}</span>
+            <MetaRow label={t("common.projects")}>{task.workspaceName || task.workspaceId}</MetaRow>
+            <MetaRow label={t("magent.repo")}>
+              <span className="font-mono">
+                {task.worktreePath || task.repoPath || t("magent.noRepo")}
+              </span>
             </MetaRow>
             {task.worktreeBranch ? (
-              <MetaRow label="分支">
+              <MetaRow label={t("magent.branch")}>
                 <span className="font-mono">{task.worktreeBranch}</span>
               </MetaRow>
             ) : null}
-            <MetaRow label="运行时">
+            <MetaRow label={t("magent.runtime")}>
               <span className="font-mono">{task.runtimeId || "—"}</span>
             </MetaRow>
-            <MetaRow label="来源">{task.source || "—"}</MetaRow>
-            <MetaRow label="创建">{absoluteTime(task.createdAt)}</MetaRow>
-            {task.startedAt ? <MetaRow label="开始">{absoluteTime(task.startedAt)}</MetaRow> : null}
-            {task.finishedAt ? (
-              <MetaRow label="结束">{absoluteTime(task.finishedAt)}</MetaRow>
+            <MetaRow label={t("magent.source")}>{task.source || "—"}</MetaRow>
+            <MetaRow label={t("magent.created")}>{absoluteTime(task.createdAt)}</MetaRow>
+            {task.startedAt ? (
+              <MetaRow label={t("magent.started")}>{absoluteTime(task.startedAt)}</MetaRow>
             ) : null}
-            <MetaRow label="耗时">{taskDuration(task)}</MetaRow>
+            {task.finishedAt ? (
+              <MetaRow label={t("magent.finished")}>{absoluteTime(task.finishedAt)}</MetaRow>
+            ) : null}
+            <MetaRow label={t("magent.duration")}>{taskDuration(task)}</MetaRow>
           </section>
 
           {task.error ? (
             <p className="select-text mx-3 mt-3 break-words rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700">
-              错误：{task.error}
+              {t("magent.error", { error: task.error })}
             </p>
           ) : null}
 
@@ -244,12 +256,12 @@ export function AgentTaskPage(props: { id: string }) {
               <button
                 type="button"
                 disabled={busy}
-                title="取消后任务结束，已产生的改动保留。搁置审核请在上方审核卡操作。"
+                title={t("magent.cancelHintDetail")}
                 onClick={cancel}
                 className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
               >
                 <X size={13} />
-                取消任务
+                {t("magent.cancelTask")}
               </button>
             </div>
           ) : null}
@@ -259,12 +271,12 @@ export function AgentTaskPage(props: { id: string }) {
               <button
                 type="button"
                 disabled={busy}
-                title="重试会创建一个新任务并重新排队。"
+                title={t("magent.retryNote")}
                 onClick={retry}
                 className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
               >
                 <RotateCcw size={13} />
-                重试
+                {t("common.retry")}
               </button>
             </div>
           ) : null}
@@ -272,7 +284,7 @@ export function AgentTaskPage(props: { id: string }) {
           {task.prompt ? (
             <details className="mx-3 mt-3 rounded-lg border border-border bg-surface">
               <summary className="cursor-pointer select-none px-3 py-2 text-ui-sm text-slate-500">
-                提示词
+                {t("magent.prompt")}
               </summary>
               <pre className="select-text max-h-64 overflow-auto whitespace-pre-wrap break-words px-3 pb-3 font-mono text-ui-xs leading-5 text-slate-600">
                 {task.prompt}

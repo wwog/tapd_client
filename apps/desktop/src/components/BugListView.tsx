@@ -21,6 +21,7 @@ import {
   type AgentInFlight,
 } from "../lib/agent";
 import { cacheApi, type Cached } from "../lib/cache";
+import { localeTag, t } from "../lib/i18n";
 import { SkeletonRows } from "./Skeleton";
 import { Button, EmptyState } from "./ui";
 import { BugListPager } from "./BugListPager";
@@ -230,7 +231,7 @@ function BugListViewImpl(props: Props) {
               ? a.created.localeCompare(b.created)
               : (a.statusLabel || a.status).localeCompare(
                   b.statusLabel || b.status,
-                  "zh-CN",
+                  localeTag(),
                 )) * direction,
         );
       }
@@ -479,7 +480,7 @@ function BugListViewImpl(props: Props) {
         return bug ? [bug] : [];
       });
       if (bugs.length === 0) {
-        setError("正在处理的缺陷加载失败，请稍后重试。");
+        setError(t("bugs.processingLoadFailed"));
         setPage(null);
         setSnapshotAt(null);
         return;
@@ -613,7 +614,7 @@ function BugListViewImpl(props: Props) {
       if (bug.creator) values.add(bug.creator);
     }
     return Array.from(values)
-      .sort((a, b) => a.localeCompare(b, "zh-CN"))
+      .sort((a, b) => a.localeCompare(b, localeTag()))
       .map((nick) => ({ value: nick, label: nick }));
   }, [memberNicks, page?.bugs]);
 
@@ -683,7 +684,9 @@ function BugListViewImpl(props: Props) {
         <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50/80 px-5 py-1.5 text-ui-sm text-amber-700">
           <WifiOff size={12} className="shrink-0" />
           <span className="truncate">
-            离线数据 · 上次同步 {formatSnapshotTime(snapshotAt)}
+            {t("bugs.offlineSnapshot", {
+              time: formatSnapshotTime(snapshotAt),
+            })}
           </span>
           <button
             type="button"
@@ -691,7 +694,7 @@ function BugListViewImpl(props: Props) {
             className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-amber-200 bg-surface px-1.5 py-0.5 text-ui-xs text-amber-700 transition hover:bg-amber-100"
           >
             <RefreshCw size={10} />
-            重试
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
@@ -699,11 +702,11 @@ function BugListViewImpl(props: Props) {
       <div className="min-h-0 flex-1 overflow-auto">
         {error ? (
           <div className="m-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
-            <div className="font-normal">缺陷加载失败</div>
+            <div className="font-normal">{t("bugs.loadFailed")}</div>
             <div className="mt-1 break-all">{error}</div>
             <div className="mt-3">
               <Button size="sm" onClick={() => setReloadTick((tick) => tick + 1)}>
-                重试
+                {t("common.retry")}
               </Button>
             </div>
           </div>
@@ -714,7 +717,7 @@ function BugListViewImpl(props: Props) {
             className="pt-1"
             rows={9}
             columns={["w-[36%]", "w-12", "w-9", "w-14", "w-16", "w-12", "w-24"]}
-            label="正在读取缺陷列表"
+            label={t("bugs.loadingList")}
           />
         ) : null}
 
@@ -723,24 +726,24 @@ function BugListViewImpl(props: Props) {
             icon={<Bug size={22} />}
             title={
               scope === "processing"
-                ? "当前没有正在处理的缺陷"
+                ? t("bugs.emptyProcessing")
                 : scope === "mine"
-                  ? "你名下没有符合条件的缺陷"
-                  : "没有符合条件的缺陷"
+                  ? t("bugs.emptyMine")
+                  : t("bugs.emptyAll")
             }
             description={
               scope === "processing"
                 ? activeFilterCount > 0
-                  ? "试试清除部分筛选条件。"
-                  : "内部 Agent 开始处理后会出现在这里。"
+                  ? t("bugs.emptyHintFilters")
+                  : t("bugs.emptyProcessingHint")
                 : activeFilterCount > 0
-                  ? "试试清除部分筛选条件，或切换到「全部」。"
-                  : "当前项目的缺陷列表为空，或视图权限不足。"
+                  ? t("bugs.emptyHintFiltersAll")
+                  : t("bugs.emptyProject")
             }
             action={
               activeFilterCount > 0 ? (
                 <Button size="sm" onClick={clearFilters}>
-                  清除筛选
+                  {t("bugs.clearFilters")}
                 </Button>
               ) : null
             }
@@ -829,7 +832,7 @@ export const BugListView = memo(BugListViewImpl);
 /** "上次同步" label: time only for today, date + time for older snapshots. */
 function formatSnapshotTime(fetchedAt: number): string {
   const date = new Date(fetchedAt * 1000);
-  if (Number.isNaN(date.getTime())) return "未知";
+  if (Number.isNaN(date.getTime())) return t("common.unknown");
 
   const now = new Date();
   const sameDay =
@@ -843,5 +846,5 @@ function formatSnapshotTime(fetchedAt: number): string {
     minute: "2-digit",
     ...(sameDay ? {} : { month: "2-digit", day: "2-digit" }),
   };
-  return date.toLocaleString("zh-CN", options);
+  return date.toLocaleString(localeTag(), options);
 }

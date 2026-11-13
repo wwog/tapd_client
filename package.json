@@ -12,6 +12,7 @@
     "build:sidecar:debug": "bash scripts/build-sidecar.sh --debug",
     "build:arm64": "pnpm build:companion && bash scripts/build-sidecar.sh aarch64-apple-darwin && pnpm -C apps/desktop tauri build --target aarch64-apple-darwin",
     "typecheck": "pnpm -C apps/companion typecheck && pnpm -C apps/desktop typecheck",
+    "i18n:check": "node scripts/i18n-check.mjs",
     "check:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo check --workspace",
     "build:mcp": "cargo build -p tapd-mcp",
     "release": "bash scripts/release.sh",

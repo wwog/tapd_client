@@ -8,6 +8,7 @@ use std::{
 
 use serde_json::Value;
 use tapd_core::bridge::BridgeHttpResult;
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{notification, session, state::SharedState};
@@ -139,7 +140,7 @@ fn session_expired(http: &BridgeHttpResult) -> bool {
         .take(2400)
         .collect::<String>()
         .to_ascii_lowercase();
-    head.contains("wwlogin") || head.contains("<title>登录") || head.contains("<title>企业微信")
+    head.contains("wwlogin") || head.contains("<title>登录") || head.contains("<title>企业微信") // i18n-exempt: HTML parse token
 }
 
 /// Guards against several in-flight requests all clearing the session at once.
@@ -217,7 +218,7 @@ pub(super) async fn session_request_text(
 ) -> Result<BridgeHttpResult, String> {
     let window = app
         .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建，请稍后重试".to_string())?;
+        .ok_or_else(|| tr("app.session.retry").to_string())?;
 
     let payload = serde_json::json!({
         "method": method,
@@ -234,14 +235,13 @@ pub(super) async fn session_request_text(
     // makes the app look signed in after the cookie has gone stale.
     if session_expired(&http) {
         expire_session(app).await;
-        return Err("TAPD 登录状态已失效，请重新扫码登录".to_string());
+        return Err(tr("app.session.expired").to_string());
     }
 
     if !http.ok {
         let preview: String = http.body.chars().take(240).collect();
-        return Err(format!(
-            "TAPD 请求失败（HTTP {}）：{}",
-            http.status, preview
+        return Err(tr_args("app.request.failed",
+            &[&http.status, &preview],
         ));
     }
 

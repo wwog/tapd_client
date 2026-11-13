@@ -15,6 +15,7 @@ import clsx from "clsx";
 
 import { mediaSrc } from "../lib/api";
 import { formatBytes } from "../lib/format";
+import { t } from "../lib/i18n";
 
 export type PreviewItem = {
   url: string;
@@ -212,40 +213,40 @@ export function MediaPreview(props: Props) {
           <div className="text-ui-xs text-slate-400">
             {index + 1} / {items.length}
             {current.size ? ` · ${formatBytes(current.size)}` : ""}
-            {current.kind === "video" ? " · 视频" : ""}
+            {current.kind === "video" ? t("media.videoSuffix") : ""}
           </div>
         </div>
 
         <div className="absolute inset-y-0 right-3 flex items-center gap-1">
           {current.kind === "image" ? (
             <>
-              <IconButton label="缩小" onClick={() => zoomBy(0.8)}>
+              <IconButton label={t("media.zoomOut")} onClick={() => zoomBy(0.8)}>
                 <ZoomOut size={15} />
               </IconButton>
               <span className="w-11 text-center font-mono text-ui-sm text-slate-300">
                 {Math.round(zoom * 100)}%
               </span>
-              <IconButton label="放大" onClick={() => zoomBy(1.25)}>
+              <IconButton label={t("media.zoomIn")} onClick={() => zoomBy(1.25)}>
                 <ZoomIn size={15} />
               </IconButton>
-              <IconButton label="适应窗口" onClick={() => setZoom(1)}>
+              <IconButton label={t("media.fitWindow")} onClick={() => setZoom(1)}>
                 <Maximize2 size={14} />
               </IconButton>
             </>
           ) : null}
           <IconButton
-            label="用本地应用打开"
+            label={t("media.openWithApp")}
             onClick={() => onOpenExternal(current.url, "file")}
           >
             <ExternalLink size={15} />
           </IconButton>
           <IconButton
-            label="在浏览器中打开"
+            label={t("media.openInBrowser")}
             onClick={() => onOpenExternal(current.url, "browser")}
           >
             <Globe size={15} />
           </IconButton>
-          <IconButton label="关闭预览" onClick={onClose}>
+          <IconButton label={t("media.closePreview")} onClick={onClose}>
             <X size={17} />
           </IconButton>
         </div>
@@ -276,7 +277,7 @@ export function MediaPreview(props: Props) {
                 )}
               />
             ) : (
-              <Hint text="预览服务尚未就绪，可用「在浏览器中打开」" />
+              <Hint text={t("media.notReady")} />
             )
           ) : source ? (
             <img
@@ -303,7 +304,7 @@ export function MediaPreview(props: Props) {
               )}
             />
           ) : (
-            <Hint text="预览服务尚未就绪，可用「在浏览器中打开」" />
+            <Hint text={t("media.notReady")} />
           )}
         </div>
 
@@ -311,7 +312,7 @@ export function MediaPreview(props: Props) {
           <>
             <button
               type="button"
-              aria-label="上一个资源"
+              aria-label={t("media.previous")}
               onClick={() => go(-1)}
               className="absolute left-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-slate-900/70 text-slate-200 transition hover:bg-slate-800"
             >
@@ -319,7 +320,7 @@ export function MediaPreview(props: Props) {
             </button>
             <button
               type="button"
-              aria-label="下一个资源"
+              aria-label={t("media.next")}
               onClick={() => go(1)}
               className="absolute right-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-slate-900/70 text-slate-200 transition hover:bg-slate-800"
             >

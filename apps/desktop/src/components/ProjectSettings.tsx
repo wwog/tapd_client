@@ -7,6 +7,7 @@ import { agentApi, type ProjectAgentConfig } from "../lib/agent";
 import { api, type Workspace, type WorkspaceContext } from "../lib/api";
 import { copyText } from "../lib/desktop";
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { Button, cardClass, inputClass } from "./ui";
 import { FolderPicker } from "./FolderPicker";
@@ -75,7 +76,7 @@ export function ProjectSettings(props: {
   /** Copies a project ID; the row swaps in a check mark instead of a toast. */
   const copyWorkspaceId = async (id: string) => {
     if (!(await copyText(id))) {
-      toast("error", "复制失败");
+      toast("error", t("common.copyFailed"));
       return;
     }
     setCopiedId(id);
@@ -159,10 +160,10 @@ export function ProjectSettings(props: {
     <section className={`${cardClass} @container`}>
       <h2
         className="flex items-center gap-2 text-ui-base text-slate-900"
-        title="每个项目可设置本地文件夹、项目规则和是否显示在左侧列表；改动自动保存。"
+        title={t("settings.projects.tooltip")}
       >
         <FolderGit2 size={15} className="text-slate-400" />
-        项目列表
+        {t("settings.projects.title")}
       </h2>
 
       {/* Container query, not viewport: the detail pane can squeeze this column
@@ -198,8 +199,8 @@ export function ProjectSettings(props: {
                 </span>
                 <button
                   type="button"
-                  title="复制项目 ID"
-                  aria-label="复制项目 ID"
+                  title={t("settings.projects.copyId")}
+                  aria-label={t("settings.projects.copyId")}
                   onClick={() => void copyWorkspaceId(workspace.id)}
                   className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-ui-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
                 >
@@ -216,12 +217,12 @@ export function ProjectSettings(props: {
                   type="button"
                   title={
                     hidden
-                      ? "在左侧项目列表显示"
+                      ? t("settings.projects.show")
                       : visibleCount <= 1
-                        ? "至少保留一个项目"
-                        : "从左侧项目列表隐藏"
+                        ? t("settings.projects.keepOne")
+                        : t("settings.projects.hide")
                   }
-                  aria-label={hidden ? "显示项目" : "隐藏项目"}
+                  aria-label={hidden ? t("settings.projects.showAction") : t("settings.projects.hideAction")}
                   disabled={!hidden && visibleCount <= 1}
                   onClick={() => onSetWorkspaceVisible(workspace.id, hidden)}
                   className={clsx(
@@ -246,14 +247,14 @@ export function ProjectSettings(props: {
                       : "text-slate-400 hover:bg-slate-50",
                   )}
                 >
-                  规则
+                  {t("settings.projects.rules")}
                   {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                 </button>
               </div>
 
               <div className="mt-2">
                 <div className="flex items-center justify-between text-ui-xs text-slate-400">
-                  <span>本地文件夹</span>
+                  <span>{t("settings.projects.localFolder")}</span>
                   {project.repoPath ? (
                     <span className="truncate pl-2 font-mono text-ui-xs text-slate-400">
                       {project.repoPath.split("/").pop()}
@@ -280,21 +281,21 @@ export function ProjectSettings(props: {
                     icon={<FolderOpen size={12} />}
                     onClick={() => setPickerFor(workspace.id)}
                   >
-                    选择
+                    {t("settings.projects.choose")}
                   </Button>
                 </div>
               </div>
 
               {open ? (
                 <div className="mt-2">
-                  <div className="text-ui-xs text-slate-400">项目规则</div>
+                  <div className="text-ui-xs text-slate-400">{t("settings.projects.rulesTitle")}</div>
                   <textarea
                     value={project.rule}
                     onChange={(event) => edit(workspace.id, { rule: event.target.value })}
                     onBlur={save}
                     rows={4}
-                    title="项目规则会作为 tapd_get_bug 的 projectRule 返回。"
-                    placeholder={"例如：\n- 只改 Rust 层，UI 交给同事\n- 提交前必须跑 cargo test"}
+                    title={t("settings.projects.rulesTooltip")}
+                    placeholder={t("settings.projects.rulesPlaceholder")}
                     className={`${inputClass} mt-1 resize-y leading-5`}
                   />
                 </div>
@@ -305,7 +306,7 @@ export function ProjectSettings(props: {
 
         {workspaces.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-            登录后加载项目
+            {t("settings.projects.loadAfterLogin")}
           </div>
         ) : null}
       </div>
@@ -313,8 +314,8 @@ export function ProjectSettings(props: {
       <FolderPicker
         open={pickerFor !== null}
         initialPath={pickerProject?.repoPath}
-        title="选择项目文件夹"
-        description="设置这个 TAPD 项目对应的本地仓库目录，Agent 会以它为工作目录；MCP 也按它把 AI 的根目录匹配到本项目。"
+        title={t("settings.projects.pickerTitle")}
+        description={t("settings.projects.pickerDesc")}
         onCancel={() => setPickerFor(null)}
         onSelect={(path) => {
           const workspaceId = pickerFor;

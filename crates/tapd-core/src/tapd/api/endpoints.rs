@@ -269,7 +269,7 @@ pub fn bug_detail_body(workspace_id: &str, bug_id: &str) -> Value {
         "installed_app_entity": {
             "obj_id": bug_id,
             "obj_type": "bug",
-            "obj_name": "缺陷"
+            "obj_name": "缺陷" // i18n-exempt: TAPD request field value
         },
         "has_edit_rule_fields": [],
         "is_archived": 0,

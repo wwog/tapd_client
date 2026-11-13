@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { ArrowUpCircle, ShieldAlert } from "lucide-react";
 
 import { getUpdateSnapshot, subscribeUpdate } from "../lib/update";
+import { t } from "../lib/i18n";
 
 type Props = {
   /** Tasks waiting for a review or merge decision; opens the 待处理 queue. */
@@ -35,7 +36,7 @@ export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props
         <button
           type="button"
           onClick={onOpenReviews}
-          title={`${pendingReviews} 个 Agent 任务待处理`}
+          title={t("app.titleBar.pending", { n: pendingReviews })}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-amber-600 transition hover:bg-amber-50"
         >
           <span className="relative">
@@ -53,7 +54,7 @@ export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props
           <button
             type="button"
             onClick={onOpenAccount}
-            title={`发现新版本 v${updateState.available.version}`}
+            title={t("app.update.available", { version: updateState.available.version })}
             className="grid h-7 w-7 place-items-center rounded-lg text-emerald-600 transition hover:bg-emerald-50"
           >
             <span className="relative">
@@ -66,15 +67,15 @@ export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props
             <div className="flex items-center gap-2 text-ui-sm">
               <ArrowUpCircle size={13} className="text-emerald-400" />
               <span className="font-normal text-slate-100">
-                新版本 v{updateState.available.version}
+                {t("app.update.newVersion", { version: updateState.available.version })}
               </span>
-              <span className="ml-auto text-ui-xs text-slate-400">更新日志</span>
+              <span className="ml-auto text-ui-xs text-slate-400">{t("app.update.changelog")}</span>
             </div>
             <p className="mt-2 max-h-56 overflow-y-auto whitespace-pre-line text-ui-sm leading-5 text-slate-300">
               {updateState.available.notes}
             </p>
             <p className="mt-2 border-t border-white/10 pt-2 text-ui-xs text-slate-400">
-              点击前往账户页更新
+              {t("app.update.openAccount")}
             </p>
           </div>
         </div>

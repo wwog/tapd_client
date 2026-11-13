@@ -9,6 +9,8 @@ use std::{
     process::Command,
 };
 
+use tapd_i18n::{tr, tr_args};
+
 pub(super) struct Worktree {
     pub(super) path: PathBuf,
     pub(super) branch: String,
@@ -58,11 +60,14 @@ fn run_git(repo: &str, args: &[&str]) -> Result<String, String> {
         .arg(repo)
         .args(args)
         .output()
-        .map_err(|error| format!("无法执行 git：{error}"))?;
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            format!("git {} 失败", args.first().copied().unwrap_or(""))
+            tr_args(
+                "agent.git.command.failed",
+                &[&args.first().copied().unwrap_or("")],
+            )
         } else {
             stderr
         });
@@ -81,25 +86,25 @@ pub(super) fn create(
 ) -> Result<Worktree, String> {
     let repo = repo.trim();
     if repo.is_empty() {
-        return Err("未配置本地仓库路径".to_string());
+        return Err(tr("agent.worktree.repo.unconfigured").to_string());
     }
     if !Path::new(repo).is_dir() {
-        return Err(format!("本地仓库路径不存在或不是目录：{repo}"));
+        return Err(tr_args("agent.worktree.repo.invalid", &[&repo]));
     }
 
     let path = worktree_path(worktrees_dir, workspace_id, task_id);
     if path.exists() {
-        return Err(format!("worktree 目录已存在：{}", path.display()));
+        return Err(tr_args("agent.worktree.dir.exists", &[&path.display()]));
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 worktree 父目录失败：{error}"))?;
+            .map_err(|error| tr_args("agent.worktree.parent.failed", &[&error]))?;
     }
 
     // Fail early with a readable message instead of letting `worktree add`
     // report a generic error for a plain directory or an empty repository.
     run_git(repo, &["rev-parse", "--verify", "HEAD"])
-        .map_err(|error| format!("不是有效的 git 仓库或没有提交（HEAD 不存在）：{error}"))?;
+        .map_err(|error| tr_args("agent.worktree.head.missing", &[&error]))?;
 
     let branch = branch_name(bug_id, task_id);
     let path_text = path.to_string_lossy().to_string();
@@ -107,7 +112,7 @@ pub(super) fn create(
         repo,
         &["worktree", "add", "-b", &branch, &path_text, "HEAD"],
     )
-    .map_err(|error| format!("创建 worktree 失败：{error}"))?;
+    .map_err(|error| tr_args("agent.worktree.add.failed", &[&error]))?;
 
     Ok(Worktree { path, branch })
 }
@@ -118,7 +123,7 @@ pub(super) fn remove(repo: &str, path: &str) -> Result<(), String> {
     let repo = repo.trim();
     let path = path.trim();
     if repo.is_empty() {
-        return Err("未配置本地仓库路径".to_string());
+        return Err(tr("agent.worktree.repo.unconfigured").to_string());
     }
     if path.is_empty() {
         return Ok(());
@@ -126,10 +131,10 @@ pub(super) fn remove(repo: &str, path: &str) -> Result<(), String> {
 
     if Path::new(path).exists() {
         run_git(repo, &["worktree", "remove", "--force", path])
-            .map_err(|error| format!("删除 worktree 失败：{error}"))?;
+            .map_err(|error| tr_args("agent.worktree.remove.failed", &[&error]))?;
     }
     run_git(repo, &["worktree", "prune"])
-        .map_err(|error| format!("清理 worktree 记录失败：{error}"))?;
+        .map_err(|error| tr_args("agent.worktree.prune.failed", &[&error]))?;
     Ok(())
 }
 

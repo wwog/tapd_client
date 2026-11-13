@@ -1,6 +1,8 @@
 //! Inputs accepted by [`crate::Workflow::apply`]. Everything platform
 //! specific is a fact the host observed; the core never creates these itself.
 
+use tapd_i18n::{tr, tr_args};
+
 use crate::task::{ChangeSet, Snapshot, TaskId, TaskSpec, Timestamp, WorktreeRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,12 +70,10 @@ pub enum MergeBlock {
 impl MergeBlock {
     pub fn message(&self) -> String {
         match self {
-            Self::DirtyRepository { files } => {
-                format!("主仓库有 {files} 个未提交文件，无法自动合并")
-            }
+            Self::DirtyRepository { files } => tr_args("flow.merge.dirtyrepo", &[files]),
             Self::RuntimeUnavailable { error } => error.clone(),
-            Self::RepositoryBusy => "该仓库已有任务正在合并，请稍后重试".to_string(),
-            Self::WorktreeMissing => "任务缺少分支或 worktree，无法自动合并".to_string(),
+            Self::RepositoryBusy => tr("flow.merge.repobusy").to_string(),
+            Self::WorktreeMissing => tr("flow.merge.worktreemissing").to_string(),
         }
     }
 }

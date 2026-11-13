@@ -6,6 +6,7 @@ import {
 } from "../lib/agent";
 import type { BugDetail, ExportResult } from "../lib/api";
 import { formatBytes } from "../lib/format";
+import { t } from "../lib/i18n";
 import { useCurrentAgent } from "../lib/useCurrentAgent";
 import { Button } from "./ui";
 
@@ -54,8 +55,10 @@ export function BugDrawerFooter(props: Props) {
         <div className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-ui-xs leading-4 text-emerald-900">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-normal">
-              已导出 {lastExport.assetCount} 个资源 ·{" "}
-              {formatBytes(lastExport.downloadedBytes)}
+              {t("bugs.exported", {
+                count: lastExport.assetCount,
+                size: formatBytes(lastExport.downloadedBytes),
+              })}
             </span>
             <div className="ml-auto flex items-center gap-1.5">
               <button
@@ -63,14 +66,14 @@ export function BugDrawerFooter(props: Props) {
                 onClick={() => onOpenPath(lastExport.dir)}
                 className="rounded border border-emerald-300 bg-surface px-1.5 py-0.5"
               >
-                打开目录
+                {t("bugs.openFolder")}
               </button>
               <button
                 type="button"
                 onClick={() => onCopy(lastExport.bugJson)}
                 className="rounded border border-emerald-300 bg-surface px-1.5 py-0.5"
               >
-                复制路径
+                {t("bugs.copyPath")}
               </button>
             </div>
           </div>
@@ -79,8 +82,12 @@ export function BugDrawerFooter(props: Props) {
           </div>
           {lastExport.warnings.length > 0 ? (
             <div className="mt-1 truncate text-amber-700" title={lastExport.warnings.join("；")}>
-              {lastExport.warnings[0]}
-              {lastExport.warnings.length > 1 ? ` 等 ${lastExport.warnings.length} 条` : ""}
+              {lastExport.warnings.length > 1
+                ? t("bugs.warningsMore", {
+                    first: lastExport.warnings[0],
+                    count: lastExport.warnings.length,
+                  })
+                : lastExport.warnings[0]}
             </div>
           ) : null}
         </div>
@@ -96,7 +103,7 @@ export function BugDrawerFooter(props: Props) {
             disabled={busy !== null && busy !== "claim"}
             onClick={onClaim}
           >
-            认领
+            {t("bugs.claim")}
           </Button>
         ) : null}
         {mine ? (
@@ -113,10 +120,10 @@ export function BugDrawerFooter(props: Props) {
                   <Bot size={13} />
                 )
               }
-              title="该缺陷已在 Agent 队列中，点击查看任务"
+              title={t("bugs.agentQueued")}
               onClick={() => onOpenAgentTask?.(agentInfo.task.id)}
             >
-              {agentInFlightLabel(agentInfo)} · 查看任务
+              {t("bugs.viewTaskLabel", { label: agentInFlightLabel(agentInfo) })}
             </Button>
           ) : (
             <div className="inline-flex">
@@ -127,20 +134,25 @@ export function BugDrawerFooter(props: Props) {
                 icon={<Bot size={13} />}
                 title={
                   currentAgent
-                    ? `当前 Agent：${currentAgent.name}（${currentAgent.binary}）`
-                    : "正在读取当前 Agent"
+                    ? t("bugs.currentAgent", {
+                        name: currentAgent.name,
+                        binary: currentAgent.binary,
+                      })
+                    : t("bugs.loadingAgent")
                 }
                 disabled={exporting || loading}
                 onClick={() => onAgentFix(detail)}
               >
-                用 {currentAgent?.name ?? "Agent"} 修复
+                {t("bugs.fixWith", {
+                  agent: currentAgent?.name ?? "Agent",
+                })}
               </Button>
               <Button
                 size="sm"
                 variant="primary"
                 className="rounded-l-none border-l border-primary-foreground/20 px-2"
-                title="添加补充说明或资源后启动"
-                aria-label="添加补充说明或资源后启动"
+                title={t("bugs.startWithNote")}
+                aria-label={t("bugs.startWithNote")}
                 disabled={exporting || loading}
                 onClick={() => onAgentCompose(detail)}
               >
@@ -156,7 +168,7 @@ export function BugDrawerFooter(props: Props) {
           loading={exporting}
           onClick={() => onExport(detail)}
         >
-          {exporting ? "导出中…" : "导出"}
+          {exporting ? t("bugs.exporting") : t("bugs.export")}
         </Button>
       </div>
     </div>

@@ -10,6 +10,8 @@ use std::time::Duration;
 use chrono::Local;
 use serde_json::{json, Value};
 
+use tapd_i18n::{tr, tr_args};
+
 use super::{
     model::{
         AiAction, AiBlock, AiField, AiPayload, AiResolution, AiTone, NotificationItem,
@@ -36,15 +38,15 @@ fn required_text(value: Option<&Value>, path: &str, max: usize) -> Result<String
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(|text| truncate_chars(text, max))
-        .ok_or_else(|| format!("{path} 不能为空"))
+        .ok_or_else(|| tr_args("notify.ai.required", &[&path]))
 }
 
 fn parse_ai_fields(value: &Value, path: &str) -> Result<Vec<AiField>, String> {
     let items = value
         .as_array()
-        .ok_or_else(|| format!("{path} 必须是数组"))?;
+        .ok_or_else(|| tr_args("notify.ai.array", &[&path]))?;
     if items.len() > 8 {
-        return Err(format!("{path} 最多 8 项"));
+        return Err(tr_args("notify.ai.fields.limit", &[&path]));
     }
     items
         .iter()
@@ -77,7 +79,7 @@ fn parse_ai_progress(value: &Value, path: &str) -> Result<AiBlock, String> {
         .filter(|label| !label.is_empty())
         .map(|label| truncate_chars(label, 80));
     if percent.is_none() && label.is_none() {
-        return Err(format!("{path} 需要 percent 或 label"));
+        return Err(tr_args("notify.ai.progress.value", &[&path]));
     }
     Ok(AiBlock::Progress { percent, label })
 }
@@ -89,7 +91,7 @@ fn parse_ai_block(block: &Value, index: usize) -> Result<AiBlock, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|kind| !kind.is_empty())
-        .ok_or_else(|| format!("{path}.type 不能为空"))?;
+        .ok_or_else(|| tr_args("notify.ai.block.type", &[&path]))?;
 
     match kind {
         "text" => Ok(AiBlock::Text {
@@ -121,8 +123,8 @@ fn parse_ai_block(block: &Value, index: usize) -> Result<AiBlock, String> {
         }
         "progress" => parse_ai_progress(block, &path),
         "divider" => Ok(AiBlock::Divider),
-        other => Err(format!(
-            "{path}.type 不支持「{other}」，可用 text / code / fields / progress / divider"
+        other => Err(tr_args("notify.ai.block.unsupported",
+            &[&path, &other],
         )),
     }
 }
@@ -136,9 +138,9 @@ fn parse_ai_actions(value: Option<&Value>) -> Result<Vec<AiAction>, String> {
     }
     let items = value
         .as_array()
-        .ok_or_else(|| "actions 必须是数组".to_string())?;
+        .ok_or_else(|| tr("notify.ai.actions.array").to_string())?;
     if items.len() > MAX_AI_ACTIONS {
-        return Err(format!("actions 最多 {MAX_AI_ACTIONS} 个"));
+        return Err(tr_args("notify.ai.actions.limit", &[&MAX_AI_ACTIONS]));
     }
 
     let mut seen = BTreeSet::new();
@@ -147,14 +149,16 @@ fn parse_ai_actions(value: Option<&Value>) -> Result<Vec<AiAction>, String> {
         let path = format!("actions[{index}]");
         let id = required_text(item.get("id"), &format!("{path}.id"), 48)?;
         if !seen.insert(id.clone()) {
-            return Err(format!("{path}.id「{id}」重复"));
+            return Err(tr_args("notify.ai.action.duplicate", &[&path, &id]));
         }
         let label = required_text(item.get("label"), &format!("{path}.label"), 24)?;
         let style = match item.get("style").and_then(Value::as_str) {
             None | Some("") => "secondary".to_string(),
             Some(style @ ("primary" | "secondary" | "danger")) => style.to_string(),
             Some(_) => {
-                return Err(format!("{path}.style 必须是 primary / secondary / danger"));
+                return Err(tr_args("notify.ai.action.style",
+                    &[&path],
+                ));
             }
         };
         actions.push(AiAction { id, label, style });
@@ -175,7 +179,9 @@ pub fn ai_payload_from_arguments(
     let tone = match arguments.get("tone").and_then(Value::as_str) {
         None => AiTone::Info,
         Some(raw) => AiTone::parse(raw)
-            .ok_or_else(|| "tone 必须是 info / success / warning / error / progress".to_string())?,
+            .ok_or_else(|| {
+                tr("notify.ai.tone").to_string()
+            })?,
     };
 
     let blocks = match arguments.get("blocks") {
@@ -183,7 +189,7 @@ pub fn ai_payload_from_arguments(
         Some(Value::Array(items)) if items.is_empty() => Vec::new(),
         Some(Value::Array(items)) => {
             if items.len() > MAX_AI_BLOCKS {
-                return Err(format!("blocks 最多 {MAX_AI_BLOCKS} 个"));
+                return Err(tr_args("notify.ai.blocks.limit", &[&MAX_AI_BLOCKS]));
             }
             items
                 .iter()
@@ -191,7 +197,7 @@ pub fn ai_payload_from_arguments(
                 .map(|(index, block)| parse_ai_block(block, index))
                 .collect::<Result<Vec<_>, _>>()?
         }
-        Some(_) => return Err("blocks 必须是数组".to_string()),
+        Some(_) => return Err(tr("notify.ai.blocks.array").to_string()),
     };
 
     let mut blocks = blocks;
@@ -264,7 +270,7 @@ impl NotificationService {
             .iter()
             .find(|item| item.id == id)
             .cloned()
-            .ok_or_else(|| NOT_FOUND.to_string())
+            .ok_or_else(|| tr(NOT_FOUND).to_string())
     }
 
     /// Creates an AI notification. `bypass_enabled` is used by the settings
@@ -276,7 +282,7 @@ impl NotificationService {
         bypass_enabled: bool,
     ) -> Result<NotificationItem, String> {
         if !bypass_enabled && !self.settings().ai_enabled {
-            return Err("AI 通知已在「设置 → 通知」中关闭".to_string());
+            return Err(tr("notify.ai.disabled").to_string());
         }
 
         let now = Local::now();
@@ -345,7 +351,7 @@ impl NotificationService {
             let item = items
                 .iter_mut()
                 .find(|item| item.id == id)
-                .ok_or_else(|| NOT_FOUND.to_string())?;
+                .ok_or_else(|| tr(NOT_FOUND).to_string())?;
             if let Some(ai) = item.ai.as_mut() {
                 if ai.resolution.is_some() {
                     return Ok(item.clone());
@@ -356,7 +362,7 @@ impl NotificationService {
                             .iter()
                             .find(|action| action.id == action_id)
                             .cloned()
-                            .ok_or_else(|| format!("未知操作「{action_id}」"))?,
+                            .ok_or_else(|| tr_args("notify.ai.action.unknown", &[&action_id]))?,
                     ),
                     None => None,
                 };
@@ -485,7 +491,7 @@ pub async fn mcp_wait(arguments: &Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| "缺少参数 id".to_string())?
+        .ok_or_else(|| tr("notify.ai.missing.id").to_string())?
         .to_string();
     let wait_secs = notify_wait_seconds(arguments);
     let started = std::time::Instant::now();

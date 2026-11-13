@@ -3,6 +3,7 @@ import type {
   AgentChatTool,
   AgentRuntimeStatus,
 } from "./agent";
+import { t, type MessageKey } from "./i18n";
 
 /** 工具卡片的归类；只影响图标和标题，不改变后端数据。 */
 export type ToolCategory =
@@ -21,47 +22,62 @@ type ToolMeta = {
   category: ToolCategory;
 };
 
-const TOOL_META: Record<string, ToolMeta> = {
-  read: { label: "读取文件", category: "read" },
-  readfile: { label: "读取文件", category: "read" },
-  fileread: { label: "读取文件", category: "read" },
-  viewfile: { label: "读取文件", category: "read" },
-  openfile: { label: "读取文件", category: "read" },
-  cat: { label: "读取文件", category: "read" },
-  head: { label: "读取文件", category: "read" },
-  tail: { label: "读取文件", category: "read" },
-  write: { label: "写入文件", category: "write" },
-  writefile: { label: "写入文件", category: "write" },
-  createfile: { label: "写入文件", category: "write" },
-  addfile: { label: "写入文件", category: "write" },
-  edit: { label: "修改文件", category: "edit" },
-  editfile: { label: "修改文件", category: "edit" },
-  multiedit: { label: "修改文件", category: "edit" },
-  patch: { label: "修改文件", category: "edit" },
-  applypatch: { label: "修改文件", category: "edit" },
-  strreplace: { label: "修改文件", category: "edit" },
-  astedit: { label: "修改文件", category: "edit" },
-  bash: { label: "执行命令", category: "exec" },
-  shell: { label: "执行命令", category: "exec" },
-  execute: { label: "执行命令", category: "exec" },
-  exec: { label: "执行命令", category: "exec" },
-  command: { label: "执行命令", category: "exec" },
-  runcommand: { label: "执行命令", category: "exec" },
-  execcommand: { label: "执行命令", category: "exec" },
-  terminal: { label: "执行命令", category: "exec" },
-  powershell: { label: "执行命令", category: "exec" },
-  grep: { label: "搜索", category: "search" },
-  glob: { label: "搜索", category: "search" },
-  search: { label: "搜索", category: "search" },
-  find: { label: "搜索", category: "search" },
-  ripgrep: { label: "搜索", category: "search" },
-  webfetch: { label: "联网", category: "web" },
-  websearch: { label: "联网", category: "web" },
-  fetch: { label: "联网", category: "web" },
-  browse: { label: "联网", category: "web" },
-  task: { label: "子 Agent", category: "agent" },
-  agent: { label: "子 Agent", category: "agent" },
-  subagent: { label: "子 Agent", category: "agent" },
+/** Tool name → category. The label follows from the category, so it is
+ *  translated at call time instead of being frozen in this table. */
+const TOOL_CATEGORIES: Record<string, ToolCategory> = {
+  read: "read",
+  readfile: "read",
+  fileread: "read",
+  viewfile: "read",
+  openfile: "read",
+  cat: "read",
+  head: "read",
+  tail: "read",
+  write: "write",
+  writefile: "write",
+  createfile: "write",
+  addfile: "write",
+  edit: "edit",
+  editfile: "edit",
+  multiedit: "edit",
+  patch: "edit",
+  applypatch: "edit",
+  strreplace: "edit",
+  astedit: "edit",
+  bash: "exec",
+  shell: "exec",
+  execute: "exec",
+  exec: "exec",
+  command: "exec",
+  runcommand: "exec",
+  execcommand: "exec",
+  terminal: "exec",
+  powershell: "exec",
+  grep: "search",
+  glob: "search",
+  search: "search",
+  find: "search",
+  ripgrep: "search",
+  webfetch: "web",
+  websearch: "web",
+  fetch: "web",
+  browse: "web",
+  task: "agent",
+  agent: "agent",
+  subagent: "agent",
+};
+
+/** Category label keys, resolved per render so the language can switch. */
+const CATEGORY_LABELS: Record<ToolCategory, MessageKey> = {
+  read: "chat.toolRead",
+  write: "chat.toolWrite",
+  edit: "chat.toolEdit",
+  exec: "chat.toolExec",
+  search: "common.search",
+  web: "chat.toolWeb",
+  agent: "chat.toolAgent",
+  mcp: "chat.toolMcp",
+  other: "chat.toolOther",
 };
 
 const normalizeToolName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -69,16 +85,18 @@ const normalizeToolName = (name: string) => name.toLowerCase().replace(/[^a-z0-9
 /** 工具名 → 标题与图标分类。未知工具回退到「工具」。 */
 export function describeTool(name: string): ToolMeta {
   const key = normalizeToolName(name);
-  const known = TOOL_META[key];
-  if (known) return known;
-  if (key.startsWith("mcp")) return { label: "MCP 工具", category: "mcp" };
+  const known = TOOL_CATEGORIES[key];
+  if (known) return { label: t(CATEGORY_LABELS[known]), category: known };
+  if (key.startsWith("mcp")) {
+    return { label: t(CATEGORY_LABELS.mcp), category: "mcp" };
+  }
   if (key.includes("grep") || key.includes("search")) {
-    return { label: "搜索", category: "search" };
+    return { label: t(CATEGORY_LABELS.search), category: "search" };
   }
   if (key.includes("edit") || key.includes("patch")) {
-    return { label: "修改文件", category: "edit" };
+    return { label: t(CATEGORY_LABELS.edit), category: "edit" };
   }
-  return { label: "工具", category: "other" };
+  return { label: t(CATEGORY_LABELS.other), category: "other" };
 }
 
 /** 工具参数的第一行，作为卡片副标题。 */
@@ -149,7 +167,7 @@ export function projectTimeline(messages: AgentChatMessage[]): TimelineRow[] {
       rows.push({
         id: message.id,
         at: message.at,
-        label: "思考",
+        label: t("chat.thinking"),
         detail: oneLine(message.text, 90),
         tone: "thinking",
       });
@@ -159,7 +177,7 @@ export function projectTimeline(messages: AgentChatMessage[]): TimelineRow[] {
       rows.push({
         id: message.id,
         at: message.at,
-        label: "系统",
+        label: t("chat.system"),
         detail: oneLine(message.text, 90),
         tone: "system",
       });
@@ -169,7 +187,7 @@ export function projectTimeline(messages: AgentChatMessage[]): TimelineRow[] {
       rows.push({
         id: message.id,
         at: message.at,
-        label: "收到任务",
+        label: t("chat.taskReceived"),
         detail: oneLine(message.text, 90),
         tone: "user",
       });
@@ -179,7 +197,7 @@ export function projectTimeline(messages: AgentChatMessage[]): TimelineRow[] {
       rows.push({
         id: message.id,
         at: message.at,
-        label: "回复",
+        label: t("chat.reply"),
         detail: oneLine(message.text, 90),
         tone: "assistant",
       });

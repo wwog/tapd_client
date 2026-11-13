@@ -21,6 +21,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::Value;
+use tapd_i18n::{tr, tr_args};
 
 /// 单次读取上限：消息条数、单条文本、工具输出、总读取字节。
 const MAX_MESSAGES: usize = 2000;
@@ -130,11 +131,11 @@ pub(super) enum TranscriptError {
 impl TranscriptError {
     pub(super) fn message(&self) -> String {
         match self {
-            Self::UnsupportedRuntime => "该运行时暂不支持对话视图，请使用终端".to_string(),
-            Self::MissingSession => "等待会话 id".to_string(),
-            Self::NotFound(detail) => format!("找不到会话记录：{detail}"),
-            Self::Read(detail) => format!("读取会话记录失败：{detail}"),
-            Self::Parse(detail) => format!("解析会话记录失败：{detail}"),
+            Self::UnsupportedRuntime => tr("agent.chat.unsupported").to_string(),
+            Self::MissingSession => tr("agent.chat.awaiting.session").to_string(),
+            Self::NotFound(detail) => tr_args("agent.transcript.notFound", &[detail]),
+            Self::Read(detail) => tr_args("agent.transcript.read.failed", &[detail]),
+            Self::Parse(detail) => tr_args("agent.transcript.parse.failed", &[detail]),
         }
     }
 }
@@ -1855,7 +1856,7 @@ fn parse_opencode_json(
 ) -> Result<(), TranscriptError> {
     let root = path
         .parent()
-        .ok_or_else(|| TranscriptError::Parse("无法定位 OpenCode 数据目录".to_string()))?;
+        .ok_or_else(|| TranscriptError::Parse(tr("agent.transcript.opencode.dir").to_string()))?;
     let messages = root.join("storage").join("message").join(session_id);
     let entries =
         fs::read_dir(&messages).map_err(|error| TranscriptError::NotFound(error.to_string()))?;

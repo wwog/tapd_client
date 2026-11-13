@@ -5,6 +5,7 @@ members = [
     "crates/tapd-core",
     "crates/tapd-mcp",
     "crates/tapd-workflow",
+    "crates/tapd-i18n",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+tapd-i18n = { path = "crates/tapd-i18n" }
 
 [profile.dev]
 # Keep dev builds responsive while still allowing debugging.

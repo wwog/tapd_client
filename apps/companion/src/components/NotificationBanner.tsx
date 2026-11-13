@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { api, useConnection, type CompanionNotification } from "../lib/api";
+import { t } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { getSession } from "../lib/session";
 import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
@@ -41,8 +42,11 @@ async function raiseSystemNotification(title: string, count: number): Promise<vo
     if (typeof Notification === "undefined") return;
     if (Notification.permission === "default") await Notification.requestPermission();
     if (Notification.permission !== "granted") return;
-    new Notification("TAPD 伴侣", {
-      body: count > 1 ? `${title} 等 ${count} 条新通知` : title,
+    new Notification(t("mobile.pair.title"), {
+      body:
+        count > 1
+          ? t("mobile.notif.manyWithTitle", { title, n: count })
+          : title,
       tag: "companion-notification",
     });
   } catch {
@@ -156,13 +160,15 @@ export function NotificationBanner() {
       <button type="button" onClick={open} className="min-w-0 flex-1 text-left">
         <span className="block truncate text-ui-caption text-slate-900">{fresh.title}</span>
         {fresh.count > 1 ? (
-          <span className="text-ui-xs text-slate-400">{fresh.count} 条新通知</span>
+          <span className="text-ui-xs text-slate-400">
+            {t("mobile.notif.count", { n: fresh.count })}
+          </span>
         ) : null}
       </button>
       <button
         type="button"
         onClick={dismiss}
-        aria-label="关闭"
+        aria-label={t("common.close")}
         className="shrink-0 rounded-md p-1 text-slate-400 transition active:bg-overlay-soft"
       >
         <X size={16} />

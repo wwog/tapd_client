@@ -4,6 +4,7 @@ import { GitBranch } from "lucide-react";
 import { agentApi, type AgentConfig, type AgentTaskStatus } from "../lib/agent";
 import { acquireAgentTasksStore, useAgentTasksStore } from "../lib/agentStore";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { Button, Spinner, Switch, cardClass, inputClass } from "./ui";
 
 const MIN_UNITS = 1;
@@ -99,10 +100,10 @@ export function AgentExecutionCard({ toast }: Props) {
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
             <GitBranch size={15} className="text-slate-400" />
-            Agent 执行
+            {t("agent.exec.title")}
           </h2>
           <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-            控制本地 Agent 任务的并行方式与代码隔离。
+            {t("agent.exec.hint")}
           </p>
         </div>
         {saving ? <Spinner className="h-3.5 w-3.5" /> : null}
@@ -114,13 +115,13 @@ export function AgentExecutionCard({ toast }: Props) {
             {loadError}
           </span>
           <Button size="sm" variant="secondary" onClick={load}>
-            重试
+            {t("common.retry")}
           </Button>
         </div>
       ) : !config ? (
         <span className="mt-4 flex items-center gap-2 text-ui-caption text-slate-400">
           <Spinner />
-          正在读取配置…
+          {t("agent.exec.reading")}
         </span>
       ) : (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -129,13 +130,15 @@ export function AgentExecutionCard({ toast }: Props) {
             title={
               queueBusy
                 ? undefined
-                : "每个任务在独立 git worktree 中运行，完成后保留提交分支。"
+                : t("agent.exec.worktreeHint")
             }
           >
-            <span className="text-ui-sm text-slate-600">Worktree 隔离</span>
+            <span className="text-ui-sm text-slate-600">
+              {t("agent.exec.worktree")}
+            </span>
             <Switch
               checked={worktreeEnabled}
-              label="Worktree 隔离"
+              label={t("agent.exec.worktree")}
               disabled={saving || queueBusy}
               onChange={(value) => {
                 if (value) setUnits(String(config.executionUnits ?? 2));
@@ -146,10 +149,14 @@ export function AgentExecutionCard({ toast }: Props) {
 
           <label
             className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-            title={worktreeEnabled ? "允许 1–8 个任务并行，默认 2。" : "关闭 Worktree 时固定为 1。"}
+            title={
+              worktreeEnabled
+                ? t("agent.exec.worktreeOnHint")
+                : t("agent.exec.worktreeOffHint")
+            }
           >
             <span className="flex items-center gap-1.5 text-ui-sm text-slate-600">
-              执行单元
+              {t("agent.exec.units")}
             </span>
             <input
               type="number"
@@ -169,12 +176,14 @@ export function AgentExecutionCard({ toast }: Props) {
 
           <div
             className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5 sm:col-span-2"
-            title="客户端重启后，之前排队的任务自动继续；关闭则保留队列但暂停，等你手动继续。"
+            title={t("agent.exec.restoreHint")}
           >
-            <span className="text-ui-sm text-slate-600">启动恢复排队</span>
+            <span className="text-ui-sm text-slate-600">
+              {t("agent.exec.restore")}
+            </span>
             <Switch
               checked={config.restoreQueuedTasks}
-              label="启动恢复排队"
+              label={t("agent.exec.restore")}
               disabled={saving}
               onChange={(value) => {
                 void save({ restoreQueuedTasks: value });
@@ -186,7 +195,7 @@ export function AgentExecutionCard({ toast }: Props) {
 
       {config && queueBusy ? (
         <p className="mt-2 text-ui-xs leading-4 text-slate-500">
-          队列中有任务，完成后才能切换 Worktree。
+          {t("agent.exec.queueBusy")}
         </p>
       ) : null}
     </section>

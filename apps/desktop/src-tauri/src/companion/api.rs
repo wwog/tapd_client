@@ -17,6 +17,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tapd_core::tapd::WorkspaceMember;
+use tapd_i18n::tr;
 
 use crate::{commands, notification, server};
 
@@ -326,7 +327,7 @@ fn claim_owner(me: Option<String>) -> Result<String, Response> {
         err_data(
             StatusCode::BAD_REQUEST,
             "no_current_user",
-            "桌面端未获取到当前用户",
+            tr("companion.user.missing"),
         )
     })
 }

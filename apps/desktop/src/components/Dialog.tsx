@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 
 import { ModalDragStrip } from "./ui";
+import { t } from "../lib/i18n";
 
 /** Shared settings modal: overlay, fixed header and a scrolling body. */
 export function Dialog(props: {
@@ -43,7 +44,7 @@ export function Dialog(props: {
           ) : null}
           <button
             type="button"
-            aria-label={`关闭${props.title}`}
+            aria-label={t("app.dialog.close", { title: props.title })}
             onClick={props.onClose}
             className={clsx(
               "grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700",

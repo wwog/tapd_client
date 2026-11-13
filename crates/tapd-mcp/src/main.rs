@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tapd_core::{mcp, paths::AppPaths, runtime::RuntimeInfo};
+use tapd_i18n::tr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -246,7 +247,7 @@ async fn ensure_app(paths: &AppPaths, client: &reqwest::Client) -> Result<Runtim
         }
     }
 
-    Err("TAPD Client 未运行。请先打开桌面客户端，或确认 MCP 配置指向正确的安装位置。".to_string())
+    Err(tr("mcp.cli.appnotrunning").to_string())
 }
 
 fn read_runtime(paths: &AppPaths) -> Option<RuntimeInfo> {
@@ -372,7 +373,7 @@ async fn send(stdout: &mut Stdout, value: Value) {
 }
 
 fn tool_definitions() -> Result<Value, String> {
-    let tools = mcp::TOOLS
+    let tools = mcp::tools()
         .iter()
         .map(|spec| {
             let schema: Value = serde_json::from_str(spec.schema)
@@ -434,8 +435,8 @@ mod manifest_tests {
         let definitions = tool_definitions().expect("manifest schemas must parse");
         let tools = definitions.as_array().expect("tools/list returns an array");
 
-        assert_eq!(tools.len(), mcp::TOOLS.len());
-        for (definition, spec) in tools.iter().zip(mcp::TOOLS) {
+        assert_eq!(tools.len(), mcp::tools().len());
+        for (definition, spec) in tools.iter().zip(mcp::tools()) {
             assert_eq!(definition["name"], spec.name);
             assert_eq!(definition["description"], spec.description);
             assert_eq!(definition["inputSchema"]["type"], "object");
