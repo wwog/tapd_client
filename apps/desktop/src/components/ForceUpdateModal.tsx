@@ -63,10 +63,10 @@ export function ForceUpdateModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="force-update-title"
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-900/55 p-6 backdrop-blur-sm"
+      className="modal-overlay fixed inset-0 z-[95] flex items-center justify-center bg-slate-900/55 p-6 backdrop-blur-sm"
     >
       <ModalDragStrip />
-      <div className="relative z-10 w-full max-w-[460px] rounded-2xl border border-border bg-surface p-6">
+      <div className="modal-panel relative z-10 w-full max-w-[460px] rounded-2xl border border-border bg-surface p-6">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-50 text-amber-600">
             <ShieldAlert size={16} />

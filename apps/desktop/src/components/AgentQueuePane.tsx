@@ -12,6 +12,7 @@ import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
 import { AgentTimeline } from "./AgentTimeline";
+import { ScrollingName } from "./ScrollingName";
 import { Badge } from "./ui";
 
 type Props = {
@@ -169,12 +170,10 @@ function RunQueueRow(props: {
               : ""}
         </span>
       </div>
-      <div
-        className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
-        title={bugTitle(task.title)}
-      >
-        {bugTitle(task.title) || t("agent.untitled")}
-      </div>
+      <ScrollingName
+        text={bugTitle(task.title) || t("agent.untitled")}
+        className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
+      />
       <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
         {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
       </div>

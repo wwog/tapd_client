@@ -4,6 +4,7 @@ import clsx from "clsx";
 
 import { api, type DirListing } from "../lib/api";
 import { t } from "../lib/i18n";
+import { useLayerClose } from "../hooks/useLayerClose";
 import { Button, ModalDragStrip } from "./ui";
 
 /**
@@ -33,6 +34,7 @@ export function FolderPicker(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pathInput, setPathInput] = useState("");
+  const { closing, requestClose, reset } = useLayerClose(onCancel);
 
   const load = async (path?: string) => {
     setLoading(true);
@@ -50,6 +52,7 @@ export function FolderPicker(props: {
 
   useEffect(() => {
     if (!open) return;
+    reset();
     setListing(null);
     void load(initialPath || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,19 +63,29 @@ export function FolderPicker(props: {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onCancel();
+        requestClose();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, onCancel]);
+  }, [open, requestClose]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]">
+    <div
+      className={clsx(
+        "modal-overlay fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
+        closing && "modal-overlay-out",
+      )}
+    >
       <ModalDragStrip />
-      <div className="relative z-10 flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10">
+      <div
+        className={clsx(
+          "modal-panel relative z-10 flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10",
+          closing && "modal-panel-out",
+        )}
+      >
         <div
           data-tauri-drag-region
           className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3"
@@ -88,7 +101,7 @@ export function FolderPicker(props: {
           <button
             type="button"
             aria-label={t("common.close")}
-            onClick={onCancel}
+            onClick={() => requestClose()}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
           >
             <X size={14} />
@@ -160,14 +173,14 @@ export function FolderPicker(props: {
               {listing?.path ?? "—"}
             </span>
           </div>
-          <Button size="sm" variant="ghost" onClick={onCancel}>
+          <Button size="sm" variant="ghost" onClick={() => requestClose()}>
             {t("common.cancel")}
           </Button>
           <Button
             size="sm"
             variant="primary"
             disabled={!listing || loading}
-            onClick={() => listing && onSelect(listing.path)}
+            onClick={() => listing && requestClose(() => onSelect(listing.path))}
             icon={<Check size={13} />}
             className={clsx(!listing && "opacity-50")}
           >

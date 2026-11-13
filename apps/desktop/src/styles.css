@@ -443,6 +443,123 @@ select,
   animation: agent-sheet-up 240ms cubic-bezier(0.22, 0.9, 0.24, 1);
 }
 
+/* 浮层进出场：右键菜单与弹窗共用同一条节奏。
+   只动 transform / opacity；退出动画结束后由 `useLayerClose` 卸载节点
+   （时长与 hooks/useLayerClose.ts 的 LAYER_OUT_MS 保持一致）。 */
+@keyframes layer-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes layer-pop-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+}
+
+.context-menu {
+  transform-origin: top left;
+  animation: layer-pop-in 120ms cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+.context-menu-out {
+  animation: layer-pop-out 110ms ease-in forwards;
+}
+
+@keyframes modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modal-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+.modal-panel {
+  animation: modal-panel-in 170ms cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+.modal-panel-out {
+  animation: modal-panel-out 110ms ease-in forwards;
+}
+
+@keyframes modal-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.modal-overlay {
+  animation: modal-overlay-in 150ms ease-out;
+}
+
+.modal-overlay-out {
+  animation: modal-overlay-out 110ms ease-in forwards;
+}
+
+@keyframes modal-sheet-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+.modal-sheet-out {
+  animation: modal-sheet-out 110ms ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu,
+  .context-menu-out,
+  .modal-panel,
+  .modal-panel-out,
+  .modal-overlay,
+  .modal-overlay-out,
+  .modal-sheet-out {
+    animation: none;
+  }
+}
+
 /* Chat 消息里的只读 Markdown：去掉预览器的商业默认间距，贴合消息卡片。 */
 .agent-chat-markdown .wmde-markdown {
   background: transparent;

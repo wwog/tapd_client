@@ -361,10 +361,14 @@ export function CompanionDialog({
       <div className="mt-4 flex justify-center">
         {pairing ? (
           <div className="rounded-xl border border-border bg-white p-3">
-            <img src={pairing.qr} alt={t("settings.companion.qrAlt")} className="h-56 w-56" />
+            <img
+              src={pairing.qr}
+              alt={t("settings.companion.qrAlt")}
+              className="h-[min(224px,34vh)] w-[min(224px,34vh)]"
+            />
           </div>
         ) : (
-          <div className="grid h-[248px] w-[248px] place-items-center rounded-xl border border-dashed border-border px-4 text-center text-ui-xs text-slate-400">
+          <div className="grid h-[min(248px,38vh)] w-[min(248px,38vh)] place-items-center rounded-xl border border-dashed border-border px-4 text-center text-ui-xs text-slate-400">
             {pairingError
               ? t("settings.companion.qrFailed")
               : pairingBusy
@@ -561,6 +565,7 @@ export function CompanionDialog({
       title={t("settings.companion.title")}
       icon={<Smartphone size={15} className="text-slate-400" />}
       size="wide"
+      fit
       onClose={onClose}
     >
       <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_340px]">

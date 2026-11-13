@@ -13,6 +13,7 @@ import { t } from "../lib/i18n";
 import { ActivityGlyph } from "./ActivityGlyph";
 import { AgentIcon } from "./AgentIcon";
 import { Segmented } from "./Segmented";
+import { ScrollingName } from "./ScrollingName";
 import { Badge, Button } from "./ui";
 
 /** 运行 tab 右侧的两种视图：结构化对话或原始 TUI。 */
@@ -83,12 +84,9 @@ export function AgentTaskHeader(props: Props) {
         />
 
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <h2
-              className="truncate text-ui-base font-normal text-slate-900"
-              title={bugTitle(task.title)}
-            >
-              {bugTitle(task.title) || t("agent.untitled")}
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
             </h2>
             <Badge tone={AGENT_STATUS_TONES[task.status]}>
               {t(AGENT_STATUS_LABELS[task.status])}

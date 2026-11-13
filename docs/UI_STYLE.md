@@ -158,6 +158,13 @@
 - 单栏内容流交给 `Dialog` 自己滚（默认）。
 - 列表 + 详情两栏时传 `bodyScroll={false}`，两栏各自 `overflow-y-auto overscroll-contain`：滚动列表不会带走右侧内容，标题栏也始终固定。
 
+浮层动效：
+
+- 右键菜单统一用 `ContextMenu`（`components/ContextMenu.tsx`）：入场 / 退场类名 `context-menu` / `context-menu-out`，位置由组件测量后自行夹进窗口，调用方不要传宽高估算。
+- 弹窗面板 `modal-panel`、蒙层 `modal-overlay`，底部抽屉退场用 `modal-sheet-out`。
+- 退场必须先标记再卸载：用 `useLayerClose`（`hooks/useLayerClose.ts`）拿 `closing` 和 `requestClose`，`onClose` 只在动画结束后执行。带 `open` 属性、关闭时不卸载的浮层，重新打开时调 `reset()`。
+- 动效只动 `transform` / `opacity`，时长 110–170ms；`prefers-reduced-motion: reduce` 下自动关闭。
+
 ## 8. 禁止清单
 
 提交前在仓库根目录执行：

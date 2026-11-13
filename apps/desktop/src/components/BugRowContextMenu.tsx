@@ -1,19 +1,19 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Fingerprint, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
-import clsx from "clsx";
 
 import type { BugSummary } from "../lib/api";
 import { bugRef } from "../lib/bug";
 import { DEV_SIM, clearDevSim, setDevSim, type DevSimKind } from "../lib/devSim";
 import { t } from "../lib/i18n";
-import { useDismiss } from "../hooks/useDismiss";
+import {
+  ContextMenu,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+} from "./ContextMenu";
 
 /** Anchor + target for the row's right-click menu. */
 export type BugRowMenu = { x: number; y: number; bug: BugSummary };
-
-/** Approximate row context menu box, used to keep it inside the window. */
-const MENU_WIDTH = 168;
-const MENU_HEIGHT = DEV_SIM ? 288 : 132;
 
 type Props = {
   menu: BugRowMenu;
@@ -26,11 +26,7 @@ type Props = {
 export function BugRowContextMenu(props: Props) {
   const { menu, onClose, onCopy, onOpenWeb } = props;
   const [copiedKey, setCopiedKey] = useState<"id" | "longId" | "title" | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
-
-  // Dismiss on any outside click, Escape, scroll, resize or blur.
-  useDismiss(true, menuRef, onClose, { scroll: true, resize: true, blur: true });
 
   useEffect(
     () => () => {
@@ -39,122 +35,95 @@ export function BugRowContextMenu(props: Props) {
     [],
   );
 
-  const copyFromMenu = (key: "id" | "longId" | "title", text: string) => {
-    onCopy?.(text);
-    setCopiedKey(key);
-    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = window.setTimeout(() => {
-      copiedTimerRef.current = null;
-      setCopiedKey(null);
-      onClose();
-    }, 700);
-  };
-
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={t("bugs.quickActions")}
-      style={{
-        left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
-        top: Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8)),
-      }}
-      className="fixed z-50 w-[168px] overflow-hidden rounded-lg border border-border bg-surface py-1 "
-      onContextMenu={(event) => event.preventDefault()}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      label={t("bugs.quickActions")}
+      onClose={onClose}
     >
-      <RowMenuItem
-        icon={<Hash size={12} />}
-        label={copiedKey === "id" ? t("bugs.copiedShortId") : t("bugs.copyShortId")}
-        done={copiedKey === "id"}
-        onClick={() => copyFromMenu("id", bugRef(menu.bug))}
-      />
-      <RowMenuItem
-        icon={<Fingerprint size={12} />}
-        label={copiedKey === "longId" ? t("bugs.copiedLongId") : t("bugs.copyLongId")}
-        done={copiedKey === "longId"}
-        onClick={() => copyFromMenu("longId", menu.bug.id)}
-      />
-      <RowMenuItem
-        icon={<Type size={12} />}
-        label={copiedKey === "title" ? t("bugs.copiedTitle") : t("bugs.copyTitle")}
-        done={copiedKey === "title"}
-        onClick={() => copyFromMenu("title", menu.bug.title)}
-      />
-      {onOpenWeb ? (
-        <RowMenuItem
-          icon={<ExternalLink size={12} />}
-          label={t("bugs.openInTapd")}
-          onClick={() => {
-            onOpenWeb(menu.bug.bugUrl);
-            onClose();
-          }}
-        />
-      ) : null}
-      {DEV_SIM ? (
-        <DevSimSection
-          bug={menu.bug}
-          onClose={onClose}
-        />
-      ) : null}
-    </div>
+      {(requestClose) => {
+        const copyFromMenu = (key: "id" | "longId" | "title", text: string) => {
+          onCopy?.(text);
+          setCopiedKey(key);
+          if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+          copiedTimerRef.current = window.setTimeout(() => {
+            copiedTimerRef.current = null;
+            setCopiedKey(null);
+            requestClose();
+          }, 700);
+        };
+
+        return (
+          <>
+            <ContextMenuItem
+              icon={<Hash size={13} />}
+              label={copiedKey === "id" ? t("bugs.copiedShortId") : t("bugs.copyShortId")}
+              done={copiedKey === "id"}
+              onClick={() => copyFromMenu("id", bugRef(menu.bug))}
+            />
+            <ContextMenuItem
+              icon={<Fingerprint size={13} />}
+              label={copiedKey === "longId" ? t("bugs.copiedLongId") : t("bugs.copyLongId")}
+              done={copiedKey === "longId"}
+              onClick={() => copyFromMenu("longId", menu.bug.id)}
+            />
+            <ContextMenuItem
+              icon={<Type size={13} />}
+              label={copiedKey === "title" ? t("bugs.copiedTitle") : t("bugs.copyTitle")}
+              done={copiedKey === "title"}
+              onClick={() => copyFromMenu("title", menu.bug.title)}
+            />
+            {onOpenWeb ? (
+              <ContextMenuItem
+                icon={<ExternalLink size={13} />}
+                label={t("bugs.openInTapd")}
+                onClick={() => {
+                  onOpenWeb(menu.bug.bugUrl);
+                  requestClose();
+                }}
+              />
+            ) : null}
+            {DEV_SIM ? (
+              <DevSimSection bug={menu.bug} requestClose={requestClose} />
+            ) : null}
+          </>
+        );
+      }}
+    </ContextMenu>
   );
 }
 
 /** Development-only state injector for the activity row / cancel button. */
-function DevSimSection(props: { bug: BugSummary; onClose: () => void }) {
-  const { bug, onClose } = props;
+function DevSimSection(props: { bug: BugSummary; requestClose: () => void }) {
+  const { bug, requestClose } = props;
   const apply = (kind: DevSimKind | null) => {
     if (kind) setDevSim(bug.workspaceId, bug.id, kind);
     else clearDevSim(bug.workspaceId, bug.id);
-    onClose();
+    requestClose();
   };
 
   return (
     <>
-      <div className="my-1 border-t border-border" />
-      <div className="flex items-center gap-1 px-3 py-1 text-ui-2xs text-slate-400">
-        <FlaskConical size={10} />
+      <ContextMenuSeparator />
+      <ContextMenuLabel icon={<FlaskConical size={11} />}>
         {t("bugs.devTest")}
-      </div>
-      <RowMenuItem
-        icon={<Hourglass size={12} />}
+      </ContextMenuLabel>
+      <ContextMenuItem
+        icon={<Hourglass size={13} />}
         label={t("bugs.simQueued")}
         onClick={() => apply("agent-queued")}
       />
-      <RowMenuItem
-        icon={<Play size={12} />}
+      <ContextMenuItem
+        icon={<Play size={13} />}
         label={t("bugs.simRunning")}
         onClick={() => apply("agent-running")}
       />
-      <RowMenuItem
-        icon={<Trash2 size={12} />}
+      <ContextMenuItem
+        icon={<Trash2 size={13} />}
         label={t("bugs.simClear")}
         onClick={() => apply(null)}
       />
     </>
-  );
-}
-
-function RowMenuItem(props: {
-  label: string;
-  icon: ReactNode;
-  done?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={props.onClick}
-      className={clsx(
-        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui-sm transition",
-        props.done
-          ? "bg-emerald-50 text-emerald-700"
-          : "text-slate-600 hover:bg-sky-50 hover:text-slate-900",
-      )}
-    >
-      <span className={props.done ? "text-emerald-600" : "text-slate-400"}>{props.icon}</span>
-      {props.label}
-    </button>
   );
 }

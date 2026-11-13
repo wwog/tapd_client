@@ -17,6 +17,7 @@ import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 import { Badge, Button } from "./ui";
 
 /** Manual merge steps returned by `mergeStart` when the agent cannot merge. */
@@ -154,12 +155,10 @@ export function AgentApproval(props: Props) {
                             )}
                           </span>
                         </div>
-                        <div
-                          className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
-                          title={bugTitle(task.title)}
-                        >
-                          {bugTitle(task.title) || t("agent.untitled")}
-                        </div>
+                        <ScrollingName
+                          text={bugTitle(task.title) || t("agent.untitled")}
+                          className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
+                        />
                         <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
                           <span className="min-w-0 truncate">
                             {task.workspaceName || task.workspaceId} · #
@@ -258,11 +257,8 @@ function ReviewCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3
-              className="min-w-0 truncate text-ui-base font-normal text-slate-900"
-              title={bugTitle(task.title)}
-            >
-              {bugTitle(task.title) || t("agent.untitled")}
+            <h3 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
             </h3>
             <Badge tone="amber">{t("agent.status.awaitingApproval")}</Badge>
           </div>
@@ -451,11 +447,8 @@ function MergeCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3
-              className="min-w-0 truncate text-ui-base font-normal text-slate-900"
-              title={bugTitle(task.title)}
-            >
-              {bugTitle(task.title) || t("agent.untitled")}
+            <h3 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
             </h3>
             <Badge tone="cyan">{t("agent.status.awaitingMerge")}</Badge>
           </div>

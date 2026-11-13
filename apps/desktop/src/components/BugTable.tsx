@@ -24,6 +24,7 @@ import {
   type AgentInFlight,
 } from "../lib/agent";
 import { AgentActivityLine } from "./AgentActivityLine";
+import { ScrollingName } from "./ScrollingName";
 import { TableFilter } from "./TableFilter";
 import { Badge, PRIORITY_TONES, SEVERITY_TONES, STATUS_TONES } from "./ui";
 import {
@@ -319,12 +320,11 @@ export function BugTable(props: Props) {
                   <span className="shrink-0 rounded bg-rose-50 px-1.5 py-0.5 text-ui-xs font-normal text-rose-600">
                     BUG
                   </span>
-                  <span
-                    className="min-w-0 flex-1 truncate font-normal text-slate-800"
-                    title={bugTitle(bug.title)}
-                  >
-                    {bugTitle(bug.title)}
-                  </span>
+                  <ScrollingName
+                    text={bugTitle(bug.title)}
+                    maxDuration={6000}
+                    className="min-w-0 flex-1 font-normal text-slate-800"
+                  />
                 </div>
                 <div className="mt-0.5 flex items-center gap-2 overflow-hidden pl-9 text-ui-xs text-slate-400">
                   <span

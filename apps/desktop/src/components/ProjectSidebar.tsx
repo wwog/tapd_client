@@ -1,11 +1,12 @@
 import clsx from "clsx";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { RefreshCw } from "lucide-react";
+import { EyeOff, FolderCog, RefreshCw } from "lucide-react";
 
 import type { Workspace, WorkspaceContext } from "../lib/api";
 import type { ProjectMenu } from "../hooks/useWorkspaceData";
 import { t } from "../lib/i18n";
 import { AccountChip } from "./AccountChip";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { ScrollingName } from "./ScrollingName";
 import { SkeletonRows } from "./Skeleton";
 import type { View } from "./NavRail";
@@ -31,6 +32,7 @@ type Props = {
   onSelectWorkspace: (id: string) => void;
   onOpenAccount: () => void;
   onOpenProjectMenu: (menu: ProjectMenu) => void;
+  onCloseProjectMenu: () => void;
   onHideWorkspace: (id: string) => void;
   onManageProjects: () => void;
   onResizeStart: (event: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -53,6 +55,7 @@ export function ProjectSidebar({
   onSelectWorkspace,
   onOpenAccount,
   onOpenProjectMenu,
+  onCloseProjectMenu,
   onHideWorkspace,
   onManageProjects,
   onResizeStart,
@@ -172,37 +175,40 @@ export function ProjectSidebar({
       </div>
 
       {projectMenu ? (
-        <div
-          role="menu"
-          className="fixed z-[70] min-w-[190px] rounded-lg border border-border bg-surface p-1 text-ui-sm text-slate-700 "
-          style={{
-            left: Math.min(projectMenu.x, window.innerWidth - 210),
-            top: Math.min(projectMenu.y, window.innerHeight - 92),
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.preventDefault()}
+        <ContextMenu
+          key={`${projectMenu.id}-${projectMenu.x}-${projectMenu.y}`}
+          x={projectMenu.x}
+          y={projectMenu.y}
+          label={t("settings.sidebar.manage")}
+          onClose={onCloseProjectMenu}
         >
-          <button
-            type="button"
-            onClick={() => onHideWorkspace(projectMenu.id)}
-            disabled={visibleWorkspaces.length <= 1}
-            title={
-              visibleWorkspaces.length <= 1
-                ? t("settings.projects.keepOne")
-                : t("settings.sidebar.localOnly")
-            }
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {t("settings.sidebar.hideName", { name: projectMenu.name })}
-          </button>
-          <button
-            type="button"
-            onClick={onManageProjects}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition hover:bg-slate-100"
-          >
-            {t("settings.sidebar.manage")}
-          </button>
-        </div>
+          {(requestClose) => (
+            <>
+              <ContextMenuItem
+                icon={<EyeOff size={13} />}
+                label={t("settings.sidebar.hideName", { name: projectMenu.name })}
+                title={
+                  visibleWorkspaces.length <= 1
+                    ? t("settings.projects.keepOne")
+                    : t("settings.sidebar.localOnly")
+                }
+                disabled={visibleWorkspaces.length <= 1}
+                onClick={() => {
+                  onHideWorkspace(projectMenu.id);
+                  requestClose();
+                }}
+              />
+              <ContextMenuItem
+                icon={<FolderCog size={13} />}
+                label={t("settings.sidebar.manage")}
+                onClick={() => {
+                  onManageProjects();
+                  requestClose();
+                }}
+              />
+            </>
+          )}
+        </ContextMenu>
       ) : null}
     </>
   );

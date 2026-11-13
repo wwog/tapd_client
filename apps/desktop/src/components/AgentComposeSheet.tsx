@@ -21,8 +21,10 @@ import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
 import { getLocale, t } from "../lib/i18n";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
+import { useLayerClose } from "../hooks/useLayerClose";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { AgentPicker } from "./AgentPicker";
+import { ScrollingName } from "./ScrollingName";
 import { Button, ModalDragStrip } from "./ui";
 
 export type AgentComposePayload = {
@@ -54,6 +56,7 @@ type Props = {
 export function AgentComposeSheet(props: Props) {
   const { open, title, submitting, onClose, onSubmit, toast } = props;
   const theme = useResolvedTheme();
+  const { closing, requestClose, reset } = useLayerClose(onClose);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -197,11 +200,13 @@ export function AgentComposeSheet(props: Props) {
   // Escape closes, ⌘/Ctrl + Enter submits from anywhere in the sheet.
   useEffect(() => {
     if (!open) return;
+    // Reopening must not inherit a stale exit animation.
+    reset();
     const onKey = (event: KeyboardEvent) => {
       // Esc 先关掉打开的选择器菜单，再考虑关闭面板。
       if (event.key === "Escape" && !submitting && !hasOpenDismissLayer()) {
         event.preventDefault();
-        onClose();
+        requestClose();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -211,7 +216,7 @@ export function AgentComposeSheet(props: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, open, submit, submitting]);
+  }, [open, requestClose, reset, submit, submitting]);
 
   // Native drag & drop only counts when the pointer is over the sheet, so the
   // rest of the workspace keeps its own drop behaviour.
@@ -263,7 +268,13 @@ export function AgentComposeSheet(props: Props) {
   return (
     <div className="fixed inset-0 z-[65]">
       {/* Backdrop is inert: the sheet has explicit close/cancel buttons. */}
-      <div aria-hidden="true" className="absolute inset-0 bg-slate-900/15" />
+      <div
+        aria-hidden="true"
+        className={clsx(
+          "modal-overlay absolute inset-0 bg-slate-900/15",
+          closing && "modal-overlay-out",
+        )}
+      />
       <ModalDragStrip />
       <section
         role="dialog"
@@ -273,6 +284,7 @@ export function AgentComposeSheet(props: Props) {
         className={clsx(
           "agent-sheet-up absolute inset-x-0 bottom-0 flex h-[min(64vh,560px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface ",
           dragging && "outline-2 -outline-offset-2 outline-sky-300",
+          closing && "modal-sheet-out",
         )}
         onDragOver={(event) => event.preventDefault()}
       >
@@ -283,18 +295,16 @@ export function AgentComposeSheet(props: Props) {
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-50 text-sky-600">
             <Sparkles size={15} />
           </span>
-          <div className="min-w-0" data-tauri-drag-region>
+          <div className="min-w-0 flex-1" data-tauri-drag-region>
             <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
               {t("chat.fixWithAgent")}
             </h2>
-            <p className="truncate text-ui-sm text-slate-500" title={bugTitle(title)}>
-              {bugTitle(title)}
-            </p>
+            <ScrollingName text={bugTitle(title)} className="text-ui-sm text-slate-500" />
           </div>
           <button
             type="button"
             aria-label={t("common.close")}
-            onClick={onClose}
+            onClick={() => requestClose()}
             disabled={submitting}
             className="ml-auto grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"
           >
@@ -384,7 +394,7 @@ export function AgentComposeSheet(props: Props) {
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
+            <Button size="sm" variant="ghost" onClick={() => requestClose()} disabled={submitting}>
               {t("common.cancel")}
             </Button>
             <Button

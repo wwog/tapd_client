@@ -4,6 +4,7 @@ import type { AgentTask } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 import { Badge, Button } from "./ui";
 
 type Props = {
@@ -29,12 +30,9 @@ export function AgentQueuedDetail(props: Props) {
             <Hourglass size={14} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <h2
-                className="truncate text-ui-base font-normal text-slate-900"
-                title={bugTitle(task.title)}
-              >
-                {bugTitle(task.title) || t("agent.untitled")}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+                <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
               </h2>
               <Badge tone="neutral">{t("agent.status.queued")}</Badge>
               {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}

@@ -26,9 +26,10 @@ import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
 import { t } from "../lib/i18n";
 import { useAgentChat } from "../hooks/useAgentChat";
-import { useDismiss } from "../hooks/useDismiss";
 import { AgentChatPane } from "./AgentChatPane";
 import { AgentIcon } from "./AgentIcon";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
+import { ScrollingName } from "./ScrollingName";
 import { Badge, Button, selectClass } from "./ui";
 import { Dialog } from "./Dialog";
 
@@ -36,9 +37,6 @@ import { Dialog } from "./Dialog";
 const STATUS_OPTIONS: AgentTaskStatus[] = ["succeeded", "failed", "canceled"];
 const PAGE_SIZE = 50;
 /** Approximate row menu box, used to keep it inside the window. */
-const MENU_WIDTH = 152;
-const MENU_HEIGHT = 44;
-
 /** Anchor + target for a history row's right-click menu. */
 type HistoryRowMenu = { x: number; y: number; task: AgentTask };
 
@@ -345,8 +343,8 @@ export function AgentHistory({
           ) : (
             <div className="p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="min-w-0 flex-1 truncate text-ui-base font-normal text-slate-900">
-                  {bugTitle(selected.title) || t("agent.untitled")}
+                <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+                  <ScrollingName text={bugTitle(selected.title) || t("agent.untitled")} />
                 </h2>
                 <Badge tone={AGENT_STATUS_TONES[selected.status]}>
                   {t(AGENT_STATUS_LABELS[selected.status])}
@@ -588,9 +586,10 @@ const HistoryRow = memo(function HistoryRow(props: {
           {relativeTime(task.createdAt)}
         </span>
       </div>
-      <div className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700">
-        {bugTitle(task.title) || t("agent.untitled")}
-      </div>
+      <ScrollingName
+        text={bugTitle(task.title) || t("agent.untitled")}
+        className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
+      />
       <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
         {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
       </div>
@@ -605,31 +604,26 @@ function HistoryRowContextMenu(props: {
   onDelete: (task: AgentTask) => void;
 }) {
   const { menu, onClose, onDelete } = props;
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useDismiss(true, menuRef, onClose, { scroll: true, resize: true, blur: true });
 
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={t("agent.history.actions")}
-      style={{
-        left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
-        top: Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8)),
-      }}
-      className="fixed z-50 w-[152px] overflow-hidden rounded-lg border border-border bg-surface py-1"
-      onContextMenu={(event) => event.preventDefault()}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      label={t("agent.history.actions")}
+      onClose={onClose}
     >
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => onDelete(menu.task)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui-sm text-rose-600 transition hover:bg-rose-50"
-      >
-        <Trash2 size={12} className="text-rose-500" />
-        {t("agent.history.deleteRecord")}
-      </button>
-    </div>
+      {(requestClose) => (
+        <ContextMenuItem
+          tone="danger"
+          icon={<Trash2 size={13} />}
+          label={t("agent.history.deleteRecord")}
+          onClick={() => {
+            onDelete(menu.task);
+            requestClose();
+          }}
+        />
+      )}
+    </ContextMenu>
   );
 }
 

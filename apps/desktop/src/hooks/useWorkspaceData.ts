@@ -154,21 +154,6 @@ export function useWorkspaceData({
     setHiddenWorkspaceIds(info.hiddenWorkspaceIds ?? []);
   }, [info]);
 
-  // Dismiss the project context menu on any outside click / Escape.
-  useEffect(() => {
-    if (!projectMenu) return;
-    const close = () => setProjectMenu(null);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [projectMenu]);
-
   // Entering the account view refreshes the identity/session snapshot, so a
   // changed company/name (or a newly cached avatar) shows up immediately.
   useEffect(() => {
@@ -277,8 +262,9 @@ export function useWorkspaceData({
   };
 
   const hideWorkspace = (id: string) => {
+    // The context menu closes itself (with its exit animation), so do not
+    // unmount it here.
     setWorkspaceVisible(id, false);
-    setProjectMenu(null);
   };
 
   const handleLogout = () => {

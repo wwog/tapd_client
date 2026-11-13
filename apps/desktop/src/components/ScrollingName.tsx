@@ -4,13 +4,15 @@ import clsx from "clsx";
 type Props = {
   text: string;
   className?: string;
+  /** Upper bound in ms for the slide; very long text keeps a readable pace. */
+  maxDuration?: number;
 };
 
 /**
- * One-line project name. If it overflows, hovering scrolls it in place instead
+ * One-line name/title. If it overflows, hovering scrolls it in place instead
  * of truncating; the speed scales with the overflow distance.
  */
-export function ScrollingName({ text, className }: Props) {
+export function ScrollingName({ text, className, maxDuration = 2500 }: Props) {
   const outerRef = useRef<HTMLSpanElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(0);
@@ -30,7 +32,7 @@ export function ScrollingName({ text, className }: Props) {
     return () => observer.disconnect();
   }, [text]);
 
-  const duration = Math.min(2500, Math.max(400, overflow * 12));
+  const duration = Math.min(maxDuration, Math.max(400, overflow * 12));
 
   return (
     <span
