@@ -41,11 +41,10 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
-      # Tauri's build script validates externalBin during `cargo check/test`,
-      # so the sidecar must exist even for read-only Rust jobs.
-      - name: Build MCP sidecar (debug)
-        run: pnpm build:sidecar:debug
-
+      # `cargo check/test` compiles two JS-generated inputs: the MCP sidecar
+      # (tauri's build script validates `externalBin`) and the companion SPA
+      # (`RustEmbed` fails to compile without `dist-companion/`). The root
+      # check/test scripts build both first, so no separate step is needed.
       - name: Check Rust workspace
         run: pnpm check:rust
 

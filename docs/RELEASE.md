@@ -133,7 +133,7 @@ target/aarch64-apple-darwin/release/bundle/dmg/TAPD Client_<version>_<arch>.dmg
 target/aarch64-apple-darwin/release/bundle/macos/TAPD Client.app.tar.gz(.sig)
 ```
 
-`cargo check --workspace` / `cargo test --workspace` 也会触发 Tauri build script，而它要求 `binaries/` 下的 sidecar 存在；直接用 `pnpm check:rust` / `pnpm test:rust`（会自动先构建 debug sidecar），或先跑 `pnpm build:sidecar:debug`。
+`cargo check --workspace` / `cargo test --workspace` 会触发两个「编译前必须有」的构建产物：`binaries/` 下的 sidecar（Tauri build script 校验 `externalBin`）与 `apps/desktop/src-tauri/dist-companion/`（移动端 SPA，`#[derive(RustEmbed)]` 在编译期展开，目录不存在直接报错）。直接用 `pnpm check:rust` / `pnpm test:rust`（会自动先跑 `build:companion` 与 debug sidecar），或先手动执行 `pnpm build:companion && pnpm build:sidecar:debug`。
 
 ## 6. 更新流程测试（v0.1.0 → v1.0.0）
 
@@ -169,4 +169,5 @@ target/aarch64-apple-darwin/release/bundle/macos/TAPD Client.app.tar.gz(.sig)
 - **客户端一直提示同一版本**：确认 GitHub Release 不是 prerelease/draft，且 `latest.json` 已上传；`version` 必须大于客户端当前版本。
 - **更新包签名校验失败**：CI 私钥与 `tauri.conf.json` 的公钥不匹配，或 `latest.json` 里的 `signature` 不是对应 `.sig` 的内容。
 - **`"…/src-tauri/binaries/tapd-mcp-aarch64-apple-darwin" does not exist`**：还没构建 sidecar，运行 `pnpm build:sidecar` 或直接用 `pnpm build`。
+- **`#[derive(RustEmbed)] folder '…/src-tauri/dist-companion' does not exist`**：还没构建移动端 SPA，运行 `pnpm build:companion`（或直接用 `pnpm build` / `pnpm check:rust` / `pnpm test:rust`）。发布包必须带上它，否则手机端只会看到「伴侣前端未构建」占位页。
 - **CI 安装依赖失败**：确认 `pnpm-lock.yaml` 已随提交更新（`pnpm install` 后提交）。

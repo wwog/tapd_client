@@ -19,13 +19,15 @@ pnpm typecheck        # 前端类型检查
 pnpm check:rust       # Rust 编译检查
 cargo test -p tapd-core
 cargo build -p tapd-mcp
-pnpm build            # 本机架构 app + dmg（自动先构建 sidecar）
+pnpm build            # 本机架构 app + dmg（自动先构建伴侣 SPA 与 sidecar）
 pnpm build:arm64      # 显式 arm64 app + dmg（与 release CI 一致）
 ```
 
 打包会把 `tapd-mcp` 放进 `TAPD Client.app/Contents/MacOS/`，设置页复制的 MCP 配置会直接指向该路径。发布流程见 [RELEASE.md](RELEASE.md)。
 
-CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、构建 debug sidecar、`cargo check` 与 workspace 测试。
+`cargo check` / `cargo test` 需要两个 JS 侧产物先行：`apps/desktop/src-tauri/binaries/`（sidecar）与 `apps/desktop/src-tauri/dist-companion/`（移动端 SPA，rust-embed 编译期嵌包）。`pnpm check:rust` / `pnpm test:rust` 会自动先构建两者，直接跑裸 cargo 会报缺目录。
+
+CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm check:rust` 与 `pnpm test:rust`（两者自带上述预构建）。
 
 ## 3. 首次运行
 

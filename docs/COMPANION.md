@@ -130,7 +130,7 @@
 - **`/companion/api/notifications` 返回裸数组**（计划初稿的 `{ items, serverTime }` 中 serverTime 无消费方，砍掉；手机端本地 last-seen 即事实源）。
 - **`/companion/api/media` 鉴权支持 `t` 查询参数**：`<img>`/`<video>` 无法设置 Authorization 头，会话 token 经 `t=` 传递（与桌面 `/media?token=` 的既有模式同构）；前端 `mediaUrl` 同步拼参。
 - **`GET /companion/api/bug` 参数为 camelCase**（`workspaceId`/`bugId`，serde rename_all 统一）。
-- **`dist-companion/` 由构建链保证**：根 `build` 先 `build:companion` 再 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。
+- **`dist-companion/` 由构建链保证**：根 `build` / `dev` / `check:rust` / `test:rust` 都先 `build:companion` 再动 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。**CI 2026-11-13 修复**：GitHub Actions 上 `dist-companion/` 不存在导致 `RustEmbed` 编译失败，补完上述脚本前缀后 check/test job 只需 `pnpm check:rust` / `pnpm test:rust`；release job 增加显式 `pnpm build:companion` 步骤（发布包必须内嵌真实 SPA，不能落到占位页）。
 - **配对细节**：一次性码 TTL 10min 单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对覆盖旧 token；`companion_status` 不返回 token_hash。
 - **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
 - **联调修复（2026-11-13 真实环境）**：移动端列表改用 `/companion/api/workspaces`（state 不含项目）；项目下拉显示 `name`（TAPD `prettyName` 是数字 ID）；`fetch_tapd_media` 将站内相对路径（`/tfl/...`）补全到 `TAPD_HOME` 后再过白名单。

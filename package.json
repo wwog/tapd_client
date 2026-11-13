@@ -5,17 +5,17 @@
   "description": "TAPD enhanced desktop client with MCP support",
   "packageManager": "pnpm@12.10.1",
   "scripts": {
-    "dev": "pnpm build:sidecar:debug && pnpm -C apps/desktop tauri dev",
+    "dev": "pnpm build:companion && pnpm build:sidecar:debug && pnpm -C apps/desktop tauri dev",
     "build": "pnpm build:companion && pnpm build:sidecar && pnpm -C apps/desktop tauri build",
     "build:companion": "pnpm -C apps/companion build",
     "build:sidecar": "bash scripts/build-sidecar.sh",
     "build:sidecar:debug": "bash scripts/build-sidecar.sh --debug",
-    "build:arm64": "bash scripts/build-sidecar.sh aarch64-apple-darwin && pnpm -C apps/desktop tauri build --target aarch64-apple-darwin",
+    "build:arm64": "pnpm build:companion && bash scripts/build-sidecar.sh aarch64-apple-darwin && pnpm -C apps/desktop tauri build --target aarch64-apple-darwin",
     "typecheck": "pnpm -C apps/companion typecheck && pnpm -C apps/desktop typecheck",
-    "check:rust": "pnpm build:sidecar:debug && cargo check --workspace",
+    "check:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo check --workspace",
     "build:mcp": "cargo build -p tapd-mcp",
     "release": "bash scripts/release.sh",
     "changelog": "node scripts/changelog.mjs",
-    "test:rust": "pnpm build:sidecar:debug && cargo test --workspace"
+    "test:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo test --workspace"
   }
 }

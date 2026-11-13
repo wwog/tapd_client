@@ -103,6 +103,12 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Build companion SPA
+        # Embedded by rust-embed into the app bundle; `dist-companion/` must
+        # exist before cargo compiles, and release builds embed it (no runtime
+        # fallback to disk).
+        run: pnpm build:companion
+
       - name: Test Rust workspace
         run: pnpm test:rust
 
