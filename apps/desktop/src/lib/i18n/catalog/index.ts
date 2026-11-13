@@ -8,6 +8,7 @@ import { common } from "./common";
 import { misc } from "./misc";
 import { settings } from "./settings";
 import { shell } from "./shell";
+import { terminal } from "./terminal";
 import { workbench } from "./workbench";
 
 export const CATALOG = {
@@ -17,6 +18,7 @@ export const CATALOG = {
   ...bugs,
   ...agent,
   ...workbench,
+  ...terminal,
   ...misc,
 } as const;
 

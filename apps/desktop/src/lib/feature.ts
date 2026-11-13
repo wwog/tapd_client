@@ -55,7 +55,13 @@ export type FeatureCommandName =
   | "notification_simulate"
   | "notification_start_drag"
   | "notification_state_get"
-  | "notification_view";
+  | "notification_view"
+  | "terminal_close"
+  | "terminal_create"
+  | "terminal_input"
+  | "terminal_list"
+  | "terminal_replay"
+  | "terminal_resize";
 
 /** Calls a feature command routed to the notification / agent / cache modules. */
 export const featureCommand = <T>(

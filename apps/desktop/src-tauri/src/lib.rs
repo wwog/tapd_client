@@ -22,6 +22,7 @@ mod server;
 mod session;
 mod shell_path;
 mod state;
+mod terminal;
 mod update;
 mod window_state;
 
@@ -178,6 +179,7 @@ pub fn run() {
 
             notification::init(&handle, state.clone());
             agent::init(&handle, state.clone());
+            terminal::init(&handle);
             // Check GitHub Releases shortly after launch, then every two hours.
             update::init(&handle, state.clone());
             session::spawn_session_watcher(handle, state);
@@ -191,6 +193,8 @@ pub fn run() {
                 // The agent TUI/serve run in their own sessions, so they must be
                 // stopped explicitly or they keep working after the app is gone.
                 agent::shutdown(app);
+                // Terminal shells are in their own sessions too.
+                terminal::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     // Persist the final geometry before the config file goes away.
                     window_state::save_now(app, &state);

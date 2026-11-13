@@ -18,6 +18,7 @@
 //!   update-field / transitions / transition / claim), which run the same
 //!   desktop command cores the bug detail panel uses.
 //! - `feature` — whitelisted proxy to the desktop `feature_command` surface.
+//! - `terminal` — the per-session terminal WebSocket (replay + live output).
 //! - `tunnel` — cloudflared Quick Tunnel detection, lifecycle and URL parsing.
 //!
 //! Every `#[tauri::command]` stays in this module because `lib.rs` registers
@@ -28,6 +29,7 @@ mod api;
 mod assets;
 mod feature;
 mod pairing;
+mod terminal;
 mod tunnel;
 
 use std::{
@@ -57,6 +59,7 @@ use api::{
 use assets::static_fallback;
 use feature::{api_feature, rate_limiter};
 use pairing::{heartbeat, pair, RateLimiter};
+use terminal::ws_terminal;
 
 /// One-time pairing codes expire after ten minutes (single use on top).
 const PAIRING_TTL_SECS: i64 = 600;
@@ -227,6 +230,7 @@ async fn serve(
         .route("/companion/api/notifications", get(api_notifications))
         .route("/companion/api/media", get(api_media))
         .route("/companion/api/feature", post(api_feature))
+        .route("/companion/api/terminal/ws", get(ws_terminal))
         .fallback(static_fallback)
         .with_state(ctx);
 

@@ -4,8 +4,11 @@
 //! (`feature_router::dispatch`, names like `agent_*` / `notification_*` /
 //! `coworker_*`). Mobile v2 reuses that surface for its new capabilities —
 //! Agent task view/review/history/enqueue/cancel/retry, Agent config, check-in
-//! notification settings and coworker packages — through the narrow allowlist
-//! below, so the LAN endpoint can never become a generic command relay.
+//! notification settings, coworker packages and the terminal session list
+//! (attach tickets come from `terminal_ticket`; input/resize travel over
+//! `companion::terminal`'s WebSocket instead) —
+//! through the narrow allowlist below, so the LAN endpoint can never become a
+//! generic command relay.
 //!
 //! Deliberately no `require_logged_in` gate: Agent config/history and coworker
 //! packages are meaningful without a TAPD session, and the whitelisted
@@ -66,6 +69,12 @@ const ALLOWED_FEATURES: &[&str] = &[
     // 同事包
     "coworker_list",
     "coworker_select",
+    // 终端会话（输入与尺寸只走 WebSocket，见 `companion::terminal`）
+    "terminal_list",
+    "terminal_create",
+    "terminal_close",
+    // WebSocket 接入的一次性票据（60s、单次、绑定会话）
+    "terminal_ticket",
 ];
 
 /// Feature-proxy budget: at most 60 requests per IP per minute.
@@ -180,6 +189,10 @@ mod tests {
         "notification_settings_set",
         "coworker_list",
         "coworker_select",
+        "terminal_list",
+        "terminal_create",
+        "terminal_close",
+        "terminal_ticket",
     ];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {

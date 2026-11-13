@@ -181,7 +181,8 @@ apps/desktop/
     session.rs               隐藏 WebView、同步 / 异步桥、Cookie
     inject.js                抓包与 __TAPDCB__ 请求助手
     commands.rs              Tauri 命令（会话、缺陷、MCP 配置、媒体打开方式）
-    feature_router.rs        通知 / Agent / 同事 / 缓存 / MCP 的统一命令路由
+    feature_router.rs        通知 / Agent / 同事 / 终端 / 缓存 / MCP 的统一命令路由
+    terminal.rs              用户终端会话（PTY、回放环、输出事件与命令面）
     cache.rs                 SQLite 离线快照缓存
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
@@ -198,6 +199,7 @@ apps/desktop/
     mcp_import.rs            各 AI 客户端配置一键注入
     export.rs                bug.json 导出、资源下载与提示词渲染
     diagnostics.rs           脱敏诊断包
+    companion/terminal.rs    远程终端 WebSocket（回放 + 实时输出 + 输入 / 尺寸）
     server.rs                本地 HTTP（/healthz、/mcp/call、调试端点）
     update.rs                GitHub Releases 检查与更新状态
     reset.rs / open_with.rs  本地数据清理 / 按默认应用打开资源
@@ -215,6 +217,8 @@ scripts/                     图标、sidecar、发版等构建工具
 - **缓存是快照**：优先保证打开即见，不做全量后台同步与离线搜索。
 - **Agent 默认串行，Worktree 开启后并行**：默认关闭 Worktree，同一时间只有一个任务使用主仓库；开启后每个任务在独立 worktree 中运行，执行单元可调到 1–8，避免互相踩踏。改动先审核、合并回主仓后才算完成，TAPD 回写集中在合并阶段，避免分支旁的中间状态污染缺陷。
 - **通知自绘**：不使用系统通知，才能承载处理 / 查看 / 忽略三个动作与更新进度。
+- **终端会话归后端，视图可丢弃**：PTY、输出环形缓冲和订阅广播都在 `terminal.rs`，关面板 / 切页面只销毁 xterm 视图，shell 继续运行；重开时回放尾部 256 KiB 并按累计字节数去重，手机与桌面可以同时挂同一会话。
+- **右 / 下容器先开者优先**：主视图区是一个 Grid（`main` / `term` / `detail` 三个稳定节点），先打开的容器保持整幅跨度，后打开者让出空间；只切 `grid-template-areas`，不重建 React 树，所以切换时缺陷列表、详情与终端都不丢状态。
 - **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行；桌面 `AgentCore` 只持有 `Mutex<Workflow>`，任务 / 队列 / 审核 / 合并 / 恢复没有第二份实现，便于穷举并发、审核、合并与恢复场景。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
@@ -226,6 +230,8 @@ scripts/                     图标、sidecar、发版等构建工具
 - 通知的「项目」范围仍只轮询当前项目；「我的」范围已跨项目轮询。
 - `assigned_time` 缺失时“转移”判定偏保守。
 - Agent 就绪检测与完成判定是启发式的；取消按进程组回收，仍可能有极端情况下的孙进程残留。
+- 终端回放是原始输出尾部（不做终端状态序列化），全屏 TUI 中途重挂只能近似重建；手机断线期间超出 256 KiB 的输出会丢。
+- 远程终端与伴侣共用配对 token，没有独立的二次确认；隧道开启时等价于把桌面用户的 shell 暴露到公网，只在可信设备上配对。
 - 发布包默认未签名、未公证；首次打开需在「系统设置 → 隐私与安全性」中允许。
 - TAPD 网页内部接口未公开，改版时需要更新适配层。
 

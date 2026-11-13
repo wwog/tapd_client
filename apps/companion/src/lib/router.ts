@@ -8,6 +8,8 @@ export type Route =
   | { name: "agent-history" }
   | { name: "agent-task"; id: string }
   | { name: "coworkers" }
+  | { name: "terminal" }
+  | { name: "terminal-session"; id: string }
   | { name: "settings" };
 
 const parse = (hash: string): Route => {
@@ -30,6 +32,9 @@ const parse = (hash: string): Route => {
       return { name: "agent" };
     case "coworkers":
       return { name: "coworkers" };
+    case "terminal":
+      if (parts[1] === "s" && parts[2]) return { name: "terminal-session", id: parts[2] };
+      return { name: "terminal" };
     case "settings":
       return { name: "settings" };
     default:

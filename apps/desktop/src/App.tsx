@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { Loader2, PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
 
@@ -43,6 +43,7 @@ import { ProjectSidebar } from "./components/ProjectSidebar";
 import { RecoveryBanner } from "./components/RecoveryBanner";
 import { SettingsPage } from "./components/SettingsPage";
 import { SkeletonRows } from "./components/Skeleton";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
@@ -58,6 +59,7 @@ import {
   defaultSidebarWidth,
   useSidebarLayout,
 } from "./hooks/useSidebarLayout";
+import { useTerminalPanel } from "./hooks/useTerminalPanel";
 import {
   useWorkspaceData,
   type WorkspacePaneBridge,
@@ -86,6 +88,29 @@ const VIEW_TITLES: Record<Exclude<View, "bugs">, MessageKey> = {
   account: "app.account.title",
   settings: "common.settings",
 };
+
+/** Grid templates for the two content panes (see `terminalSpans`). */
+const GRID_AREAS_TERMINAL_FIRST = '"main detail" "term term"';
+const GRID_AREAS_DETAIL_FIRST = '"main detail" "term detail"';
+
+/**
+ * Open order of one content pane: every false -> true edge takes the nex
+ * number, and the smaller number owns the full span.
+ *
+ * The bump runs in a layout effect, so the area swap happens in the same pain
+ * as the open; doing it during render would mutate a ref on a render React may
+ * discard.
+ */
+function useOpenOrder(open: boolean, counter: { current: number }): number {
+  const [order, setOrder] = useState(0);
+  const wasOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (open === wasOpen.current) return;
+    wasOpen.current = open;
+    if (open) setOrder(++counter.current);
+  }, [open, counter]);
+  return order;
+}
 
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
@@ -122,7 +147,7 @@ export default function App() {
     void refreshCompanionStatus();
   }, []);
 
-  // Green rail icon while a phone is online. Pairing/presence events flip it
+  // Green rail icon while a phone is online. Pairing/presence events flip i
   // immediately; the poll clears it after the 60s heartbeat window expires.
   usePoll(
     () => void refreshCompanionStatus(),
@@ -203,7 +228,7 @@ export default function App() {
   }, []);
 
   // 处理中 exists only while an agent works on this project; when the last one
-  // finishes (or the user switches project) fall back to 我负责的 so the list
+  // finishes (or the user switches project) fall back to 我负责的 so the lis
   // can never sit on a scope whose segment is gone.
   const processingCount = agentActiveBugIds(workspaceId, agentInFlight).length;
   useEffect(() => {
@@ -239,6 +264,40 @@ export default function App() {
     detailRendered: detailPane.rendered,
     detailWidth: detailPane.width,
   });
+
+  const terminal = useTerminalPanel({ workspaceId, showToast });
+
+  /** Shared rising-edge counter for the detail pane and the terminal panel. */
+  const openCounter = useRef(0);
+  const detailOrder = useOpenOrder(detailPane.open, openCounter);
+  const terminalOrder = useOpenOrder(terminal.open, openCounter);
+  /**
+   * The pane opened first spans the full width; the newer one yields the righ
+   * side to the other. Both panes stay mounted and only the grid areas swap, so
+   * switching never remounts the bug list, the detail or the terminals.
+   *
+   * `rendered` (not `open`) decides: a closing pane keeps its area until its
+   * shrink animation ends, otherwise the surviving pane would jump mid-frame.
+   */
+  const terminalSpans =
+    terminal.rendered && (!detailPane.rendered || terminalOrder < detailOrder);
+
+  // ⌘J is the shell panel's only global shortcut. Captured so a focused editor
+  // cannot swallow it; the panel is the single owner of its open state. Ctrl+J
+  // is a newline inside a shell, so only the platform modifier is accepted.
+  const toggleTerminal = terminal.toggle;
+  useEffect(() => {
+    const primaryModifier = navigator.userAgent.includes("Mac");
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = primaryModifier ? event.metaKey : event.ctrlKey;
+      if (!modifier || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "j") return;
+      event.preventDefault();
+      toggleTerminal();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [toggleTerminal]);
 
   // The two panes depend on each other's latest values at event time only;
   // wiring the bridges after both hooks keeps render values in the same frame.
@@ -352,7 +411,7 @@ export default function App() {
           model: payload?.model ?? null,
           permissionMode: payload?.permissionMode ?? null,
         });
-        // The view switches to the Agent tab and focuses this task; a toast
+        // The view switches to the Agent tab and focuses this task; a toas
         // on top of that is just noise.
         setAgentFocusTaskId(task.id);
         setView("agent");
@@ -682,6 +741,8 @@ export default function App() {
           name={context?.user.nick || info.me}
           showCompanion={companionEnabled}
           companionOnline={companionOnline}
+          terminalOpen={terminal.open}
+          onToggleTerminal={toggleTerminal}
           onOpenCompanion={() => setCompanionOpen(true)}
           onActivate={activateView}
         />
@@ -706,102 +767,126 @@ export default function App() {
           onSelectWorkspace={selectWorkspace}
           onOpenAccount={() => activateView("account")}
           onOpenProjectMenu={setProjectMenu}
+          onCloseProjectMenu={() => setProjectMenu(null)}
           onHideWorkspace={hideWorkspace}
           onManageProjects={() => {
-            setProjectMenu(null);
+            // The context menu closes itself after its exit animation.
             setView("projects");
           }}
           onResizeStart={sidebar.startResize}
         />
 
-        {/* Content panel */}
-        <main className="mb-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-surface  border border-border">
-          <header className="flex h-12 shrink-0 items-center gap-1.5 px-2" data-tauri-drag-region>
-            {!projectListHidden ? (
-              <button
-                type="button"
-                aria-label={
-                  sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
-                }
-                title={
-                  sidebar.autoCollapse
-                    ? sidebar.peek
-                      ? t("app.sidebar.collapse")
-                      : t("app.sidebar.expandNarrow")
-                    : sidebar.hidden
-                      ? t("app.sidebar.expand")
-                      : t("app.sidebar.collapse")
-                }
-                onClick={sidebar.toggle}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
-              >
-                {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-              </button>
-            ) : null}
-
-            <div className="min-w-0 flex-1 px-1">
-              <h1 className="truncate text-ui-base font-normal leading-5 text-slate-900">
-                {title}
-              </h1>
-              {subtitle ? (
-                <p className="truncate text-ui-sm leading-4 text-slate-400">{subtitle}</p>
+        {/*
+          Two stable panes under one grid: `main` / `term` / `detail` never
+          change identity, only their areas, so switching panes keeps the list,
+          the detail and every terminal mounted with their state intact.
+        */}
+        <div
+          className="grid min-h-0 min-w-0 flex-1"
+          style={{
+            gridTemplateAreas: terminalSpans
+              ? GRID_AREAS_TERMINAL_FIRST
+              : GRID_AREAS_DETAIL_FIRST,
+            gridTemplateColumns: "minmax(0, 1fr) auto",
+            gridTemplateRows: "minmax(0, 1fr) auto",
+          }}
+        >
+          {/* Content panel */}
+          <main
+            className="mb-2 mr-2 flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl bg-surface border border-border"
+            style={{ gridArea: "main" }}
+          >
+            <header className="flex h-12 shrink-0 items-center gap-1.5 px-2" data-tauri-drag-region>
+              {!projectListHidden ? (
+                <button
+                  type="button"
+                  aria-label={
+                    sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
+                  }
+                  title={
+                    sidebar.autoCollapse
+                      ? sidebar.peek
+                        ? t("app.sidebar.collapse")
+                        : t("app.sidebar.expandNarrow")
+                      : sidebar.hidden
+                        ? t("app.sidebar.expand")
+                        : t("app.sidebar.collapse")
+                  }
+                  onClick={sidebar.toggle}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+                >
+                  {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+                </button>
               ) : null}
-            </div>
 
-            {view === "bugs" && workspace ? (
-              <ProjectOpenButton
-                key={workspace.id}
-                workspaceId={workspace.id}
-                onError={(text) => showToast("error", text)}
+              <div className="min-w-0 flex-1 px-1">
+                <h1 className="truncate text-ui-base font-normal leading-5 text-slate-900">
+                  {title}
+                </h1>
+                {subtitle ? (
+                  <p className="truncate text-ui-sm leading-4 text-slate-400">{subtitle}</p>
+                ) : null}
+              </div>
+
+              {view === "bugs" && workspace ? (
+                <ProjectOpenButton
+                  key={workspace.id}
+                  workspaceId={workspace.id}
+                  onError={(text) => showToast("error", text)}
+                />
+              ) : null}
+            </header>
+
+            {recoveryReport ? (
+              <RecoveryBanner
+                report={recoveryReport}
+                onOpenTasks={() => activateView("agent")}
+                onDismiss={dismissRecoveryReport}
               />
             ) : null}
 
-          </header>
+            {renderView()}
+          </main>
 
-          {recoveryReport ? (
-            <RecoveryBanner
-              report={recoveryReport}
-              onOpenTasks={() => activateView("agent")}
-              onDismiss={dismissRecoveryReport}
+          <TerminalPanel panel={terminal} style={{ gridArea: "term" }} />
+
+          {/* The detail pane animates its own width; this wrapper only places it. */}
+          <div className="flex min-h-0" style={{ gridArea: "detail" }}>
+            <DetailPaneHos
+              rendered={detailPane.rendered}
+              open={detailPane.open}
+              width={detailPane.width}
+              resizing={detailPane.resizing}
+              onResizeStart={detailPane.startResize}
+              detail={detailPane.detail}
+              loading={detailPane.loading}
+              error={detailPane.error}
+              exporting={detailPane.exporting}
+              lastExport={detailPane.lastExport}
+              onClose={detailPane.closeDetail}
+              onOpenWeb={openPath}
+              onCopy={copy}
+              onExport={detailPane.exportDetail}
+              onAgentFix={handleAgentFix}
+              onAgentCompose={openAgentCompose}
+              agentInFlight={agentInFlight}
+              onOpenAgentTask={openAgentTask}
+              onOpenPath={openPath}
+              onOpenMedia={openMedia}
+              me={context?.user.nick ?? info.me}
+              members={detailPane.members}
+              membersLoading={detailPane.membersLoading}
+              onRefreshMembers={detailPane.refreshMembers}
+              onClaim={detailPane.claimFromDetail}
+              onAddComment={detailPane.addComment}
+              onChangeField={detailPane.changeField}
+              onTransition={detailPane.transition}
             />
-          ) : null}
-
-          {renderView()}
-        </main>
-
-        <DetailPaneHost
-          rendered={detailPane.rendered}
-          open={detailPane.open}
-          width={detailPane.width}
-          resizing={detailPane.resizing}
-          onResizeStart={detailPane.startResize}
-          detail={detailPane.detail}
-          loading={detailPane.loading}
-          error={detailPane.error}
-          exporting={detailPane.exporting}
-          lastExport={detailPane.lastExport}
-          onClose={detailPane.closeDetail}
-          onOpenWeb={openPath}
-          onCopy={copy}
-          onExport={detailPane.exportDetail}
-          onAgentFix={handleAgentFix}
-          onAgentCompose={openAgentCompose}
-          agentInFlight={agentInFlight}
-          onOpenAgentTask={openAgentTask}
-          onOpenPath={openPath}
-          onOpenMedia={openMedia}
-          me={context?.user.nick ?? info.me}
-          members={detailPane.members}
-          membersLoading={detailPane.membersLoading}
-          onRefreshMembers={detailPane.refreshMembers}
-          onClaim={detailPane.claimFromDetail}
-          onAddComment={detailPane.addComment}
-          onChangeField={detailPane.changeField}
-          onTransition={detailPane.transition}
-        />
+          </div>
+        </div>
       </div>
 
-      <AgentComposeSheet
+      <AgentComposeShee
         key={composeAgent ? `${composeAgent.workspaceId}:${composeAgent.id}` : "agent-compose"}
         open={composeAgent !== null}
         title={composeAgent?.title ?? ""}

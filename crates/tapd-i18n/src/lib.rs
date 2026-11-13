@@ -35,6 +35,7 @@ const BUCKETS: &[&[Message]] = &[
     catalog::bug::MESSAGES,
     catalog::notification::MESSAGES,
     catalog::companion::MESSAGES,
+    catalog::terminal::MESSAGES,
     catalog::app::MESSAGES,
     catalog::misc::MESSAGES,
 ];

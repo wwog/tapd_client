@@ -64,6 +64,12 @@ use git::{
 };
 use hooks::SessionHookKind;
 use pty::{AgentRuntime, PromptGuard, PtyOutcome};
+// Shared with the interactive terminals: both PTY readers must not split a
+// multi-byte character across two frames.
+pub(crate) use pty::take_utf8_prefix;
+// Same signal path for both PTY families: a shell tree is killed exactly like
+// an agent TUI tree.
+pub(crate) use pty::kill_process_group;
 
 pub const MAIN_LABEL: &str = "main";
 

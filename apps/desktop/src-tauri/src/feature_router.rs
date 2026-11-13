@@ -20,6 +20,8 @@ pub async fn dispatch(
         crate::agent::command(app, state, name, payload).await
     } else if name.starts_with("coworker_") {
         crate::coworker::command(app, state, name, payload).await
+    } else if name.starts_with("terminal_") {
+        crate::terminal::command(app, name, payload).await
     } else if name.starts_with("cache_") {
         crate::cache::command(state, name, payload).await
     } else if name.starts_with("mcp_") {

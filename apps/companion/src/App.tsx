@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bot, Bug, RefreshCw, Settings } from "lucide-react";
+import { Bot, Bug, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import {
@@ -20,6 +20,8 @@ import { AgentHistoryPage } from "./pages/AgentHistoryPage";
 import { AgentTaskPage } from "./pages/AgentTaskPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TerminalPage } from "./pages/TerminalPage";
+import { TerminalSessionPage } from "./pages/TerminalSessionPage";
 
 /** Full-screen gate: one-line title, explanation folded into `title`. */
 function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
@@ -42,12 +44,13 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "agent" | "settings";
+type TabKey = "bugs" | "agent" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
   { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
+  { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
   { key: "settings", label: "common.settings", hash: "#/settings" },
 ];
 
@@ -62,6 +65,9 @@ const tabOf = (route: Route): TabKey => {
     case "agent-task":
     case "coworkers":
       return "agent";
+    case "terminal":
+    case "terminal-session":
+      return "terminal";
     case "settings":
       return "settings";
     default:
@@ -91,6 +97,7 @@ function TabBar(props: { active: TabKey; badge: number }) {
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
                 {tab.key === "agent" ? <Bot size={18} /> : null}
+                {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
                 {tab.key === "agent" && props.badge > 0 ? (
                   <span
@@ -183,13 +190,21 @@ export default function App() {
     ? agentState.queuedCount ?? agentState.tasks.filter((task) => task.status === "queued").length
     : 0;
   const badge = awaiting > 0 ? awaiting : queued;
+  // Terminal sessions take the whole screen: the key bar replaces the tab bar.
+  const fullBleed = route.name === "terminal-session";
 
   return (
     <div className="flex h-full flex-col">
       {/* Mounted behind the gates too: its poll requests are what detect
           recovery (desktop back online / logged back in). */}
       {route.name !== "pair" ? <NotificationBanner /> : null}
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14">
+      <main
+        className={
+          fullBleed
+            ? "min-h-0 flex-1 overflow-hidden"
+            : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
+        }
+      >
         {route.name === "pair" ? <PairPage /> : null}
         {route.name === "bugs" ? <BugsPage /> : null}
         {route.name === "bug" ? (
@@ -199,9 +214,17 @@ export default function App() {
         {route.name === "agent-history" ? <AgentHistoryPage /> : null}
         {route.name === "agent-task" ? <AgentTaskPage id={route.id} /> : null}
         {route.name === "coworkers" ? <CoworkersPage /> : null}
+        {route.name === "terminal" ? <TerminalPage /> : null}
+        {route.name === "terminal-session" ? (
+          // One instance per session: exit/ended/title/draft state must not
+          // leak from the previous session when the route id changes.
+          <TerminalSessionPage key={route.id} id={route.id} />
+        ) : null}
         {route.name === "settings" ? <SettingsPage /> : null}
       </main>
-      {route.name !== "pair" ? <TabBar active={tabOf(route)} badge={badge} /> : null}
+      {route.name !== "pair" && !fullBleed ? (
+        <TabBar active={tabOf(route)} badge={badge} />
+      ) : null}
     </div>
   );
 }

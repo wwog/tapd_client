@@ -167,7 +167,9 @@ fn probe_login_shell() -> Option<OsString> {
     Some(OsString::from(line))
 }
 
-fn default_shell() -> OsString {
+/// The platform shell used when `$SHELL` is missing or unusable. Shared with
+/// user-facing terminals so both spawn paths agree.
+pub(crate) fn default_shell() -> OsString {
     #[cfg(target_os = "macos")]
     {
         OsString::from("/bin/zsh")

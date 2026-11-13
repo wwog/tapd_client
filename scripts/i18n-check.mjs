@@ -311,7 +311,9 @@ function checkRust() {
   )) {
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(
-      /\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g,
+      // Optional trailing comma: rustfmt wraps long entries as one element per
+      // line with a trailing comma before the closing paren.
+      /\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)/g,
     )) {
       const [, key, zh, en] = match;
       if (entries.has(key)) duplicates.push(`${key} (${rel(file)})`);

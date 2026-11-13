@@ -142,3 +142,33 @@
 - **v2.1（2026-11-13）**：对齐桌面细节 + 请求频次优化。列表默认「我的」（owners=[me]）+ Segmented 切换；筛选处理人/创建人接 `/companion/api/members`（服务端复用 2h 缓存，客户端 30min）；排序控件（created/modified 双向，入 bugFilter）；详情动作区（复制链接 bugUrl、认领=update-field owner+claim、状态流转 sheet、评论）。**请求频次优化**：reqCache SWR（列表键 30s/详情 60s/workspaces 5min/state 15s，fresh 内回列表零请求、stale 先渲染旧值后台刷新、写后精确失效）+ 轮询自适应（Agent 页 8s/其他页 30s）+ 页面隐藏全暂停恢复补一轮 + 频次预算表（reqCache.ts 注释块，后续优化事实源）。后端 6 端点复用 commands.rs 提取的 *_core（356 测试全绿 +9）。真实走查：payload/排序/动作区四入口/端点（members 27 人、transitions 只读）全过；写操作止于表单（真实项目数据不落写）。
 - **v3（2026-11-13）扫码入口与隧道生命周期**：左侧栏「设置」上方新增移动端伴侣入口，仅在 `companion.enabled` 时显示；设置页只保留启用 / 配对码开关，不再出现二维码。`CompanionConfig.enabled` 默认改为 `true`（已有显式 `false` 保留）。弹窗默认外网 Quick Tunnel：`companion_cloudflared_check` 用 `shell_path::user_path()` 检测 `cloudflared`，`companion_tunnel_start` 拉起 `cloudflared tunnel --url http://127.0.0.1:<port> --protocol http2 --no-autoupdate`，后台线程解析 stderr 中的 `*.trycloudflare.com`，30 秒未就绪判失败；未安装时弹窗只显示安装教程与「我已安装」，不显示二维码。隧道在扫码 / 关闭弹窗后保持运行，仅在显式停止、停用伴侣或应用退出时清理；`companion_pairing_code(mode)` 支持 `tunnel`（隧道 URL）与 `lan`（测试）两种二维码。**握手 / 心跳**：配对成功即写入内存 presence 并 emit `companion://paired`；手机每 20 秒 `POST /companion/api/heartbeat`，桌面 60 秒内有心跳即在线，emit `companion://presence`；`companion_status.devices` 返回 `online` / `lastSeenAt`，弹窗与手机设置页各自渲染在线状态。新增 Tauri 事件 `companion://tunnel` / `companion://paired` / `companion://presence`。**扫码配对码保留（2026-11-13 修复）**：移动端无会话时不再把 URL 重写成裸 `#/pair`；未配对时 `agent_tasks_list` 轮询直接跳过；401 处理遇到带 `t=` 的扫码 URL 不改写；`PairPage` 直接从 `location.hash` 读取配对码并监听 `hashchange`，Safari 晚到 fragment 也能重新配对。
 - **遗留观察**：IAB 的 Playwright click 命中目标不可靠（fill/坐标点击正常），非产品问题；临时端口重启即换 → 手机端重启后需重新扫码（固有行为）。
+
+## 9. 远程终端（v4，2026-11-13）
+
+桌面端的底部终端与手机共用同一批 PTY 会话，所以手机看到的是桌面机器上真实运行的 shell，不是独立的远程登录。
+
+**桌面侧**（`src-tauri/src/terminal.rs`）
+
+- `terminal_create` / `terminal_list` / `terminal_input` / `terminal_resize` / `terminal_close` / `terminal_replay` / `terminal_ticket`，全部走 `feature_command` 的 `terminal_` 前缀；会话上限 8，**到上限时先回收已退出会话**（纯移除，不 kill），因此死标签不会挡住新开。
+- 每个会话一个 PTY、一个 16ms 帧批处理写线程、256 KiB 回放环与单调累计字节数 `seq`。`terminal://output` 带 `seq`，`terminal_replay` 返回快照的 `seq`，桌面视图据此丢弃已包含在快照里的实时帧。
+- **回放对齐**：回放固定以「reset + 清屏」开头；环形缓冲被截断时从第一个完整行开始，避免手机/桌面重挂时左上角出现半行残字。
+- **输入有界**：每个会话按排队字节封顶 1 MiB，超出返回 `terminal.busy` 并记日志；PTY 写入由会话自己的队列线程串行完成，async 路径不阻塞。
+- **退出必达**：`wait()` 放在独立 waiter 线程，shell 退出即上报，孙进程仍持有 PTY 也不会让会话永远「运行中」；上报后保留 150ms 排空最后一帧输出再收尾。
+- **OSC 标题与 cwd**：解析 OSC 0/2（标题）与 OSC 7（`file://host/path`，percent-decode）并更新 Tab/手机列表的标题与 cwd，序列跨帧分割也能正确拼接。
+- 事件：`terminal://output` / `terminal://exit` / `terminal://sessions`；关闭面板不杀进程，退出应用统一回收进程组。
+
+**手机侧**
+
+- `GET /companion/api/terminal/ws?ticket=<ticket>&id=<sessionId>`：先 `feature("terminal_ticket", { id })` 换**一次性票据**（60s、单次、绑定会话），再在同一次加锁里取「回放 + 订阅」，回放与实时输出不重叠、不缺口。旧的 `t=<sessionToken>` 仍兼容，但手机只用票据，长期 token 不再出现在 URL 与隧道日志里。
+- 下行 `{"type":"replay"|"data","data":…}`、`{"type":"exit","code":…}`、`{"type":"error","code":…}`；上行 `{"type":"input","data":…}`、`{"type":"resize","cols":…,"rows":…}`。会话不存在时在升级后回一帧 `{"type":"error","code":"not_found"}` 再关闭（浏览器拿不到握手 404）；手机显示「终端已结束」并停止重连。
+- 手机页面：`#/terminal` 会话列表（10s 轮询、新建 / 关闭；新建时可选「家目录」或某个项目，选项目则由桌面解析该项目配置的 `repoPath`），`#/terminal/s/<id>` 全屏 xterm + 按键条；断线 1s→2s→4s→…≤10s 回连，页面隐藏时暂停，恢复后重连并由 replay 复位重绘。会话页按 id 独立挂载，切换会话不会残留上一个的退出/结束状态。
+- 手机列表 / 新建 / 关闭 / 取票走 `/companion/api/feature` 白名单；输入与尺寸只走 WebSocket，避免逐键 HTTP，也不把 `terminal_input` 暴露成通用代理命令。
+- **输入：行输入为默认，直通为全屏程序备用**。Quick Tunnel 实测往返 0.8–2s，逐字符发、逐字符回显在物理上不可能跟手，所以手机端默认「行输入」：命令在手机本机编辑（零延迟），回车时整行 + `\r` 作为一帧发出；Tab / Esc / Ctrl / 方向键会先把当前草稿提交再发送对应序列，保证 shell 行内容与本地草稿一致。标题栏可切「直通」：按键实时下发，适合 vim、less、Agent TUI 等全屏程序。直通模式下按键按 30ms 封顶合并（不是空闲去抖，持续打字也按帧发出），Enter / Tab / Ctrl / Esc 立即发送。桌面端同样按 40ms 封顶合并。服务端每个会话有一个输入队列线程串行写 PTY，逐键不再各起一个阻塞任务，输入顺序保持不变。
+- 行输入细节：←/→ 移动本地光标（不发 PTY）；↑/↓ 浏览本机命令历史（`sessionStorage`，最近 50 条，第一次 ↑ 暂存草稿）；输入框可一键切换明文/遮蔽，方便在 `sudo`、`ssh` 等不回显的提示里隐藏内容；模式（行输入/直通）与每个会话的草稿都记在 `sessionStorage`，返回列表再进来不丢。键盘弹起时按键条默认收起，标题栏一个按钮可展开。
+- 行输入时 xterm 的 stdin 关闭、点击终端区会聚焦输入框。终端页固定在 `visualViewport` 的 `top/left/width/height` 上（同时监听 `resize` 与 `scroll`），键盘弹起或系统平移视口时整页跟着可视区域走，标题、终端内容、输入框与按键条都不会被键盘盖住或滚出屏幕；固定页自己补 `safe-area-inset-*`，按键条不压 Home 指示条。
+
+**安全与限制**
+
+- 门槛与伴侣相同：一次性配对码换 token，解除配对立即失效；WebSocket 另用 60s 单次票据，长期 token 不再进入 URL。隧道开启时远程终端等价于公网可达的桌面 shell，只在可信设备上配对。
+- 不做独立认证、二次确认、端口转发或文件传输；机型上的密码输入建议用遮蔽开关或直通模式。
+- 回放是原始输出尾部，不做终端状态序列化；全屏 TUI 中途重挂只能近似重建，手机断线超过 256 KiB 的输出会丢。

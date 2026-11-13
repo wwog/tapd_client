@@ -23,7 +23,7 @@ tracing.workspace = true
 tapd-i18n.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
 portable-pty = "0.9"

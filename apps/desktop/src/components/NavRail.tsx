@@ -7,6 +7,7 @@ import {
   Plug,
   Settings as SettingsIcon,
   Smartphone,
+  SquareTerminal,
   Users,
 } from "lucide-react";
 
@@ -51,6 +52,9 @@ type Props = {
   showCompanion: boolean;
   /** A paired phone is heartbeating: paint the entry green. */
   companionOnline: boolean;
+  /** The bottom shell panel is open (paints the entry as active). */
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
   onOpenCompanion: () => void;
   onActivate: (view: View) => void;
 };
@@ -64,6 +68,8 @@ export function NavRail({
   name,
   showCompanion,
   companionOnline,
+  terminalOpen,
+  onToggleTerminal,
   onOpenCompanion,
   onActivate,
 }: Props) {
@@ -134,6 +140,21 @@ export function NavRail({
           <Smartphone size={15} />
         </button>
       ) : null}
+      <button
+        type="button"
+        title={t("terminal.shortcutHint")}
+        aria-label={t(terminalOpen ? "terminal.toggleHide" : "terminal.toggleShow")}
+        aria-pressed={terminalOpen}
+        onClick={onToggleTerminal}
+        className={clsx(
+          "mb-1 grid h-9 w-9 place-items-center rounded-xl transition",
+          terminalOpen
+            ? "bg-overlay text-slate-900"
+            : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
+        )}
+      >
+        <SquareTerminal size={15} />
+      </button>
       <button
         type="button"
         title={t("common.settings")}

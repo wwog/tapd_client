@@ -9,3 +9,4 @@ pub mod core;
 pub mod mcp;
 pub mod misc;
 pub mod notification;
+pub mod terminal;

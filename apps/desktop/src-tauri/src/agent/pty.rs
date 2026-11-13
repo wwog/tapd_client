@@ -72,7 +72,7 @@ extern "C" {
 
 /// Signals a whole process group. The TUI is spawned through portable-pty,
 /// which puts it in its own session, so its pid is also the group id.
-fn kill_process_group(pid: u32, signal: i32) -> bool {
+pub(crate) fn kill_process_group(pid: u32, signal: i32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -81,7 +81,7 @@ fn kill_process_group(pid: u32, signal: i32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(_pid: u32, _signal: i32) -> bool {
+pub(crate) fn kill_process_group(_pid: u32, _signal: i32) -> bool {
     false
 }
 
@@ -144,7 +144,7 @@ impl PromptGuard {
 /// PTY reads are chunked, so a multi-byte character (e.g. Chinese text in the
 /// TUI) can be split in half. Decoding such a batch used to surface as U+FFFD
 /// in the terminal, which looked like corrupted output.
-pub(super) fn take_utf8_prefix(buffer: &mut Vec<u8>) -> Vec<u8> {
+pub(crate) fn take_utf8_prefix(buffer: &mut Vec<u8>) -> Vec<u8> {
     let cut = match std::str::from_utf8(buffer) {
         Ok(_) => buffer.len(),
         Err(error) => {

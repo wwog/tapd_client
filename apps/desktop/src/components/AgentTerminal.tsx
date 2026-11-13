@@ -1,42 +1,16 @@
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
 
 import { agentApi, type AgentOutputPayload } from "../lib/agent";
+import { AGENT_TERMINAL_THEME, attachWebgl, TERMINAL_FONT } from "../lib/xterm";
 
 type Props = {
   taskId: string;
   /** Forward keystrokes and PTY resizes; only while the task is alive. */
   interactive: boolean;
   className?: string;
-};
-
-/** Dark palette matching the rest of the console. */
-const THEME = {
-  background: "#09090b",
-  foreground: "#e4e4e7",
-  cursor: "#38bdf8",
-  cursorAccent: "#09090b",
-  selectionBackground: "#3f3f46",
-  black: "#18181b",
-  red: "#f87171",
-  green: "#4ade80",
-  yellow: "#facc15",
-  blue: "#60a5fa",
-  magenta: "#c084fc",
-  cyan: "#22d3ee",
-  white: "#e4e4e7",
-  brightBlack: "#52525b",
-  brightRed: "#fca5a5",
-  brightGreen: "#86efac",
-  brightYellow: "#fde68a",
-  brightBlue: "#93c5fd",
-  brightMagenta: "#d8b4fe",
-  brightCyan: "#67e8f9",
-  brightWhite: "#fafafa",
 };
 
 /**
@@ -49,26 +23,6 @@ const THEME = {
  * select text.
  */
 const TUI_MODES = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h";
-
-/**
- * GPU-backed renderer. Without it xterm repaints cell by cell through the DOM,
- * which cannot keep up with a TUI that redraws the screen ~60 times a second.
- * Returns null when the webview has no usable WebGL context; the DOM renderer
- * stays as the fallback.
- */
-function attachWebgl(term: Terminal): WebglAddon | null {
-  try {
-    const addon = new WebglAddon();
-    // Drivers drop the context when the window is occluded or the GPU is
-    // reclaimed; releasing the addon lets xterm fall back to the DOM renderer
-    // instead of leaving a blank canvas.
-    addon.onContextLoss(() => addon.dispose());
-    term.loadAddon(addon);
-    return addon;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Live terminal view for a task's TUI.
@@ -93,14 +47,11 @@ export function AgentTerminal({ taskId, interactive, className }: Props) {
     if (!host) return;
 
     const term = new Terminal({
+      ...TERMINAL_FONT,
       cursorBlink: interactiveRef.current,
       // 鼠标上报打开后，macOS 上用 Option+拖动才能选中文本（同 iTerm）。
       macOptionClickForcesSelection: true,
-      fontFamily: '"SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 12,
-      lineHeight: 1.1,
-      scrollback: 5000,
-      theme: THEME,
+      theme: AGENT_TERMINAL_THEME,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
