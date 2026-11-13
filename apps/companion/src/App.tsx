@@ -2,7 +2,11 @@ import { useEffect } from "react";
 import { Bot, Bug, RefreshCw, Settings } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
-import { setAgentPollMode, useAgentTasks } from "./lib/agentTasks";
+import {
+  refreshAgentTasks,
+  setAgentPollMode,
+  useAgentTasks,
+} from "./lib/agentTasks";
 import { startHeartbeat } from "./lib/heartbeat";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
@@ -122,16 +126,31 @@ export default function App() {
     if (session) startHeartbeat();
   }, [session]);
 
-  // Pairing is the only entry: without a session every route is #/pair,
-  // with one #/pair is only kept when it carries a fresh pairing code.
+  // The agent feed is mounted before pairing but skips requests without a
+  // session; fetch immediately once the pair handshake succeeds.
   useEffect(() => {
-    if (!session && route.name !== "pair") navigate("#/pair");
+    if (session) void refreshAgentTasks();
+  }, [session]);
+
+  // Pairing is the only entry. Never rewrite the URL while there is no
+  // session: a scan opens `#/pair?t=<code>`, and navigating to a bare
+  // `#/pair` here would drop the code before PairPage can read it. With a
+  // session, a bare `#/pair` (no code) is just a stray route.
+  useEffect(() => {
     if (session && route.name === "pair" && !route.query.get("t")) {
       navigate("#/bugs");
     }
   }, [route, session]);
 
-  if (!session && route.name !== "pair") return null;
+  if (!session) {
+    return (
+      <div className="flex h-full flex-col">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <PairPage />
+        </main>
+      </div>
+    );
+  }
 
   if (connection.kind === "offline") {
     return <GateScreen title="桌面端掉线" hint="无法连接桌面端，恢复网络后重试。" retry />;

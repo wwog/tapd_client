@@ -225,13 +225,15 @@ export function IslandWindow() {
       : null;
   const agentAwaiting = agentSummary?.awaitingApproval ?? 0;
   const agentMerging = agentSummary?.awaitingMerge ?? 0;
+  /** Name of the runtime doing the work; falls back to the generic label. */
+  const agentRuntimeLabel = agentSummary?.runtimeName?.trim() || "Agent";
   /** Capsule wording: review first, then merge, then running. */
   const agentStatusLabel =
     agentAwaiting > 0
       ? "Agent 待审核"
       : agentMerging > 0
         ? "Agent 待合并"
-        : "Agent 运行中";
+        : `${agentRuntimeLabel} 修复中`;
 
   const { label: statusLabel, tone } = useMemo(() => {
     if (updateState?.available) {
@@ -243,7 +245,12 @@ export function IslandWindow() {
     if ((agentSummary?.awaitingMerge ?? 0) > 0) {
       return { label: "Agent 待合并", tone: "review" as const };
     }
-    if (agentSummary?.running) return { label: "Agent 运行中", tone: "agent" as const };
+    if (agentSummary?.running) {
+      return {
+        label: `${agentSummary.runtimeName?.trim() || "Agent"} 修复中`,
+        tone: "agent" as const,
+      };
+    }
     if (!snapshot) return { label: "连接中", tone: "idle" as const };
     if (!snapshot.running) return { label: "通知已暂停", tone: "paused" as const };
     if (snapshot.lastError) return { label: "同步异常", tone: "error" as const };
@@ -259,9 +266,9 @@ export function IslandWindow() {
   /** The capsule only offers the peek while it is actually reporting Agent
    *  work; an update notice or pending cards take precedence. */
   const agentActive =
-    statusLabel === "Agent 运行中" ||
-    statusLabel === "Agent 待审核" ||
-    statusLabel === "Agent 待合并";
+    (agentSummary?.awaitingApproval ?? 0) > 0 ||
+    (agentSummary?.awaitingMerge ?? 0) > 0 ||
+    Boolean(agentSummary?.running);
 
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
@@ -381,7 +388,17 @@ export function IslandWindow() {
           </button>
         </div>
         {peeking && agentActive && agentSummary ? (
-          <AgentPeekCard summary={agentSummary} />
+          <AgentPeekCard
+            summary={agentSummary}
+            onOpenDetail={() => {
+              const { workspaceId, bugId } = agentSummary;
+              if (!workspaceId || !bugId) return;
+              setPeeking(false);
+              void notificationApi
+                .openBug(workspaceId, bugId)
+                .catch(() => undefined);
+            }}
+          />
         ) : null}
       </div>
     );
@@ -747,15 +764,23 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
 }
 
 /**
- * Hover summary under the collapsed capsule: which project and which bug the
- * current Agent task belongs to. Its height/gap must match the Rust
- * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
+ * Hover summary under the collapsed capsule: which bug the current Agent task
+ * belongs to, plus the fields worth seeing before opening it. Its height/gap
+ * must match the Rust `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the
+ * window.
  */
-function AgentPeekCard({ summary }: { summary: AgentSummary }) {
+function AgentPeekCard({
+  summary,
+  onOpenDetail,
+}: {
+  summary: AgentSummary;
+  onOpenDetail: () => void;
+}) {
   const title = summary.title ? bugTitle(summary.title) : "";
   const review = summary.awaitingApproval ?? 0;
   const merge = summary.awaitingMerge ?? 0;
   const pending = review + merge;
+  const canOpen = Boolean(summary.workspaceId && summary.bugId);
   // Both counts fit side by side only while they are small; keep one kind of
   // label per state so 300px stays readable.
   const status =
@@ -769,9 +794,9 @@ function AgentPeekCard({ summary }: { summary: AgentSummary }) {
           ? merge > 1
             ? `待合并 ${merge}`
             : "待合并"
-          : "运行中";
+          : "修复中";
   return (
-    <div className="mt-1.5 flex h-[88px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
+    <div className="mt-1.5 flex h-[112px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
       <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
         <span
           className={clsx(
@@ -788,6 +813,28 @@ function AgentPeekCard({ summary }: { summary: AgentSummary }) {
       <p className="mt-1 line-clamp-2 text-ui-sm" title={title || undefined}>
         {title || "正在准备任务…"}
       </p>
+      <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
+        {summary.severity ? (
+          <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
+            {summary.severity}
+          </span>
+        ) : null}
+        {summary.priority ? (
+          <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
+            {summary.priority}优先级
+          </span>
+        ) : null}
+        {canOpen ? (
+          <button
+            type="button"
+            onClick={onOpenDetail}
+            className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
+          >
+            <Eye size={11} />
+            打开详情
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -4,6 +4,7 @@
 
 ## 新增
 
+- 内部 Agent 运行修复时，顶部胶囊直接显示正在执行的运行时（如「Claude Code 修复中」）；悬停摘要卡补充严重程度/优先级，并提供「打开详情」直接打开缺陷详情。
 - 左侧栏「设置」上方新增移动端伴侣入口（设置开启后才显示），点击弹窗扫码；弹窗默认走外网 Quick Tunnel，自动检测并拉起 `cloudflared`、生成配对二维码。未安装 `cloudflared` 时只显示安装教程与「我已安装」确认，不显示二维码；局域网作为测试备选。
 - 配对握手与心跳：手机配对成功后桌面弹窗立即显示「已连接」，之后每 20 秒一次心跳；桌面显示设备在线状态与最近心跳，手机设置页显示桌面端在线/掉线、版本与最近同步时间。
 - 移动端伴侣默认开启；设置页只保留启用与配对码开关，不再显示二维码。
@@ -25,6 +26,8 @@
 
 ## 修改
 
+- 移动端设置页移除底部「桌面端账号 / 桌面端版本 / 连接状态」区块，只保留本地偏好、桌面配置和解除配对。
+- 模态框交互统一：带关闭按钮的弹窗不再点击蒙层关闭（统一 `Dialog`、Agent 补充说明等），蒙层顶部保留 44px 透明拖动条，弹窗打开时仍可拖动窗口；媒体预览的顶部标题区也可拖动。
 - 外网隧道生命周期与扫码解耦：扫码成功或关闭弹窗都不会清理隧道，手机可继续使用同一地址；仅在「停止隧道」、停止移动端伴侣或退出应用时结束进程。
 - Agent 工作流全量迁移到 `tapd-workflow`：`AgentCore` 只持有 `workflow: Mutex<Workflow>` 作为任务状态 / 队列 / 审核 / 合并 / 恢复的唯一 owner，`AgentTask` 只是 UI 与持久化视图；宿主执行 crate 产出的 Effect（worktree / PTY / 导出 / git / SQLite / UI）并以 Input 回执；approve、merge_start、verify_merge 需要的 git 检查在命令路径同步执行。
 - 删除宿主重复状态机：`tasks`、`spawn_worker`、`take_next_queued`、`finish_task`、`apply_finish`、`recover_incomplete`、`persist_tasks`、`update_task`、`entered` / `shutting_down` 标志、`wake`，以及 `claim_entry` / `release_entry` / `ensure_entered` 门禁；`AgentCore` 只保留宿主配置、PTY runtimes、hook、scan、storage_error、worktree / persist 锁等平台职责。
@@ -48,6 +51,7 @@
 
 ## 修复
 
+- 扫码打开伴侣时不再丢掉配对码：移动端在无会话时不再把 URL 重写成裸 `#/pair`，未配对时数据轮询不发请求，401 处理遇到带 `t=` 的扫码 URL 也不改写；配对页直接从 `location.hash` 读取配对码，并在 `hashchange` 时重试。此前 Safari 晚到一步的 fragment 会被这些重写覆盖，导致手机提示「需要配对码」。
 - 启动时顶部胶囊不再先闪一个空白色块：胶囊窗口创建后保持隐藏，等界面画出第一帧（`island_ready`）才显示；胶囊页面在首帧就是透明的，不再先铺应用底色。webview 始终不报告绘制时 2 秒后兜底显示。
 - 复杂改动不再依赖模型主动调用审核工具：任务结束时有本轮新产生的未提交文件就自动进入待审核，忘记调用也不会把改动留在工作区。
 - 合并完成判定改为校验分支是否已并入主仓库当前 HEAD（`git merge-base --is-ancestor`），不再以合并进程退出码为准；合并 Agent 退出但分支未并入时保持待合并，不误判成功。

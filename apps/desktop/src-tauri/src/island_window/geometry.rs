@@ -12,8 +12,8 @@ pub(super) const ISLAND_TOP_MARGIN: f64 = 6.0;
 /// underneath, without moving the pill (it stays centred on the anchor).
 pub(super) const PEEK_WIDTH: f64 = 300.0;
 const PEEK_GAP: f64 = 6.0;
-/// Project row + a two-line title, sized for the largest UI font.
-const PEEK_CARD_HEIGHT: f64 = 88.0;
+/// Project row + a two-line title + the severity/priority row with 打开详情.
+const PEEK_CARD_HEIGHT: f64 = 112.0;
 pub(super) const PEEK_HEIGHT: f64 = PILL_HEIGHT + PEEK_GAP + PEEK_CARD_HEIGHT;
 /// The update panel is the collapsed capsule at 3x.
 pub(super) const UPDATE_WIDTH: f64 = PILL_WIDTH * 3.0;

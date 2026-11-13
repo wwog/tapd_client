@@ -98,6 +98,20 @@ export const selectClass =
 
 export const cardClass = "rounded-2xl border border-border bg-surface p-5";
 
+/**
+ * Transparent strip at the top of a modal overlay. The overlay covers the
+ * custom title bar, so without this the window cannot be dragged while a
+ * dialog is open. Dialogs must be `relative z-10` to paint above it.
+ */
+export function ModalDragStrip({ className }: { className?: string }) {
+  return (
+    <div
+      data-tauri-drag-region
+      className={clsx("absolute inset-x-0 top-0 h-11", className)}
+    />
+  );
+}
+
 /** Shared switch; `uncheckedClassName` keeps legacy track shades without restyling. */
 export function Switch(props: {
   checked: boolean;

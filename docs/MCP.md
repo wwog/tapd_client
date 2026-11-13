@@ -109,7 +109,7 @@ opencode mcp list
 
 ### 4.1 AI 通知格式
 
-`tapd_notify_user` 把一条通知推到屏幕顶部的胶囊，并同步等待用户操作（默认 30 秒，最长 120 秒），因此同一个工具调用就能拿到回执。适合「任务完成 / 失败 / 需要确认」等场景，外部 AI 客户端也可以用它提示用户。
+`tapd_notify_user` 把一条通知推到屏幕顶部的胶囊，并同步等待用户操作（默认 30 秒，最长 120 秒），因此同一个工具调用就能拿到回执。适合「任务完成 / 失败 / 需要确认」等场景。
 
 - `tone`：`info` / `success` / `warning` / `error` / `progress`，控制图标与配色。
 - `body`：正文，保留换行。
@@ -141,7 +141,7 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 - 复杂任务（多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败）：不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，交给用户复核和测试。
 - 任何情况下都不要在提交成功前评论或更新 TAPD 状态。
 
-外部 AI 没有客户端待审核入口，也不再有占用登记、审核暂停或任务回报工具。桌面 Agent 的复杂任务由客户端在任务结束时检查未提交改动，自动进入待审核。
+桌面 Agent 的复杂任务由客户端在任务结束时检查未提交改动，自动进入待审核。
 
 写回规则：
 
@@ -150,18 +150,17 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 - `tapd_update_bug_status` 的 `comment` 会先追加评论，再进行状态流转；状态流转失败时评论仍保留，便于追溯。
 - 状态流转会按 TAPD 工作流配置自动带出处理人/开发人员/测试人员等字段默认值（与网页端流转弹窗一致）。
 - 需要覆盖默认值时传 `fields` 对象，例如 `{"current_owner":"张三","resolution":"fixed"}`；也支持 `[{"name":"current_owner","value":"张三"}]` 行数组。未提供的字段沿用工作流配置。
-- 桌面 Agent 任务仍有本轮未提交文件时，客户端会拒绝 `tapd_add_bug_comment` / `tapd_update_bug_status` 并提示先 `git commit`。外部 AI 没有本地任务记录，不受这条保护，必须自己遵守「先 commit，再回写」。
+- 桌面 Agent 任务仍有本轮未提交文件时，客户端会拒绝 `tapd_add_bug_comment` / `tapd_update_bug_status` 并提示先 `git commit`。
 
 ### 4.3 修复提示词（tapd_get_bug 的 prompt）
 
-`tapd_get_bug` 在导出修复包的同时返回渲染好的 `prompt`，一次调用即可拿到「bug.json 路径 + 本地仓库 + 修复要求」，不再单独提供提示词工具。返回值只有 `warnings`、`downloadedBytes`、`bugJson`、`assetCount`、`skills`、`projectRule`、`prompt` 七个字段；缺陷详情不再内联，旧的交付流程说明、同事技能数组与占用字段均已移除。
+`tapd_get_bug` 在导出修复包的同时返回渲染好的 `prompt`，一次调用即可拿到「bug.json 路径 + 本地仓库 + 修复要求」，不再单独提供提示词工具。返回值只有 `warnings`、`downloadedBytes`、`bugJson`、`assetCount`、`skills`、`projectRule`、`prompt` 七个字段；缺陷详情不再内联，旧的交付流程说明、同事技能数组与占用相关字段均已移除。
 
 提示词只包含任务本身的变量（`title`、`json_path`、`repo_path`、`workspace_name`、`severity`、`priority`），并要求先阅读 `bug.json` 与 `assets/`、定位根因做最小必要修改、遵循团队代码规范：
 
 - `repo_path` 取项目「本地文件夹」；没有配置时用调用方 `root`；两者都没有时写「（当前工作目录）」。
 - 项目规则不再作为模板变量。它通过独立的 `projectRule` 字段返回，由 AI 按需遵守；`prompt` 里不包含项目规则、同事技能段或 `tapdIntegration` 字段，简单/复杂任务分流与回写步骤已经内联在提示词里。
 - 同事技能通过独立的 `skills` map 返回，不再写入提示词，也不会复制到导出目录。
-- 外部客户端没有活动 Agent 任务，不提供 `task_id`，也不要求调用审核或任务回报工具。
 
 返回（只列与提示词相关的字段，导出目录见「导出产物」）：
 

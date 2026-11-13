@@ -6,7 +6,6 @@ import {
   asApiError,
   type AgentConfig,
   type AgentRuntimeDescriptor,
-  type CompanionState,
   type NotificationSettings,
 } from "../lib/api";
 import { useAgentTasks } from "../lib/agentTasks";
@@ -175,29 +174,12 @@ export function SettingsPage() {
   const prefs = usePrefs();
   const presence = useDesktopPresence();
   const { state: agentTasksState } = useAgentTasks();
-  const [state, setState] = useState<CompanionState | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   const [notif, setNotif] = useState<NotificationSettings | null>(null);
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const [pendingLoads, setPendingLoads] = useState(3);
   const [deskError, setDeskError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const data = await api.state();
-        if (!cancelled) setState(data);
-      } catch (err) {
-        if (!cancelled) setError(asApiError(err).message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // 桌面端配置：三项依次读取；任一失败都保留错误，成功项照常渲染。
   useEffect(() => {
@@ -501,30 +483,6 @@ export function SettingsPage() {
             onChange={(value) => void patchNotif({ maxVisible: value })}
           />
         </SettingRow>
-      </section>
-
-      <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        {error ? (
-          <p className="py-2.5 text-ui-caption text-rose-600">{error}</p>
-        ) : (
-          <>
-            <SettingRow label="桌面端账号">
-              <span className="min-w-0 truncate text-ui-caption text-slate-700">
-                {state ? state.me ?? "—" : "…"}
-              </span>
-            </SettingRow>
-            <SettingRow label="桌面端版本">
-              <span className="text-ui-caption text-slate-700 tabular-nums">
-                {state ? state.version : "…"}
-              </span>
-            </SettingRow>
-            <SettingRow label="连接状态">
-              <span className="text-ui-caption text-slate-700">
-                {state ? (state.loggedIn ? "已登录" : "未登录") : "…"}
-              </span>
-            </SettingRow>
-          </>
-        )}
       </section>
 
       <div className="mx-3 mt-3">

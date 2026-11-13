@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 import { api, asApiError } from "../lib/api";
-import { useRoute } from "../lib/router";
 import { setSession } from "../lib/session";
 
 /** Short device label for the desktop's paired-device list. */
@@ -23,8 +22,21 @@ const deviceName = (): string => {
  * it asks the user to scan.
  */
 export function PairPage() {
-  const route = useRoute();
-  const code = route.name === "pair" ? (route.query.get("t") ?? "") : "";
+  // Read the code from the live URL, not the cached route: Safari can apply
+  // the fragment a moment after the SPA mounts, and an effect elsewhere may
+  // rewrite the hash. A `hashchange` listener picks the code up either way.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHashChange = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  const queryStart = hash.indexOf("?");
+  const code =
+    queryStart >= 0
+      ? (new URLSearchParams(hash.slice(queryStart + 1)).get("t") ?? "")
+      : "";
+
   const [pairing, setPairing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -45,7 +57,7 @@ export function PairPage() {
           setError(
             code
               ? asApiError(err).message
-              : "需要配对码：请在桌面端设置页扫码打开，或先关闭配对码开关",
+              : "需要配对码：请在桌面端左侧栏「移动端伴侣」重新扫码，或先关闭配对码开关",
           );
         }
       }

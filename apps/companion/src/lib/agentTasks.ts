@@ -8,6 +8,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
 import { api, asApiError, type AgentTask, type AgentTasksState } from "./api";
+import { getSession } from "./session";
 import { isPageHidden, onPageVisibilityChange } from "./visibility";
 
 /** Agent 页 / 任务详情实时节奏。 */
@@ -56,6 +57,10 @@ const subscribe = (listener: () => void) => {
 
 /** Refresh once; concurrent calls collapse into the running one. */
 export async function refreshAgentTasks(): Promise<void> {
+  // The App mounts this feed before pairing too. An unauthenticated request
+  // would 401 and the request layer would rewrite the scan URL to a bare
+  // `#/pair`, dropping the one-time code — so wait for a session.
+  if (!getSession()) return;
   if (inFlight) return;
   inFlight = true;
   try {

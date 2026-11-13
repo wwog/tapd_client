@@ -1260,6 +1260,14 @@ fn runtime_descriptor(id: &str) -> Option<AgentRuntimeDescriptor> {
         .find(|runtime| runtime.id == id)
 }
 
+/// Human-facing runtime name for the island capsule ("Claude Code 修复中").
+fn runtime_display_name(id: &str) -> String {
+    let id = id.trim();
+    runtime_descriptor(id)
+        .map(|runtime| runtime.name.to_string())
+        .unwrap_or_else(|| id.to_string())
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct AgentConfigPatch {
@@ -1641,9 +1649,14 @@ pub struct AgentSummary {
     /// Number of tasks waiting for a merge decision.
     awaiting_merge: usize,
     active_task_id: Option<String>,
+    workspace_id: Option<String>,
     title: Option<String>,
     workspace_name: Option<String>,
     bug_id: Option<String>,
+    severity: Option<String>,
+    priority: Option<String>,
+    /// Runtime working the active task, for the capsule's "… 修复中" label.
+    runtime_name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2779,9 +2792,13 @@ impl AgentCore {
             awaiting_approval: counts.awaiting_approval,
             awaiting_merge: counts.awaiting_merge,
             active_task_id: active.map(|task| task.id.0.clone()),
+            workspace_id: active.map(|task| task.spec.workspace_id.clone()),
             title: active.map(|task| task.spec.title.clone()),
             workspace_name: active.map(|task| task.spec.workspace_name.clone()),
             bug_id: active.map(|task| task.spec.bug_id.clone()),
+            severity: active.map(|task| task.spec.severity.clone()),
+            priority: active.map(|task| task.spec.priority.clone()),
+            runtime_name: active.map(|task| runtime_display_name(&task.spec.runtime_id)),
         }
     }
 
@@ -5881,6 +5898,16 @@ mod tests {
         assert_eq!(task.prompt, "prompt");
         assert_eq!(task.json_path, "/tmp/bug.json");
         assert_eq!(task.baseline_dirty, vec!["user.txt".to_string()]);
+    }
+
+    #[test]
+    fn runtime_display_name_uses_the_catalog_label() {
+        assert_eq!(super::runtime_display_name("claude"), "Claude Code");
+        // Unknown ids stay visible instead of disappearing from the capsule.
+        assert_eq!(
+            super::runtime_display_name(" custom-agent "),
+            "custom-agent"
+        );
     }
 
     #[test]

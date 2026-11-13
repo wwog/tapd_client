@@ -81,7 +81,7 @@ Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 
 - 子页分「运行 / 待处理 / 历史」。运行显示 `queued / preparing / running / merging`；待处理同时显示 `awaiting_approval` 与 `awaiting_merge`；历史只显示终态任务。
 - 头部显示任务标题、状态、项目/缺陷、工作目录（Worktree 开启时显示分支，完整路径放在 title）、队列/运行/待处理数量与退出码；有 hook 事件时额外显示运行时状态条（当前工具、最后消息、模型、子 Agent 数量）。
-- 状态文案：`awaiting_merge` 显示「待合并」，`merging` 显示「合并中」；待处理页、任务标题栏与顶部胶囊使用同一套文案，胶囊与标题栏同时展示待审核 / 待合并数量。
+- 状态文案：`awaiting_merge` 显示「待合并」，`merging` 显示「合并中」；运行中时顶部胶囊显示具体运行时（如「Claude Code 修复中」）。待处理页、任务标题栏与顶部胶囊使用同一套文案，胶囊与标题栏同时展示待审核 / 待合并数量；悬停胶囊可查看缺陷摘要并直接「打开详情」。
 - 运行时状态来自 hook：`working / waiting_permission / waiting_question / error / idle`，只保存在内存，通过 `agent://runtime` 推送；任务结束后清空。
 - 操作：中断、打开导出目录、打开关联缺陷；右侧终端可直接接管键盘。
 - 终端：PTY 输出只走实时通道（WebGL 渲染的 xterm），不写日志文件；面板中途打开时靠一次尺寸抖动让 TUI 整屏重绘。

@@ -557,7 +557,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!envelope.ok) {
     if (envelope.code === "unauthorized") {
       clearSession();
-      navigate("#/pair");
+      // A scan URL carries its one-time code in the hash. Rewriting it to a
+      // bare `#/pair` here would make PairPage ask for a code that is still
+      // right there, so leave the URL alone while a code is present.
+      const hash = window.location.hash;
+      if (!(hash.includes("/pair") && hash.includes("t="))) {
+        navigate("#/pair");
+      }
       throw new ApiError("unauthorized", "配对已失效，请重新扫码");
     }
     if (envelope.code === "not_logged_in") {

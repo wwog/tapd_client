@@ -3,7 +3,7 @@ import { ArrowUp, Check, Folder, FolderOpen, Loader2, X } from "lucide-react";
 import clsx from "clsx";
 
 import { api, type DirListing } from "../lib/api";
-import { Button } from "./ui";
+import { Button, ModalDragStrip } from "./ui";
 
 /**
  * Dependency-free folder picker: browses directories through the Rust side
@@ -70,10 +70,16 @@ export function FolderPicker(props: {
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]">
-      <div className="flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10">
-        <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-ui-base font-normal text-slate-900">{title}</h2>
+      <ModalDragStrip />
+      <div className="relative z-10 flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10">
+        <div
+          data-tauri-drag-region
+          className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3"
+        >
+          <div className="min-w-0" data-tauri-drag-region>
+            <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
+              {title}
+            </h2>
             {description ? (
               <p className="mt-0.5 text-ui-sm leading-5 text-slate-500">{description}</p>
             ) : null}

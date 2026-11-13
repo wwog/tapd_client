@@ -42,7 +42,11 @@ const TONE_DOT: Record<Tone, string> = {
 };
 
 const addressOf = (url: string): string =>
-  url.replace(/^https?:\/\//, "").split("/#/")[0];
+  url
+    .split("#")[0]
+    .split("?")[0]
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
 
 /** Short relative time for the device's last heartbeat. */
 const lastSeenLabel = (iso: string | null | undefined): string => {
@@ -184,8 +188,15 @@ export function CompanionDialog({
     setPairingError(false);
     try {
       const code = await companionApi.pairingCode(mode);
-      const qr = await toDataURL(code.url, { margin: 1, width: 480 });
-      if (seq === requestSeq.current) setPairing({ ...code, qr });
+      // Cache-bust the document so a phone that scanned before an SPA update
+      // cannot reuse the old HTML/JS. The router only reads the hash, so the
+      // extra query is inert.
+      const [base, fragment] = code.url.split("#");
+      const url = fragment
+        ? `${base}${base.includes("?") ? "&" : "?"}v=${Date.now()}#${fragment}`
+        : code.url;
+      const qr = await toDataURL(url, { margin: 1, width: 480 });
+      if (seq === requestSeq.current) setPairing({ ...code, url, qr });
     } catch (error) {
       if (seq === requestSeq.current) {
         setPairingError(true);

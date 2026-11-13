@@ -257,9 +257,14 @@ export type AgentSummary = {
   /** Worktree tasks waiting for the user to confirm the merge. */
   awaitingMerge?: number;
   activeTaskId: string | null;
+  workspaceId: string | null;
   title: string | null;
   workspaceName: string | null;
   bugId: string | null;
+  severity: string | null;
+  priority: string | null;
+  /** Runtime working the active task ("Claude Code", "OpenCode", …). */
+  runtimeName: string | null;
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */

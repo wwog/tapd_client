@@ -21,7 +21,7 @@ import { useResolvedTheme } from "../lib/appearance";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { AgentPicker } from "./AgentPicker";
-import { Button } from "./ui";
+import { Button, ModalDragStrip } from "./ui";
 
 export type AgentComposePayload = {
   prompt: string;
@@ -210,12 +210,9 @@ export function AgentComposeSheet(props: Props) {
 
   return (
     <div className="fixed inset-0 z-[65]">
-      <button
-        type="button"
-        aria-label="关闭补充说明"
-        className="absolute inset-0 cursor-default bg-slate-900/15"
-        onClick={() => !submitting && onClose()}
-      />
+      {/* Backdrop is inert: the sheet has explicit close/cancel buttons. */}
+      <div aria-hidden="true" className="absolute inset-0 bg-slate-900/15" />
+      <ModalDragStrip />
       <section
         role="dialog"
         aria-modal="true"
@@ -227,12 +224,17 @@ export function AgentComposeSheet(props: Props) {
         )}
         onDragOver={(event) => event.preventDefault()}
       >
-        <header className="flex shrink-0 items-center gap-2.5 border-b border-slate-100 px-5 py-3">
+        <header
+          data-tauri-drag-region
+          className="flex shrink-0 items-center gap-2.5 border-b border-slate-100 px-5 py-3"
+        >
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-50 text-sky-600">
             <Sparkles size={15} />
           </span>
-          <div className="min-w-0">
-            <h2 className="text-ui-base font-normal text-slate-900">用 Agent 修复</h2>
+          <div className="min-w-0" data-tauri-drag-region>
+            <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
+              用 Agent 修复
+            </h2>
             <p className="truncate text-ui-sm text-slate-500" title={bugTitle(title)}>
               {bugTitle(title)}
             </p>

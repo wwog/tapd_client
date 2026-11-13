@@ -3,6 +3,8 @@ import { X } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 
+import { ModalDragStrip } from "./ui";
+
 /** Shared settings modal: overlay, fixed header and a scrolling body. */
 export function Dialog(props: {
   title: string;
@@ -18,23 +20,24 @@ export function Dialog(props: {
   children: ReactNode;
 }) {
   return createPortal(
-    <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[1px]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) props.onClose();
-      }}
-    >
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[1px]">
+      <ModalDragStrip />
       <div
         className={clsx(
-          "flex flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10",
+          "relative z-10 flex flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10",
           props.size === "wide"
             ? "h-[min(82vh,760px)] w-[min(1180px,94vw)]"
             : "max-h-[min(82vh,760px)] w-[min(560px,92vw)]",
         )}
       >
-        <header className="flex shrink-0 items-center gap-2 border-b border-slate-100 px-4 py-3">
+        <header
+          data-tauri-drag-region
+          className="flex shrink-0 items-center gap-2 border-b border-slate-100 px-4 py-3"
+        >
           {props.icon}
-          <h2 className="text-ui-base font-normal text-slate-900">{props.title}</h2>
+          <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
+            {props.title}
+          </h2>
           {props.action ? (
             <div className="ml-auto flex items-center gap-2">{props.action}</div>
           ) : null}

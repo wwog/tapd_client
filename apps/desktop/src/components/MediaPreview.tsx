@@ -201,8 +201,11 @@ export function MediaPreview(props: Props) {
 
   return createPortal(
     <div className="theme-static-dark fixed inset-0 z-[60] flex flex-col bg-slate-950/95 text-slate-100">
-      <header className="relative flex shrink-0 items-center justify-center border-b border-white/10 px-4 py-2.5">
-        <div className="min-w-0 max-w-[min(60%,34rem)] text-center">
+      <header
+        data-tauri-drag-region
+        className="relative flex shrink-0 items-center justify-center border-b border-white/10 px-4 py-2.5"
+      >
+        <div data-tauri-drag-region className="min-w-0 max-w-[min(60%,34rem)] text-center">
           <div className="truncate text-ui-caption font-normal" title={current.label}>
             {current.label}
           </div>
