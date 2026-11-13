@@ -27,8 +27,8 @@ const RAIL_ANIM: Record<string, string> = {
 };
 
 /**
- * Rail tabs. Labels are catalogue keys rendered with `t()` at render time, so a
- * language switch never keeps the startup language.
+ * Activity-bar tabs. Labels are catalogue keys rendered with `t()` at render
+ * time, so a language switch never keeps the startup language.
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
@@ -52,7 +52,7 @@ type Props = {
   showCompanion: boolean;
   /** A paired phone is heartbeating: paint the entry green. */
   companionOnline: boolean;
-  /** The bottom shell panel is open (paints the entry as active). */
+  /** The bottom terminal panels are visible (paints the entry as active). */
   terminalOpen: boolean;
   onToggleTerminal: () => void;
   onOpenCompanion: () => void;
@@ -60,7 +60,7 @@ type Props = {
 };
 
 /** Icon rail: primary views, the account chip and Settings. */
-export function NavRail({
+export function ActivityBar({
   view,
   railAnim,
   sidebarHidden,

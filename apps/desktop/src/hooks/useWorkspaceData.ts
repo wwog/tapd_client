@@ -12,7 +12,7 @@ import { cacheApi } from "../lib/cache";
 import type { ToastFn } from "../lib/feature";
 import { t } from "../lib/i18n";
 import { useTauriEvent } from "../lib/tauriEvent";
-import type { View } from "../components/NavRail";
+import type { View } from "../components/ActivityBar";
 
 export type ProjectMenu = {
   id: string;

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { ToastFn } from "../lib/feature";
 import { t } from "../lib/i18n";
@@ -11,29 +10,13 @@ import {
 } from "../lib/terminal";
 import { useTauriEvent } from "../lib/tauriEvent";
 import { readPref, writePref } from "../lib/uiPrefs";
-import { useVerticalDragResize } from "./useDragResize";
 
-/** Preference key: panel visibility and card height, restored on startup. */
+/** Preference key: panel visibility, restored on startup (`{ open }`). */
 export const TERMINAL_PANEL_PREF = "terminal.panel.v1";
-export const TERMINAL_DEFAULT_HEIGHT = 280;
-export const TERMINAL_MIN_HEIGHT = 140;
 /** Backstop so repeated clicks cannot spawn an unbounded number of PTYs. */
 export const TERMINAL_MAX_SESSIONS = 8;
-/** Matches the 300ms height transition plus a frame before unmounting. */
-const CLOSE_ANIMATION_MS = 320;
 
-type PanelPrefs = { open: boolean; height: number };
-
-/** Upper bound the user can drag to: most of the window, never the whole one. */
-const maxPanelHeight = (): number =>
-  Math.round((typeof window === "undefined" ? 900 : window.innerHeight) * 0.7);
-
-const clampHeight = (value: number): number => {
-  const next = Number.isFinite(value) ? value : TERMINAL_DEFAULT_HEIGHT;
-  return Math.round(
-    Math.min(Math.max(next, TERMINAL_MIN_HEIGHT), Math.max(TERMINAL_MIN_HEIGHT, maxPanelHeight())),
-  );
-};
+type PanelPrefs = { open: boolean };
 
 export type UseTerminalPanelOptions = {
   /** Project whose configured folder new terminals open in; empty when none. */
@@ -42,102 +25,41 @@ export type UseTerminalPanelOptions = {
 };
 
 export type TerminalPanelState = {
-  /** User intent: the panel is open (or animating open). */
-  open: boolean;
-  /** Kept true through the close animation; false unmounts the panel. */
-  rendered: boolean;
-  /** Card height in px, already clamped. */
-  height: number;
-  resizing: boolean;
+  /** User intent: terminal panels are hidden from the workbench. */
+  hidden: boolean;
   sessions: TerminalMeta[];
+  /** Session the user touched last; used when focusing the bottom dock. */
   activeId: string | null;
-  /** Header button and ⌘J: opens (spawning when empty) or hides. */
-  toggle: () => void;
-  close: () => void;
-  setActive: (id: string) => void;
   create: () => void;
   closeSession: (id: string) => void;
   restart: (session: TerminalMeta) => void;
-  startResize: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  show: () => void;
+  hide: () => void;
 };
 
 /**
- * Bottom terminal panel: visibility, height and the backend sessions it shows.
+ * Backend-owned terminal sessions plus the persisted visibility flag.
  *
- * The drawer half only animates; the sessions are owned by the backend so a
- * phone can create or close one and the tab list follows `terminal://sessions`.
- * A restored (startup) panel does not spawn a shell — the user sees the empty
- * state instead, so an app start never leaves stray PTYs behind.
+ * Visibility lives here, not in the layout: hiding the terminal removes its
+ * panels (App syncs layout ↔ sessions) while the PTYs stay alive, so reopening
+ * restores every tab. The backend is authoritative for the session list — a
+ * phone can create or close one and the tabs follow `terminal://sessions`.
  */
 export function useTerminalPanel({
   workspaceId,
   showToast,
 }: UseTerminalPanelOptions): TerminalPanelState {
   const [stored] = useState(() => readPref<Partial<PanelPrefs>>(TERMINAL_PANEL_PREF));
-  const [open, setOpen] = useState(stored?.open === true);
-  const [rendered, setRendered] = useState(stored?.open === true);
-  const [height, setHeight] = useState(() =>
-    clampHeight(typeof stored?.height === "number" ? stored.height : TERMINAL_DEFAULT_HEIGHT),
-  );
-  const [resizing, setResizing] = useState(false);
+  const [hidden, setHidden] = useState(stored?.open !== true);
   const [sessions, setSessions] = useState<TerminalMeta[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  const renderedRef = useRef(rendered);
-  renderedRef.current = rendered;
-  const openRef = useRef(open);
-  openRef.current = open;
-  const heightRef = useRef(height);
-  heightRef.current = height;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
 
-  const closeTimer = useRef<number | null>(null);
-  /** Bumped on every show/hide so a late animation frame cannot reopen. */
-  const toggleToken = useRef(0);
-  /** The first list read finished (successfully or not); before that we cannot
-   *  tell an empty panel from one whose sessions are still loading. */
-  const listed = useRef(false);
   /** A `terminal://sessions` push already arrived, so it is newer than the
    *  initial list request and the list response must not overwrite it. */
   const synced = useRef(false);
-
-  const clearCloseTimer = useCallback(() => {
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  }, []);
-
-  /**
-   * Opens the panel. A first open mounts at zero height and grows on the next
-   * frame, so the height transition starts from a painted value (the same
-   * two-frame trick the detail pane uses for its width).
-   */
-  const show = useCallback(() => {
-    const token = ++toggleToken.current;
-    clearCloseTimer();
-    if (renderedRef.current) {
-      setOpen(true);
-      return;
-    }
-    setRendered(true);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        if (token === toggleToken.current) setOpen(true);
-      });
-    });
-  }, [clearCloseTimer]);
-
-  const hide = useCallback(() => {
-    ++toggleToken.current;
-    setOpen(false);
-    clearCloseTimer();
-    closeTimer.current = window.setTimeout(() => {
-      closeTimer.current = null;
-      setRendered(false);
-    }, CLOSE_ANIMATION_MS);
-  }, [clearCloseTimer]);
 
   /** Creates a session, or reports why it could not (cap and backend errors). */
   const spawn = useCallback(
@@ -172,8 +94,8 @@ export function useTerminalPanel({
     [showToast, workspaceId],
   );
 
-  // Restored sessions are reused across panel closes; the initial list is what
-  // makes a reopen show the previous tabs instead of an empty panel.
+  // Restored sessions are reused across hides; the initial list is what makes
+  // a reopen show the previous tabs instead of an empty dock.
   useEffect(() => {
     void terminalApi
       .list()
@@ -182,10 +104,7 @@ export function useTerminalPanel({
         // newer than the response, so the stale snapshot must not drop a tab.
         if (!synced.current) setSessions(list);
       })
-      .catch(() => showToast("error", t("terminal.loadFailed")))
-      .finally(() => {
-        listed.current = true;
-      });
+      .catch(() => showToast("error", t("terminal.loadFailed")));
   }, [showToast]);
 
   useTauriEvent<TerminalSessionsPayload>("terminal://sessions", ({ sessions: list }) => {
@@ -205,23 +124,8 @@ export function useTerminalPanel({
   });
 
   useEffect(() => {
-    writePref(TERMINAL_PANEL_PREF, { open, height });
-  }, [open, height]);
-
-  useEffect(
-    () => () => {
-      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    },
-    [],
-  );
-
-  // The height cap is relative to the window; a shrunken window must not leave
-  // the panel covering most of the terminal area until the app restarts.
-  useEffect(() => {
-    const onResize = () => setHeight((current) => clampHeight(current));
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    writePref(TERMINAL_PANEL_PREF, { open: !hidden });
+  }, [hidden]);
 
   const create = useCallback(() => {
     void spawn({});
@@ -262,26 +166,8 @@ export function useTerminalPanel({
     [closeSession, spawn],
   );
 
-  const toggle = useCallback(() => {
-    if (openRef.current) {
-      hide();
-      return;
-    }
-    show();
-    // This is a user action, so an empty panel starts a shell right away. The
-    // startup restore takes the other path: it leaves the empty state in place.
-    if (listed.current && sessionsRef.current.length === 0) void spawn({});
-  }, [hide, show, spawn]);
-
-  const startResize = useVerticalDragResize(() => {
-    const startHeight = heightRef.current;
-    setResizing(true);
-    return {
-      // Dragging the top edge upward (negative delta) grows the panel.
-      onMove: (delta) => setHeight(clampHeight(startHeight - delta)),
-      onEnd: () => setResizing(false),
-    };
-  });
+  const show = useCallback(() => setHidden(false), []);
+  const hide = useCallback(() => setHidden(true), []);
 
   const active =
     activeId !== null && sessions.some((session) => session.id === activeId)
@@ -289,18 +175,13 @@ export function useTerminalPanel({
       : (sessions[0]?.id ?? null);
 
   return {
-    open,
-    rendered,
-    height,
-    resizing,
+    hidden,
     sessions,
     activeId: active,
-    toggle,
-    close: hide,
-    setActive: setActiveId,
     create,
     closeSession: (id) => void closeSession(id),
     restart,
-    startResize,
+    show,
+    hide,
   };
 }

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Loader2, PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
+import { Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
 import {
@@ -10,7 +10,7 @@ import {
   type RecoveryReport,
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
-import { t, type MessageKey } from "./lib/i18n";
+import { t } from "./lib/i18n";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -21,50 +21,47 @@ import { useMembersDirectory } from "./lib/members";
 import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
-import { AccountPage } from "./components/AccountPage";
-import { AgentPage } from "./components/AgentPage";
+import { ActivityBar, type View } from "./components/ActivityBar";
 import {
   AgentComposeSheet,
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
-import { BugListView } from "./components/BugListView";
 import { CompanionDialog } from "./components/CompanionDialog";
-import { CoworkerPage } from "./components/CoworkerPage";
-import { DetailPaneHost } from "./components/DetailPaneHost";
 import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
 import { LoginGate } from "./components/LoginGate";
-import { McpPage } from "./components/McpPage";
-import { NavRail, type View } from "./components/NavRail";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
-import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectSidebar } from "./components/ProjectSidebar";
 import { RecoveryBanner } from "./components/RecoveryBanner";
-import { SettingsPage } from "./components/SettingsPage";
-import { SkeletonRows } from "./components/Skeleton";
-import { TerminalPanel } from "./components/TerminalPanel";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
-import { Button } from "./components/ui";
 import { useAgentQueue } from "./hooks/useAgentQueue";
 import { usePoll } from "./hooks/usePoll";
-import {
-  useDetailPane,
-  type DetailLayoutRef,
-  type DetailPaneBridge,
-} from "./hooks/useDetailPane";
-import {
-  DETAIL_PANEL_WIDTH,
-  defaultSidebarWidth,
-  useSidebarLayout,
-} from "./hooks/useSidebarLayout";
+import { useDetailPane } from "./hooks/useDetailPane";
+import { useSidebarLayout } from "./hooks/useSidebarLayout";
 import { useTerminalPanel } from "./hooks/useTerminalPanel";
 import {
   useWorkspaceData,
   type WorkspacePaneBridge,
 } from "./hooks/useWorkspaceData";
 import type { BugScope } from "./components/bugListPrefs";
+import {
+  GROUP_GAP,
+  PANEL_MIN_SIZE,
+  groupMinSize,
+} from "./workbench/layout/defaults";
+import {
+  panelId,
+  type PageView,
+  type PanelRef,
+  type WorkbenchLayoutApi,
+} from "./workbench/layout/types";
+import { activeView } from "./workbench/layout/ops";
+import { useWorkbenchLayout } from "./workbench/layout/useWorkbenchLayout";
+import { Workbench } from "./workbench/Workbench";
+import { Sash } from "./workbench/components/Sash";
+import type { PageHostServices } from "./workbench/components/pageContext";
 
 /** Minimal bug shape needed to enqueue an Agent task. */
 type AgentTarget = {
@@ -76,45 +73,42 @@ type AgentTarget = {
   workspaceName?: string;
 };
 
-/**
- * Header title key for every view whose title is static. Keys render through
- * `t()` at render time, never at module scope.
- */
-const VIEW_TITLES: Record<Exclude<View, "bugs">, MessageKey> = {
-  projects: "app.projects.title",
-  agent: "app.nav.agent",
-  coworker: "app.nav.coworker",
-  mcp: "app.nav.mcp",
-  account: "app.account.title",
-  settings: "common.settings",
-};
+/** The singleton bug detail panel, if the layout has one. */
+function findBugPanel(layout: WorkbenchLayoutApi): PanelRef | null {
+  for (const group of layout.groups) {
+    const panel = group.panels.find((item) => item.kind === "bug");
+    if (panel) return panel;
+  }
+  return null;
+}
 
-/** Grid templates for the two content panes (see `terminalSpans`). */
-const GRID_AREAS_TERMINAL_FIRST = '"main detail" "term term"';
-const GRID_AREAS_DETAIL_FIRST = '"main detail" "term detail"';
-
-/**
- * Open order of one content pane: every false -> true edge takes the nex
- * number, and the smaller number owns the full span.
- *
- * The bump runs in a layout effect, so the area swap happens in the same pain
- * as the open; doing it during render would mutate a ref on a render React may
- * discard.
- */
-function useOpenOrder(open: boolean, counter: { current: number }): number {
-  const [order, setOrder] = useState(0);
-  const wasOpen = useRef(false);
-  useLayoutEffect(() => {
-    if (open === wasOpen.current) return;
-    wasOpen.current = open;
-    if (open) setOrder(++counter.current);
-  }, [open, counter]);
-  return order;
+/** Width the layout area needs beside the side bar, including canonical docks. */
+function layoutContentMinWidth(layout: WorkbenchLayoutApi): number {
+  const primary = layout.groups.find((group) => group.role === "primary");
+  const secondary = layout.groups.find((group) => group.role === "secondary");
+  const primaryMin = primary
+    ? groupMinSize(primary).width
+    : PANEL_MIN_SIZE.page.width;
+  const secondaryMin =
+    secondary && secondary.panels.length
+      ? groupMinSize(secondary).width + GROUP_GAP
+      : 0;
+  return Math.max(primaryMin + secondaryMin + GROUP_GAP, 460);
 }
 
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
-  const [view, setView] = useState<View>("bugs");
+  const layoutApi = useWorkbenchLayout();
+  const view = activeView(layoutApi.layout);
+  const setView = useCallback(
+    (next: View) => {
+      // Switching pages must reveal the primary dock even if another group was
+      // maximized (notification jumps, activity-bar clicks).
+      if (layoutApi.layout.maximizedGroupId) layoutApi.maximizeGroup(null);
+      layoutApi.openPage(next);
+    },
+    [layoutApi.maximizeGroup, layoutApi.openPage, layoutApi.layout.maximizedGroupId],
+  );
   const [railAnim, setRailAnim] = useState<{ id: string; token: number } | null>(null);
   const railAnimTimer = useRef<number | null>(null);
   /** Set when the user asks for an Agent fix without a configured folder. */
@@ -235,19 +229,32 @@ export default function App() {
     if (scope === "processing" && processingCount === 0) setScope("mine");
   }, [scope, processingCount]);
 
-  /** Layout values readable from the stable detail callback. */
-  const detailLayoutRef = useRef<DetailLayoutRef>({
-    viewportWidth: 1280,
-    sidebarWidth: defaultSidebarWidth(1280),
-    detailWidth: DETAIL_PANEL_WIDTH,
-    projectListHidden: false,
-  });
-  /** Sidebar controls the detail pane needs when it opens / resizes. */
-  const detailBridgeRef = useRef<DetailPaneBridge>({
-    setSidebarCollapsed: () => undefined,
-    setSidebarPeek: () => undefined,
-    getSidebarWidth: () => 0,
-  });
+  /** Latest layout API for stable callbacks and effects. */
+  const layoutRef = useRef(layoutApi);
+  layoutRef.current = layoutApi;
+
+  /** Opens/focuses the singleton bug panel in the secondary dock. */
+  const openBugPanel = (
+    targetWorkspaceId: string,
+    bugId: string,
+    label?: string,
+  ) => {
+    // A maximized group may be covering the secondary dock.
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "bug", workspaceId: targetWorkspaceId, bugId },
+      target: "secondary",
+      label,
+    });
+  };
+
+  /** Removes the bug panel; called by the drawer close and tab close paths. */
+  const closeBugPanel = () => {
+    const panel = findBugPanel(layoutRef.current);
+    if (panel) layoutRef.current.closePanel(panel.id);
+  };
 
   const detailPane = useDetailPane({
     workspaceId,
@@ -255,37 +262,110 @@ export default function App() {
     me: context?.user.nick ?? info?.me ?? null,
     bumpList,
     showToast,
-    layoutRef: detailLayoutRef,
-    bridge: detailBridgeRef,
+    openPanel: openBugPanel,
+    closePanel: closeBugPanel,
   });
+
+  const { loadDetail: loadBugDetail, reset: resetBugDetail } = detailPane;
+
+  // App owns the trigger: whenever the active bug panel resource changes, the
+  // detail fetch follows. A target that already matches was opened through
+  // `openDetail`, which loaded it directly; closing the tab resets the hook.
+  const bugPanel = findBugPanel(layoutApi);
+  const detailTarget = detailPane.target;
+  /** Dedupes the loader across StrictMode's double effect invocation. */
+  const requestedBugRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!bugPanel || bugPanel.resource.type !== "bug") {
+      requestedBugRef.current = null;
+      resetBugDetail();
+      return;
+    }
+    const { workspaceId: targetWorkspaceId, bugId } = bugPanel.resource;
+    const key = `${targetWorkspaceId}:${bugId}`;
+    if (
+      detailTarget &&
+      detailTarget.workspaceId === targetWorkspaceId &&
+      detailTarget.bugId === bugId
+    ) {
+      requestedBugRef.current = key;
+      return;
+    }
+    if (requestedBugRef.current === key) return;
+    requestedBugRef.current = key;
+    loadBugDetail(targetWorkspaceId, bugId);
+  }, [bugPanel?.id, detailTarget, loadBugDetail, resetBugDetail]);
 
   const sidebar = useSidebarLayout({
     projectListHidden,
-    detailRendered: detailPane.rendered,
-    detailWidth: detailPane.width,
+    sidebarWidth: layoutApi.sidebarWidth,
+    setSidebarWidth: layoutApi.setSidebarWidth,
+    contentMinWidth: layoutContentMinWidth(layoutApi),
   });
 
   const terminal = useTerminalPanel({ workspaceId, showToast });
 
-  /** Shared rising-edge counter for the detail pane and the terminal panel. */
-  const openCounter = useRef(0);
-  const detailOrder = useOpenOrder(detailPane.open, openCounter);
-  const terminalOrder = useOpenOrder(terminal.open, openCounter);
-  /**
-   * The pane opened first spans the full width; the newer one yields the righ
-   * side to the other. Both panes stay mounted and only the grid areas swap, so
-   * switching never remounts the bug list, the detail or the terminals.
-   *
-   * `rendered` (not `open`) decides: a closing pane keeps its area until its
-   * shrink animation ends, otherwise the surviving pane would jump mid-frame.
-   */
-  const terminalSpans =
-    terminal.rendered && (!detailPane.rendered || terminalOrder < detailOrder);
+  // Layout mirrors the backend-owned PTY list; hiding the dock removes its
+  // panels (the PTYs stay alive) and showing it restores every session.
+  const syncTerminalPanels = layoutApi.syncTerminalPanels;
+  useEffect(() => {
+    syncTerminalPanels(
+      terminal.hidden
+        ? []
+        : terminal.sessions.map((session) => ({
+            id: session.id,
+            label: session.title || session.cwd,
+          })),
+    );
+    // The sync callback is read from the current render; only the session
+    // list and visibility decide when the layout changes.
+  }, [syncTerminalPanels, terminal.hidden, terminal.sessions]);
 
-  // ⌘J is the shell panel's only global shortcut. Captured so a focused editor
-  // cannot swallow it; the panel is the single owner of its open state. Ctrl+J
-  // is a newline inside a shell, so only the platform modifier is accepted.
-  const toggleTerminal = terminal.toggle;
+  /** Show => focus the bottom dock (spawning a first shell when empty). */
+  const wantTerminalFocus = useRef(false);
+  useEffect(() => {
+    if (terminal.hidden || !wantTerminalFocus.current) return;
+    if (terminal.sessions.length === 0) return;
+    wantTerminalFocus.current = false;
+    const target = terminal.activeId ?? terminal.sessions[0]!.id;
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "terminal", sessionId: target },
+      target: "bottom",
+    });
+  }, [terminal.hidden, terminal.sessions, terminal.activeId]);
+
+  const hasTerminalPanels = layoutApi.groups.some((group) =>
+    group.panels.some((panel) => panel.kind === "terminal"),
+  );
+  const terminalOpen = !terminal.hidden && hasTerminalPanels;
+
+  /**
+   * ⌘J / rail toggle. Hiding keeps every PTY alive; showing restores the tabs,
+   * spawns the first shell when there is none, and focuses the bottom dock.
+   */
+  const toggleTerminal = useCallback(() => {
+    if (!terminal.hidden && hasTerminalPanels) {
+      terminal.hide();
+      return;
+    }
+    terminal.show();
+    wantTerminalFocus.current = true;
+    if (terminal.sessions.length === 0) terminal.create();
+  }, [
+    hasTerminalPanels,
+    terminal.create,
+    terminal.hide,
+    terminal.hidden,
+    terminal.sessions.length,
+    terminal.show,
+  ]);
+
+  // ⌘J is the shell dock's only global shortcut. Captured so a focused editor
+  // cannot swallow it; Ctrl+J is a newline inside a shell, so only the platform
+  // modifier is accepted.
   useEffect(() => {
     const primaryModifier = navigator.userAgent.includes("Mac");
     const onKeyDown = (event: KeyboardEvent) => {
@@ -299,23 +379,24 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [toggleTerminal]);
 
-  // The two panes depend on each other's latest values at event time only;
-  // wiring the bridges after both hooks keeps render values in the same frame.
+  // Detail actions read by workspace events (notifications, logout) without a
+  // hook-order cycle.
   paneBridgeRef.current = {
     loadBugDetail: detailPane.openDetail,
     closeDetail: detailPane.closeDetail,
   };
-  detailBridgeRef.current = {
-    setSidebarCollapsed: sidebar.setCollapsed,
-    setSidebarPeek: sidebar.setPeek,
-    getSidebarWidth: sidebar.getEffectiveWidth,
-  };
-  detailLayoutRef.current = {
-    viewportWidth: sidebar.viewportWidth,
-    sidebarWidth: sidebar.expandedWidth,
-    detailWidth: detailPane.width,
-    projectListHidden,
-  };
+
+  // The bugs page tab is the workspace name; update it when the project
+  // switches (the tab label is persisted with the panel).
+  const bugsPagePanel = layoutApi.groups
+    .flatMap((group) => group.panels)
+    .find((panel) => panel.id === panelId.page("bugs"));
+  useEffect(() => {
+    if (!bugsPagePanel) return;
+    const label = workspace?.name ?? t("common.bugs");
+    if (bugsPagePanel.label === label) return;
+    layoutRef.current.setPanelLabel(bugsPagePanel.id, label);
+  }, [bugsPagePanel?.id, bugsPagePanel?.label, workspace?.name]);
 
   /** Switch views and replay the destination's rail icon animation. */
   const activateView = useCallback((id: View) => {
@@ -325,7 +406,7 @@ export default function App() {
       window.clearTimeout(railAnimTimer.current);
     }
     railAnimTimer.current = window.setTimeout(() => setRailAnim(null), 720);
-  }, []);
+  }, [setView]);
 
   useEffect(
     () => () => {
@@ -346,7 +427,7 @@ export default function App() {
   const openAgentTask = useCallback((taskId: string) => {
     setAgentFocusTaskId(taskId);
     setView("agent");
-  }, []);
+  }, [setView]);
 
   /** The focus request is one-shot: the Agent page clears it after applying. */
   const clearAgentFocus = useCallback(() => {
@@ -370,18 +451,19 @@ export default function App() {
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
     setView("bugs");
+    // Detail belongs to the previous project: drop both the panel and its data.
     detailPane.closeDetail();
     void api.setLastWorkspace(id);
   };
 
   const openBug = useCallback(
     (bug: BugSummary) => {
-      detailPane.openDetail(bug.workspaceId, bug.id);
+      detailPane.openDetail(bug.workspaceId, bug.id, bug.title);
     },
     [detailPane.openDetail],
   );
 
-  /** Opens/switches the right-side detail pane without leaving the current view. */
+  /** Opens/switches the bug detail panel without leaving the current view. */
   const openBugById = useCallback(
     (targetWorkspaceId: string, bugId: string) => {
       detailPane.openDetail(targetWorkspaceId, bugId);
@@ -421,7 +503,7 @@ export default function App() {
         return false;
       }
     },
-    [context, showToast],
+    [context, setView, showToast],
   );
 
   /**
@@ -580,147 +662,182 @@ export default function App() {
     );
   }
 
-  const title =
-    view === "bugs" ? (workspace?.name ?? t("common.bugs")) : t(VIEW_TITLES[view]);
-  const subtitle =
-    view === "bugs" && !workspace
-      ? projectsKnown
-        ? t("app.projects.empty")
-        : t("app.projects.loading")
-      : "";
+  const activeBugId =
+    detailPane.target && detailPane.target.workspaceId === workspace?.id
+      ? detailPane.target.bugId
+      : null;
 
-  const renderView = () => {
-    switch (view) {
-      case "bugs":
-        return contextError ? (
-          <div className="p-5">
-            <div className="rounded-xl bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700 border border-rose-100">
-              <div className="font-normal">{t("app.projects.loadFailed")}</div>
-              <div className="mt-1 break-all">{contextError}</div>
-              <Button
-                size="sm"
-                className="mt-3"
-                onClick={() => void loadContext()}
-                icon={<RefreshCw size={13} />}
-              >
-                {t("app.projects.reload")}
-              </Button>
-            </div>
-          </div>
-        ) : workspace ? (
-          <BugListView
-            key={workspace.id}
-            workspace={workspace}
-            me={context?.user.nick ?? info.me}
-            scope={scope}
-            onScopeChange={setScope}
-            onOpenBug={openBug}
-            activeBugId={
-              // `rendered` (not `open`) keeps the highlight through the close
-              // animation, so it fades out with the pane instead of snapping.
-              detailPane.rendered && detailPane.target?.workspaceId === workspace.id
-                ? detailPane.target.bugId
-                : null
-            }
-            onOpenWeb={openPath}
-            onCopy={copy}
-            onAgentFix={enqueueAgent}
-            onAgentCompose={openAgentCompose}
-            agentInFlight={agentInFlight}
-            onOpenAgentTask={openAgentTask}
-            onCancelTask={cancelAgentTask}
-            onClaim={detailPane.claimFromList}
-            refreshToken={refreshToken}
-          />
-        ) : (
-          <div className="min-h-0 flex-1 p-4">
-            <SkeletonRows
-              rows={10}
-              columns={["w-2/5", "w-16", "w-12", "w-16", "w-20", "w-16", "w-24"]}
-              label={t("app.projects.skeleton")}
-            />
-          </div>
-        );
-      case "projects":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <div className="mx-auto max-w-4xl">
-              <ProjectSettings
-                context={context}
-                hiddenWorkspaceIds={hiddenWorkspaceIds}
-                onSetWorkspaceVisible={setWorkspaceVisible}
-                toast={showToast}
-              />
-            </div>
-          </div>
-        );
-      case "agent":
-        return (
-          <AgentPage
-            focusTaskId={agentFocusTaskId}
-            focusReviewToken={agentReviewFocus}
-            onOpenBug={openBugById}
-            toast={showToast}
-            onFocusConsumed={clearAgentFocus}
-          />
-        );
-      case "coworker":
-        return <CoworkerPage toast={showToast} />;
-      case "mcp":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <McpPage
-              workspaces={context?.workspaces ?? []}
-              onCopy={copy}
-              toast={showToast}
-            />
-          </div>
-        );
-      case "account":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <AccountPage
-              info={info}
-              context={context}
-              onShowLogin={() => {
-                void api
-                  .sessionShow()
-                  .catch((error) => showToast("error", String(error)));
-              }}
-              onLogout={handleLogout}
-              onRefresh={() => {
-                void refreshBase();
-                void loadContext();
-              }}
-              toast={showToast}
-            />
-          </div>
-        );
-      default:
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <SettingsPage
-              info={info}
-              onOpenPath={openPath}
-              onCopy={(text) => void copy(text)}
-              onShowOnboarding={() => {
-                void api
-                  .resetOnboarding()
-                  .then(() => refreshBase())
-                  .catch((error) => showToast("error", String(error)));
-              }}
-              toast={showToast}
-            />
-          </div>
-        );
+  const primaryGroup =
+    layoutApi.groups.find((group) => group.role === "primary") ??
+    layoutApi.groups[0];
+  const primaryActivePanel = primaryGroup?.panels.find(
+    (panel) => panel.id === primaryGroup.activePanelId,
+  );
+  const primaryView: PageView | null =
+    primaryActivePanel?.resource.type === "page"
+      ? primaryActivePanel.resource.view
+      : null;
+
+  const primaryActions = (
+    <>
+      {!projectListHidden ? (
+        <button
+          type="button"
+          aria-label={
+            sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
+          }
+          title={
+            sidebar.autoCollapse
+              ? sidebar.peek
+                ? t("app.sidebar.collapse")
+                : t("app.sidebar.expandNarrow")
+              : sidebar.hidden
+                ? t("app.sidebar.expand")
+                : t("app.sidebar.collapse")
+          }
+          onClick={sidebar.toggle}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+        >
+          {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+        </button>
+      ) : null}
+      {primaryView === "bugs" && workspace ? (
+        <ProjectOpenButton
+          key={workspace.id}
+          workspaceId={workspace.id}
+          onError={(text) => showToast("error", text)}
+        />
+      ) : null}
+    </>
+  );
+
+  /** Sign out: drop every project-scoped panel, then let the session layer run. */
+  const logout = () => {
+    const panels = layoutRef.current.groups.flatMap((group) => group.panels);
+    for (const panel of panels) {
+      if (panel.kind !== "page") layoutRef.current.closePanel(panel.id);
     }
+    layoutRef.current.openPage("bugs");
+    handleLogout();
+  };
+
+  const page: PageHostServices = {
+    info,
+    context,
+    contextLoading,
+    contextError,
+    workspace,
+    workspaceId,
+    scope,
+    setScope,
+    activeBugId,
+    projectsKnown,
+    hiddenWorkspaceIds,
+    agentInFlight,
+    agentFocusTaskId,
+    agentReviewFocus,
+    refreshToken,
+    toast: showToast,
+    onOpenBug: openBug,
+    onOpenBugById: openBugById,
+    onOpenWeb: openPath,
+    onOpenPath: openPath,
+    onCopy: copy,
+    onClaim: detailPane.claimFromList,
+    onAgentFix: enqueueAgent,
+    onAgentCompose: openAgentCompose,
+    onOpenAgentTask: openAgentTask,
+    onCancelTask: cancelAgentTask,
+    onClearAgentFocus: clearAgentFocus,
+    onSetWorkspaceVisible: setWorkspaceVisible,
+    onOpenMedia: openMedia,
+    loadContext,
+    refreshBase,
+    onShowLogin: () => {
+      void api.sessionShow().catch((error) => showToast("error", String(error)));
+    },
+    onLogout: logout,
+    onRefresh: () => {
+      void refreshBase();
+      void loadContext();
+    },
+    onShowOnboarding: () => {
+      void api
+        .resetOnboarding()
+        .then(() => refreshBase())
+        .catch((error) => showToast("error", String(error)));
+    },
+  };
+
+  const services = {
+    toast: showToast,
+    copy,
+    openPath,
+    workspaceName: (targetWorkspaceId: string) =>
+      context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+      targetWorkspaceId,
+    currentWorkspaceId: workspaceId,
+    bug: {
+      detail: detailPane.detail,
+      loading: detailPane.loading,
+      error: detailPane.error,
+      exporting: detailPane.exporting,
+      lastExport: detailPane.lastExport,
+      me: context?.user.nick ?? info.me,
+      members: detailPane.members,
+      membersLoading: detailPane.membersLoading,
+      agentInFlight,
+      onOpenWeb: openPath,
+      onCopy: copy,
+      onExport: detailPane.exportDetail,
+      onAgentFix: handleAgentFix,
+      onAgentCompose: openAgentCompose,
+      onOpenAgentTask: openAgentTask,
+      onOpenPath: openPath,
+      onOpenMedia: openMedia,
+      onRefreshMembers: detailPane.refreshMembers,
+      onClaim: detailPane.claimFromDetail,
+      onAddComment: detailPane.addComment,
+      onChangeField: detailPane.changeField,
+      onTransition: detailPane.transition,
+      onClose: detailPane.closeDetail,
+    },
+    terminal: {
+      sessions: terminal.sessions,
+      create: terminal.create,
+      close: terminal.closeSession,
+      restart: terminal.restart,
+    },
+  };
+
+  const banner = recoveryReport ? (
+    <RecoveryBanner
+      report={recoveryReport}
+      onOpenTasks={() => activateView("agent")}
+      onDismiss={dismissRecoveryReport}
+    />
+  ) : null;
+
+  /** Project menu entry: the read-only explorer opens in the secondary dock. */
+  const openExplorer = (targetWorkspaceId: string) => {
+    const name =
+      context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+      targetWorkspaceId;
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "explorer", workspaceId: targetWorkspaceId },
+      label: name,
+      target: "secondary",
+    });
   };
 
   return (
     <div
       className={clsx(
         "flex h-full flex-col overflow-hidden bg-canvas text-slate-900",
-        (sidebar.resizing || detailPane.resizing) && "select-none",
+        sidebar.resizing && "select-none",
       )}
     >
       <TitleBar
@@ -733,7 +850,7 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1">
-        <NavRail
+        <ActivityBar
           view={view}
           railAnim={railAnim}
           sidebarHidden={sidebar.hidden}
@@ -741,7 +858,7 @@ export default function App() {
           name={context?.user.nick || info.me}
           showCompanion={companionEnabled}
           companionOnline={companionOnline}
-          terminalOpen={terminal.open}
+          terminalOpen={terminalOpen}
           onToggleTerminal={toggleTerminal}
           onOpenCompanion={() => setCompanionOpen(true)}
           onActivate={activateView}
@@ -773,120 +890,40 @@ export default function App() {
             // The context menu closes itself after its exit animation.
             setView("projects");
           }}
-          onResizeStart={sidebar.startResize}
+          onBrowseFiles={openExplorer}
+          // The shared Sash overlays the old handle; its mousedown is inert.
+          onResizeStart={(event) => event.preventDefault()}
         />
 
-        {/*
-          Two stable panes under one grid: `main` / `term` / `detail` never
-          change identity, only their areas, so switching panes keeps the list,
-          the detail and every terminal mounted with their state intact.
-        */}
-        <div
-          className="grid min-h-0 min-w-0 flex-1"
-          style={{
-            gridTemplateAreas: terminalSpans
-              ? GRID_AREAS_TERMINAL_FIRST
-              : GRID_AREAS_DETAIL_FIRST,
-            gridTemplateColumns: "minmax(0, 1fr) auto",
-            gridTemplateRows: "minmax(0, 1fr) auto",
-          }}
-        >
-          {/* Content panel */}
-          <main
-            className="mb-2 mr-2 flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl bg-surface border border-border"
-            style={{ gridArea: "main" }}
-          >
-            <header className="flex h-12 shrink-0 items-center gap-1.5 px-2" data-tauri-drag-region>
-              {!projectListHidden ? (
-                <button
-                  type="button"
-                  aria-label={
-                    sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
-                  }
-                  title={
-                    sidebar.autoCollapse
-                      ? sidebar.peek
-                        ? t("app.sidebar.collapse")
-                        : t("app.sidebar.expandNarrow")
-                      : sidebar.hidden
-                        ? t("app.sidebar.expand")
-                        : t("app.sidebar.collapse")
-                  }
-                  onClick={sidebar.toggle}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
-                >
-                  {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-                </button>
-              ) : null}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <Workbench
+            layout={layoutApi}
+            services={services}
+            page={page}
+            primaryActions={primaryActions}
+            banner={banner}
+          />
 
-              <div className="min-w-0 flex-1 px-1">
-                <h1 className="truncate text-ui-base font-normal leading-5 text-slate-900">
-                  {title}
-                </h1>
-                {subtitle ? (
-                  <p className="truncate text-ui-sm leading-4 text-slate-400">{subtitle}</p>
-                ) : null}
-              </div>
-
-              {view === "bugs" && workspace ? (
-                <ProjectOpenButton
-                  key={workspace.id}
-                  workspaceId={workspace.id}
-                  onError={(text) => showToast("error", text)}
-                />
-              ) : null}
-            </header>
-
-            {recoveryReport ? (
-              <RecoveryBanner
-                report={recoveryReport}
-                onOpenTasks={() => activateView("agent")}
-                onDismiss={dismissRecoveryReport}
-              />
-            ) : null}
-
-            {renderView()}
-          </main>
-
-          <TerminalPanel panel={terminal} style={{ gridArea: "term" }} />
-
-          {/* The detail pane animates its own width; this wrapper only places it. */}
-          <div className="flex min-h-0" style={{ gridArea: "detail" }}>
-            <DetailPaneHos
-              rendered={detailPane.rendered}
-              open={detailPane.open}
-              width={detailPane.width}
-              resizing={detailPane.resizing}
-              onResizeStart={detailPane.startResize}
-              detail={detailPane.detail}
-              loading={detailPane.loading}
-              error={detailPane.error}
-              exporting={detailPane.exporting}
-              lastExport={detailPane.lastExport}
-              onClose={detailPane.closeDetail}
-              onOpenWeb={openPath}
-              onCopy={copy}
-              onExport={detailPane.exportDetail}
-              onAgentFix={handleAgentFix}
-              onAgentCompose={openAgentCompose}
-              agentInFlight={agentInFlight}
-              onOpenAgentTask={openAgentTask}
-              onOpenPath={openPath}
-              onOpenMedia={openMedia}
-              me={context?.user.nick ?? info.me}
-              members={detailPane.members}
-              membersLoading={detailPane.membersLoading}
-              onRefreshMembers={detailPane.refreshMembers}
-              onClaim={detailPane.claimFromDetail}
-              onAddComment={detailPane.addComment}
-              onChangeField={detailPane.changeField}
-              onTransition={detailPane.transition}
+          {!sidebar.hidden && !projectListHidden ? (
+            <Sash
+              axis="x"
+              label={t("settings.sidebar.resizeLabel")}
+              className="z-20"
+              style={{ left: -6, top: 0, width: 8, height: "100%" }}
+              onDragStart={() => {
+                sidebar.beginResize();
+                return {
+                  move: (delta) => sidebar.resize(delta),
+                  end: sidebar.endResize,
+                };
+              }}
+              onReset={sidebar.resetWidth}
             />
-          </div>
+          ) : null}
         </div>
       </div>
 
-      <AgentComposeShee
+      <AgentComposeSheet
         key={composeAgent ? `${composeAgent.workspaceId}:${composeAgent.id}` : "agent-compose"}
         open={composeAgent !== null}
         title={composeAgent?.title ?? ""}

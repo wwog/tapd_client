@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { EyeOff, FolderCog, RefreshCw } from "lucide-react";
+import { EyeOff, FolderCog, FolderTree, RefreshCw } from "lucide-react";
 
 import type { Workspace, WorkspaceContext } from "../lib/api";
 import type { ProjectMenu } from "../hooks/useWorkspaceData";
@@ -9,7 +9,7 @@ import { AccountChip } from "./AccountChip";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { ScrollingName } from "./ScrollingName";
 import { SkeletonRows } from "./Skeleton";
-import type { View } from "./NavRail";
+import type { View } from "./ActivityBar";
 
 type Props = {
   context: WorkspaceContext | null;
@@ -35,6 +35,8 @@ type Props = {
   onCloseProjectMenu: () => void;
   onHideWorkspace: (id: string) => void;
   onManageProjects: () => void;
+  /** Opens the read-only file explorer for this project (workbench panel). */
+  onBrowseFiles?: (workspaceId: string) => void;
   onResizeStart: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
 
@@ -58,6 +60,7 @@ export function ProjectSidebar({
   onCloseProjectMenu,
   onHideWorkspace,
   onManageProjects,
+  onBrowseFiles,
   onResizeStart,
 }: Props) {
   return (
@@ -120,35 +123,55 @@ export function ProjectSidebar({
             {visibleWorkspaces.map((item) => {
               const active = item.id === workspaceId;
               return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => onSelectWorkspace(item.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    onOpenProjectMenu({
-                      id: item.id,
-                      name: item.name,
-                      x: event.clientX,
-                      y: event.clientY,
-                    });
-                  }}
-                  className={clsx(
-                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left text-ui-base transition",
-                    active
-                      ? "bg-overlay font-normal text-slate-900"
-                      : "text-slate-600 hover:bg-overlay-soft",
-                  )}
-                >
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: item.logoColor || "#0ea5e9" }}
-                  />
-                  <ScrollingName text={item.name} className="flex-1" />
-                  {active ? (
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                <div key={item.id} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Clicking the already-selected project is the shortcut
+                      // to its explorer; the first click only selects it.
+                      if (active && onBrowseFiles) onBrowseFiles(item.id);
+                      else onSelectWorkspace(item.id);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      onOpenProjectMenu({
+                        id: item.id,
+                        name: item.name,
+                        x: event.clientX,
+                        y: event.clientY,
+                      });
+                    }}
+                    className={clsx(
+                      "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
+                      active
+                        ? "bg-overlay font-normal text-slate-900"
+                        : "text-slate-600 hover:bg-overlay-soft",
+                    )}
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: item.logoColor || "#0ea5e9" }}
+                    />
+                    <ScrollingName text={item.name} className="flex-1" />
+                    {active ? (
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
+                    ) : null}
+                  </button>
+                  {onBrowseFiles ? (
+                    <button
+                      type="button"
+                      aria-label={t("explorer.browse")}
+                      title={t("explorer.browseHint")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onBrowseFiles(item.id);
+                      }}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <FolderTree size={12} />
+                    </button>
                   ) : null}
-                </button>
+                </div>
               );
             })}
           </div>
@@ -184,6 +207,16 @@ export function ProjectSidebar({
         >
           {(requestClose) => (
             <>
+              <ContextMenuItem
+                icon={<FolderTree size={13} />}
+                label={t("explorer.browse")}
+                title={t("explorer.browseHint")}
+                disabled={!onBrowseFiles}
+                onClick={() => {
+                  onBrowseFiles?.(projectMenu.id);
+                  requestClose();
+                }}
+              />
               <ContextMenuItem
                 icon={<EyeOff size={13} />}
                 label={t("settings.sidebar.hideName", { name: projectMenu.name })}

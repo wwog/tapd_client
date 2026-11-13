@@ -69,8 +69,13 @@ pub struct CompanionConfig {
     /// that knows the address pair directly — a deliberate test-phase relief,
     /// weaker by design, so the default stays on.
     pub require_pairing_code: bool,
-    /// Paired phones, one entry per device name (re-pairing overwrites).
+    /// Paired phones, one entry per device name. Re-pairing keeps the id and
+    /// management flag while rotating the token and pairing time.
     pub devices: Vec<CompanionDevice>,
+    /// Internal one-time migration marker: legacy configs predate per-device
+    /// management permissions. It lets [`Self::migrate_device_permissions`]
+    /// grant the first device once without undoing a later explicit revoke.
+    pub device_permissions_initialized: bool,
 }
 
 impl Default for CompanionConfig {
@@ -82,7 +87,23 @@ impl Default for CompanionConfig {
             enabled: true,
             require_pairing_code: true,
             devices: Vec::new(),
+            device_permissions_initialized: false,
         }
+    }
+}
+
+impl CompanionConfig {
+    /// Legacy configs had no per-device management flag. Grant the first
+    /// paired device management once, then mark the migration done so a user
+    /// revoking that permission is not overridden on the next restart.
+    pub fn migrate_device_permissions(&mut self) {
+        if self.device_permissions_initialized {
+            return;
+        }
+        if let Some(first) = self.devices.first_mut() {
+            first.can_manage = true;
+        }
+        self.device_permissions_initialized = true;
     }
 }
 
@@ -98,6 +119,10 @@ pub struct CompanionDevice {
     pub token_hash: String,
     /// RFC 3339 time of the latest pairing with this name.
     pub paired_at: String,
+    /// Whether this device may manage other paired devices from the phone.
+    /// The first paired device defaults to true; the desktop can toggle any
+    /// device, including revoking the first one.
+    pub can_manage: bool,
 }
 
 /// A release the client must install before it can keep being used.
@@ -234,6 +259,7 @@ impl ConfigStore {
                 if config.onboarded_version == 0 && legacy_onboarded(&raw) {
                     config.onboarded_version = 1;
                 }
+                config.companion.migrate_device_permissions();
                 config
             }
             Err(_) => AppConfig::default(),
@@ -340,6 +366,47 @@ mod onboarding_tests {
         )
         .expect("write config");
         assert_eq!(store.load().onboarded_version, 2);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn legacy_companion_devices_grant_first_management() {
+        let store = temp_store("companion-legacy");
+        std::fs::write(
+            store.path(),
+            r#"{"companion":{"devices":[
+                {"id":"a","name":"A","tokenHash":"hash-a","pairedAt":"2026-11-13T00:00:00+00:00"},
+                {"id":"b","name":"B","tokenHash":"hash-b","pairedAt":"2026-11-13T00:01:00+00:00"}
+            ]}}"#,
+        )
+        .expect("write config");
+
+        let companion = store.load().companion;
+        assert!(companion.device_permissions_initialized);
+        assert!(companion.devices[0].can_manage);
+        assert!(!companion.devices[1].can_manage);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn explicit_revoke_is_not_regranted_on_reload() {
+        let store = temp_store("companion-revoked");
+        std::fs::write(
+            store.path(),
+            r#"{"companion":{
+                "devicePermissionsInitialized":true,
+                "devices":[
+                    {"id":"a","name":"A","tokenHash":"hash-a","pairedAt":"2026-11-13T00:00:00+00:00","canManage":false},
+                    {"id":"b","name":"B","tokenHash":"hash-b","pairedAt":"2026-11-13T00:01:00+00:00","canManage":false}
+                ]
+            }}"#,
+        )
+        .expect("write config");
+
+        let companion = store.load().companion;
+        assert!(companion.device_permissions_initialized);
+        assert!(!companion.devices[0].can_manage);
+        assert!(!companion.devices[1].can_manage);
         let _ = std::fs::remove_file(store.path());
     }
 }

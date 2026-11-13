@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bot, Bug, RefreshCw, Settings, Terminal } from "lucide-react";
+import { Bot, Bug, Folder, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import {
@@ -20,6 +20,8 @@ import { AgentHistoryPage } from "./pages/AgentHistoryPage";
 import { AgentTaskPage } from "./pages/AgentTaskPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { FilesPage } from "./pages/FilesPage";
+import { FilePage } from "./pages/FilePage";
 import { TerminalPage } from "./pages/TerminalPage";
 import { TerminalSessionPage } from "./pages/TerminalSessionPage";
 
@@ -44,12 +46,13 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "agent" | "terminal" | "settings";
+type TabKey = "bugs" | "agent" | "files" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
   { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
+  { key: "files", label: "mobile.files.title", hash: "#/files" },
   { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
   { key: "settings", label: "common.settings", hash: "#/settings" },
 ];
@@ -65,6 +68,9 @@ const tabOf = (route: Route): TabKey => {
     case "agent-task":
     case "coworkers":
       return "agent";
+    case "files":
+    case "file":
+      return "files";
     case "terminal":
     case "terminal-session":
       return "terminal";
@@ -97,6 +103,7 @@ function TabBar(props: { active: TabKey; badge: number }) {
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
                 {tab.key === "agent" ? <Bot size={18} /> : null}
+                {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
                 {tab.key === "agent" && props.badge > 0 ? (
@@ -214,6 +221,17 @@ export default function App() {
         {route.name === "agent-history" ? <AgentHistoryPage /> : null}
         {route.name === "agent-task" ? <AgentTaskPage id={route.id} /> : null}
         {route.name === "coworkers" ? <CoworkersPage /> : null}
+        {route.name === "files" ? (
+          <FilesPage workspaceId={route.workspaceId} path={route.path} />
+        ) : null}
+        {route.name === "file" ? (
+          // Keyed by target: copied/error state must not leak between files.
+          <FilePage
+            key={`${route.workspaceId ?? ""}:${route.path}`}
+            workspaceId={route.workspaceId}
+            path={route.path}
+          />
+        ) : null}
         {route.name === "terminal" ? <TerminalPage /> : null}
         {route.name === "terminal-session" ? (
           // One instance per session: exit/ended/title/draft state must not

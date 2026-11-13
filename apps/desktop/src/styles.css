@@ -1153,3 +1153,35 @@ select,
     transform: translate(0, 0);
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Workbench
+   Content fade-in only: new groups appear at their final size, never animate
+   width/height (nested splits jitter). Tab moves are DOM moves, so a panel
+   that keeps its identity does not re-run the animation.
+--------------------------------------------------------------------------- */
+@keyframes workbench-panel-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.workbench-panel {
+  animation: workbench-panel-fade 160ms ease-out;
+}
+
+/* While a tab is dragged the whole window keeps the grab cursor; terminal
+   selection is unaffected because the drag never starts inside xterm. */
+body.workbench-tab-dragging,
+body.workbench-tab-dragging * {
+  cursor: grabbing !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-panel {
+    animation: none;
+  }
+}

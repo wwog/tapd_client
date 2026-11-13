@@ -8,6 +8,7 @@ mod coworker;
 mod diagnostics;
 mod export;
 mod feature_router;
+mod fs;
 mod island_window;
 mod locale;
 mod mcp;
@@ -115,6 +116,9 @@ pub fn run() {
             commands::open_media,
             commands::media_endpoint,
             commands::list_dirs,
+            fs::fs_list,
+            fs::fs_read,
+            fs::fs_stat,
             commands::open_targets,
             commands::set_open_target,
             companion::companion_status,
@@ -122,6 +126,7 @@ pub fn run() {
             companion::companion_set_require_code,
             companion::companion_pairing_code,
             companion::companion_unpair,
+            companion::companion_set_device_manage,
             companion::companion_cloudflared_check,
             companion::companion_tunnel_start,
             companion::companion_tunnel_stop,

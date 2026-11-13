@@ -1,14 +1,19 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ChevronLeft, Minus, Plus, Star } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronLeft, Copy, Minus, Plus, Star } from "lucide-react";
 
 import {
   api,
   asApiError,
   type AgentConfig,
   type AgentRuntimeDescriptor,
+  type CompanionDeviceInfo,
+  type CompanionDevices,
   type NotificationSettings,
 } from "../lib/api";
 import { useAgentTasks } from "../lib/agentTasks";
+import { Badge } from "../components/Badge";
+import { copyText } from "../lib/clipboard";
+import { relativeTime } from "../lib/format";
 import { useDesktopPresence } from "../lib/heartbeat";
 import { localeTag, t, type LocaleMode } from "../lib/i18n";
 import {
@@ -66,7 +71,37 @@ function SettingRow(props: { label: string; children: ReactNode }) {
   );
 }
 
-/** 带说明的开关行（title 承载语义说明）。 */
+/** 带说明的开关控件（title/aria-label 承载语义说明）。 */
+function SwitchButton(props: {
+  label: string;
+  title?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked}
+      aria-label={props.label}
+      title={props.title}
+      disabled={props.disabled}
+      onClick={() => props.onChange(!props.checked)}
+      className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
+        props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
+      } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
+    >
+      <span
+        className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
+          props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
+        }`}
+      />
+    </button>
+  );
+}
+
+/** 带说明的开关行。 */
 function SwitchRow(props: {
   label: string;
   title?: string;
@@ -76,24 +111,13 @@ function SwitchRow(props: {
 }) {
   return (
     <SettingRow label={props.label}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={props.checked}
-        aria-label={props.label}
+      <SwitchButton
+        label={props.label}
         title={props.title}
+        checked={props.checked}
         disabled={props.disabled}
-        onClick={() => props.onChange(!props.checked)}
-        className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
-          props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
-        } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
-      >
-        <span
-          className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
-            props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
-          }`}
-        />
-      </button>
+        onChange={props.onChange}
+      />
     </SettingRow>
   );
 }
@@ -214,6 +238,12 @@ export function SettingsPage() {
   );
   const [pendingLoads, setPendingLoads] = useState(() => (settingsCache ? 0 : 3));
   const [deskError, setDeskError] = useState<string | null>(null);
+  const [devices, setDevices] = useState<CompanionDevices | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const devicesSeq = useRef(0);
 
   // 桌面端配置：三项依次读取；任一失败都保留错误，成功项照常渲染。
   useEffect(() => {
@@ -256,6 +286,32 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  // 设备管理：只有管理员会请求；每次心跳静默刷新在线状态。
+  const loadDevices = useCallback(async () => {
+    const seq = ++devicesSeq.current;
+    try {
+      const next = await api.devices();
+      if (seq !== devicesSeq.current) return;
+      setDevices(next);
+      setDevicesError(null);
+    } catch (err) {
+      if (seq !== devicesSeq.current) return;
+      setDevicesError(asApiError(err).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!presence.canManage) {
+      setDevices(null);
+      setDevicesError(null);
+      return;
+    }
+    // While a permission/unpair request is in flight, its optimistic state is
+    // authoritative; reload once it settles.
+    if (deviceBusy) return;
+    void loadDevices();
+  }, [presence.canManage, presence.lastSync, deviceBusy, loadDevices]);
 
   // Agent 配置：乐观更新，失败回滚并保留错误（无 toast，错误留在页面）。
   const patchConfig = async (patch: Partial<AgentConfig>) => {
@@ -310,6 +366,82 @@ export function SettingsPage() {
     settingsCache = null;
     clearSession();
     navigate("#/pair");
+  };
+
+  /** 权限开关：先乐观更新，失败只回滚这一台设备。 */
+  const setDeviceManage = async (
+    device: CompanionDeviceInfo,
+    canManage: boolean,
+  ) => {
+    // Invalidate any in-flight list refresh so it cannot overwrite this edit.
+    devicesSeq.current += 1;
+    setDeviceBusy(true);
+    setDevices((current) =>
+      current
+        ? {
+            ...current,
+            devices: current.devices.map((item) =>
+              item.id === device.id ? { ...item, canManage } : item,
+            ),
+          }
+        : current,
+    );
+    try {
+      await api.devicePermission(device.id, canManage);
+    } catch (err) {
+      setDevices((current) =>
+        current
+          ? {
+              ...current,
+              devices: current.devices.map((item) =>
+                item.id === device.id
+                  ? { ...item, canManage: device.canManage }
+                  : item,
+              ),
+            }
+          : current,
+      );
+      setDevicesError(asApiError(err).message);
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
+  const removeDevice = async (device: CompanionDeviceInfo) => {
+    if (
+      !window.confirm(
+        t("mobile.settings.removeDeviceConfirm", { name: device.name }),
+      )
+    ) {
+      return;
+    }
+    setDeviceBusy(true);
+    devicesSeq.current += 1;
+    try {
+      await api.deviceUnpair(device.id);
+      setDevices((current) =>
+        current
+          ? {
+              ...current,
+              devices: current.devices.filter((item) => item.id !== device.id),
+            }
+          : current,
+      );
+    } catch (err) {
+      setDevicesError(asApiError(err).message);
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
+  const copyCurrentLink = async () => {
+    setLinkError(null);
+    if (!(await copyText(window.location.origin))) {
+      setLinkError(t("common.copyFailed"));
+      return;
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 1500);
   };
 
   // 队列里有未结束任务时，桌面端会拒绝切换 Worktree；开关直接锁住。
@@ -367,6 +499,127 @@ export function SettingsPage() {
           </span>
         </SettingRow>
       </section>
+
+      {presence.canManage ? (
+        <>
+          <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
+            {t("mobile.settings.devices")}
+          </h2>
+          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+            <SettingRow label={t("mobile.settings.host")}>
+              <span className="flex items-center gap-1.5 text-ui-caption text-slate-700">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    presence.online ? "bg-emerald-500" : "bg-slate-300"
+                  }`}
+                />
+                {presence.version ? `v${presence.version}` : "—"}
+              </span>
+            </SettingRow>
+            <div className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+              <span className="shrink-0 text-ui-caption text-slate-700">
+                {t("mobile.settings.currentLink")}
+              </span>
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
+                <span
+                  className="min-w-0 truncate font-mono text-ui-xs text-slate-500"
+                  title={window.location.origin}
+                >
+                  {window.location.origin.replace(/^https?:\/\//, "")}
+                </span>
+                <button
+                  type="button"
+                  aria-label={
+                    linkCopied ? t("common.copied") : t("common.copy")
+                  }
+                  title={linkCopied ? t("common.copied") : t("common.copy")}
+                  onClick={() => void copyCurrentLink()}
+                  className="shrink-0 rounded p-1 text-slate-400 transition active:bg-overlay-soft"
+                >
+                  {linkCopied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+            {linkError ? (
+              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+                {linkError}
+              </p>
+            ) : null}
+            {devicesError ? (
+              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+                {devicesError}
+              </p>
+            ) : null}
+            {devices ? (
+              devices.devices.length > 0 ? (
+                devices.devices.map((device) => (
+                  <div
+                    key={device.id}
+                    className="border-b border-border py-2.5 last:border-b-0"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                            device.online ? "bg-emerald-500" : "bg-slate-300"
+                          }`}
+                        />
+                        <span className="truncate text-ui-caption text-slate-700">
+                          {device.name}
+                        </span>
+                        {device.self ? (
+                          <Badge tone="blue">
+                            {t("mobile.settings.thisDevice")}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {device.self ? null : (
+                        <SwitchButton
+                          checked={device.canManage}
+                          disabled={deviceBusy}
+                          label={`${t("mobile.settings.manageDevices")} ${device.name}`}
+                          title={t("mobile.settings.manageDevicesHint")}
+                          onChange={(value) =>
+                            void setDeviceManage(device, value)
+                          }
+                        />
+                      )}
+                    </div>
+                    <div className="mt-0.5 flex items-center justify-between gap-2 pl-3.5">
+                      <span className="min-w-0 truncate text-ui-2xs text-slate-400">
+                        {device.online
+                          ? t("mobile.settings.presenceOnline")
+                          : t("mobile.settings.presenceOffline")}
+                        {device.lastSeenAt
+                          ? ` · ${relativeTime(device.lastSeenAt)}`
+                          : ""}
+                      </span>
+                      {device.self ? null : (
+                        <button
+                          type="button"
+                          disabled={deviceBusy}
+                          onClick={() => void removeDevice(device)}
+                          className="shrink-0 rounded px-1 py-0.5 text-ui-2xs text-rose-600 transition active:bg-rose-50 disabled:opacity-40"
+                        >
+                          {t("mobile.settings.removeDevice")}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="py-2 text-ui-xs text-slate-400">
+                  {t("mobile.settings.noDevices")}
+                </p>
+              )
+            ) : (
+              <p className="py-2 text-ui-caption text-slate-400">
+                {t("mobile.settings.devicesLoading")}
+              </p>
+            )}
+          </section>
+        </>
+      ) : null}
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
         <SettingRow label={t("common.language")}>

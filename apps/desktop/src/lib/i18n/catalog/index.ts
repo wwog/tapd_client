@@ -5,6 +5,8 @@
 import { agent } from "./agent";
 import { bugs } from "./bugs";
 import { common } from "./common";
+import { explorer } from "./explorer";
+import { layout } from "./layout";
 import { misc } from "./misc";
 import { settings } from "./settings";
 import { shell } from "./shell";
@@ -19,6 +21,8 @@ export const CATALOG = {
   ...agent,
   ...workbench,
   ...terminal,
+  ...layout,
+  ...explorer,
   ...misc,
 } as const;
 

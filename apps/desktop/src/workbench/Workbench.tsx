@@ -1,0 +1,440 @@
+/**
+ * Workbench host: wires the layout API to the split view, the tab drag
+ * protocol, the stable panel portals and the panel services context.
+ *
+ * App owns the layout hook and the domain hooks (`useDetailPane`,
+ * `useTerminalPanel`); this component only translates them into the view layer.
+ */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+
+import { api as appApi } from "../lib/api";
+import {
+  LAYOUT_GUTTER,
+  RAIL_WIDTH,
+} from "../hooks/useSidebarLayout";
+import {
+  GROUP_GAP,
+  groupMinSize,
+} from "./layout/defaults";
+import {
+  type DropZone,
+  type PanelRef,
+  type WorkbenchLayoutApi,
+} from "./layout/types";
+import { PANEL_DEFINITIONS } from "./panels/registry";
+import {
+  PanelServicesProvider,
+  type PanelServices,
+} from "./panels/context";
+import { PageHostProvider, type PageHostServices } from "./components/pageContext";
+import { DragGhost, DropOverlay, type TabDrag, type TabDrop } from "./components/DragLayer";
+import { GroupView } from "./components/GroupView";
+import { PanelHost } from "./components/PanelHost";
+import { SplitView, type GroupPlacement } from "./components/SplitView";
+
+type WorkbenchProps = {
+  layout: WorkbenchLayoutApi;
+  /** Domain services; `open` / `closePanel` / `pinPanel` are filled in here. */
+  services: Omit<PanelServices, "open" | "closePanel" | "pinPanel">;
+  page: PageHostServices;
+  /** Primary group tab-strip actions (side bar toggle, project-open button). */
+  primaryActions?: ReactNode;
+  /** One app-level strip above the layout area (recovery report). */
+  banner?: ReactNode;
+};
+
+type DragOrigin = {
+  panel: PanelRef;
+  groupId: string;
+  startX: number;
+  startY: number;
+  pointerId: number;
+  icon: ReactNode;
+  label: string;
+};
+
+export function Workbench({
+  layout: api,
+  services: baseServices,
+  page,
+  primaryActions,
+  banner,
+}: WorkbenchProps) {
+  const [bodies, setBodies] = useState<Record<string, HTMLElement | null>>({});
+  const [drag, setDrag] = useState<TabDrag | null>(null);
+  /** A `+` click should activate the session it spawned once the list syncs. */
+  const pendingTerminalActivate = useRef<number | null>(null);
+
+  const registerBody = useCallback(
+    (groupId: string, element: HTMLElement | null) => {
+      setBodies((current) =>
+        current[groupId] === element
+          ? current
+          : { ...current, [groupId]: element },
+      );
+    },
+    [],
+  );
+
+  const closePanel = useCallback(
+    (panel: PanelRef) => {
+      if (panel.resource.type === "terminal") {
+        baseServices.terminal.close(panel.resource.sessionId);
+      }
+      if (panel.resource.type === "bug") {
+        // App closes the layout panel and clears the detail fetch.
+        baseServices.bug.onClose();
+        return;
+      }
+      api.closePanel(panel.id);
+    },
+    [api.closePanel, baseServices.bug, baseServices.terminal],
+  );
+
+  const closePanelById = useCallback(
+    (panelId: string) => {
+      for (const group of api.groups) {
+        const panel = group.panels.find((item) => item.id === panelId);
+        if (panel) {
+          closePanel(panel);
+          return;
+        }
+      }
+    },
+    [api.layout, closePanel],
+  );
+
+  /**
+   * Window growth: a newly filled/expanded secondary dock needs room for the
+   * primary minimum, the secondary minimum and the rail/sidebar. Watching the
+   * dock's panel kinds catches every path (App bug panel, services.open, drag
+   * into the dock); the first render is skipped so a restored layout does not
+   * resize the window at startup.
+   */
+  const secondaryKindKey =
+    api.groups
+      .find((group) => group.role === "secondary")
+      ?.panels.map((panel) => panel.kind)
+      .join("|") ?? "";
+  const previousSecondaryKey = useRef(secondaryKindKey);
+  useEffect(() => {
+    if (
+      !secondaryKindKey ||
+      secondaryKindKey === previousSecondaryKey.current
+    ) {
+      previousSecondaryKey.current = secondaryKindKey;
+      return;
+    }
+    previousSecondaryKey.current = secondaryKindKey;
+    const secondary = api.groups.find((group) => group.role === "secondary");
+    const primary = api.groups.find((group) => group.role === "primary");
+    if (!secondary) return;
+    const required =
+      RAIL_WIDTH +
+      api.sidebarWidth +
+      (primary ? groupMinSize(primary).width : 460) +
+      groupMinSize(secondary).width +
+      LAYOUT_GUTTER +
+      GROUP_GAP * 2;
+    void appApi.ensureWindowWidth(required).catch(() => 0);
+  }, [secondaryKindKey, api]);
+
+  /** Programmatic open: restore a maximized layout so the new dock is visible. */
+  const openService = useCallback(
+    (spec: Parameters<WorkbenchLayoutApi["open"]>[0]) => {
+      if (api.layout.maximizedGroupId) api.maximizeGroup(null);
+      return api.open(spec);
+    },
+    [api.layout.maximizedGroupId, api.maximizeGroup, api.open],
+  );
+
+  const services = useMemo<PanelServices>(
+    () => ({
+      ...baseServices,
+      open: openService,
+      closePanel: closePanelById,
+      pinPanel: api.pinPanel,
+    }),
+    [baseServices, openService, closePanelById, api.pinPanel],
+  );
+
+  const spawnTerminal = useCallback(() => {
+    pendingTerminalActivate.current = api.groups.reduce(
+      (count, group) =>
+        count + group.panels.filter((panel) => panel.kind === "terminal").length,
+      0,
+    );
+    baseServices.terminal.create();
+  }, [api.groups, baseServices.terminal.create]);
+
+  // `syncTerminalPanels` appends sessions without moving focus; the `+` button
+  // still expects the fresh tab to come to the front. Wait for the panel count
+  // to grow so a slow spawn cannot activate an older tab.
+  useEffect(() => {
+    const expected = pendingTerminalActivate.current;
+    if (expected === null) return;
+    const terminals = api.groups.flatMap((group) =>
+      group.panels
+        .filter((panel) => panel.kind === "terminal")
+        .map((panel) => ({ group, panel })),
+    );
+    if (terminals.length <= expected) return;
+    const newest = terminals[terminals.length - 1]!;
+    pendingTerminalActivate.current = null;
+    api.activateGroup(newest.group.id);
+    api.activatePanel(newest.panel.id);
+  }, [api.layout, api.activateGroup, api.activatePanel]);
+
+  const applyDrop = useCallback(
+    (panel: PanelRef, fromGroupId: string, drop: TabDrop | null, x: number) => {
+      if (!drop) return;
+      // A split or cross-group move while maximized would land in a hidden
+      // group; restore the tree first.
+      if (
+        api.layout.maximizedGroupId &&
+        (drop.groupId !== fromGroupId || drop.zone !== "center")
+      ) {
+        api.maximizeGroup(null);
+      }
+      if (drop.groupId === fromGroupId) {
+        const group = api.groups.find((item) => item.id === fromGroupId);
+        const currentIndex =
+          group?.panels.findIndex((item) => item.id === panel.id) ?? 0;
+        const finalIndex = tabInsertionIndex(drop.groupId, panel.id, x);
+        // `movePanel` receives the index in the pre-removal list; it shifts
+        // same-group drops down by one after removing the tab.
+        const targetIndex =
+          finalIndex > currentIndex ? finalIndex + 1 : finalIndex;
+        api.movePanel(panel.id, drop.groupId, targetIndex);
+        return;
+      }
+      if (drop.zone === "center") {
+        const target = api.groups.find((group) => group.id === drop.groupId);
+        api.movePanel(panel.id, drop.groupId, target?.panels.length ?? 0);
+        return;
+      }
+      api.splitPanel(panel.id, drop.groupId, drop.zone);
+    },
+    [api],
+  );
+
+  const startTabDrag = useCallback(
+    (
+      event: ReactPointerEvent<HTMLElement>,
+      panel: PanelRef,
+      groupId: string,
+    ) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+
+      // Catch pointerup even when the pointer leaves the window mid-drag.
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Synthetic pointers (tests, older WebViews) may reject capture.
+      }
+
+      const origin: DragOrigin = {
+        panel,
+        groupId,
+        startX: event.clientX,
+        startY: event.clientY,
+        pointerId: event.pointerId,
+        icon: PANEL_DEFINITIONS[panel.kind].icon(panel),
+        label: PANEL_DEFINITIONS[panel.kind].title(panel),
+      };
+      let active = false;
+      let cancelled = false;
+      let current: TabDrop | null = null;
+
+      const detach = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        window.removeEventListener("keydown", onKeyDown, true);
+        document.body.classList.remove("workbench-tab-dragging");
+      };
+
+      const onMove = (move: PointerEvent) => {
+        if (move.pointerId !== origin.pointerId) return;
+        if (!active) {
+          if (
+            Math.hypot(
+              move.clientX - origin.startX,
+              move.clientY - origin.startY,
+            ) < 4
+          ) {
+            return;
+          }
+          active = true;
+          document.body.classList.add("workbench-tab-dragging");
+        }
+        current = findDropTarget(move.clientX, move.clientY);
+        setDrag({
+          panelId: panel.id,
+          fromGroupId: groupId,
+          x: move.clientX,
+          y: move.clientY,
+          icon: origin.icon,
+          label: origin.label,
+          drop: current,
+        });
+      };
+
+      const onUp = (up: PointerEvent) => {
+        if (up.pointerId !== origin.pointerId) return;
+        detach();
+        if (active && !cancelled) {
+          current = findDropTarget(up.clientX, up.clientY);
+          applyDrop(panel, groupId, current, up.clientX);
+        }
+        setDrag(null);
+      };
+
+      const onCancel = (cancel: PointerEvent) => {
+        if (cancel.pointerId !== origin.pointerId) return;
+        cancelled = true;
+        detach();
+        setDrag(null);
+      };
+
+      const onKeyDown = (key: KeyboardEvent) => {
+        if (key.key !== "Escape") return;
+        cancelled = true;
+        detach();
+        setDrag(null);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+      window.addEventListener("keydown", onKeyDown, true);
+    },
+    [applyDrop],
+  );
+
+  const renderGroup = useCallback(
+    (placement: GroupPlacement, state: { hidden: boolean; maximized: boolean }) => (
+      <GroupView
+        key={placement.group.id}
+        api={api}
+        group={placement.group}
+        rect={placement.rect}
+        empty={placement.empty}
+        hidden={state.hidden}
+        maximized={state.maximized}
+        primaryActions={primaryActions}
+        onRegisterBody={registerBody}
+        onSpawnTerminal={spawnTerminal}
+        onTabPointerDown={startTabDrag}
+      />
+    ),
+    [api, primaryActions, registerBody, spawnTerminal, startTabDrag],
+  );
+
+  return (
+    <PanelServicesProvider value={services}>
+      <PageHostProvider value={page}>
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {banner}
+          <SplitView layout={api} renderGroup={renderGroup} />
+        </div>
+
+        <PanelHost groups={api.groups} bodies={bodies} />
+
+        {drag ? (
+          <>
+            {drag.drop ? <DropOverlay drop={drag.drop} /> : null}
+            <DragGhost drag={drag} />
+          </>
+        ) : null}
+      </PageHostProvider>
+    </PanelServicesProvider>
+  );
+}
+
+/** Finds the group cell under the pointer and derives the drop zone. */
+function findDropTarget(x: number, y: number): TabDrop | null {
+  // Empty canonical docks collapse to 0px; check their boundary strip first so
+  // they can still receive a drop (otherwise the filled sibling covers them).
+  const empties = document.querySelectorAll<HTMLElement>(
+    '[data-workbench-group-empty="true"]',
+  );
+  for (const cell of empties) {
+    const groupId = cell.dataset.workbenchGroup;
+    if (!groupId) continue;
+    const rect = cell.getBoundingClientRect();
+    const pad = 12;
+    if (
+      x >= rect.left - pad &&
+      x <= rect.right + pad &&
+      y >= rect.top - pad &&
+      y <= rect.bottom + pad
+    ) {
+      return {
+        groupId,
+        zone: "center",
+        left: rect.left - pad,
+        top: rect.top - pad,
+        width: Math.max(rect.width, 0) + pad * 2,
+        height: Math.max(rect.height, 0) + pad * 2,
+      };
+    }
+  }
+
+  const stack = document.elementsFromPoint(x, y);
+  for (const element of stack) {
+    const cell = element.closest<HTMLElement>("[data-workbench-group-cell]");
+    if (!cell) continue;
+    const groupId = cell.dataset.workbenchGroup;
+    if (!groupId) continue;
+    const rect = cell.getBoundingClientRect();
+    return {
+      groupId,
+      zone: zoneFor(rect, x, y),
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  return null;
+}
+
+function zoneFor(rect: DOMRect, x: number, y: number): DropZone {
+  if (rect.width <= 0 || rect.height <= 0) return "center";
+  const rx = (x - rect.left) / rect.width;
+  const ry = (y - rect.top) / rect.height;
+  const edge = 0.25;
+  if (rx < edge) return "left";
+  if (rx > 1 - edge) return "right";
+  if (ry < edge) return "top";
+  if (ry > 1 - edge) return "bottom";
+  return "center";
+}
+
+/** Final tab index after removing the dragged tab from its group. */
+function tabInsertionIndex(groupId: string, draggedId: string, x: number): number {
+  const cell = Array.from(
+    document.querySelectorAll<HTMLElement>("[data-workbench-group-cell]"),
+  ).find((element) => element.dataset.workbenchGroup === groupId);
+  if (!cell) return 0;
+  const tabs = Array.from(
+    cell.querySelectorAll<HTMLElement>("[data-tab-id]"),
+  ).filter((element) => element.dataset.tabId !== draggedId);
+  let index = 0;
+  for (const tab of tabs) {
+    const rect = tab.getBoundingClientRect();
+    if (x > rect.left + rect.width / 2) index += 1;
+    else break;
+  }
+  return index;
+}

@@ -1,0 +1,259 @@
+/*
+ * Syntax palette for the read-only file viewer and Markdown preview.
+ *
+ * Prism emits `token <type>` spans; refractor does not ship a theme. The
+ * palette lives in CSS (not TSX) so it can switch with the app theme and does
+ * not add hard-coded colours to component code.
+ */
+
+.explorer-code .token.comment,
+.explorer-code .token.prolog,
+.explorer-code .token.doctype,
+.explorer-code .token.cdata {
+  color: #94a3b8;
+}
+
+.explorer-code .token.punctuation,
+.explorer-code .token.operator {
+  color: #64748b;
+}
+
+.explorer-code .token.namespace {
+  opacity: 0.75;
+}
+
+.explorer-code .token.property,
+.explorer-code .token.tag,
+.explorer-code .token.constant,
+.explorer-code .token.symbol,
+.explorer-code .token.deleted {
+  color: #be123c;
+}
+
+.explorer-code .token.boolean,
+.explorer-code .token.number {
+  color: #b45309;
+}
+
+.explorer-code .token.selector,
+.explorer-code .token.attr-name,
+.explorer-code .token.string,
+.explorer-code .token.char,
+.explorer-code .token.builtin,
+.explorer-code .token.inserted {
+  color: #0f766e;
+}
+
+.explorer-code .token.operator,
+.explorer-code .token.entity,
+.explorer-code .token.url {
+  color: #0369a1;
+}
+
+.explorer-code .token.atrule,
+.explorer-code .token.attr-value,
+.explorer-code .token.keyword {
+  color: #7c3aed;
+}
+
+.explorer-code .token.function,
+.explorer-code .token.class-name {
+  color: #0369a1;
+}
+
+.explorer-code .token.regex,
+.explorer-code .token.important,
+.explorer-code .token.variable {
+  color: #b45309;
+}
+
+.explorer-code .token.important,
+.explorer-code .token.bold {
+  font-weight: inherit;
+}
+
+.explorer-code .token.italic {
+  font-style: italic;
+}
+
+/* Markdown preview: align MDEditor's neutral defaults with the panel. */
+.explorer-markdown .wmde-markdown {
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: var(--text-ui-caption);
+  line-height: 1.65;
+}
+
+.explorer-markdown .wmde-markdown > :first-child {
+  margin-top: 0;
+}
+
+.explorer-markdown .wmde-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.explorer-markdown .wmde-markdown h1,
+.explorer-markdown .wmde-markdown h2,
+.explorer-markdown .wmde-markdown h3,
+.explorer-markdown .wmde-markdown h4,
+.explorer-markdown .wmde-markdown h5,
+.explorer-markdown .wmde-markdown h6 {
+  border-bottom: 0;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.explorer-markdown .wmde-markdown a {
+  color: var(--color-sky-600);
+}
+
+.explorer-markdown .wmde-markdown pre,
+.explorer-markdown .wmde-markdown code {
+  font-family: var(--font-mono);
+}
+
+.explorer-markdown .wmde-markdown pre {
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--color-slate-50);
+  font-size: var(--text-ui-xs);
+  line-height: 1.55;
+}
+
+.explorer-markdown .wmde-markdown code {
+  background: var(--color-slate-50);
+}
+
+.explorer-markdown .wmde-markdown pre code {
+  background: transparent;
+}
+
+.explorer-markdown .wmde-markdown img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.explorer-markdown .wmde-markdown table {
+  border-collapse: collapse;
+}
+
+.explorer-markdown .wmde-markdown th,
+.explorer-markdown .wmde-markdown td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+}
+
+.explorer-markdown .wmde-markdown blockquote {
+  border-left: 2px solid var(--color-border);
+  color: var(--color-slate-500);
+}
+
+.explorer-markdown .wmde-markdown .token.comment,
+.explorer-markdown .wmde-markdown .token.prolog,
+.explorer-markdown .wmde-markdown .token.doctype,
+.explorer-markdown .wmde-markdown .token.cdata {
+  color: #94a3b8;
+}
+
+.explorer-markdown .wmde-markdown .token.keyword,
+.explorer-markdown .wmde-markdown .token.atrule,
+.explorer-markdown .wmde-markdown .token.attr-value {
+  color: #7c3aed;
+}
+
+.explorer-markdown .wmde-markdown .token.string,
+.explorer-markdown .wmde-markdown .token.char,
+.explorer-markdown .wmde-markdown .token.attr-name,
+.explorer-markdown .wmde-markdown .token.builtin,
+.explorer-markdown .wmde-markdown .token.inserted {
+  color: #0f766e;
+}
+
+.explorer-markdown .wmde-markdown .token.number,
+.explorer-markdown .wmde-markdown .token.boolean,
+.explorer-markdown .wmde-markdown .token.constant,
+.explorer-markdown .wmde-markdown .token.symbol {
+  color: #b45309;
+}
+
+.explorer-markdown .wmde-markdown .token.function,
+.explorer-markdown .wmde-markdown .token.class-name {
+  color: #0369a1;
+}
+
+.explorer-markdown .wmde-markdown .token.tag,
+.explorer-markdown .wmde-markdown .token.property,
+.explorer-markdown .wmde-markdown .token.selector,
+.explorer-markdown .wmde-markdown .token.deleted {
+  color: #be123c;
+}
+
+/* Dark theme: same hues, lighter inks. */
+[data-theme="dark"] .explorer-code .token.comment,
+[data-theme="dark"] .explorer-code .token.prolog,
+[data-theme="dark"] .explorer-code .token.doctype,
+[data-theme="dark"] .explorer-code .token.cdata,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.comment,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.prolog,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.doctype,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.cdata {
+  color: #8b93a1;
+}
+
+[data-theme="dark"] .explorer-code .token.keyword,
+[data-theme="dark"] .explorer-code .token.atrule,
+[data-theme="dark"] .explorer-code .token.attr-value,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.keyword,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.atrule,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.attr-value {
+  color: #c4b5fd;
+}
+
+[data-theme="dark"] .explorer-code .token.string,
+[data-theme="dark"] .explorer-code .token.char,
+[data-theme="dark"] .explorer-code .token.attr-name,
+[data-theme="dark"] .explorer-code .token.builtin,
+[data-theme="dark"] .explorer-code .token.inserted,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.string,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.char,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.attr-name,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.builtin,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.inserted {
+  color: #6ee7b7;
+}
+
+[data-theme="dark"] .explorer-code .token.number,
+[data-theme="dark"] .explorer-code .token.boolean,
+[data-theme="dark"] .explorer-code .token.constant,
+[data-theme="dark"] .explorer-code .token.symbol,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.number,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.boolean,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.constant,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.symbol {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .explorer-code .token.function,
+[data-theme="dark"] .explorer-code .token.class-name,
+[data-theme="dark"] .explorer-code .token.url,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.function,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.class-name {
+  color: #7dd3fc;
+}
+
+[data-theme="dark"] .explorer-code .token.tag,
+[data-theme="dark"] .explorer-code .token.property,
+[data-theme="dark"] .explorer-code .token.selector,
+[data-theme="dark"] .explorer-code .token.deleted,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.tag,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.property,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.selector,
+[data-theme="dark"] .explorer-markdown .wmde-markdown .token.deleted {
+  color: #fda4af;
+}
+
+[data-theme="dark"] .explorer-code .token.punctuation,
+[data-theme="dark"] .explorer-code .token.operator {
+  color: #a2aab8;
+}

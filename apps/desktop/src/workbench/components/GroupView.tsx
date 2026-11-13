@@ -1,0 +1,348 @@
+import clsx from "clsx";
+import {
+  Maximize2,
+  Minimize2,
+  Pin,
+  Plus,
+  X,
+} from "lucide-react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+
+import { ContextMenu, ContextMenuItem, ContextMenuSeparator } from "../../components/ContextMenu";
+import { t } from "../../lib/i18n";
+import { PANEL_DEFINITIONS } from "../panels/registry";
+import { usePanelServices } from "../panels/context";
+import type { GroupNode, PanelRef, WorkbenchLayoutApi } from "../layout/types";
+import { GROUP_INSET, type Rect } from "./SplitView";
+
+type GroupViewProps = {
+  api: WorkbenchLayoutApi;
+  group: GroupNode;
+  rect: Rect;
+  empty: boolean;
+  hidden: boolean;
+  maximized: boolean;
+  /** Side bar toggle and project-open button, rendered in the primary strip. */
+  primaryActions?: ReactNode;
+  onRegisterBody: (groupId: string, element: HTMLElement | null) => void;
+  onSpawnTerminal: () => void;
+  onTabPointerDown: (
+    event: ReactPointerEvent<HTMLElement>,
+    panel: PanelRef,
+    groupId: string,
+  ) => void;
+};
+
+type TabMenu = { panel: PanelRef; x: number; y: number };
+
+/**
+ * One group: an absolutely placed cell, the card chrome, the tab strip and the
+ * body the panel portals land in. Empty canonical docks keep their cell (so a
+ * drag can find them) but render no chrome and take 0px.
+ */
+export function GroupView({
+  api,
+  group,
+  rect,
+  empty,
+  hidden,
+  maximized,
+  primaryActions,
+  onRegisterBody,
+  onSpawnTerminal,
+  onTabPointerDown,
+}: GroupViewProps) {
+  const services = usePanelServices();
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [menu, setMenu] = useState<TabMenu | null>(null);
+
+  useLayoutEffect(() => {
+    onRegisterBody(group.id, empty ? null : bodyRef.current);
+    return () => onRegisterBody(group.id, null);
+  }, [group.id, empty, onRegisterBody]);
+
+  const hasTerminal = group.panels.some((panel) => panel.kind === "terminal");
+  const isMaximized = maximized;
+
+  const toggleMaximize = () =>
+    api.maximizeGroup(isMaximized ? null : group.id);
+
+  const handleStripDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-tab-id], button")) return;
+    toggleMaximize();
+  };
+
+  return (
+    <div
+      data-workbench-group={group.id}
+      data-workbench-group-cell="true"
+      {...(empty ? { "data-workbench-group-empty": "true" } : {})}
+      // A maximized sibling makes this cell visibility-hidden; inert keeps a
+      // focused terminal or form from receiving keys while it is not visible.
+      inert={hidden}
+      aria-hidden={hidden || undefined}
+      className="absolute"
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
+        visibility: hidden ? "hidden" : undefined,
+        zIndex: maximized ? 10 : undefined,
+      }}
+    >
+      {empty ? null : (
+        <div
+          data-workbench-group={group.id}
+          className="absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface"
+          style={{ inset: GROUP_INSET }}
+        >
+          <header
+            className="relative flex h-9 shrink-0 items-center gap-1 border-b border-border px-1.5"
+            data-tauri-drag-region
+            onDoubleClick={handleStripDoubleClick}
+          >
+            <div
+              className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+              data-tauri-drag-region
+            >
+              {group.panels.map((panel) => (
+                <TabItem
+                  key={panel.id}
+                  panel={panel}
+                  active={group.activePanelId === panel.id}
+                  onSelect={() => api.activatePanel(panel.id)}
+                  onClose={() => services.closePanel(panel.id)}
+                  onPointerDown={(event) =>
+                    onTabPointerDown(event, panel, group.id)
+                  }
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMenu({ panel, x: event.clientX, y: event.clientY });
+                  }}
+                  onPin={() => services.pinPanel(panel.id)}
+                />
+              ))}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-0.5">
+              {group.role === "primary" ? primaryActions : null}
+              {hasTerminal ? (
+                <StripButton label={t("terminal.new")} onClick={onSpawnTerminal}>
+                  <Plus size={14} />
+                </StripButton>
+              ) : null}
+              <StripButton
+                label={isMaximized ? t("layout.restore") : t("layout.maximize")}
+                onClick={toggleMaximize}
+              >
+                {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              </StripButton>
+            </div>
+          </header>
+
+          <div
+            ref={bodyRef}
+            data-workbench-group={group.id}
+            data-workbench-group-body="true"
+            className="relative min-h-0 flex-1 overflow-hidden"
+          />
+        </div>
+      )}
+
+      {menu ? (
+        <TabMenuView
+          api={api}
+          group={group}
+          menu={menu}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function TabMenuView({
+  api,
+  group,
+  menu,
+  onClose,
+}: {
+  api: WorkbenchLayoutApi;
+  group: GroupNode;
+  menu: TabMenu;
+  onClose: () => void;
+}) {
+  const services = usePanelServices();
+  const closableOthers = group.panels.filter(
+    (panel) =>
+      panel.id !== menu.panel.id && PANEL_DEFINITIONS[panel.kind].closable,
+  );
+  const isMaximized = api.layout.maximizedGroupId === group.id;
+  const title = PANEL_DEFINITIONS[menu.panel.kind].title(menu.panel);
+
+  return (
+    <ContextMenu x={menu.x} y={menu.y} label={title} onClose={onClose}>
+      {(requestClose) => (
+        <>
+          {PANEL_DEFINITIONS[menu.panel.kind].closable ? (
+            <ContextMenuItem
+              icon={<X size={13} />}
+              label={t("layout.closeTab")}
+              onClick={() => {
+                services.closePanel(menu.panel.id);
+                requestClose();
+              }}
+            />
+          ) : null}
+          <ContextMenuItem
+            icon={<X size={13} />}
+            label={t("layout.closeOthers")}
+            disabled={closableOthers.length === 0}
+            onClick={() => {
+              for (const panel of closableOthers) services.closePanel(panel.id);
+              requestClose();
+            }}
+          />
+          {menu.panel.preview ? (
+            <ContextMenuItem
+              icon={<Pin size={13} />}
+              label={t("layout.pinTab")}
+              onClick={() => {
+                services.pinPanel(menu.panel.id);
+                requestClose();
+              }}
+            />
+          ) : null}
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            label={isMaximized ? t("layout.restore") : t("layout.maximize")}
+            onClick={() => {
+              api.maximizeGroup(isMaximized ? null : group.id);
+              requestClose();
+            }}
+          />
+        </>
+      )}
+    </ContextMenu>
+  );
+}
+
+function TabItem({
+  panel,
+  active,
+  onSelect,
+  onClose,
+  onPointerDown,
+  onContextMenu,
+  onPin,
+}: {
+  panel: PanelRef;
+  active: boolean;
+  onSelect: () => void;
+  onClose: () => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
+  onPin: () => void;
+}) {
+  const definition = PANEL_DEFINITIONS[panel.kind];
+  const label = definition.title(panel);
+  /** Pointer-down origin; a moved pointer means the click was a tab drag. */
+  const pressRef = useRef<{ x: number; y: number } | null>(null);
+
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      data-tab-id={panel.id}
+      title={panel.preview ? t("layout.previewHint") : label}
+      onPointerDown={(event) => {
+        pressRef.current = { x: event.clientX, y: event.clientY };
+        onPointerDown(event);
+      }}
+      onClick={(event) => {
+        const press = pressRef.current;
+        pressRef.current = null;
+        if (
+          press &&
+          Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4
+        ) {
+          return;
+        }
+        onSelect();
+      }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        if ((event.target as HTMLElement).closest("button")) return;
+        onPin();
+      }}
+      onContextMenu={onContextMenu}
+      className={clsx(
+        "group/tab flex h-7 max-w-56 shrink-0 cursor-default items-center gap-1 rounded-md pl-2 pr-0.5 transition select-none",
+        active
+          ? "bg-slate-100 text-slate-700"
+          : "text-slate-500 hover:bg-overlay",
+      )}
+    >
+      <span className="shrink-0 text-slate-400">{definition.icon(panel)}</span>
+      <span
+        className={clsx(
+          "min-w-0 truncate text-ui-sm",
+          panel.preview && "italic",
+        )}
+      >
+        {label}
+      </span>
+      {definition.closable ? (
+        <button
+          type="button"
+          aria-label={t("layout.closeTab")}
+          title={t("layout.closeTab")}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          className={clsx(
+            "grid h-4 w-4 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-overlay hover:text-slate-600",
+            active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100",
+          )}
+        >
+          <X size={10} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function StripButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+    >
+      {children}
+    </button>
+  );
+}

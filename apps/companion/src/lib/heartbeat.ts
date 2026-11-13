@@ -7,6 +7,10 @@ import { getSession } from "./session";
 export type DesktopPresence = {
   online: boolean;
   deviceName: string | null;
+  /** Server-side id of this phone's device record. */
+  deviceId: string | null;
+  /** Whether this phone may manage other paired devices. */
+  canManage: boolean;
   version: string | null;
   /** Local timestamp of the last successful heartbeat. */
   lastSync: number | null;
@@ -17,6 +21,8 @@ const INTERVAL_MS = 20_000;
 let presence: DesktopPresence = {
   online: false,
   deviceName: null,
+  deviceId: null,
+  canManage: false,
   version: null,
   lastSync: null,
 };
@@ -39,6 +45,8 @@ async function beat(): Promise<void> {
     update({
       online: true,
       deviceName: data.deviceName,
+      deviceId: data.deviceId,
+      canManage: data.canManage,
       version: data.version,
       lastSync: Date.now(),
     });

@@ -49,6 +49,22 @@ export const shell = {
   "mobile.settings.device": ["设备", "Device"],
   "mobile.settings.desktopVersion": ["桌面版本", "Desktop version"],
   "mobile.settings.lastSync": ["最近同步", "Last sync"],
+  "mobile.settings.devices": ["设备管理", "Device management"],
+  "mobile.settings.host": ["桌面主机", "Desktop host"],
+  "mobile.settings.currentLink": ["当前地址", "Current address"],
+  "mobile.settings.thisDevice": ["本机", "This device"],
+  "mobile.settings.manageDevices": ["可管理设备", "Can manage devices"],
+  "mobile.settings.manageDevicesHint": [
+    "允许这台设备在手机端管理其他设备。",
+    "Allow this device to manage other devices from the phone.",
+  ],
+  "mobile.settings.removeDevice": ["解除", "Unpair"],
+  "mobile.settings.removeDeviceConfirm": [
+    "解除「{name}」的配对？该设备需要重新扫码。",
+    'Unpair "{name}"? That device will need to scan again.',
+  ],
+  "mobile.settings.devicesLoading": ["读取设备列表…", "Loading devices…"],
+  "mobile.settings.noDevices": ["暂无已配对设备", "No paired devices"],
   "mobile.settings.desktopSettings": ["桌面端配置", "Desktop settings"],
   "mobile.settings.writeBackHint": [
     "改动会立即写回桌面端；失败时恢复原值并显示错误。",

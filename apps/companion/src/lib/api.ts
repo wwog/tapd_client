@@ -34,6 +34,57 @@ export type WorkspaceContext = {
   workspaces: Workspace[];
 };
 
+/* -------------------------------------------------------------------------
+   Project files (read-only). Shapes mirror `apps/desktop/src/lib/fs.ts`;
+   the Rust companion routes serialize the same serde structs.
+   ------------------------------------------------------------------------- */
+
+export type FsEntryKind = "dir" | "file" | "symlink";
+
+export type FsEntry = {
+  name: string;
+  /** Relative to the project root, `/`-separated, no leading slash. */
+  path: string;
+  kind: FsEntryKind;
+  /** Bytes; 0 for directories. */
+  size: number;
+  /** Unix seconds. */
+  mtime: number;
+  /** Dot-prefixed name. */
+  hidden: boolean;
+};
+
+export type FsListing = {
+  /** Absolute project root; display only, never sent back as a path. */
+  root: string;
+  /** Relative directory; "" is the project root. */
+  path: string;
+  entries: FsEntry[];
+  /** The directory exceeded the entry cap and was cut off. */
+  truncated: boolean;
+};
+
+/** What a preview can render. Anything else falls back to metadata only. */
+export type FsContentKind =
+  | "text"
+  | "markdown"
+  | "image"
+  | "audio"
+  | "video"
+  | "binary"
+  | "tooLarge";
+
+export type FsContent = {
+  kind: FsContentKind;
+  path: string;
+  size: number;
+  mtime: number;
+  /** UTF-8 body for text/markdown; null for every other kind. */
+  text: string | null;
+  /** The read stopped at the desktop's text limit. */
+  truncated: boolean;
+};
+
 export type BugQuery = {
   workspaceId: string;
   /** 处理人 nicknames; several match with OR. */
@@ -200,6 +251,22 @@ export type CompanionState = {
   version: string;
   me: string | null;
   workspaces: Workspace[];
+};
+
+/** One paired device, from the manager-only devices endpoint. */
+export type CompanionDeviceInfo = {
+  id: string;
+  name: string;
+  pairedAt: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  canManage: boolean;
+  self: boolean;
+};
+
+export type CompanionDevices = {
+  selfId: string;
+  devices: CompanionDeviceInfo[];
 };
 
 /** Mirror of the desktop notification engine's entries (read-only). */
@@ -608,10 +675,30 @@ export const api = {
 
   /** Presence handshake: tells the desktop this device is still connected. */
   heartbeat: () =>
-    request<{ version: string; deviceName: string; now: string }>(
-      "/companion/api/heartbeat",
-      { method: "POST" },
-    ),
+    request<{
+      version: string;
+      deviceName: string;
+      deviceId: string;
+      canManage: boolean;
+      now: string;
+    }>("/companion/api/heartbeat", { method: "POST" }),
+
+  /** Manager-only: paired devices and their management permissions. */
+  devices: () => request<CompanionDevices>("/companion/api/devices"),
+
+  devicePermission: (deviceId: string, canManage: boolean) =>
+    request<void>("/companion/api/devices/permission", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId, canManage }),
+    }),
+
+  deviceUnpair: (deviceId: string) =>
+    request<void>("/companion/api/devices/unpair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId }),
+    }),
 
   bugs: (query: BugQuery) =>
     request<BugListPage>("/companion/api/bugs", {
@@ -629,6 +716,20 @@ export const api = {
   members: (workspaceId: string) => {
     const params = new URLSearchParams({ workspaceId });
     return request<WorkspaceMember[]>(`/companion/api/members?${params.toString()}`);
+  },
+
+  /* -- Project files (read-only) ----------------------------------------- */
+
+  /** One directory level of the project's configured folder, dirs first. */
+  files: (workspaceId: string, path: string) => {
+    const params = new URLSearchParams({ workspaceId, path });
+    return request<FsListing>(`/companion/api/files?${params.toString()}`);
+  },
+
+  /** File body for text/markdown, or a kind the viewer picks a renderer for. */
+  file: (workspaceId: string, path: string) => {
+    const params = new URLSearchParams({ workspaceId, path });
+    return request<FsContent>(`/companion/api/file?${params.toString()}`);
   },
 
   /* -- Bug write actions (user-initiated only) ---------------------------- */
@@ -743,6 +844,20 @@ export const api = {
 
   coworkerSelect: (ids: string[]) =>
     feature<{ selectedIds: string[] }>("coworker_select", { ids }),
+};
+
+/**
+ * Same-origin streaming URL for `<img>` / `<audio>` / `<video>` / raw links.
+ * Those elements cannot set headers, so the session token rides in `t`, the
+ * same scheme `mediaUrl` (lib/rich.ts) uses for rich-text media.
+ */
+export const fileRawUrl = (workspaceId: string, path: string): string => {
+  const params = new URLSearchParams({
+    t: getSession() ?? "",
+    workspaceId,
+    path,
+  });
+  return `/companion/api/file/raw?${params.toString()}`;
 };
 
 /** Reactive connection state for full-screen gates. */
