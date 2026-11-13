@@ -4104,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-client"
-version = "1.1.5"
+version = "1.2.0"
 dependencies = [
  "axum",
  "base64 0.21.7",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-core"
-version = "1.1.5"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4147,7 +4147,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-mcp"
-version = "1.1.5"
+version = "1.2.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -4160,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-workflow"
-version = "1.1.5"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
