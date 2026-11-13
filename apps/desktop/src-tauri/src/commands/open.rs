@@ -132,24 +132,23 @@ fn media_filename(url: &str) -> String {
 
 /// Accepts any `tapd.cn` host, so avatars served from `viper.tapd.cn` are
 /// proxied with the session cookie just like captures and attachments.
+///
+/// The URL is parsed with the same WHATWG rules the HTTP client uses, so the
+/// host approved here is the host the request actually reaches. Hand-rolled
+/// splitting is not equivalent: `https://evil.com\@file.tapd.cn/x` reads as
+/// `file.tapd.cn` by hand, while the parser (and therefore the request that
+/// carries the TAPD session cookie) goes to `evil.com`.
 pub(crate) fn is_tapd_media_url(url: &str) -> bool {
-    let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    else {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
-
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('.')
-        .to_ascii_lowercase();
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
 
     host == "tapd.cn" || host.ends_with(".tapd.cn")
 }
@@ -171,6 +170,30 @@ mod tests {
         assert!(!is_tapd_media_url("https://evil.example.com/a.png"));
         assert!(!is_tapd_media_url("https://tapd.cn.evil.example/a.png"));
         assert!(!is_tapd_media_url("file:///etc/passwd"));
+        assert!(is_tapd_media_url("HTTPS://FILE.TAPD.CN/a.png"));
+        assert!(is_tapd_media_url("https://tapd.cn./a.png"));
+        assert!(is_tapd_media_url("https://file.tapd.cn:8443/a.png"));
+    }
+
+    #[test]
+    fn rejects_urls_whose_real_host_is_not_tapd() {
+        // 反斜杠在 WHATWG 解析里是路径分隔符：手工按 `@` 取 host 会误判为
+        // file.tapd.cn，而请求实际打到 evil.com（并带上 TAPD Cookie）。
+        assert!(!is_tapd_media_url(
+            "https://evil.com\\@file.tapd.cn/collect.png"
+        ));
+        assert!(!is_tapd_media_url(
+            "https://evil.example\\@file.tapd.cn/collect.png"
+        ));
+        // userinfo 形式同理：真实 host 是 @ 后面的 evil.com。
+        assert!(!is_tapd_media_url(
+            "https://file.tapd.cn@evil.com/collect.png"
+        ));
+        assert!(!is_tapd_media_url("https://file.tapd.cn@evil.com:443/x"));
+        // userinfo 里的 `evil.com:443` 不影响真实 host，仍放行。
+        assert!(is_tapd_media_url("https://evil.com:443@file.tapd.cn/x"));
+        assert!(!is_tapd_media_url("javascript:alert(1)"));
+        assert!(!is_tapd_media_url("//file.tapd.cn/a.png"));
     }
 
     #[test]

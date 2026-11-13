@@ -79,9 +79,20 @@ pub(crate) async fn fetch_tapd_media(
         return Err((StatusCode::UNAUTHORIZED, "no session cookie".to_string()));
     };
 
+    // Every hop is re-approved: the request carries the TAPD session cookie,
+    // so following a redirect to a non-TAPD host would hand it to that host.
     let client = reqwest::Client::builder()
         .user_agent(media::USER_AGENT)
         .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5
+                || !crate::commands::open::is_tapd_media_url(attempt.url().as_str())
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
