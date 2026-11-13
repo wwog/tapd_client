@@ -17,12 +17,17 @@ import {
 import { Badge, Button, Switch, cardClass } from "./ui";
 import { usePoll } from "../hooks/usePoll";
 
+/** Last snapshot, so re-entering Settings paints before the silent refresh. */
+let cachedSnapshot: NotificationStateSnapshot | null = null;
+
 export function NotificationSettings({ toast }: SettingsSectionProps) {
   const [settings, setSettings] = useState<NotificationSettingsValue>(
-    DEFAULT_NOTIFICATION_SETTINGS,
+    () => cachedSnapshot?.settings ?? DEFAULT_NOTIFICATION_SETTINGS,
   );
-  const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(
+    () => cachedSnapshot,
+  );
+  const [loading, setLoading] = useState(() => cachedSnapshot === null);
   const [simulating, setSimulating] = useState(false);
   const [debugTitle, setDebugTitle] = useState("测试通知");
   const [debugBody, setDebugBody] = useState("这是一条来自设置页的调试通知。");
@@ -34,6 +39,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
     async (silent = false) => {
       try {
         const state = await notificationApi.state();
+        cachedSnapshot = state;
         setSettings(state.settings);
         setSnapshot(state);
       } catch (error) {
@@ -74,7 +80,9 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
     void persist({ ...settingsRef.current, ...partial });
   };
 
-  const patchQuietHours = (partial: Partial<NotificationSettingsValue["quietHours"]>) => {
+  const patchQuietHours = (
+    partial: Partial<NotificationSettingsValue["quietHours"]>,
+  ) => {
     const current = settingsRef.current;
     void persist({
       ...current,
@@ -216,7 +224,6 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
                 <Bot size={12} className="text-slate-400" />
                 允许 AI / MCP 唤起通知
               </div>
-
             </div>
             <Switch
               checked={settings.aiEnabled}
@@ -225,7 +232,8 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
             />
           </div>
 
-          <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50/70 p-2.5">
+          {/* 通知测试完毕，暂时注释 */
+          /* <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50/70 p-2.5">
             <div className="flex items-center justify-between">
               <div
                 className="text-ui-sm text-slate-700"
@@ -303,7 +311,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
                 ))}
               </div>
             ) : null}
-          </div>
+          </div> */}
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -333,7 +341,6 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               }}
               className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
             />
-
           </label>
 
           <label
@@ -343,7 +350,9 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
             <span className="text-ui-sm text-slate-600">同时展示数量</span>
             <select
               value={settings.maxVisible}
-              onChange={(event) => patch({ maxVisible: Number(event.target.value) })}
+              onChange={(event) =>
+                patch({ maxVisible: Number(event.target.value) })
+              }
               className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
             >
               {[1, 2, 3, 4, 5].map((value) => (
@@ -352,7 +361,6 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
                 </option>
               ))}
             </select>
-
           </label>
         </div>
 
@@ -377,7 +385,9 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               type="time"
               value={settings.quietHours.start}
               disabled={!settings.quietHours.enabled}
-              onChange={(event) => patchQuietHours({ start: event.target.value })}
+              onChange={(event) =>
+                patchQuietHours({ start: event.target.value })
+              }
               className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 focus:outline-2 focus:outline-sky-200"
             />
             <span className="text-ui-sm text-slate-400">至</span>
@@ -388,7 +398,6 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               onChange={(event) => patchQuietHours({ end: event.target.value })}
               className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 focus:outline-2 focus:outline-sky-200"
             />
-
           </div>
         </div>
 
@@ -403,7 +412,12 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
             <div className="min-w-0 truncate">
               待处理：
               <span className="ml-1 text-slate-700">
-                {(snapshot?.items ?? []).filter((item) => item.state === "pending").length} 条
+                {
+                  (snapshot?.items ?? []).filter(
+                    (item) => item.state === "pending",
+                  ).length
+                }{" "}
+                条
               </span>
             </div>
           </div>
@@ -413,25 +427,6 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               <span className="break-all">{snapshot.lastError}</span>
             </div>
           ) : null}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            loading={simulating}
-            onClick={() => void simulate()}
-            icon={<Send size={13} />}
-          >
-            模拟通知
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => void load()}
-            icon={<RefreshCw size={13} />}
-          >
-            刷新状态
-          </Button>
         </div>
       </div>
     </section>
@@ -482,9 +477,13 @@ function ScopeOption(props: {
             props.active ? "border-sky-500" : "border-slate-300",
           )}
         >
-          {props.active ? <span className="h-1.5 w-1.5 rounded-full bg-sky-500" /> : null}
+          {props.active ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
+          ) : null}
         </span>
-        <span className="text-ui-caption font-normal text-slate-800">{props.title}</span>
+        <span className="text-ui-caption font-normal text-slate-800">
+          {props.title}
+        </span>
       </div>
     </button>
   );
@@ -501,7 +500,11 @@ function SwitchRow(props: {
       <div className="text-ui-caption text-slate-700" title={props.description}>
         {props.label}
       </div>
-      <Switch checked={props.checked} onChange={props.onChange} label={props.label} />
+      <Switch
+        checked={props.checked}
+        onChange={props.onChange}
+        label={props.label}
+      />
     </div>
   );
 }

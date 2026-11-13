@@ -10,7 +10,12 @@ import {
   type RecoveryReport,
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
-import { refreshCompanionEnabled, useCompanionEnabled } from "./lib/companion";
+import {
+  markCompanionOnline,
+  refreshCompanionStatus,
+  useCompanionEnabled,
+  useCompanionOnline,
+} from "./lib/companion";
 import { useMembersDirectory } from "./lib/members";
 import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
@@ -41,6 +46,7 @@ import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
 import { useAgentQueue } from "./hooks/useAgentQueue";
+import { usePoll } from "./hooks/usePoll";
 import {
   useDetailPane,
   type DetailLayoutRef,
@@ -97,6 +103,8 @@ export default function App() {
   /** Mobile companion QR dialog; the rail entry exists only while enabled. */
   const [companionOpen, setCompanionOpen] = useState(false);
   const companionEnabled = useCompanionEnabled();
+  /** Any paired phone heartbeat within the last minute. */
+  const companionOnline = useCompanionOnline();
 
   /** Tasks the backend restored when this system entry began. */
   const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
@@ -107,8 +115,18 @@ export default function App() {
 
   useEffect(() => {
     startUpdateStore();
-    void refreshCompanionEnabled();
+    void refreshCompanionStatus();
   }, []);
+
+  // Green rail icon while a phone is online. Pairing/presence events flip it
+  // immediately; the poll clears it after the 60s heartbeat window expires.
+  usePoll(
+    () => void refreshCompanionStatus(),
+    companionEnabled ? 20_000 : 0,
+    { pauseWhenHidden: true },
+  );
+  useTauriEvent("companion://paired", () => markCompanionOnline());
+  useTauriEvent("companion://presence", () => markCompanionOnline());
 
   // Pending commit reviews are surfaced in the title bar so they cannot be
   // forgotten behind the Agent tab.
@@ -658,6 +676,7 @@ export default function App() {
           meAvatar={info.meAvatar}
           name={context?.user.nick || info.me}
           showCompanion={companionEnabled}
+          companionOnline={companionOnline}
           onOpenCompanion={() => setCompanionOpen(true)}
           onActivate={activateView}
         />

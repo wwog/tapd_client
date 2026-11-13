@@ -17,7 +17,11 @@ import {
   type PairingCode,
   type PairingMode,
 } from "../lib/api";
-import { setCompanionEnabledLocal } from "../lib/companion";
+import {
+  cachedCompanionStatus,
+  rememberCompanionStatus,
+  setCompanionEnabledLocal,
+} from "../lib/companion";
 import type { SettingsSectionProps } from "../lib/feature";
 import { usePoll } from "../hooks/usePoll";
 import { useTauriEvent } from "../lib/tauriEvent";
@@ -76,7 +80,9 @@ export function CompanionDialog({
   onClose: () => void;
   toast: SettingsSectionProps["toast"];
 }) {
-  const [status, setStatus] = useState<CompanionStatus | null>(null);
+  const [status, setStatus] = useState<CompanionStatus | null>(() =>
+    cachedCompanionStatus(),
+  );
   const [mode, setMode] = useState<PairingMode>("tunnel");
   const [pairing, setPairing] = useState<PairingWithQr | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -97,6 +103,7 @@ export function CompanionDialog({
       try {
         const next = await companionApi.status();
         setStatus(next);
+        rememberCompanionStatus(next);
         return next;
       } catch (error) {
         if (!silent) toast("error", String(error));

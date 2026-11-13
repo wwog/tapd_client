@@ -3,7 +3,11 @@ import clsx from "clsx";
 import { Smartphone } from "lucide-react";
 
 import { companionApi, type CompanionStatus } from "../lib/api";
-import { setCompanionEnabledLocal } from "../lib/companion";
+import {
+  cachedCompanionStatus,
+  rememberCompanionStatus,
+  setCompanionEnabledLocal,
+} from "../lib/companion";
 import type { SettingsSectionProps } from "../lib/feature";
 import { Button, Switch, cardClass } from "./ui";
 
@@ -16,7 +20,9 @@ const STATE_LINE = "mt-4 text-ui-caption";
  * `CompanionDialog`.
  */
 export function CompanionCard({ toast }: SettingsSectionProps) {
-  const [status, setStatus] = useState<CompanionStatus | null>(null);
+  const [status, setStatus] = useState<CompanionStatus | null>(() =>
+    cachedCompanionStatus(),
+  );
   const [statusError, setStatusError] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [switchingCode, setSwitchingCode] = useState(false);
@@ -27,7 +33,7 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
         const next = await companionApi.status();
         setStatus(next);
         setStatusError(false);
-        setCompanionEnabledLocal(next.enabled);
+        rememberCompanionStatus(next);
         return next;
       } catch (error) {
         setStatusError(true);
@@ -103,10 +109,6 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
       ) : (
         <>
           <div className="mt-4 flex items-center justify-between gap-3">
-            <span className="text-ui-sm text-slate-700">扫码入口</span>
-            <span className="text-ui-xs text-slate-400">左侧栏「设置」上方</span>
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-3">
             <span
               className="text-ui-sm text-slate-700"
               title="关闭后，手机打开伴侣地址即可直接配对，无需扫码；仅建议测试阶段使用。"

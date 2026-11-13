@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronLeft, Minus, Plus } from "lucide-react";
+import { ChevronLeft, Minus, Plus, Star } from "lucide-react";
 
 import {
   api,
@@ -19,6 +19,8 @@ import {
 } from "../lib/prefs";
 import { navigate } from "../lib/router";
 import { clearSession } from "../lib/session";
+
+const PROJECT_URL = "https://github.com/wwog/tapd_client";
 
 /** Static segmented control: the active segment gets a selected surface. */
 function Segmented<T extends string>(props: {
@@ -167,6 +169,31 @@ const POLL_MAX = 600;
 /** 不再占据队列的任务状态（Worktree 开关的锁依据，与桌面一致）。 */
 const TERMINAL_STATUSES = ["succeeded", "failed", "canceled"];
 
+type SettingsCache = {
+  agentConfig: AgentConfig | null;
+  notif: NotificationSettings | null;
+  runtimes: AgentRuntimeDescriptor[];
+};
+
+/** Last values from the previous Settings visit. Re-entering renders these
+    immediately and refreshes from the desktop silently. */
+let settingsCache: SettingsCache | null = null;
+
+const rememberSettings = (patch: Partial<SettingsCache>): void => {
+  settingsCache = {
+    agentConfig:
+      patch.agentConfig !== undefined
+        ? patch.agentConfig
+        : (settingsCache?.agentConfig ?? null),
+    notif:
+      patch.notif !== undefined ? patch.notif : (settingsCache?.notif ?? null),
+    runtimes:
+      patch.runtimes !== undefined
+        ? patch.runtimes
+        : (settingsCache?.runtimes ?? []),
+  };
+};
+
 /** Companion preferences live only on this phone; the desktop is read-write
     through feature commands, every change commits immediately (no save
     button), failures revert and stay on screen. */
@@ -175,10 +202,16 @@ export function SettingsPage() {
   const presence = useDesktopPresence();
   const { state: agentTasksState } = useAgentTasks();
 
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
-  const [notif, setNotif] = useState<NotificationSettings | null>(null);
-  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
-  const [pendingLoads, setPendingLoads] = useState(3);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(
+    () => settingsCache?.agentConfig ?? null,
+  );
+  const [notif, setNotif] = useState<NotificationSettings | null>(
+    () => settingsCache?.notif ?? null,
+  );
+  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>(
+    () => settingsCache?.runtimes ?? [],
+  );
+  const [pendingLoads, setPendingLoads] = useState(() => (settingsCache ? 0 : 3));
   const [deskError, setDeskError] = useState<string | null>(null);
 
   // 桌面端配置：三项依次读取；任一失败都保留错误，成功项照常渲染。
@@ -189,19 +222,28 @@ export function SettingsPage() {
       let failure: string | null = null;
       try {
         const config = await api.agentConfig();
-        if (!cancelled) setAgentConfig(config);
+        if (!cancelled) {
+          setAgentConfig(config);
+          rememberSettings({ agentConfig: config });
+        }
       } catch (err) {
         failure = asApiError(err).message;
       }
       try {
         const { settings } = await api.notificationSettings();
-        if (!cancelled) setNotif(settings);
+        if (!cancelled) {
+          setNotif(settings);
+          rememberSettings({ notif: settings });
+        }
       } catch (err) {
         failure = failure ?? asApiError(err).message;
       }
       try {
         const catalog = await api.agentRuntimes();
-        if (!cancelled) setRuntimes(catalog);
+        if (!cancelled) {
+          setRuntimes(catalog);
+          rememberSettings({ runtimes: catalog });
+        }
       } catch (err) {
         failure = failure ?? asApiError(err).message;
       }
@@ -218,13 +260,17 @@ export function SettingsPage() {
   const patchConfig = async (patch: Partial<AgentConfig>) => {
     if (!agentConfig) return;
     const previous = agentConfig;
-    setAgentConfig({ ...agentConfig, ...patch });
+    const optimistic = { ...agentConfig, ...patch };
+    setAgentConfig(optimistic);
+    rememberSettings({ agentConfig: optimistic });
     try {
       const saved = await api.agentConfigSet(patch);
       setAgentConfig(saved);
+      rememberSettings({ agentConfig: saved });
       setDeskError(null);
     } catch (err) {
       setAgentConfig(previous);
+      rememberSettings({ agentConfig: previous });
       setDeskError(asApiError(err).message);
     }
   };
@@ -235,12 +281,15 @@ export function SettingsPage() {
     const previous = notif;
     const next: NotificationSettings = { ...notif, ...patch };
     setNotif(next);
+    rememberSettings({ notif: next });
     try {
       const { settings } = await api.notificationSettingsSet(next);
       setNotif(settings);
+      rememberSettings({ notif: settings });
       setDeskError(null);
     } catch (err) {
       setNotif(previous);
+      rememberSettings({ notif: previous });
       setDeskError(asApiError(err).message);
     }
   };
@@ -257,6 +306,7 @@ export function SettingsPage() {
 
   const unpair = () => {
     if (!window.confirm("解除配对后需要重新扫码，确定解除？")) return;
+    settingsCache = null;
     clearSession();
     navigate("#/pair");
   };
@@ -494,6 +544,18 @@ export function SettingsPage() {
         >
           解除配对
         </button>
+      </div>
+
+      <div className="mx-3 mt-4 pb-2 text-center">
+        <a
+          href={PROJECT_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-ui-xs text-sky-600 underline decoration-sky-200 underline-offset-2 transition active:text-sky-700"
+        >
+          <Star size={11} />
+          喜欢的话，去 GitHub star 一下
+        </a>
       </div>
     </div>
   );

@@ -44,6 +44,8 @@ type Props = {
   name: string | null;
   /** Companion enabled in Settings: show the phone scan entry. */
   showCompanion: boolean;
+  /** A paired phone is heartbeating: paint the entry green. */
+  companionOnline: boolean;
   onOpenCompanion: () => void;
   onActivate: (view: View) => void;
 };
@@ -56,6 +58,7 @@ export function NavRail({
   meAvatar,
   name,
   showCompanion,
+  companionOnline,
   onOpenCompanion,
   onActivate,
 }: Props) {
@@ -116,7 +119,12 @@ export function NavRail({
           title="移动端伴侣"
           aria-label="移动端伴侣"
           onClick={onOpenCompanion}
-          className="mb-1 grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition hover:bg-overlay-soft hover:text-slate-700"
+          className={clsx(
+            "mb-1 grid h-9 w-9 place-items-center rounded-xl transition",
+            companionOnline
+              ? "text-emerald-500 hover:bg-emerald-50 hover:text-emerald-600"
+              : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
+          )}
         >
           <Smartphone size={15} />
         </button>

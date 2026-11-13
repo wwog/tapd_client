@@ -50,8 +50,12 @@ export function AgentConfigPane({ toast }: Props) {
   }, [toast]);
 
   const selectedRuntime =
-    runtimes.find((runtime) => runtime.id === config?.runtimeId) ?? runtimes[0] ?? null;
-  const selectedScan = selectedRuntime ? byRuntime.get(selectedRuntime.id) : undefined;
+    runtimes.find((runtime) => runtime.id === config?.runtimeId) ??
+    runtimes[0] ??
+    null;
+  const selectedScan = selectedRuntime
+    ? byRuntime.get(selectedRuntime.id)
+    : undefined;
 
   const patchConfig = (patch: Partial<AgentConfig>) => {
     setConfig((current) => (current ? { ...current, ...patch } : current));
@@ -82,7 +86,13 @@ export function AgentConfigPane({ toast }: Props) {
 
   const selectRuntime = async (runtimeId: string) => {
     const runtime = runtimes.find((item) => item.id === runtimeId);
-    if (!config || !runtime || !runtime.available || runtime.id === config.runtimeId) return;
+    if (
+      !config ||
+      !runtime ||
+      !runtime.available ||
+      runtime.id === config.runtimeId
+    )
+      return;
     setSaving(true);
     // 可执行路径只有一个，切换运行时同时切回该运行时的默认命令。
     patchConfig({ runtimeId: runtime.id, binaryPath: runtime.binary });
@@ -96,31 +106,12 @@ export function AgentConfigPane({ toast }: Props) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       <div className="mx-auto max-w-4xl space-y-4 pb-2">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
-              <Bot size={15} className="text-slate-400" />
-              Agent 运行时
-            </h2>
-            <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-              选择默认 Agent，并调整它的启动方式与提示词模板。改动只影响之后入队的任务。
-            </p>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<RefreshCw size={13} />}
-            loading={scanning}
-            onClick={() => void refresh(true)}
-          >
-            刷新检测
-          </Button>
-        </header>
-
         <section className={cardClass}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
-              <h3 className="text-ui-caption font-normal text-slate-800">默认 Agent</h3>
+              <h3 className="text-ui-caption font-normal text-slate-800">
+                默认 Agent
+              </h3>
               <p className="mt-0.5 text-ui-xs leading-4 text-slate-400">
                 缺陷详情的「用 Agent 修复」与修复队列默认使用这个运行时。
               </p>
@@ -129,6 +120,16 @@ export function AgentConfigPane({ toast }: Props) {
               {snapshot?.checkedAt
                 ? `上次检测 ${formatDateTime(snapshot.checkedAt)}`
                 : "尚未检测本机 Agent"}
+              <span>&nbsp;&nbsp;</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<RefreshCw size={13} />}
+                loading={scanning}
+                onClick={() => void refresh(true)}
+              >
+                检测
+              </Button>
             </span>
           </div>
 
@@ -157,8 +158,12 @@ export function AgentConfigPane({ toast }: Props) {
           !selectedScan?.found &&
           selectedRuntime.id !== "custom" ? (
             <p className="mt-3 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-ui-sm leading-5 text-amber-800">
-              <TriangleAlert size={13} className="mt-0.5 shrink-0 text-amber-600" />
-              该 Agent 未在本机 PATH 中检测到。安装后点「刷新检测」，或把下方的可执行路径改成绝对路径。
+              <TriangleAlert
+                size={13}
+                className="mt-0.5 shrink-0 text-amber-600"
+              />
+              该 Agent 未在本机 PATH
+              中检测到。安装后点「刷新检测」，或把下方的可执行路径改成绝对路径。
             </p>
           ) : null}
         </section>
@@ -202,7 +207,11 @@ export function AgentConfigPane({ toast }: Props) {
   );
 }
 
-function Lifecycle({ stages }: { stages: AgentRuntimeDescriptor["lifecycle"] }) {
+function Lifecycle({
+  stages,
+}: {
+  stages: AgentRuntimeDescriptor["lifecycle"];
+}) {
   return (
     <section>
       <h3 className="flex items-center gap-1.5 text-ui-caption font-normal text-slate-800">
@@ -220,9 +229,7 @@ function Lifecycle({ stages }: { stages: AgentRuntimeDescriptor["lifecycle"] }) 
             </span>
             <div className="min-w-0 flex-1" title={stage.description}>
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-ui-sm text-slate-700">
-                  {stage.label}
-                </span>
+                <span className="text-ui-sm text-slate-700">{stage.label}</span>
                 {stage.needsHuman ? <Badge tone="amber">需人工</Badge> : null}
                 {stage.terminal ? <Badge tone="neutral">终态</Badge> : null}
               </div>
@@ -236,7 +243,11 @@ function Lifecycle({ stages }: { stages: AgentRuntimeDescriptor["lifecycle"] }) 
 
 function Capabilities({ runtime }: { runtime: AgentRuntimeDescriptor }) {
   const items: Array<[string, boolean, string]> = [
-    ["终端交互", runtime.capabilities.interactiveTerminal, "PTY 输出与键盘输入"],
+    [
+      "终端交互",
+      runtime.capabilities.interactiveTerminal,
+      "PTY 输出与键盘输入",
+    ],
     ["权限请求", runtime.capabilities.permissionPrompt, "运行时可暂停等待授权"],
     [
       "桌面回执",
@@ -262,7 +273,10 @@ function Capabilities({ runtime }: { runtime: AgentRuntimeDescriptor }) {
             {supported ? (
               <Check size={12} className="mt-0.5 shrink-0 text-emerald-500" />
             ) : (
-              <CircleSlash size={12} className="mt-0.5 shrink-0 text-slate-400" />
+              <CircleSlash
+                size={12}
+                className="mt-0.5 shrink-0 text-slate-400"
+              />
             )}
             <div className="text-ui-sm text-slate-700">{label}</div>
           </div>
@@ -296,7 +310,9 @@ function Limitations({ runtime }: { runtime: AgentRuntimeDescriptor }) {
           <ShieldAlert size={13} className="text-amber-600" />
           无法互操作时
         </div>
-        <p className="mt-1 text-ui-sm leading-5 text-amber-800">{runtime.fallback}</p>
+        <p className="mt-1 text-ui-sm leading-5 text-amber-800">
+          {runtime.fallback}
+        </p>
       </div>
     </section>
   );

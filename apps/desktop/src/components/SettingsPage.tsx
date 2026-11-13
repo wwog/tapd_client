@@ -7,12 +7,14 @@ import {
   PackageOpen,
   ShieldCheck,
   Sparkles,
+  Star,
   Trash2,
 } from "lucide-react";
 
 import { api, type AppInfo } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
+import { PROJECT_URL } from "../lib/links";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { CompanionCard } from "./CompanionCard";
@@ -256,6 +258,18 @@ export function SettingsPage(props: Props) {
           </Button>
         </div>
       </section>
+
+      <footer className="pb-2 pt-1 text-center">
+        <button
+          type="button"
+          onClick={() => onOpenPath(PROJECT_URL)}
+          title="在浏览器打开项目仓库"
+          className="inline-flex items-center gap-1.5 text-ui-xs text-sky-600 transition hover:text-sky-700 hover:underline underline-offset-2"
+        >
+          <Star size={12} />
+          喜欢的话，去 GitHub star 一下
+        </button>
+      </footer>
 
       {capturesOpen ? (
         <Dialog
