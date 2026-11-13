@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
-  Bot,
+  // Bot,
   Check,
   CircleSlash,
   RefreshCw,

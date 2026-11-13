@@ -1,20 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Bell, Bot, Clock, RefreshCw, Send } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  Bot,
+  Clock,
+  RefreshCw,
+  // Send, // 调试通知
+} from "lucide-react";
 
 import type { SettingsSectionProps } from "../lib/feature";
-import { bugTitle } from "../lib/bug";
+// import { bugTitle } from "../lib/bug"; // 调试通知
 import {
-  AI_TONE_LABELS,
+  // AI_TONE_LABELS, // 调试通知
   DEFAULT_NOTIFICATION_SETTINGS,
   formatPollTime,
   notificationApi,
-  type AiTone,
-  type NotificationItem,
+  // type AiTone, // 调试通知
+  // type NotificationItem, // 调试通知
   type NotificationSettings as NotificationSettingsValue,
   type NotificationStateSnapshot,
 } from "../lib/notification";
-import { Badge, Button, Switch, cardClass } from "./ui";
+import { Badge, Switch, cardClass } from "./ui"; // Button 调试通知用
 import { usePoll } from "../hooks/usePoll";
 
 /** Last snapshot, so re-entering Settings paints before the silent refresh. */
@@ -28,12 +35,13 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
     () => cachedSnapshot,
   );
   const [loading, setLoading] = useState(() => cachedSnapshot === null);
-  const [simulating, setSimulating] = useState(false);
-  const [debugTitle, setDebugTitle] = useState("测试通知");
-  const [debugBody, setDebugBody] = useState("这是一条来自设置页的调试通知。");
-  const [debugTone, setDebugTone] = useState<AiTone>("success");
-  const [debugActions, setDebugActions] = useState(true);
-  const [debugSending, setDebugSending] = useState(false);
+  // 调试通知
+  // const [simulating, setSimulating] = useState(false);
+  // const [debugTitle, setDebugTitle] = useState("测试通知");
+  // const [debugBody, setDebugBody] = useState("这是一条来自设置页的调试通知。");
+  // const [debugTone, setDebugTone] = useState<AiTone>("success");
+  // const [debugActions, setDebugActions] = useState(true);
+  // const [debugSending, setDebugSending] = useState(false);
 
   const load = useCallback(
     async (silent = false) => {
@@ -95,45 +103,46 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
     void persist(settingsRef.current);
   };
 
-  const simulate = async () => {
-    setSimulating(true);
-    try {
-      await notificationApi.simulate({});
-    } catch (error) {
-      toast("error", String(error));
-    } finally {
-      setSimulating(false);
-    }
-  };
+  // 调试通知
+  // const simulate = async () => {
+  //   setSimulating(true);
+  //   try {
+  //     await notificationApi.simulate({});
+  //   } catch (error) {
+  //     toast("error", String(error));
+  //   } finally {
+  //     setSimulating(false);
+  //   }
+  // };
 
-  const sendDebug = async () => {
-    setDebugSending(true);
-    try {
-      await notificationApi.aiDebug({
-        title: debugTitle.trim() || "测试通知",
-        tone: debugTone,
-        body: debugBody.trim() || undefined,
-        // Repeated debug sends replace the previous card instead of stacking.
-        tag: "settings-debug",
-        actions: debugActions
-          ? [
-              { id: "confirm", label: "确认", style: "primary" },
-              { id: "cancel", label: "取消", style: "secondary" },
-            ]
-          : [],
-      });
-      await load(true);
-    } catch (error) {
-      toast("error", String(error));
-    } finally {
-      setDebugSending(false);
-    }
-  };
+  // const sendDebug = async () => {
+  //   setDebugSending(true);
+  //   try {
+  //     await notificationApi.aiDebug({
+  //       title: debugTitle.trim() || "测试通知",
+  //       tone: debugTone,
+  //       body: debugBody.trim() || undefined,
+  //       // Repeated debug sends replace the previous card instead of stacking.
+  //       tag: "settings-debug",
+  //       actions: debugActions
+  //         ? [
+  //             { id: "confirm", label: "确认", style: "primary" },
+  //             { id: "cancel", label: "取消", style: "secondary" },
+  //           ]
+  //         : [],
+  //     });
+  //     await load(true);
+  //   } catch (error) {
+  //     toast("error", String(error));
+  //   } finally {
+  //     setDebugSending(false);
+  //   }
+  // };
 
   /** AI cards stay in memory, so `state` returns both pending and resolved. */
-  const aiItems = (snapshot?.items ?? [])
-    .filter((item) => item.source === "ai")
-    .slice(0, 4);
+  // const aiItems = (snapshot?.items ?? [])
+  //   .filter((item) => item.source === "ai")
+  //   .slice(0, 4);
 
   return (
     <section className={cardClass}>
@@ -433,24 +442,25 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
   );
 }
 
-const AI_TONE_CHIP: Record<AiTone, string> = {
-  info: "border-sky-200 bg-sky-50 text-sky-700",
-  success: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  warning: "border-amber-200 bg-amber-50 text-amber-700",
-  error: "border-rose-200 bg-rose-50 text-rose-700",
-  progress: "border-sky-200 bg-sky-50 text-sky-700",
-};
-
-function aiResultLabel(item: NotificationItem): string {
-  const resolution = item.ai?.resolution;
-  if (!resolution) return item.state === "pending" ? "待操作" : "—";
-  if (resolution.kind === "action") {
-    return `已点击 ${resolution.actionLabel ?? resolution.actionId ?? ""}`.trim();
-  }
-  if (resolution.kind === "dismissed") return "已关闭";
-  if (resolution.kind === "replaced") return "已替换";
-  return resolution.kind;
-}
+// 调试通知
+// const AI_TONE_CHIP: Record<AiTone, string> = {
+//   info: "border-sky-200 bg-sky-50 text-sky-700",
+//   success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+//   warning: "border-amber-200 bg-amber-50 text-amber-700",
+//   error: "border-rose-200 bg-rose-50 text-rose-700",
+//   progress: "border-sky-200 bg-sky-50 text-sky-700",
+// };
+//
+// function aiResultLabel(item: NotificationItem): string {
+//   const resolution = item.ai?.resolution;
+//   if (!resolution) return item.state === "pending" ? "待操作" : "—";
+//   if (resolution.kind === "action") {
+//     return `已点击 ${resolution.actionLabel ?? resolution.actionId ?? ""}`.trim();
+//   }
+//   if (resolution.kind === "dismissed") return "已关闭";
+//   if (resolution.kind === "replaced") return "已替换";
+//   return resolution.kind;
+// }
 
 function ScopeOption(props: {
   active: boolean;
