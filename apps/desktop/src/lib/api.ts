@@ -334,6 +334,8 @@ export type CompanionDevice = {
   /** A heartbeat arrived within the last minute. */
   online: boolean;
   lastSeenAt?: string | null;
+  /** May manage other devices from the phone. */
+  canManage: boolean;
 };
 
 /** A locally installed cloudflared binary, detected via the user's PATH. */
@@ -367,11 +369,10 @@ export type CompanionStatus = {
 /** Where the pairing QR points: the public tunnel (default) or LAN (test). */
 export type PairingMode = "lan" | "tunnel";
 
-/** One-time pairing code: TTL 10 minutes, single use. */
+/** One-time pairing code: single use, no time-based expiry. */
 export type PairingCode = {
   code: string;
   url: string;
-  expiresAt: string;
 };
 
 export type OpenMediaMode = "file" | "browser" | "reveal" | "path";
@@ -508,6 +509,9 @@ export const companionApi = {
   pairingCode: (mode: PairingMode = "lan") =>
     invoke<PairingCode>("companion_pairing_code", { mode }),
   unpair: (deviceId: string) => invoke<void>("companion_unpair", { deviceId }),
+  /** Toggles whether a phone may manage other paired devices. */
+  setDeviceManage: (deviceId: string, canManage: boolean) =>
+    invoke<void>("companion_set_device_manage", { deviceId, canManage }),
   /** Re-detects cloudflared (after the user installs it). */
   cloudflaredCheck: () => invoke<CloudflaredInfo>("companion_cloudflared_check"),
   tunnelStart: () => invoke<CompanionTunnel>("companion_tunnel_start"),

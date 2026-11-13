@@ -128,7 +128,7 @@ fn token_is_paired(devices: &[CompanionDevice], token: &str) -> bool {
 
 /// The paired device a session token belongs to. Heartbeats use it to record
 /// presence under the device id the dialog renders.
-fn device_for_token(state: &SharedState, token: &str) -> Option<CompanionDevice> {
+pub(super) fn device_for_token(state: &SharedState, token: &str) -> Option<CompanionDevice> {
     let token_hash = sha256_hex(token);
     state
         .config
@@ -215,10 +215,7 @@ pub(super) async fn pair(
     if ctx.state.config_snapshot().companion.require_pairing_code {
         let matched = {
             let mut runtime = ctx.state.companion.lock().expect("companion lock");
-            runtime.consume_pairing_code(
-                request.token.as_deref().unwrap_or("").trim(),
-                chrono::Utc::now(),
-            )
+            runtime.consume_pairing_code(request.token.as_deref().unwrap_or("").trim())
         };
         if !matched {
             return err_data(
@@ -235,15 +232,18 @@ pub(super) async fn pair(
         name: normalize_device_name(request.name.as_deref()),
         token_hash: sha256_hex(&token),
         paired_at: chrono::Utc::now().to_rfc3339(),
+        can_manage: false,
     };
-    let device_id = device.id.clone();
-    let device_name = device.name.clone();
-    // Replace-by-name: one phone keeps one slot, re-pairing rotates its token.
+    // Replace-by-name: one phone keeps one slot, re-pairing rotates its token
+    // while preserving its id and management permission.
     let saved = ctx.state.update_config(|config| {
-        upsert_device_by_name(&mut config.companion.devices, device)
+        config.companion.device_permissions_initialized = true;
+        apply_pairing(&mut config.companion.devices, device)
     });
     match saved {
-        Ok(()) => {
+        Ok(device) => {
+            let device_id = device.id.clone();
+            let device_name = device.name.clone();
             // Handshake completed: the dialog can switch to "connected" now,
             // before the phone's first heartbeat arrives.
             let now = chrono::Utc::now();
@@ -301,6 +301,8 @@ pub(super) async fn heartbeat(
     let response = ok_data(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "deviceName": device.name.clone(),
+        "deviceId": device.id.clone(),
+        "canManage": device.can_manage,
         "now": now.to_rfc3339(),
     }));
     let _ = ctx.app.emit(
@@ -320,13 +322,22 @@ fn normalize_device_name(raw: Option<&str>) -> String {
     trimmed.chars().take(MAX_DEVICE_NAME_CHARS).collect()
 }
 
-/// Registers a device by name: re-pairing with the same name overwrites the
-/// previous entry (token + time), a new name appends.
-fn upsert_device_by_name(devices: &mut Vec<CompanionDevice>, device: CompanionDevice) {
-    match devices.iter_mut().find(|existing| existing.name == device.name) {
-        Some(existing) => *existing = device,
-        None => devices.push(device),
+/// Registers a device by name. A new device gets management rights only when
+/// it is the first paired entry; re-pairing with an existing name keeps that
+/// device's id and management flag and rotates its token/time.
+fn apply_pairing(
+    devices: &mut Vec<CompanionDevice>,
+    mut incoming: CompanionDevice,
+) -> CompanionDevice {
+    if let Some(existing) = devices.iter_mut().find(|device| device.name == incoming.name) {
+        incoming.id = existing.id.clone();
+        incoming.can_manage = existing.can_manage;
+        *existing = incoming.clone();
+        return incoming;
     }
+    incoming.can_manage = devices.is_empty();
+    devices.push(incoming.clone());
+    incoming
 }
 
 // ---------------------------------------------------------------------------
@@ -346,14 +357,14 @@ mod tests {
             name: name.to_string(),
             token_hash: token_hash.to_string(),
             paired_at: "2026-11-13T00:00:00+00:00".to_string(),
+            can_manage: false,
         }
     }
 
-    fn runtime_with_code(expires_in_secs: i64) -> CompanionRuntime {
+    fn runtime_with_code() -> CompanionRuntime {
         CompanionRuntime {
             pairing: Some(PairingCode {
                 code: "pair-code".to_string(),
-                expires_at: chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs),
             }),
             ..CompanionRuntime::default()
         }
@@ -361,24 +372,25 @@ mod tests {
 
     #[test]
     fn valid_pairing_code_is_consumed_exactly_once() {
-        let mut runtime = runtime_with_code(60);
-        let now = chrono::Utc::now();
+        let mut runtime = runtime_with_code();
 
-        assert!(runtime.consume_pairing_code("pair-code", now));
+        assert!(runtime.consume_pairing_code("pair-code"));
         // 第二次提交同一个码：已作废，必须拒绝。
-        assert!(!runtime.consume_pairing_code("pair-code", now));
+        assert!(!runtime.consume_pairing_code("pair-code"));
     }
 
     #[test]
-    fn expired_pairing_code_is_rejected() {
-        let mut runtime = runtime_with_code(-1);
-        assert!(!runtime.consume_pairing_code("pair-code", chrono::Utc::now()));
+    fn pairing_code_does_not_expire_over_time() {
+        let mut runtime = runtime_with_code();
+
+        // 配对码只受“使用/替换/应用退出”影响，没有时间窗口。
+        assert!(runtime.consume_pairing_code("pair-code"));
     }
 
     #[test]
     fn unknown_pairing_code_is_rejected() {
-        let mut runtime = runtime_with_code(60);
-        assert!(!runtime.consume_pairing_code("something-else", chrono::Utc::now()));
+        let mut runtime = runtime_with_code();
+        assert!(!runtime.consume_pairing_code("something-else"));
     }
 
     #[test]
@@ -450,11 +462,16 @@ mod tests {
             enabled: true,
             require_pairing_code: true,
             devices: vec![device("iPhone 15", &sha256_hex("token"))],
+            device_permissions_initialized: true,
         };
 
         let raw = serde_json::to_string(&config).expect("serialize companion config");
         assert!(raw.contains("\"tokenHash\""), "wire key must be camelCase: {raw}");
         assert!(raw.contains("\"pairedAt\""), "wire key must be camelCase: {raw}");
+        assert!(
+            raw.contains("\"devicePermissionsInitialized\""),
+            "wire key must be camelCase: {raw}"
+        );
 
         let parsed: CompanionConfig =
             serde_json::from_str(&raw).expect("deserialize companion config");
@@ -467,6 +484,7 @@ mod tests {
         assert!(parsed.enabled, "companion must default on");
         assert!(parsed.require_pairing_code, "code gate must default on");
         assert!(parsed.devices.is_empty());
+        assert!(!parsed.device_permissions_initialized);
     }
 
     #[test]
@@ -477,25 +495,52 @@ mod tests {
     }
 
     #[test]
-    fn re_pairing_same_name_replaces_token_not_row() {
+    fn first_paired_device_gets_management() {
+        let mut devices = Vec::new();
+
+        let first = apply_pairing(&mut devices, device("iPhone", "hash-a"));
+        let second = apply_pairing(&mut devices, device("iPad", "hash-b"));
+
+        assert!(first.can_manage);
+        assert!(!second.can_manage);
+        assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn re_pairing_same_name_keeps_row_id_and_management() {
         let mut devices = vec![device("iPhone", "old-hash")];
+        devices[0].can_manage = true;
+        let original_id = devices[0].id.clone();
         let replacement = device("iPhone", "new-hash");
 
-        upsert_device_by_name(&mut devices, replacement);
+        let stored = apply_pairing(&mut devices, replacement);
 
         assert_eq!(devices.len(), 1);
+        assert_eq!(stored.id, original_id);
+        assert!(stored.can_manage);
         assert_eq!(devices[0].token_hash, "new-hash");
     }
 
     #[test]
-    fn pairing_with_new_name_appends_device() {
+    fn pairing_with_new_name_appends_without_management() {
         let mut devices = vec![device("iPhone", "hash-a")];
+        devices[0].can_manage = true;
 
-        upsert_device_by_name(&mut devices, device("iPad", "hash-b"));
+        let stored = apply_pairing(&mut devices, device("iPad", "hash-b"));
 
         assert_eq!(devices.len(), 2);
+        assert!(!stored.can_manage);
         let names: Vec<&str> = devices.iter().map(|device| device.name.as_str()).collect();
         assert_eq!(names, vec!["iPhone", "iPad"]);
+    }
+
+    #[test]
+    fn a_new_first_device_after_unpairing_everyone_gets_management() {
+        let mut devices = Vec::new();
+
+        let stored = apply_pairing(&mut devices, device("iPhone", "hash-a"));
+
+        assert!(stored.can_manage);
     }
 
     #[test]

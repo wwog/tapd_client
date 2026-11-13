@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Check,
+  CircleHelp,
   Copy,
   ExternalLink,
   Loader2,
@@ -27,7 +28,7 @@ import { localeTag, t } from "../lib/i18n";
 import { usePoll } from "../hooks/usePoll";
 import { useTauriEvent } from "../lib/tauriEvent";
 import { Dialog } from "./Dialog";
-import { Button } from "./ui";
+import { Button, Switch } from "./ui";
 
 /** Official download page; the app never installs cloudflared itself. */
 const CLOUDFLARED_DOCS =
@@ -35,7 +36,7 @@ const CLOUDFLARED_DOCS =
 const INSTALL_COMMAND = "brew install cloudflared";
 
 type PairingWithQr = PairingCode & { qr: string };
-type Busy = "tunnel" | "stop" | "unpair" | null;
+type Busy = "tunnel" | "stop" | null;
 type Tone = "emerald" | "amber" | "rose" | "sky" | "muted";
 
 const TONE_DOT: Record<Tone, string> = {
@@ -89,15 +90,17 @@ export function CompanionDialog({
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"link" | "install" | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
 
   const pairingBaseRef = useRef<string | null>(null);
   const requestSeq = useRef(0);
   const copiedTimer = useRef<number | null>(null);
+  const helpRef = useRef<HTMLDivElement | null>(null);
 
   const loadStatus = useCallback(
     async (silent = true): Promise<CompanionStatus | null> => {
@@ -155,6 +158,9 @@ export function CompanionDialog({
   });
   useTauriEvent<unknown>("companion://paired", () => {
     void loadStatus(true);
+    // The one-time code was consumed; rotate immediately so the next device
+    // can scan the refreshed QR without a manual "regenerate" action.
+    void requestPairing();
   });
   useTauriEvent<unknown>("companion://presence", () => {
     void loadStatus(true);
@@ -164,7 +170,6 @@ export function CompanionDialog({
   usePoll(
     () => {
       void loadStatus(true);
-      setNow(Date.now());
     },
     2_000,
     { pauseWhenHidden: true },
@@ -177,6 +182,18 @@ export function CompanionDialog({
     [],
   );
 
+  // Close the multi-device explainer when clicking anywhere outside it.
+  useEffect(() => {
+    if (!helpOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (helpRef.current && !helpRef.current.contains(event.target as Node)) {
+        setHelpOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [helpOpen]);
+
   const tunnelUrl =
     status?.tunnel.state === "running" ? (status.tunnel.url ?? null) : null;
   const lanBase =
@@ -186,9 +203,6 @@ export function CompanionDialog({
   const pairingBase = mode === "tunnel" ? tunnelUrl : lanBase;
   const onlineDevice = status?.devices.find((device) => device.online) ?? null;
   const cloudflaredInstalled = status?.cloudflared.installed ?? false;
-  const pairingExpired = pairing
-    ? Date.parse(pairing.expiresAt) <= now
-    : false;
 
   const requestPairing = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -228,12 +242,6 @@ export function CompanionDialog({
       void requestPairing();
     }
   }, [pairingBase, requestPairing]);
-
-  // Keep a waiting QR usable: refresh an expired code until a device connects.
-  useEffect(() => {
-    if (!pairing || onlineDevice || !pairingExpired) return;
-    void requestPairing();
-  }, [pairing, onlineDevice, pairingExpired, requestPairing]);
 
   const copyText = async (text: string, kind: "link" | "install") => {
     try {
@@ -305,15 +313,27 @@ export function CompanionDialog({
     }
   };
 
+  const setDeviceManage = async (deviceId: string, canManage: boolean) => {
+    setDeviceBusy(true);
+    try {
+      await companionApi.setDeviceManage(deviceId, canManage);
+      await loadStatus(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
   const unpair = async (deviceId: string) => {
-    setBusy("unpair");
+    setDeviceBusy(true);
     try {
       await companionApi.unpair(deviceId);
       await loadStatus(true);
     } catch (error) {
       toast("error", String(error));
     } finally {
-      setBusy(null);
+      setDeviceBusy(false);
     }
   };
 
@@ -346,7 +366,6 @@ export function CompanionDialog({
     if (onlineDevice) {
       return { tone: "emerald", text: t("settings.companion.connected", { name: onlineDevice.name }) };
     }
-    if (pairingExpired) return { tone: "amber", text: t("settings.companion.codeExpired") };
     if (pairing) return { tone: "sky", text: t("settings.companion.waitingPhone") };
     return { tone: "muted", text: t("settings.companion.preparingQr") };
   })();
@@ -369,11 +388,23 @@ export function CompanionDialog({
           </div>
         ) : (
           <div className="grid h-[min(248px,38vh)] w-[min(248px,38vh)] place-items-center rounded-xl border border-dashed border-border px-4 text-center text-ui-xs text-slate-400">
-            {pairingError
-              ? t("settings.companion.qrFailed")
-              : pairingBusy
-                ? t("settings.companion.generatingQr")
-                : t("settings.companion.waitingTunnel")}
+            {pairingError ? (
+              <div>
+                <p>{t("settings.companion.qrFailed")}</p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mt-1"
+                  onClick={() => void requestPairing()}
+                >
+                  {t("common.retry")}
+                </Button>
+              </div>
+            ) : pairingBusy ? (
+              t("settings.companion.generatingQr")
+            ) : (
+              t("settings.companion.waitingTunnel")
+            )}
           </div>
         )}
       </div>
@@ -399,20 +430,9 @@ export function CompanionDialog({
             {copied === "link" ? <Check size={13} /> : <Copy size={13} />}
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            loading={pairingBusy}
-            disabled={!pairingBase}
-            onClick={() => void requestPairing()}
-          >
-            {t("settings.companion.regenerate")}
-          </Button>
-          <span className="text-ui-2xs text-slate-400">
-            {t("settings.companion.codeHint")}
-          </span>
-        </div>
+        <p className="text-ui-2xs text-slate-400">
+          {t("settings.companion.codeHint")}
+        </p>
       </div>
     </div>
   );
@@ -644,12 +664,38 @@ export function CompanionDialog({
           </div>
 
           <div className="rounded-2xl border border-border bg-surface p-4">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-ui-sm text-slate-900">{t("settings.companion.devices")}</h3>
+            <div
+              ref={helpRef}
+              className="relative flex items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-1">
+                <h3 className="text-ui-sm text-slate-900">
+                  {t("settings.companion.devices")}
+                </h3>
+                <button
+                  type="button"
+                  aria-label={t("settings.companion.devicesHelpTitle")}
+                  aria-expanded={helpOpen}
+                  title={t("settings.companion.devicesHelpTitle")}
+                  onClick={() => setHelpOpen((open) => !open)}
+                  className="rounded p-0.5 text-slate-400 transition hover:text-slate-700"
+                >
+                  <CircleHelp size={13} />
+                </button>
+              </div>
               <span className="text-ui-2xs text-slate-400">
                 {status?.devices.length ?? 0}
               </span>
+              {helpOpen ? (
+                <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-border bg-surface p-3 text-ui-xs leading-5 text-slate-600">
+                  <p>{t("settings.companion.devicesHelpFirst")}</p>
+                  <p className="mt-2">{t("settings.companion.devicesHelpRotate")}</p>
+                </div>
+              ) : null}
             </div>
+            <p className="mt-1 text-ui-2xs text-slate-400">
+              {t("settings.companion.deviceManageHint")}
+            </p>
             {status && status.devices.length > 0 ? (
               <ul className="mt-1 divide-y divide-slate-100">
                 {status.devices.map((device) => (
@@ -669,9 +715,15 @@ export function CompanionDialog({
                         {lastSeenLabel(device.lastSeenAt)}
                       </p>
                     </div>
+                    <Switch
+                      checked={device.canManage}
+                      onChange={(value) => void setDeviceManage(device.id, value)}
+                      disabled={deviceBusy}
+                      label={`${t("settings.companion.deviceManage")} ${device.name}`}
+                    />
                     <button
                       type="button"
-                      disabled={busy === "unpair"}
+                      disabled={deviceBusy}
                       onClick={() => void unpair(device.id)}
                       className="shrink-0 rounded px-1 py-0.5 text-ui-2xs text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
                     >
