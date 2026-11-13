@@ -119,7 +119,7 @@ export function FilePanel({ panel, active }: PanelProps) {
     width: number;
     height: number;
   } | null>(null);
-  /** Last mtime read from disk; null until the first successful read. */
+  /** Last millisecond mtime read from disk; null until the first read. */
   const loadedMtime = useRef<number | null>(null);
   /** Read by the activation check without re-subscribing the effect. */
   const dirtyRef = useRef(false);
@@ -143,7 +143,7 @@ export function FilePanel({ panel, active }: PanelProps) {
       .read({ workspaceId, path })
       .then((content) => {
         if (!cancelled) {
-          loadedMtime.current = content.mtime;
+          loadedMtime.current = content.mtimeMs;
           setState({ status: "ready", content });
         }
       })
@@ -168,7 +168,7 @@ export function FilePanel({ panel, active }: PanelProps) {
     fsApi
       .stat({ workspaceId, path })
       .then((stat) => {
-        if (cancelled || stat.mtime === loaded) return;
+        if (cancelled || stat.mtimeMs === loaded) return;
         if (dirtyRef.current) setConflict(true);
         else setReloadToken((value) => value + 1);
       })
@@ -249,22 +249,29 @@ export function FilePanel({ panel, active }: PanelProps) {
   const save = useCallback(
     async (force = false) => {
       if (!content || !editable || saving || !dirty) return;
-      const text = draft ?? content.text ?? "";
+      const saved = draft ?? content.text ?? "";
       setSaving(true);
       try {
         const result = await fsApi.write({
           workspaceId,
           path,
-          text,
-          mtime: content.mtime,
+          text: saved,
+          mtimeMs: content.mtimeMs,
           force,
         });
-        loadedMtime.current = result.mtime;
+        loadedMtime.current = result.mtimeMs;
         setState({
           status: "ready",
-          content: { ...content, text, mtime: result.mtime, size: result.size },
+          content: {
+            ...content,
+            text: saved,
+            mtime: result.mtime,
+            mtimeMs: result.mtimeMs,
+            size: result.size,
+          },
         });
-        setDraft(null);
+        // Keystrokes typed while the request was in flight must survive.
+        setDraft((current) => (current === saved ? null : current));
         setConflict(false);
       } catch (error) {
         const message = String(error);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -238,6 +238,9 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   const editable = Boolean(content && isText && !content.truncated && writeEnabled);
   const value = draft ?? text;
   const dirty = draft !== null && draft !== text;
+  /** Latest buffer for the save response; typing may continue while saving. */
+  const draftRef = useRef<string | null>(null);
+  draftRef.current = draft;
 
   const startEdit = () => {
     setDraft(text);
@@ -257,22 +260,28 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
     if (!workspaceId || !content || saving) return;
     setSaving(true);
     setSaveError(null);
+    const saved = value;
     try {
       const next = await api.writeFile(
         workspaceId,
         path,
-        value,
-        content.mtime,
+        saved,
+        content.mtimeMs,
         force,
       );
       setContent({
         ...content,
-        text: value,
+        text: saved,
         size: next.size,
         mtime: next.mtime,
+        mtimeMs: next.mtimeMs,
       });
-      setEditing(false);
-      setDraft(null);
+      // Do not close the editor or drop the buffer if the user kept typing
+      // while the request was in flight.
+      if (draftRef.current === saved) {
+        setEditing(false);
+        setDraft(null);
+      }
       setConflict(false);
     } catch (error) {
       const failure = asApiError(error);

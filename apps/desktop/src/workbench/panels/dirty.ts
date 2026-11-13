@@ -18,6 +18,18 @@ export function isPanelDirty(panelId: string): boolean {
   return dirty.has(panelId);
 }
 
+/** Any editor currently holds unsaved text (logout / window close guard). */
+export function hasDirtyPanels(): boolean {
+  return dirty.size > 0;
+}
+
+/** Drops all flags after the user explicitly accepts losing the buffers. */
+export function clearDirtyPanels(): void {
+  if (dirty.size === 0) return;
+  dirty.clear();
+  emit();
+}
+
 export function setPanelDirty(panelId: string, value: boolean): void {
   if (dirty.has(panelId) === value) return;
   if (value) dirty.add(panelId);

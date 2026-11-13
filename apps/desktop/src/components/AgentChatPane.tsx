@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import MDEditor from "@uiw/react-md-editor";
+import rehypeSanitize from "rehype-sanitize";
 import clsx from "clsx";
 import {
   AlertCircle,
@@ -363,6 +364,7 @@ function Markdown({ text }: { text: string }) {
     <div className="agent-chat-markdown text-ui-caption leading-5 text-slate-700">
       <MDEditor.Markdown
         source={text}
+        rehypePlugins={[rehypeSanitize]}
         wrapperElement={{ "data-color-mode": "light" }}
         urlTransform={(url) =>
           url.startsWith("http://") || url.startsWith("https://") ? "" : url

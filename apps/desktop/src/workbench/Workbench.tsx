@@ -172,9 +172,25 @@ export function Workbench({
   const openService = useCallback(
     (spec: Parameters<WorkbenchLayoutApi["open"]>[0]) => {
       if (api.layout.maximizedGroupId) api.maximizeGroup(null);
+      // A preview tab is replaced by the next preview of the same kind. If the
+      // current one holds unsaved edits, pin it first so the buffer survives
+      // (the new file simply opens as another tab).
+      if (spec.preview === true) {
+        for (const group of api.groups) {
+          for (const panel of group.panels) {
+            if (
+              panel.preview &&
+              panel.kind === spec.resource.type &&
+              isPanelDirty(panel.id)
+            ) {
+              api.pinPanel(panel.id);
+            }
+          }
+        }
+      }
       return api.open(spec);
     },
-    [api.layout.maximizedGroupId, api.maximizeGroup, api.open],
+    [api],
   );
 
   const services = useMemo<PanelServices>(

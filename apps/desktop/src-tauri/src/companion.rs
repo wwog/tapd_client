@@ -252,8 +252,9 @@ async fn serve(
         )
         .route("/companion/api/feature", post(api_feature))
         .route("/companion/api/terminal/ws", get(ws_terminal))
-        // Text edits carry up to 2 MiB; JSON escaping needs a little headroom.
-        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
+        // Text edits carry up to 2 MiB; JSON escaping plus the request envelope
+        // needs headroom above that.
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .fallback(static_fallback)
         .with_state(ctx);
 

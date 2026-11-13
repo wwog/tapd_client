@@ -6,6 +6,7 @@
  * overrides live in `code.css` next to the syntax palette.
  */
 import MDEditor from "@uiw/react-md-editor";
+import rehypeSanitize from "rehype-sanitize";
 
 import { useResolvedTheme } from "../../lib/appearance";
 import "./code.css";
@@ -20,6 +21,10 @@ export function MarkdownView({ text }: { text: string }) {
     >
       <MDEditor.Markdown
         source={text}
+        // READMEs come from arbitrary repositories. The preview pipeline adds
+        // `rehype-raw` by default; sanitize after it so `iframe`/`script` and
+        // `javascript:` URLs never reach the WebView (which has Tauri IPC).
+        rehypePlugins={[rehypeSanitize]}
         wrapperElement={{ "data-color-mode": theme }}
       />
     </div>

@@ -119,11 +119,11 @@ pub(super) async fn api_file_raw(
 pub(super) struct WriteRequest {
     workspace_id: String,
     path: String,
-    #[serde(default)]
+    /// Required: a missing body must not silently blank the file.
     text: String,
-    /// Mtime the editor loaded; a mismatch is a conflict unless `force`.
+    /// Loaded mtime in milliseconds; a mismatch is a conflict unless `force`.
     #[serde(default)]
-    mtime: Option<i64>,
+    mtime_ms: Option<u64>,
     #[serde(default)]
     force: bool,
 }
@@ -165,7 +165,7 @@ pub(super) async fn api_file_write(
             &root,
             &request.path,
             &request.text,
-            request.mtime,
+            request.mtime_ms,
             request.force,
         )
     })

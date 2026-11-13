@@ -79,6 +79,8 @@ export type FsContent = {
   path: string;
   size: number;
   mtime: number;
+  /** Milliseconds since the epoch; the editor's conflict token. */
+  mtimeMs: number;
   /** UTF-8 body for text/markdown; null for every other kind. */
   text: string | null;
   /** The read stopped at the desktop's text limit. */
@@ -91,6 +93,7 @@ export type FsWriteResult = {
   kind: FsEntryKind;
   size: number;
   mtime: number;
+  mtimeMs: number;
 };
 
 export type BugQuery = {
@@ -752,18 +755,18 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
-  /** Overwrites one text file; `mtime` enables the conflict check. */
+  /** Overwrites one text file; `mtimeMs` enables the conflict check. */
   writeFile: (
     workspaceId: string,
     path: string,
     text: string,
-    mtime?: number,
+    mtimeMs?: number,
     force?: boolean,
   ) =>
     request<FsWriteResult>("/companion/api/file/write", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspaceId, path, text, mtime, force }),
+      body: JSON.stringify({ workspaceId, path, text, mtimeMs, force }),
     }),
 
   /* -- Bug write actions (user-initiated only) ---------------------------- */

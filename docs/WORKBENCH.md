@@ -139,11 +139,11 @@ type LayoutPrefs = { version: 1; layout: LayoutState; sidebarWidth: number };
 Rust `src-tauri/src/fs.rs`：
 
 - 根 = `agent.json` 的 `projects[workspaceId].repoPath`；未配置直接报错。
-- 所有入参只接受**相对路径**；`resolve_in_root` 拒绝绝对路径、`..`、NUL、非 UTF-8，canonicalize 后按组件比较，拒绝符号链接逃逸。
-- `fs_list`（一层，dirs-first，5000 条截断）、`fs_read`（文本 2 MiB 截断；`text/markdown/image/audio/video/binary/tooLarge`）、`fs_stat`。
+- 所有入参只接受**相对路径**；`resolve_in_root` 拒绝绝对路径、`..`、NUL、非 UTF-8，canonicalize 后按组件比较，拒绝符号链接逃逸；规范化后的路径再按组件（忽略大小写）拒绝 `.git`，大小写变体与 `docs -> .git` 这类符号链接别名同样挡住。
+- `fs_list`（一层，dirs-first，5000 条截断）、`fs_read`（文本 2 MiB 截断；`text/markdown/image/audio/video/binary/tooLarge`）、`fs_stat`。读取返回秒级 `mtime`（展示）与毫秒级 `mtimeMs`（冲突令牌）。
 - 二进制预览走本机流式路由 `GET /file?token&ws&path`（Range）；移动端 `GET /companion/api/file/raw?t&ws&path` 复用同一实现。
-- `fs_write`：只覆盖**已存在的文本文件**（不新建），上限 2 MiB；先写同目录临时文件、保留原文件权限再 rename，崩溃不会留下半个文件。请求带加载时的 `mtime`，不一致返回 `conflict:`（HTTP 409），`force` 才覆盖。
-- 桌面编辑器是 Monaco（懒加载 chunk + 本地 worker），⌘S 保存；未保存时标签显示圆点，关闭标签弹出「放弃并关闭 / 继续编辑」。
+- `fs_write`：只覆盖**已存在的 UTF-8 文本文件**（不新建，现有文件也不能超过 2 MiB），上限 2 MiB；先写同目录临时文件（`create_new`，拒绝预置的临时文件名）、保留原文件权限再 rename，崩溃不会留下半个文件。请求带加载时的 `mtimeMs`，不一致返回 `conflict:`（HTTP 409），`force` 才覆盖。
+- 桌面编辑器是 Monaco（懒加载 chunk + 本地 worker），⌘S 保存；未保存时标签显示圆点，关闭标签弹出「放弃并关闭 / 继续编辑」。保存请求在途时继续输入不会被回包覆盖；有未保存修改的预览标签会被自动固定，不会被下一个文件替换；退出登录与关闭窗口也会先确认。Markdown 预览经 `rehype-sanitize` 清洗，README 里的 `iframe`/`script` 不会进入 WebView。
 
 ## 9. 移动端
 
@@ -151,7 +151,7 @@ Rust `src-tauri/src/fs.rs`：
 
 - 底部「文件」tab：项目切换 → 面包屑目录列表（点击下钻/返回）→ 预览页（文本/Markdown/图片/二进制提示）。
 - JSON 接口 `GET /companion/api/files`、`GET /companion/api/file`；二进制走 `file/raw`，鉴权与媒体一致（Bearer 或 `?t=`）。
-- 编辑默认关闭：桌面伴侣弹窗或手机设置页（仅 `canManage` 设备）打开 `companion.allowFileWrite` 后，文件页才显示编辑按钮；保存走 `POST /companion/api/file/write`，同样带 `mtime` 冲突校验。手机端不加载 Monaco：预览用 highlight.js（懒加载 chunk + 主题色板）上色，编辑用等宽 textarea（16px，避免 iOS 聚焦缩放）。
+- 编辑默认关闭：桌面伴侣弹窗或手机设置页（仅 `canManage` 设备）打开 `companion.allowFileWrite` 后，文件页才显示编辑按钮；保存走 `POST /companion/api/file/write`，同样带 `mtimeMs` 冲突校验，`text` 为必填。手机端不加载 Monaco：预览用 highlight.js（懒加载 chunk + 主题色板）上色，编辑用等宽 textarea（16px，避免 iOS 聚焦缩放）。
 
 ## 10. 文件所有权
 

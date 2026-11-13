@@ -22,7 +22,8 @@
     "monaco-editor": "^0.57.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "rehype-sanitize": "^6.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",

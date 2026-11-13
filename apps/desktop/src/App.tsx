@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { AlertTriangle, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
 import {
@@ -27,6 +28,7 @@ import {
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
 import { CompanionDialog } from "./components/CompanionDialog";
+import { Dialog } from "./components/Dialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
 import { LoginGate } from "./components/LoginGate";
@@ -36,6 +38,7 @@ import { ProjectSidebar } from "./components/ProjectSidebar";
 import { RecoveryBanner } from "./components/RecoveryBanner";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
+import { Button } from "./components/ui";
 import { useAgentQueue } from "./hooks/useAgentQueue";
 import { usePoll } from "./hooks/usePoll";
 import { useDetailPane } from "./hooks/useDetailPane";
@@ -61,6 +64,7 @@ import { activeView } from "./workbench/layout/ops";
 import { useWorkbenchLayout } from "./workbench/layout/useWorkbenchLayout";
 import { Workbench } from "./workbench/Workbench";
 import { Sash } from "./workbench/components/Sash";
+import { clearDirtyPanels, hasDirtyPanels } from "./workbench/panels/dirty";
 import type { PageHostServices } from "./workbench/components/pageContext";
 
 /** Minimal bug shape needed to enqueue an Agent task. */
@@ -125,6 +129,8 @@ export default function App() {
   const [agentReviewFocus, setAgentReviewFocus] = useState(0);
   /** Mobile companion QR dialog; the rail entry exists only while enabled. */
   const [companionOpen, setCompanionOpen] = useState(false);
+  /** Unsaved edits block logout / window close until the user decides. */
+  const [unsavedExit, setUnsavedExit] = useState<"logout" | "quit" | null>(null);
   const companionEnabled = useCompanionEnabled();
   /** Any paired phone heartbeat within the last minute. */
   const companionOnline = useCompanionOnline();
@@ -139,6 +145,24 @@ export default function App() {
   useEffect(() => {
     startUpdateStore();
     void refreshCompanionStatus();
+  }, []);
+
+  // Closing the window with unsaved edits asks first. `destroy` in the dialog
+  // bypasses this handler, so confirming cannot loop.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested((event) => {
+        if (!hasDirtyPanels()) return;
+        event.preventDefault();
+        setUnsavedExit("quit");
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   // Green rail icon while a phone is online. Pairing/presence events flip i
@@ -711,14 +735,24 @@ export default function App() {
     </>
   );
 
-  /** Sign out: drop every project-scoped panel, then let the session layer run. */
-  const logout = () => {
+  /** Sign out after the unsaved-edit confirmation (if any). */
+  const performLogout = () => {
     const panels = layoutRef.current.groups.flatMap((group) => group.panels);
     for (const panel of panels) {
       if (panel.kind !== "page") layoutRef.current.closePanel(panel.id);
     }
     layoutRef.current.openPage("bugs");
     handleLogout();
+    setUnsavedExit(null);
+  };
+
+  /** Sign out: drop every project-scoped panel, then let the session layer run. */
+  const logout = () => {
+    if (hasDirtyPanels()) {
+      setUnsavedExit("logout");
+      return;
+    }
+    performLogout();
   };
 
   const page: PageHostServices = {
@@ -955,6 +989,47 @@ export default function App() {
           onClose={() => setCompanionOpen(false)}
           toast={showToast}
         />
+      ) : null}
+
+      {unsavedExit ? (
+        <Dialog
+          title={t("layout.unsavedTitle")}
+          icon={<AlertTriangle size={15} className="text-amber-500" />}
+          onClose={() => setUnsavedExit(null)}
+        >
+          <p className="text-ui-caption leading-6 text-slate-600">
+            {unsavedExit === "logout"
+              ? t("layout.unsavedLogout")
+              : t("layout.unsavedQuit")}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setUnsavedExit(null)}
+            >
+              {t("layout.keepEditing")}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                if (unsavedExit === "logout") {
+                  clearDirtyPanels();
+                  performLogout();
+                  return;
+                }
+                clearDirtyPanels();
+                const window = getCurrentWindow();
+                void window.destroy().catch(() => window.close());
+              }}
+            >
+              {unsavedExit === "logout"
+                ? t("layout.logoutAnyway")
+                : t("layout.quitAnyway")}
+            </Button>
+          </div>
+        </Dialog>
       ) : null}
 
       {/* Last layer: a forced update covers onboarding, dialogs and settings. */}

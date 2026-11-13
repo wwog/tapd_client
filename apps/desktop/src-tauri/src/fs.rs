@@ -101,10 +101,10 @@ impl FsError {
 
     /// The Tauri command surfaces this message verbatim; the stable `conflict:`
     /// prefix lets the editor offer reload/overwrite without a JSON envelope.
-    fn conflict(current_mtime: i64) -> Self {
+    fn conflict(current_mtime_ms: u64) -> Self {
         Self::new(
             FsErrorKind::Conflict,
-            format!("conflict: file changed on disk ({current_mtime})"),
+            format!("conflict: file changed on disk ({current_mtime_ms})"),
         )
     }
 
@@ -225,6 +225,19 @@ pub(crate) fn resolve_in_root(root: &Path, relative: &str) -> Result<PathBuf, Fs
     if !target.starts_with(&canonical_root) {
         return Err(FsError::outside());
     }
+    // The early check only sees the request string. Resolve aliases as well: a
+    // case variant (`.GIT` on a case-insensitive filesystem) or a symlink such
+    // as `docs -> .git` must not reach the repository internals.
+    let relative_to_root = target
+        .strip_prefix(&canonical_root)
+        .map_err(|_| FsError::outside())?;
+    for component in relative_to_root.components() {
+        if let Component::Normal(name) = component {
+            if name.to_string_lossy().eq_ignore_ascii_case(".git") {
+                return Err(FsError::invalid("the .git directory is not browsable"));
+            }
+        }
+    }
     Ok(target)
 }
 
@@ -247,6 +260,17 @@ fn unix_secs(metadata: &std_fs::Metadata) -> i64 {
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Conflict token for editors. Second-resolution timestamps miss external
+/// writes that land in the same second as the load, so saves compare this.
+fn unix_millis(metadata: &std_fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -386,6 +410,8 @@ pub struct FsContent {
     path: String,
     size: u64,
     mtime: i64,
+    /// Milliseconds since the epoch; the editor's conflict token.
+    mtime_ms: u64,
     /// UTF-8 body for text/markdown; null for every other kind.
     text: Option<String>,
     /// The read stopped at the server's text limit.
@@ -399,6 +425,7 @@ pub struct FsStat {
     kind: FsEntryKind,
     size: u64,
     mtime: i64,
+    mtime_ms: u64,
 }
 
 const IMAGE_EXTENSIONS: &[&str] = &[
@@ -456,6 +483,7 @@ pub(crate) fn read_file(root: &Path, relative: &str) -> Result<FsContent, FsErro
             path: display,
             size,
             mtime,
+            mtime_ms: unix_millis(&metadata),
             text: None,
             truncated: false,
         });
@@ -487,6 +515,7 @@ pub(crate) fn read_file(root: &Path, relative: &str) -> Result<FsContent, FsErro
         path: display,
         size,
         mtime,
+        mtime_ms: unix_millis(&metadata),
         text,
         truncated,
     })
@@ -517,6 +546,7 @@ pub(crate) fn stat(root: &Path, relative: &str) -> Result<FsStat, FsError> {
             metadata.len()
         },
         mtime: unix_secs(&metadata),
+        mtime_ms: unix_millis(&metadata),
     })
 }
 
@@ -524,14 +554,15 @@ pub(crate) fn stat(root: &Path, relative: &str) -> Result<FsStat, FsError> {
 ///
 /// The body goes to a sibling temp file first, keeps the original permissions
 /// and is renamed over the target, so a crash cannot leave a half-written
-/// source file. `expected_mtime` is the value the editor loaded; a mismatch
+/// source file. `expected_mtime_ms` is the value the editor loaded; a mismatch
 /// means the file changed on disk and is reported as [`FsErrorKind::Conflict`]
-/// unless `force` is set. New files and directories are deliberately rejected.
+/// unless `force` is set. New files, directories and binary bodies are
+/// deliberately rejected.
 pub(crate) fn write_file(
     root: &Path,
     relative: &str,
     text: &str,
-    expected_mtime: Option<i64>,
+    expected_mtime_ms: Option<u64>,
     force: bool,
 ) -> Result<FsStat, FsError> {
     let canonical = canonical_root(root)?;
@@ -543,11 +574,21 @@ pub(crate) fn write_file(
     if text.len() as u64 > MAX_WRITE_BYTES {
         return Err(FsError::too_large("file is too large to edit"));
     }
-    let current_mtime = unix_secs(&metadata);
+    if metadata.len() > MAX_WRITE_BYTES {
+        return Err(FsError::too_large("file is too large to edit"));
+    }
+    // The editor only offers text files; enforce the same rule on the API so a
+    // paired phone cannot turn an image/binary file into text.
+    let existing = std_fs::read(&target).map_err(FsError::io)?;
+    if std::str::from_utf8(&existing).is_err() {
+        return Err(FsError::invalid("only UTF-8 text files are editable"));
+    }
+
+    let current_mtime_ms = unix_millis(&metadata);
     if !force {
-        if let Some(expected) = expected_mtime {
-            if expected != current_mtime {
-                return Err(FsError::conflict(current_mtime));
+        if let Some(expected) = expected_mtime_ms {
+            if expected != current_mtime_ms {
+                return Err(FsError::conflict(current_mtime_ms));
             }
         }
     }
@@ -565,7 +606,12 @@ pub(crate) fn write_file(
     ));
 
     let write_result = (|| -> Result<(), std::io::Error> {
-        let mut file = std_fs::File::create(&temp)?;
+        // `create_new` refuses an existing path or a planted symlink at the
+        // predictable temp name.
+        let mut file = std_fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
         // Keep executable bits and other modes of the original file.
         std_fs::set_permissions(&temp, metadata.permissions())?;
         file.write_all(text.as_bytes())?;
@@ -583,6 +629,7 @@ pub(crate) fn write_file(
         kind: FsEntryKind::File,
         size: updated.len(),
         mtime: unix_secs(&updated),
+        mtime_ms: unix_millis(&updated),
     })
 }
 
@@ -686,14 +733,16 @@ pub async fn fs_write(
     workspace_id: String,
     path: String,
     text: String,
-    mtime: Option<i64>,
+    mtime_ms: Option<u64>,
     force: Option<bool>,
 ) -> Result<FsStat, String> {
     let root = root_for(&app, &workspace_id).map_err(|error| error.message())?;
-    tokio::task::spawn_blocking(move || write_file(&root, &path, &text, mtime, force.unwrap_or(false)))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.message())
+    tokio::task::spawn_blocking(move || {
+        write_file(&root, &path, &text, mtime_ms, force.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.message())
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +990,7 @@ mod tests {
         assert_eq!(file.size, 3);
         assert_eq!(file.path, "note.txt");
         assert!(file.mtime > 0);
+        assert!(file.mtime_ms > 0);
 
         let dir = stat(&root, "sub").expect("stat dir");
         assert_eq!(dir.kind, FsEntryKind::Dir);
@@ -972,12 +1022,13 @@ mod tests {
             &root,
             "src/note.txt",
             "new body\n",
-            Some(before.mtime),
+            Some(before.mtime_ms),
             false,
         )
         .expect("write");
         assert_eq!(updated.kind, FsEntryKind::File);
         assert_eq!(updated.size, 9);
+        assert!(updated.mtime_ms >= before.mtime_ms);
 
         let content = read_file(&root, "src/note.txt").expect("read back");
         assert_eq!(content.text.as_deref(), Some("new body\n"));
@@ -990,13 +1041,13 @@ mod tests {
         let root = tree.root();
         let before = stat(&root, "note.txt").expect("stat");
 
-        let error = write_file(&root, "note.txt", "mine", Some(before.mtime - 1), false)
+        let error = write_file(&root, "note.txt", "mine", Some(before.mtime_ms - 1), false)
             .expect_err("stale mtime");
         assert_eq!(error.kind, FsErrorKind::Conflict);
         assert!(error.message().starts_with("conflict:"));
 
         let forced =
-            write_file(&root, "note.txt", "mine", Some(before.mtime - 1), true).expect("forced");
+            write_file(&root, "note.txt", "mine", Some(before.mtime_ms - 1), true).expect("forced");
         assert_eq!(forced.size, 4);
         assert_eq!(
             read_file(&root, "note.txt")
@@ -1043,6 +1094,34 @@ mod tests {
 
         let error = write_file(&root, "note.txt", &body, None, true).expect_err("too large");
         assert_eq!(error.kind, FsErrorKind::TooLarge);
+    }
+
+    #[test]
+    fn rejects_git_through_case_and_symlink_aliases() {
+        let tree = TempTree::new("git-alias");
+        tree.mkdir(".git");
+        tree.write(".git/config", b"[core]");
+        let root = tree.root();
+
+        // Case variant: on a case-insensitive filesystem this canonicalizes to
+        // `.git`; elsewhere it simply does not exist.
+        let error = resolve_in_root(&root, ".GIT/config").expect_err("case alias");
+        assert!(
+            matches!(
+                error.kind,
+                FsErrorKind::InvalidRequest | FsErrorKind::NotFound
+            ),
+            "unexpected kind: {:?}",
+            error.kind
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".git"), tree.base.join("docs"))
+                .expect("create alias");
+            let error = resolve_in_root(&root, "docs/config").expect_err("symlink alias");
+            assert_eq!(error.kind, FsErrorKind::InvalidRequest);
+        }
     }
 
     #[cfg(unix)]

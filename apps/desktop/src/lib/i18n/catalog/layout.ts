@@ -31,4 +31,14 @@ export const layout = {
   ],
   "layout.discardClose": ["放弃并关闭", "Discard and close"],
   "layout.keepEditing": ["继续编辑", "Keep editing"],
+  "layout.unsavedLogout": [
+    "退出登录会丢弃未保存的修改。",
+    "Signing out will discard unsaved changes.",
+  ],
+  "layout.unsavedQuit": [
+    "退出应用会丢弃未保存的修改。",
+    "Quitting will discard unsaved changes.",
+  ],
+  "layout.logoutAnyway": ["仍要退出登录", "Sign out anyway"],
+  "layout.quitAnyway": ["仍要退出", "Quit anyway"],
 } as const satisfies Catalog;

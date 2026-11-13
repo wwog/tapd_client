@@ -49,6 +49,8 @@ export type FsContent = {
   path: string;
   size: number;
   mtime: number;
+  /** Milliseconds since the epoch; the editor's conflict token. */
+  mtimeMs: number;
   /** UTF-8 body for text/markdown; null for every other kind. */
   text: string | null;
   /** The read stopped at the server's text limit. */
@@ -60,21 +62,23 @@ export type FsStat = {
   kind: FsEntryKind;
   size: number;
   mtime: number;
+  mtimeMs: number;
 };
 
 export type FsRequest = { workspaceId: string; path: string };
 
-/** Result of a save; the editor stores `mtime` for the next conflict check. */
+/** Result of a save; the editor stores `mtimeMs` for the next conflict check. */
 export type FsWriteResult = {
   path: string;
   size: number;
   mtime: number;
+  mtimeMs: number;
 };
 
 export type FsWriteRequest = FsRequest & {
   text: string;
-  /** The mtime the editor loaded; omit to write unconditionally. */
-  mtime?: number;
+  /** The millisecond mtime the editor loaded; omit to write unconditionally. */
+  mtimeMs?: number;
   /** Skip the conflict check (explicit overwrite). */
   force?: boolean;
 };

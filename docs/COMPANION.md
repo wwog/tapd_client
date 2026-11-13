@@ -182,10 +182,10 @@
 浏览桌面项目配置的本地文件夹，不镜像桌面分屏布局。编辑默认关闭。
 
 - `GET /companion/api/files?workspaceId=&path=`（Bearer）→ `{ root, path, entries, truncated }`；一层目录、dirs-first、隐藏文件带 `hidden` 标记、单目录 5000 条截断。
-- `GET /companion/api/file?workspaceId=&path=`（Bearer）→ `{ kind, path, size, mtime, text, truncated }`；文本 2 MiB 截断，图片 / 音视频只给 kind，50 MiB 以上为 `tooLarge`。
+- `GET /companion/api/file?workspaceId=&path=`（Bearer）→ `{ kind, path, size, mtime, mtimeMs, text, truncated }`；文本 2 MiB 截断，图片 / 音视频只给 kind，50 MiB 以上为 `tooLarge`。
 - `GET /companion/api/file/raw?t=<token>&workspaceId=&path=`（查询 token，供 `<img>` / `<video>`）→ 原始字节，支持单段 `Range`。
 - `GET /companion/api/file/write`（Bearer）→ `{ enabled }`；`POST /companion/api/file/write-setting { enabled }`（仅 `canManage`）切换桌面配置 `companion.allowFileWrite`，默认 false。桌面伴侣弹窗也提供同一开关。
-- `POST /companion/api/file/write { workspaceId, path, text, mtime?, force? }`（Bearer，需开关打开）→ `{ path, kind, size, mtime }`；只覆盖已存在的文本文件（2 MiB），同目录临时文件 + rename，`mtime` 不一致返回 409 `conflict`，`force` 覆盖。
+- `POST /companion/api/file/write { workspaceId, path, text, mtimeMs?, force? }`（Bearer，需开关打开）→ `{ path, kind, size, mtime, mtimeMs }`；`text` 必填，只覆盖已存在的 UTF-8 文本文件（2 MiB），同目录 `create_new` 临时文件 + rename，`mtimeMs` 不一致返回 409 `conflict`，`force` 覆盖；二进制或超限现有文件直接拒绝。
 - 路径与桌面同一套 `fs.rs` 解析：根为项目 `repoPath`，只接受相对路径，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；未配置文件夹返回 `no_folder:`，手机显示「在桌面端项目设置里选择本地文件夹」。
 - 手机页面：底部「文件」tab → `#/files?ws=&path=`（项目切换、面包屑、返回上级、隐藏文件开关、目录下钻）→ `#/file?ws=&path=`（文本 / Markdown、图片、音视频、二进制元信息）。预览用 highlight.js 上色（懒加载 chunk，输出经 DOMPurify 清洗后注入）；编辑开启且文件未截断时可切换等宽 textarea 编辑并保存，冲突时提示重新加载或覆盖。表单控件在手机上固定 16px，避免 iOS 聚焦时自动放大页面。
 
