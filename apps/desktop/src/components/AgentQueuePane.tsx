@@ -4,11 +4,13 @@ import clsx from "clsx";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  type AgentChat,
   type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
+import { AgentTimeline } from "./AgentTimeline";
 import { Badge } from "./ui";
 
 type Props = {
@@ -20,6 +22,10 @@ type Props = {
   queuePosition: (task: AgentTask) => number | null;
   /** 运行中 Agent 的当前状态，key 是 task id。 */
   runtimeStatus?: Record<string, AgentRuntimeStatus>;
+  /** 选中任务的 transcript，用于下方「执行流程」。 */
+  chat?: AgentChat | null;
+  chatError?: string | null;
+  live?: boolean;
   onSelect: (taskId: string) => void;
 };
 
@@ -36,6 +42,9 @@ export function AgentQueuePane(props: Props) {
     selectedId,
     queuePosition,
     runtimeStatus,
+    chat,
+    chatError,
+    live = false,
     onSelect,
   } = props;
 
@@ -93,6 +102,13 @@ export function AgentQueuePane(props: Props) {
           </div>
         )}
       </div>
+
+      <AgentTimeline
+        chat={chat ?? null}
+        error={chatError ?? null}
+        status={selectedId ? runtimeStatus?.[selectedId] : undefined}
+        live={live}
+      />
     </aside>
   );
 }

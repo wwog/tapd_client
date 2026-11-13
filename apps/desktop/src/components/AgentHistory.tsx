@@ -4,6 +4,7 @@ import {
   Bug,
   FolderOpen,
   Loader2,
+  MessagesSquare,
   RotateCcw,
   Search,
   Terminal,
@@ -14,6 +15,7 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
   agentApi,
+  supportsAgentChat,
   type AgentRuntimeDescriptor,
   type AgentTask,
   type AgentTaskStatus,
@@ -22,7 +24,10 @@ import {
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
+import { useAgentChat } from "../hooks/useAgentChat";
 import { useDismiss } from "../hooks/useDismiss";
+import { AgentChatPane } from "./AgentChatPane";
+import { AgentIcon } from "./AgentIcon";
 import { Badge, Button, selectClass } from "./ui";
 import { Dialog } from "./Dialog";
 
@@ -76,10 +81,13 @@ export function AgentHistory({
   const [retryBusy, setRetryBusy] = useState<string | null>(null);
   const [rowMenu, setRowMenu] = useState<HistoryRowMenu | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentTask | null>(null);
+  const [chatTask, setChatTask] = useState<AgentTask | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const appliedFocusRef = useRef<string | null>(null);
   const requestRef = useRef(0);
+  // 历史任务只读 transcript：打开弹窗时拉一次，不轮询。
+  const historyChat = useAgentChat(chatTask?.id ?? null, false);
 
   // Debounce the keyword so typing does not fire a request per keystroke.
   useEffect(() => {
@@ -372,6 +380,17 @@ export function AgentHistory({
                 <Button
                   size="sm"
                   variant="secondary"
+                  icon={<MessagesSquare size={12} />}
+                  disabled={
+                    !supportsAgentChat(selected.runtimeId) || !selected.agentSessionId
+                  }
+                  onClick={() => setChatTask(selected)}
+                >
+                  查看对话
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
                   icon={
                     retryBusy === selected.id ? (
                       <Loader2 size={12} className="animate-spin" />
@@ -449,6 +468,38 @@ export function AgentHistory({
             setDeleteTarget(task);
           }}
         />
+      ) : null}
+
+      {chatTask ? (
+        <Dialog
+          title={`对话 · ${bugTitle(chatTask.title) || "（无标题）"}`}
+          icon={
+            <AgentIcon
+              runtimeId={chatTask.runtimeId}
+              name={runtimes.find((runtime) => runtime.id === chatTask.runtimeId)?.name}
+              size={18}
+            />
+          }
+          size="wide"
+          bodyScroll={false}
+          onClose={() => setChatTask(null)}
+        >
+          <div className="flex h-full min-h-0 flex-col">
+            <AgentChatPane
+              taskId={chatTask.id}
+              runtimeId={chatTask.runtimeId}
+              runtimeName={
+                runtimes.find((runtime) => runtime.id === chatTask.runtimeId)?.name
+              }
+              chat={historyChat.data}
+              chatError={historyChat.error}
+              loading={historyChat.loading}
+              live={false}
+              onSwitchToTerminal={() => setChatTask(null)}
+              toast={toast}
+            />
+          </div>
+        </Dialog>
       ) : null}
 
       {deleteTarget ? (

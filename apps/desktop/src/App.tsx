@@ -345,6 +345,8 @@ export default function App() {
           attachments: payload?.attachments.length ? payload.attachments : undefined,
           // 提交面板可以为本次任务单独选 Agent；为空时后端用默认运行时。
           runtimeId: payload?.runtimeId ?? null,
+          model: payload?.model ?? null,
+          permissionMode: payload?.permissionMode ?? null,
         });
         // The view switches to the Agent tab and focuses this task; a toast
         // on top of that is just noise.

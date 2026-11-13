@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use super::{truncate_text, AgentRuntimePhase, AgentRuntimeStatus};
+use super::{prompt, truncate_text, AgentPendingPrompt, AgentRuntimePhase, AgentRuntimeStatus};
 
 /// 一个 hook 事件归一化后的结果。
 pub(super) struct HookActivity {
@@ -99,8 +99,16 @@ pub(super) fn normalize(
                 model,
                 now,
             );
+            // AskUserQuestion 走 PreToolUse：把问题解析成可回答的卡片。
+            let question_prompt = tool
+                .as_deref()
+                .filter(|name| prompt::is_question_tool(name))
+                .and_then(|_| prompt::question(payload, tool.clone(), now));
             status.tool = tool;
             status.detail = detail;
+            // 工具切换视为新的工作段，Working 条从 0 开始计时。
+            status.started_at = Some(now.to_string());
+            status.prompt = question_prompt;
             activity.status = Some(status);
         }
         "posttooluse" | "aftertool" | "toolend" => {
@@ -138,9 +146,10 @@ pub(super) fn normalize(
                 model,
                 now,
             );
-            status.tool = tool;
-            status.detail = detail;
-            status.message = message;
+            status.tool = tool.clone();
+            status.detail = detail.clone();
+            status.message = message.clone();
+            status.prompt = Some(prompt::approval(tool, detail.or(message), now));
             activity.status = Some(status);
         }
         "questionasked" | "notification" => {
@@ -163,8 +172,29 @@ pub(super) fn normalize(
                 model,
                 now,
             );
-            status.tool = tool;
-            status.message = message;
+            status.tool = tool.clone();
+            status.message = message.clone();
+            // 只有真正的提问事件才占用输入区；普通 Notification（例如
+            // “等待输入”）不能把 Composer 藏起来。
+            status.prompt = if waiting_permission {
+                Some(prompt::approval(tool, message, now))
+            } else if key == "questionasked" {
+                prompt::question(payload, tool, now).or_else(|| {
+                    message.map(|text| AgentPendingPrompt {
+                        prompt_id: now.to_string(),
+                        kind: "question".to_string(),
+                        tool: None,
+                        summary: None,
+                        question: Some(text),
+                        header: None,
+                        options: Vec::new(),
+                        can_answer: false,
+                        answer_hint: None,
+                    })
+                })
+            } else {
+                prompt::question(payload, tool, now)
+            };
             activity.status = Some(status);
         }
         "permissionreplied" | "permissionresolved" | "questionreplied" | "questionrejected"
@@ -242,6 +272,7 @@ pub(super) fn normalize(
                 model,
                 now,
             );
+            status.last_message = message.clone();
             status.message = message;
             activity.status = Some(status);
         }
@@ -259,6 +290,7 @@ pub(super) fn normalize(
                     model,
                     now,
                 );
+                status.last_message = message.clone();
                 status.message = message;
                 activity.status = Some(status);
             } else {
@@ -270,6 +302,7 @@ pub(super) fn normalize(
                     model,
                     now,
                 );
+                status.last_message = message.clone();
                 status.message = message;
                 activity.status = Some(status);
                 activity.complete = true;
@@ -349,6 +382,13 @@ fn base(
             .map(str::to_string)
             .or_else(|| previous.and_then(|status| status.session_id.clone())),
         subagents: previous.map(|status| status.subagents).unwrap_or(0),
+        // phase 不变时沿用起点；切换 phase 时从现在重新计时。
+        started_at: match previous {
+            Some(status) if status.phase == phase => status.started_at.clone(),
+            _ => Some(now.to_string()),
+        },
+        last_message: previous.and_then(|status| status.last_message.clone()),
+        prompt: None,
         updated_at: now.to_string(),
     }
 }
@@ -501,17 +541,51 @@ mod tests {
     #[test]
     fn permission_request_waits_and_stop_completes() {
         let waiting = run("permission.asked", json!({ "tool_name": "Write" }));
-        assert_eq!(
-            waiting.status.expect("known event").phase,
-            AgentRuntimePhase::WaitingPermission
-        );
+        let status = waiting.status.expect("known event");
+        assert_eq!(status.phase, AgentRuntimePhase::WaitingPermission);
+        let prompt = status.prompt.expect("approval prompt");
+        assert_eq!(prompt.kind, "approval");
+        assert_eq!(prompt.options.len(), 2);
+        assert!(!waiting.complete);
 
         let stopped = run("AfterAgent", json!({ "last_assistant_message": "done" }));
         assert!(stopped.complete);
-        assert_eq!(
-            stopped.status.expect("known event").phase,
-            AgentRuntimePhase::Idle
+        let status = stopped.status.expect("known event");
+        assert_eq!(status.phase, AgentRuntimePhase::Idle);
+        assert!(status.prompt.is_none());
+        assert_eq!(status.last_message.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn ask_user_question_tool_becomes_a_prompt_card() {
+        let activity = run(
+            "PreToolUse",
+            json!({
+                "tool_name": "AskUserQuestion",
+                "tool_input": { "questions": [{
+                    "question": "继续吗",
+                    "options": ["继续", "停止"]
+                }]}
+            }),
         );
+        let prompt = activity
+            .status
+            .expect("known event")
+            .prompt
+            .expect("question prompt");
+        assert_eq!(prompt.kind, "question");
+        assert_eq!(prompt.options.len(), 2);
+        assert!(prompt.can_answer, "single-select question is answerable");
+    }
+
+    #[test]
+    fn plain_notification_does_not_block_the_composer() {
+        let activity = run(
+            "Notification",
+            json!({ "notification_type": "waiting_for_input", "message": "等待输入" }),
+        );
+        let status = activity.status.expect("known event");
+        assert!(status.prompt.is_none());
     }
 
     #[test]

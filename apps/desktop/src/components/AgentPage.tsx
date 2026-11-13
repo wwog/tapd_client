@@ -4,6 +4,7 @@ import { Bot, Terminal } from "lucide-react";
 import {
   agentApi,
   isAgentApprovalStatus,
+  supportsAgentChat,
   type AgentRuntimeDescriptor,
   type AgentTask,
   type AgentTaskStatus,
@@ -13,14 +14,16 @@ import {
   agentTasksStore,
   useAgentTasksStore,
 } from "../lib/agentStore";
+import { useAgentChat } from "../hooks/useAgentChat";
 import { openTaskExportDir } from "../lib/desktop";
 import { AgentApproval, type ManualMerge } from "./AgentApproval";
+import { AgentChatPane } from "./AgentChatPane";
 import { AgentConfigPane } from "./AgentConfigPane";
 import { AgentHistory } from "./AgentHistory";
 import { AgentQueuePane, QUEUE_PANE_WIDTH } from "./AgentQueuePane";
 import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
-import { AgentTaskHeader } from "./AgentTaskHeader";
+import { AgentTaskHeader, type AgentChatView } from "./AgentTaskHeader";
 import { AgentTerminal } from "./AgentTerminal";
 import { Button } from "./ui";
 
@@ -80,6 +83,8 @@ export function AgentPage({
   // Task explicitly selected by `agent://focus` or a click in the run queue;
   // cleared when the active task changes so the terminal follows the worker.
   const [explicitTaskId, setExplicitTaskId] = useState<string | null>(null);
+  /** 每个任务显式选择的右侧视图；未选择时按运行时自动决定。 */
+  const [viewChoice, setViewChoice] = useState<Record<string, AgentChatView>>({});
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Manual steps returned by 用原 Agent 合并 when the agent cannot merge. */
   const [manualMerge, setManualMerge] = useState<ManualMerge | null>(null);
@@ -271,6 +276,25 @@ export function AgentPage({
   const live =
     selectedTask !== null &&
     (selectedTask.status === "running" || selectedTask.status === "merging");
+  const chatSupported = supportsAgentChat(selectedTask?.runtimeId);
+  const selectedRuntime = selectedTask
+    ? runtimes.find((runtime) => runtime.id === selectedTask.runtimeId)
+    : undefined;
+  const selectedPermission = selectedRuntime?.permissions.find(
+    (permission) => permission.id === (selectedTask?.permissionMode || "default"),
+  );
+  // 默认：支持对话且正在运行时看对话，否则终端；用户手动选择优先。
+  const view: AgentChatView = selectedTask
+    ? (viewChoice[selectedTask.id] ??
+      (chatSupported && live ? "chat" : "terminal"))
+    : "terminal";
+  // 只有真正跑起来的任务才有 transcript；排队/准备阶段不探测会话文件。
+  const chat = useAgentChat(live ? selectedTask?.id ?? null : null, live && chatSupported);
+  const currentModel =
+    selectedTask?.model ||
+    chat.data?.model ||
+    (selectedTask ? tasksState?.runtimeStatus?.[selectedTask.id]?.model : undefined) ||
+    undefined;
 
   const counts = useMemo(() => {
     const queued =
@@ -487,6 +511,9 @@ export function AgentPage({
               selectedId={selectedId}
               queuePosition={queuePosition}
               runtimeStatus={tasksState?.runtimeStatus}
+              chat={chat.data}
+              chatError={chat.error}
+              live={live}
               onSelect={setExplicitTaskId}
             />
           )}
@@ -540,6 +567,17 @@ export function AgentPage({
                   canCancel={canCancel}
                   actionBusy={actionBusy}
                   live={live}
+                  view={view}
+                  chatSupported={chatSupported}
+                  model={currentModel}
+                  permissionLabel={selectedPermission?.label}
+                  permissionId={selectedTask.permissionMode || "default"}
+                  onViewChange={(next) =>
+                    setViewChoice((current) => ({
+                      ...current,
+                      [selectedTask.id]: next,
+                    }))
+                  }
                   onCancel={() =>
                     void runAction(`cancel:${selectedTask.id}`, () =>
                       agentApi.cancel(selectedTask.id),
@@ -557,7 +595,27 @@ export function AgentPage({
                   </div>
                 ) : null}
 
-                {live ? (
+                {live && view === "chat" && chatSupported ? (
+                  <AgentChatPane
+                    key={selectedTask.id}
+                    taskId={selectedTask.id}
+                    runtimeId={selectedTask.runtimeId}
+                    runtimeName={runtimeName(selectedTask.runtimeId)}
+                    status={tasksState?.runtimeStatus?.[selectedTask.id]}
+                    model={currentModel}
+                    chat={chat.data}
+                    chatError={chat.error}
+                    loading={chat.loading}
+                    live={live}
+                    onSwitchToTerminal={() =>
+                      setViewChoice((current) => ({
+                        ...current,
+                        [selectedTask.id]: "terminal",
+                      }))
+                    }
+                    toast={toast}
+                  />
+                ) : live ? (
                   <div className="min-h-0 flex-1 bg-zinc-950 p-1.5">
                     <AgentTerminal
                       key={selectedTask.id}

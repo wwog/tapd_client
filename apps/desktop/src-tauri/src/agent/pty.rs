@@ -464,6 +464,15 @@ impl AgentCore {
                         if let Some(error) = state.error {
                             // StopFailure 等事件表示本轮失败，不能按成功收尾。
                             outcome.error = Some(error);
+                        } else if let Some(error) = self.transcript_error(task) {
+                            // provider 记录的错误（重试耗尽、网络中断、API 错误）
+                            // 不一定出现在 hook 里；标记失败而不是按完成收尾。
+                            tracing::warn!(
+                                task_id = %task.id,
+                                %error,
+                                "agent transcript reported a provider error"
+                            );
+                            outcome.error = Some(error);
                         } else {
                             let message = "Agent 回合已结束，自动完成本轮".to_string();
                             outcome.completed = true;
@@ -494,13 +503,23 @@ impl AgentCore {
                 // only proof that the prompt actually started.
                 let prompt_started = !inject_prompt || guard.injected();
                 if produced_output && prompt_started && quiet_for >= idle {
-                    let message = format!("Agent 输出静默 {}s，已结束本轮", idle.as_secs());
-                    tracing::warn!(task_id = %task.id, %message, "agent idle completion");
-                    outcome.completed = true;
-                    outcome.warning = Some(match outcome.warning.take() {
-                        Some(existing) => format!("{existing}；{message}"),
-                        None => message,
-                    });
+                    if let Some(error) = self.transcript_error(task) {
+                        // 静默兜底也不能把 provider 失败当成完成。
+                        tracing::warn!(
+                            task_id = %task.id,
+                            %error,
+                            "agent went idle after a provider error"
+                        );
+                        outcome.error = Some(error);
+                    } else {
+                        let message = format!("Agent 输出静默 {}s，已结束本轮", idle.as_secs());
+                        tracing::warn!(task_id = %task.id, %message, "agent idle completion");
+                        outcome.completed = true;
+                        outcome.warning = Some(match outcome.warning.take() {
+                            Some(existing) => format!("{existing}；{message}"),
+                            None => message,
+                        });
+                    }
                     if let Ok(mut runtime) = runtime.lock() {
                         runtime.kill();
                     }
@@ -531,6 +550,14 @@ impl AgentCore {
             std::thread::sleep(Duration::from_millis(200));
         }
         outcome.canceled = outcome.canceled || canceled.load(Ordering::SeqCst);
+
+        // 没有 hook / 静默兜底时，非零退出码就是失败；不能留下“完成但 exit 1”
+        // 的记录。hook 已判定完成时进程是被我们杀掉的，不看退出码。
+        if !outcome.canceled && outcome.error.is_none() && !outcome.completed {
+            if let Some(code) = outcome.exit_code.filter(|code| *code != 0) {
+                outcome.error = Some(format!("Agent 进程异常退出（exit {code}）"));
+            }
+        }
 
         // Do not block forever on the readers: a grandchild process may keep
         // the slave fd open after the TUI exits, which delays EOF.

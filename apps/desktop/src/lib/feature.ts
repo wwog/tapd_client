@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
  * matching arm per name.
  */
 export type FeatureCommandName =
+  | "agent_chat"
   | "agent_config_get"
   | "agent_config_set"
   | "agent_detect"
@@ -17,6 +18,7 @@ export type FeatureCommandName =
   | "agent_merge_verify"
   | "agent_open_task"
   | "agent_open_terminal"
+  | "agent_prompt_answer"
   | "agent_queue_resume"
   | "agent_resize"
   | "agent_review_approve"
@@ -25,6 +27,7 @@ export type FeatureCommandName =
   | "agent_runtimes"
   | "agent_scan"
   | "agent_save_resource"
+  | "agent_send_message"
   | "agent_summary"
   | "agent_task_cancel"
   | "agent_task_delete"
