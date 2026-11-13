@@ -224,6 +224,8 @@ mod tests {
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
             runtime_id: "opencode".to_string(),
+            model: String::new(),
+            permission_mode: String::new(),
             agent_session_id: None,
             approval: None,
             merge: None,

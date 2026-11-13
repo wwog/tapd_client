@@ -35,6 +35,16 @@ Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理�
 | TUI 就绪静默 | 有输出后静默多久认为 TUI 就绪，默认 900ms |
 | 就绪超时 | 最长等待，默认 15s；超时会强制注入并记录 warning |
 | 静默完成 | 输出静默多久视为本轮结束，默认 180s；0 表示关闭。进程退出与会话 hook 是主信号，静默只做兜底 |
+| 默认模型 | 该运行时的默认 `--model`；留空交给 CLI。提交面板可按任务覆盖 |
+| 访问权限 | 默认权限 / 自动执行 / 完全访问 / 只读计划等，按运行时能力提供；提交面板可按任务覆盖 |
+
+「用 Agent 修复」面板底部可以为本次任务单独选择运行时、模型与访问权限。模型输入带常用值建议，
+也可以直接填 CLI 支持的任意模型名（例如 OpenCode 的 `provider/model`）。权限选项会翻译成各 CLI
+自己的参数：Claude `--permission-mode`、Codex `--full-auto` / `--dangerously-bypass-approvals-and-sandbox`、
+OpenCode `--auto`、OMP `--approval-mode write|yolo`。
+
+任务结束判定只认成功回合：会话 hook 报错、transcript 里 provider 记录的最终错误（如重试耗尽、
+`ECONNRESET`、模型不可用）或没有 hook 时的非零退出码都会把任务标记为失败，不会显示成完成。
 
 配置文件：`~/Library/Application Support/com.tapdclient.desktop/agent.json`。
 

@@ -14,6 +14,7 @@ import {
   agentApi,
   type AgentConfig,
   type AgentRuntimeDescriptor,
+  type AgentRuntimeOptions,
 } from "../lib/agent";
 import { useAgentScan } from "../lib/agentScan";
 import { formatDateTime } from "../lib/format";
@@ -51,6 +52,23 @@ export function AgentConfigPane({ toast }: Props) {
   const selectedRuntime =
     runtimes.find((runtime) => runtime.id === config?.runtimeId) ?? runtimes[0] ?? null;
   const selectedScan = selectedRuntime ? byRuntime.get(selectedRuntime.id) : undefined;
+  /** 模型输入是草稿，失焦 / 回车才落盘，避免每敲一个字符都写配置。 */
+  const [modelDraft, setModelDraft] = useState("");
+
+  const optionsFor = (runtimeId: string | undefined): AgentRuntimeOptions => {
+    const saved = runtimeId ? config?.runtimeOptions?.[runtimeId] : undefined;
+    const fallback = runtimes.find((runtime) => runtime.id === runtimeId)?.permissions[0]?.id;
+    return {
+      model: saved?.model ?? "",
+      permissionMode: saved?.permissionMode || fallback || "default",
+    };
+  };
+
+  useEffect(() => {
+    setModelDraft(optionsFor(selectedRuntime?.id).model);
+    // 切换运行时时同步草稿；配置变化（保存成功）时也以保存值为准。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRuntime?.id, config?.runtimeOptions]);
 
   const patchConfig = (patch: Partial<AgentConfig>) => {
     setConfig((current) => (current ? { ...current, ...patch } : current));
@@ -70,6 +88,7 @@ export function AgentConfigPane({ toast }: Props) {
         readyQuietMs: finiteOr(next.readyQuietMs, 900),
         readyTimeoutMs: finiteOr(next.readyTimeoutMs, 15_000),
         idleCompleteMs: finiteOr(next.idleCompleteMs, 180_000),
+        runtimeOptions: next.runtimeOptions,
       });
       setConfig(saved);
       // Keep the "current agent" labels in the bug list / drawer in sync.
@@ -90,6 +109,26 @@ export function AgentConfigPane({ toast }: Props) {
     } finally {
       setSaving(false);
     }
+  };
+
+  /** 保存当前运行时的默认模型 / 权限；任务提交时仍可单独覆盖。 */
+  const storeRuntimeOptions = async (patch: Partial<AgentRuntimeOptions>) => {
+    if (!config || !selectedRuntime) return;
+    const nextOptions = { ...optionsFor(selectedRuntime.id), ...patch };
+    const runtimeOptions = {
+      ...(config.runtimeOptions ?? {}),
+      [selectedRuntime.id]: nextOptions,
+    };
+    patchConfig({ runtimeOptions });
+    await commit({ runtimeOptions });
+  };
+
+  const commitModel = () => {
+    if (!selectedRuntime) return;
+    const next = modelDraft.trim();
+    if (next === optionsFor(selectedRuntime.id).model) return;
+    setModelDraft(next);
+    void storeRuntimeOptions({ model: next });
   };
 
   return (
@@ -161,6 +200,65 @@ export function AgentConfigPane({ toast }: Props) {
             </p>
           ) : null}
         </section>
+
+        {config && selectedRuntime ? (
+          <section className={cardClass}>
+            <h3 className="text-ui-caption font-normal text-slate-800">运行参数</h3>
+            <p className="mt-0.5 text-ui-xs leading-4 text-slate-400">
+              默认模型与访问权限；提交任务时仍可按任务覆盖，留空表示用 CLI 默认值。
+            </p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="min-w-[240px] flex-1">
+                <span className="mb-1 block text-ui-xs text-slate-500">默认模型</span>
+                <input
+                  value={modelDraft}
+                  list={`settings-agent-model-${selectedRuntime.id}`}
+                  onChange={(event) => setModelDraft(event.target.value)}
+                  onBlur={commitModel}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="留空使用运行时的默认模型"
+                  spellCheck={false}
+                  className="h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+                />
+                <datalist id={`settings-agent-model-${selectedRuntime.id}`}>
+                  {selectedRuntime.models.map((item) => (
+                    <option key={item} value={item} />
+                  ))}
+                </datalist>
+              </label>
+              {selectedRuntime.permissions.length > 1 ? (
+                <label className="min-w-[190px]">
+                  <span className="mb-1 block text-ui-xs text-slate-500">访问权限</span>
+                  <select
+                    value={optionsFor(selectedRuntime.id).permissionMode}
+                    onChange={(event) =>
+                      void storeRuntimeOptions({ permissionMode: event.target.value })
+                    }
+                    className="h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+                  >
+                    {selectedRuntime.permissions.map((option) => (
+                      <option key={option.id} value={option.id} title={option.description}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            {selectedRuntime.permissions.length > 1 ? (
+              <p className="mt-2 text-ui-xs leading-4 text-slate-400">
+                {selectedRuntime.permissions.find(
+                  (option) => option.id === optionsFor(selectedRuntime.id).permissionMode,
+                )?.description ?? ""}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         {!config || !selectedRuntime ? (
           <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">

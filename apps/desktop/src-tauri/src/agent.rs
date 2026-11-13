@@ -27,8 +27,10 @@
 mod git;
 mod hooks;
 mod persist;
+mod prompt;
 mod pty;
 mod status;
+mod transcript;
 mod workflow_bridge;
 mod worktree;
 
@@ -171,15 +173,37 @@ export default function tapdSessionMonitor(pi) {
   };
 
   let settleTimer = null;
+  let lastError = "";
   const clearSettle = () => {
     if (settleTimer) {
       clearTimeout(settleTimer);
       settleTimer = null;
     }
   };
-  const settle = (ctx) => {
+  // 重试耗尽 / 网络中断时 assistant 消息带 errorMessage；用户中断是 aborted。
+  const assistantError = (messages) => {
+    if (!Array.isArray(messages)) return "";
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message || message.role !== "assistant") continue;
+      if (message.errorMessage) return clip(message.errorMessage, 400);
+      const reason = message.stopReason;
+      if (reason && !["stop", "toolUse", "length", "aborted", "end_turn"].includes(reason)) {
+        return clip(`Agent 结束：${reason}`, 200);
+      }
+    }
+    return "";
+  };
+  const eventError = (event) => {
+    const value = event?.error;
+    if (typeof value === "string") return clip(value, 400);
+    if (value && typeof value.message === "string") return clip(value.message, 400);
+    return "";
+  };
+  const settle = (ctx, error) => {
     clearSettle();
-    post(ctx, "agent_end", { message: "回合结束" });
+    if (error) post(ctx, "StopFailure", { error });
+    else post(ctx, "agent_end", { message: "回合结束" });
   };
 
   pi.on("session_start", (event, ctx) =>
@@ -187,14 +211,17 @@ export default function tapdSessionMonitor(pi) {
   );
   pi.on("before_agent_start", (event, ctx) => {
     clearSettle();
+    lastError = "";
     post(ctx, "UserPromptSubmit", { prompt: clip(event?.prompt, 200) });
   });
   pi.on("agent_start", (_event, ctx) => {
     clearSettle();
+    lastError = "";
     post(ctx, "AgentStart", {});
   });
   pi.on("turn_start", (_event, ctx) => {
     clearSettle();
+    lastError = "";
     post(ctx, "TurnStart", {});
   });
   pi.on("tool_call", (event, ctx) =>
@@ -219,14 +246,16 @@ export default function tapdSessionMonitor(pi) {
   pi.on("agent_end", (event, ctx) => {
     // pi 可能继续重试/压缩/跟进，不能把 agent_end 当最终结束。
     clearSettle();
+    lastError = assistantError(event?.messages) || eventError(event);
     post(ctx, "AgentTurnEnd", {
       message: lastAssistantText(event?.messages, 400),
+      error: lastError || null,
     }, { willContinue: Boolean(event?.willRetry) });
     if (event?.willRetry) return;
-    settleTimer = setTimeout(() => settle(ctx), 5000);
+    settleTimer = setTimeout(() => settle(ctx, lastError), 5000);
     if (settleTimer && typeof settleTimer.unref === "function") settleTimer.unref();
   });
-  pi.on("agent_settled", (_event, ctx) => settle(ctx));
+  pi.on("agent_settled", (event, ctx) => settle(ctx, lastError || eventError(event)));
   pi.on("session_shutdown", () => clearSettle());
 }
 "#;
@@ -268,6 +297,16 @@ pub struct ProjectAgentConfig {
     pub rule: String,
 }
 
+/// 每个运行时的默认模型与访问权限；任务入队时可单独覆盖。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentRuntimeOptions {
+    /// 空字符串表示交给 CLI 自己决定。
+    pub model: String,
+    /// 权限选项 id；见 `AgentPermissionOption`。
+    pub permission_mode: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
@@ -301,6 +340,9 @@ pub struct AgentConfig {
     /// 保留，但保持暂停，等用户手动继续，不丢任务。
     #[serde(default = "default_restore_queued_tasks")]
     pub restore_queued_tasks: bool,
+    /// 每个运行时的默认模型与权限；任务入队时作为默认值。
+    #[serde(default)]
+    pub runtime_options: BTreeMap<String, AgentRuntimeOptions>,
 }
 
 /// Worktree 开启后默认并行两个任务：再多会让 TUI 抢占交互终端，也不利于排查。
@@ -328,6 +370,7 @@ impl Default for AgentConfig {
             worktree_enabled: false,
             execution_units: default_execution_units(),
             restore_queued_tasks: default_restore_queued_tasks(),
+            runtime_options: BTreeMap::new(),
         }
     }
 }
@@ -383,6 +426,23 @@ impl AgentConfig {
                 (workspace_id, ProjectAgentConfig { repo_path, rule })
             })
             .filter(|(_, project)| !project.repo_path.is_empty() || !project.rule.is_empty())
+            .collect();
+
+        // 只保留已知运行时；空选项直接丢弃，避免配置文件堆积垃圾。
+        self.runtime_options = self
+            .runtime_options
+            .into_iter()
+            .filter(|(runtime_id, _)| runtime_descriptor(runtime_id).is_some())
+            .map(|(runtime_id, options)| {
+                (
+                    runtime_id,
+                    AgentRuntimeOptions {
+                        model: options.model.trim().to_string(),
+                        permission_mode: options.permission_mode.trim().to_string(),
+                    },
+                )
+            })
+            .filter(|(_, options)| !options.model.is_empty() || !options.permission_mode.is_empty())
             .collect();
 
         self
@@ -453,6 +513,24 @@ pub enum PromptInjection {
     Stdin,
 }
 
+/// 可以传给运行时的访问权限选项；第一项通常是「默认」。
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionOption {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+}
+
+/// 只声明「默认」的运行时：不追加任何权限参数。
+fn default_permissions() -> Vec<AgentPermissionOption> {
+    vec![AgentPermissionOption {
+        id: "default",
+        label: "默认权限",
+        description: "沿用 CLI 自己的权限与沙箱配置。",
+    }]
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeDescriptor {
@@ -466,6 +544,10 @@ pub struct AgentRuntimeDescriptor {
     pub aliases: Vec<&'static str>,
     /// 启动参数（不含提示词）。
     pub args: Vec<&'static str>,
+    /// 常用模型名，仅用于下拉建议；允许自由输入。
+    pub models: Vec<&'static str>,
+    /// 可选访问权限；总是至少包含 `default`。
+    pub permissions: Vec<AgentPermissionOption>,
     pub prompt_injection: PromptInjection,
     /// Flag 模式下承载提示词的参数名，例如 `-i` / `--prompt`。
     pub prompt_flag: Option<&'static str>,
@@ -588,6 +670,10 @@ struct TuiRuntimeExtra {
     aliases: Vec<&'static str>,
     /// 固定启动参数（子命令、信任跳过等）。
     args: Vec<&'static str>,
+    /// 常用模型名（datalist 建议）。
+    models: Vec<&'static str>,
+    /// 可选的访问权限；为空时只有「默认权限」。
+    permissions: Vec<AgentPermissionOption>,
     /// Argv 注入时提示词前面的参数终止符。
     argv_separator: Option<&'static str>,
     /// 启动时挂会话监控 hook（见 `agent/hooks.rs`）。
@@ -642,6 +728,12 @@ fn tui_runtime_with(
         binary,
         aliases: extra.aliases,
         args: extra.args,
+        models: extra.models,
+        permissions: if extra.permissions.is_empty() {
+            default_permissions()
+        } else {
+            extra.permissions
+        },
         prompt_injection,
         prompt_flag,
         argv_separator: extra.argv_separator,
@@ -670,6 +762,18 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             DEFAULT_BINARY,
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::OpenCode,
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "沿用 OpenCode 自己的权限配置。",
+                    },
+                    AgentPermissionOption {
+                        id: "auto",
+                        label: "自动批准",
+                        description: "自动批准未被显式拒绝的权限请求。",
+                    },
+                ],
                 ..TuiRuntimeExtra::default()
             },
             PromptInjection::Stdin,
@@ -683,6 +787,29 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "Claude Code 交互式终端，提示词作为启动参数传入。",
             "claude",
             TuiRuntimeExtra {
+                models: vec!["sonnet", "opus", "haiku", "fable"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "按 Claude 自己的设置询问。",
+                    },
+                    AgentPermissionOption {
+                        id: "accept_edits",
+                        label: "自动接受编辑",
+                        description: "文件编辑不再逐次确认，命令仍按默认策略询问。",
+                    },
+                    AgentPermissionOption {
+                        id: "full_access",
+                        label: "完全访问",
+                        description: "跳过所有权限检查，仅建议在可信仓库使用。",
+                    },
+                    AgentPermissionOption {
+                        id: "plan",
+                        label: "只读计划",
+                        description: "只读分析并给出计划，不修改文件。",
+                    },
+                ],
                 session_hook: SessionHookKind::ClaudeSettings {
                     dir: ".claude",
                     env: Some("CLAUDE_CONFIG_DIR"),
@@ -701,6 +828,24 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "Codex CLI 交互式终端，提示词作为启动参数传入。",
             "codex",
             TuiRuntimeExtra {
+                models: vec!["gpt-5-codex", "gpt-5", "o3", "o4-mini"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "沿用 Codex 自己的审批与沙箱配置。",
+                    },
+                    AgentPermissionOption {
+                        id: "full_auto",
+                        label: "自动执行",
+                        description: "在工作区内自动执行，不逐条确认。",
+                    },
+                    AgentPermissionOption {
+                        id: "full_access",
+                        label: "完全访问",
+                        description: "跳过审批与沙箱，仅建议在可信仓库使用。",
+                    },
+                ],
                 session_hook: SessionHookKind::Codex,
                 ..TuiRuntimeExtra::default()
             },
@@ -1085,6 +1230,23 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             TuiRuntimeExtra {
                 // TUI 会持续重绘，静默兜底无法触发；用会话 hook 收尾并记录 session id。
                 session_hook: SessionHookKind::Omp,
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "沿用 OMP 自己的审批配置。",
+                    },
+                    AgentPermissionOption {
+                        id: "write",
+                        label: "自动执行写操作",
+                        description: "自动批准写文件等操作，危险命令仍会询问。",
+                    },
+                    AgentPermissionOption {
+                        id: "full_access",
+                        label: "完全访问",
+                        description: "跳过所有工具批准（yolo），仅建议在可信仓库使用。",
+                    },
+                ],
                 ..TuiRuntimeExtra::default()
             },
             PromptInjection::Argv,
@@ -1098,6 +1260,24 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "OpenClaude 终端 Agent，提示词作为启动参数传入。",
             "openclaude",
             TuiRuntimeExtra {
+                models: vec!["sonnet", "opus", "haiku", "fable"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "按 OpenClaude 自己的设置询问。",
+                    },
+                    AgentPermissionOption {
+                        id: "accept_edits",
+                        label: "自动接受编辑",
+                        description: "文件编辑不再逐次确认。",
+                    },
+                    AgentPermissionOption {
+                        id: "full_access",
+                        label: "完全访问",
+                        description: "跳过所有权限检查，仅建议在可信仓库使用。",
+                    },
+                ],
                 session_hook: SessionHookKind::ClaudeSettings {
                     dir: ".openclaude",
                     env: None,
@@ -1128,6 +1308,18 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "opencode2",
             TuiRuntimeExtra {
                 args: vec!["--standalone"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: "默认权限",
+                        description: "沿用 OpenCode 2 自己的权限配置。",
+                    },
+                    AgentPermissionOption {
+                        id: "auto",
+                        label: "自动批准",
+                        description: "自动批准未被显式拒绝的权限请求。",
+                    },
+                ],
                 ..TuiRuntimeExtra::default()
             },
             PromptInjection::Stdin,
@@ -1275,6 +1467,7 @@ struct AgentConfigPatch {
     worktree_enabled: Option<bool>,
     execution_units: Option<u32>,
     restore_queued_tasks: Option<bool>,
+    runtime_options: Option<BTreeMap<String, AgentRuntimeOptions>>,
 }
 
 impl AgentConfigPatch {
@@ -1315,6 +1508,9 @@ impl AgentConfigPatch {
         }
         if let Some(value) = self.restore_queued_tasks {
             config.restore_queued_tasks = value;
+        }
+        if let Some(options) = self.runtime_options {
+            config.runtime_options = options;
         }
     }
 }
@@ -1384,7 +1580,52 @@ pub struct AgentRuntimeStatus {
     pub session_id: Option<String>,
     /// 正在运行的子 Agent 数量。
     pub subagents: u32,
+    /// 当前 phase / 工具的开始时间，用于 Working 条的已用时长。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// 最近一条 assistant 文本；transcript 尚未落盘时作为预览。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
+    /// 阻塞中的权限确认 / 提问；有值时 Chat 与胶囊共用同一张卡片。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<AgentPendingPrompt>,
     pub updated_at: String,
+}
+
+/// 提问 / 权限卡片上的一个可回执选项；`id` 由后端翻译成运行时按键。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPromptOption {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// 权限确认或 AskUserQuestion 的归一化结果。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPendingPrompt {
+    /// `taskId + 事件时间`；旧卡片带着过期 id，点击时会被拒绝。
+    pub prompt_id: String,
+    /// approval | question
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// 权限请求摘要。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// 提问正文。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub options: Vec<AgentPromptOption>,
+    /// 当前运行时是否支持用按键回答。
+    pub can_answer: bool,
+    /// 「发送 1 / Esc」「在终端中回答」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_hint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1458,6 +1699,12 @@ pub struct AgentTask {
     /// cannot change how an existing/queued task runs.
     #[serde(default = "default_task_runtime")]
     pub runtime_id: String,
+    /// 本次运行使用的模型；空字符串表示运行时默认。
+    #[serde(default)]
+    pub model: String,
+    /// 本次运行的访问权限选项 id；空字符串表示运行时默认。
+    #[serde(default)]
+    pub permission_mode: String,
     /// 会话 hook 捕获的运行时 session id，用于「打开系统终端」精确续接对应
     /// 会话；缺失时退回各 CLI 的「继续最近会话」参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1579,6 +1826,12 @@ struct EnqueueRequest {
     /// 本次任务指定运行时；为空或未知时回退到设置里的默认运行时。
     #[serde(default)]
     pub runtime_id: Option<String>,
+    /// 本次任务指定模型；为空时使用该运行时的默认模型。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 本次任务指定访问权限；为空时使用该运行时的默认权限。
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1644,6 +1897,26 @@ pub struct AgentSummary {
     title: Option<String>,
     workspace_name: Option<String>,
     bug_id: Option<String>,
+    /// 当前运行时的品牌信息，胶囊折叠态与 peek 使用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<AgentRuntimePhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_message: Option<String>,
+    /// 有值时胶囊可以直接回答权限 / 提问。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt: Option<AgentPendingPrompt>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1688,6 +1961,82 @@ struct SaveResourceRequest {
     name: String,
     /// Base64 bytes (a `data:` prefix is accepted).
     data: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SendMessageRequest {
+    task_id: String,
+    text: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PromptAnswerRequest {
+    task_id: String,
+    prompt_id: String,
+    option_id: String,
+}
+
+/// `agent_chat` 的响应；找不到 transcript 时 `messages` 为空并给出可读原因。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AgentChatPayload {
+    task_id: String,
+    runtime_id: String,
+    session_id: String,
+    messages: Vec<transcript::ChatMessage>,
+    truncated: bool,
+    source: String,
+    /// 内容指纹；前端据此跳过未变化的一次轮询，避免整页重绘。
+    fingerprint: String,
+    /// transcript 里实际使用的模型；设置页/任务里没有显式模型时展示。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// 前端带来的指纹与当前一致：`messages` 为空，无需替换 UI。
+    unchanged: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ChatRequest {
+    task_id: String,
+    /// 前端上一次拿到的指纹；命中时走轻量响应。
+    fingerprint: Option<String>,
+}
+
+/// 一个任务的 transcript 解析缓存；指纹不变时直接复用。
+struct ChatCache {
+    session_id: String,
+    /// 已解析的 transcript 路径；避免每秒重新扫目录。
+    path: PathBuf,
+    fingerprint: String,
+    payload: AgentChatPayload,
+}
+
+/// transcript 缓存的任务数量上限；超出后整体清空，避免长期运行无限增长。
+const CHAT_CACHE_LIMIT: usize = 32;
+
+/// 空 Chat 响应：`error` 给用户可读原因，终端始终可用。
+fn chat_empty(
+    task_id: &str,
+    runtime_id: &str,
+    session_id: &str,
+    error: Option<String>,
+) -> AgentChatPayload {
+    AgentChatPayload {
+        task_id: task_id.to_string(),
+        runtime_id: runtime_id.to_string(),
+        session_id: session_id.to_string(),
+        messages: Vec::new(),
+        truncated: false,
+        source: String::new(),
+        fingerprint: String::new(),
+        model: None,
+        unchanged: false,
+        error,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1843,6 +2192,26 @@ fn task_spec_from_request(
         .filter(|id| runtime_descriptor(id).is_some())
         .map(str::to_string)
         .unwrap_or_else(|| config.runtime_id.clone());
+    // 任务级选择优先；未指定时沿用该运行时的默认模型 / 权限。
+    let runtime_options = config
+        .runtime_options
+        .get(&runtime_id)
+        .cloned()
+        .unwrap_or_default();
+    let model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&runtime_options.model)
+        .to_string();
+    let permission_mode = request
+        .permission_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| runtime_options.permission_mode.clone());
     let workspace_name = request
         .workspace_name
         .as_deref()
@@ -1892,6 +2261,8 @@ fn task_spec_from_request(
             .to_string(),
         repo_path: config.repo_path_for(workspace_id),
         runtime_id,
+        model,
+        permission_mode,
         source: source.trim().to_string(),
         extra_prompt,
         attachments,
@@ -2060,6 +2431,8 @@ pub struct AgentCore {
     hook_events: Mutex<HashMap<String, HookEvent>>,
     /// 运行中的 Agent 状态（当前工具、等待类型、消息），只存在于内存。
     runtime_status: Mutex<HashMap<String, AgentRuntimeStatus>>,
+    /// 按任务缓存的 transcript 解析结果，key 是 task id。
+    transcript_cache: Mutex<HashMap<String, ChatCache>>,
 }
 
 impl AgentCore {
@@ -2081,6 +2454,7 @@ impl AgentCore {
             hook_tokens: Mutex::new(HashMap::new()),
             hook_events: Mutex::new(HashMap::new()),
             runtime_status: Mutex::new(HashMap::new()),
+            transcript_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2593,16 +2967,24 @@ impl AgentCore {
             .lock()
             .ok()
             .and_then(|status| status.get(task_id).cloned());
+        let at = now();
         let activity = status::normalize(
             previous.as_ref(),
             event,
             payload.as_ref(),
             session_id.as_deref(),
-            &now(),
+            &at,
             *will_continue,
             *awaiting_async_work,
         );
-        if let Some(next) = activity.status {
+        if let Some(mut next) = activity.status {
+            if let Some(prompt) = next.prompt.as_mut() {
+                // prompt id 绑定任务与本次 hook 事件：旧卡片不会误操作新请求。
+                let runtime_id = self.stored_runtime_id(task_id).unwrap_or_default();
+                prompt.prompt_id = format!("{task_id}:{at}");
+                prompt.can_answer = prompt::can_answer(&runtime_id, prompt);
+                prompt.answer_hint = prompt::answer_hint(&runtime_id, prompt);
+            }
             self.set_runtime_status(task_id, next);
         }
         if !activity.complete && activity.error.is_none() {
@@ -2647,6 +3029,8 @@ impl AgentCore {
                 "agent://runtime",
                 json!({ "taskId": task_id, "status": status }),
             );
+            // 胶囊的审批按钮依赖摘要里的 prompt / 当前动作，随状态一起推送。
+            let _ = self.app.emit("agent://summary", self.summary());
         }
     }
 
@@ -2774,6 +3158,16 @@ impl AgentCore {
         let active = workflow
             .active_task_id()
             .and_then(|task_id| workflow.task(task_id));
+        // 运行时状态是胶囊审批的数据源；任务切换后旧状态不能串到新任务。
+        let runtime_status = active.map(|task| task.id.0.as_str()).and_then(|task_id| {
+            self.runtime_status
+                .lock()
+                .ok()
+                .and_then(|status| status.get(task_id).cloned())
+        });
+        let runtime_name = active
+            .and_then(|task| runtime_descriptor(&task.spec.runtime_id))
+            .map(|descriptor| descriptor.name.to_string());
         AgentSummary {
             running: counts.active > 0,
             awaiting_approval: counts.awaiting_approval,
@@ -2782,6 +3176,23 @@ impl AgentCore {
             title: active.map(|task| task.spec.title.clone()),
             workspace_name: active.map(|task| task.spec.workspace_name.clone()),
             bug_id: active.map(|task| task.spec.bug_id.clone()),
+            runtime_id: active.map(|task| task.spec.runtime_id.clone()),
+            runtime_name,
+            phase: runtime_status.as_ref().map(|status| status.phase),
+            status_label: runtime_status.as_ref().map(|status| status.label.clone()),
+            tool: runtime_status
+                .as_ref()
+                .and_then(|status| status.tool.clone()),
+            detail: runtime_status
+                .as_ref()
+                .and_then(|status| status.detail.clone()),
+            started_at: runtime_status
+                .as_ref()
+                .and_then(|status| status.started_at.clone()),
+            last_message: runtime_status
+                .as_ref()
+                .and_then(|status| status.last_message.clone()),
+            prompt: runtime_status.and_then(|status| status.prompt),
         }
     }
 
@@ -2802,6 +3213,16 @@ impl AgentCore {
             .ok()?
             .task(&id)
             .and_then(|task| task.agent_session_id.clone())
+    }
+
+    /// 任务入队时快照的运行时 id；权限按键映射需要它。
+    fn stored_runtime_id(&self, task_id: &str) -> Option<String> {
+        let id = TaskId::new(task_id);
+        self.workflow
+            .lock()
+            .ok()?
+            .task(&id)
+            .map(|task| task.spec.runtime_id.clone())
     }
 
     async fn update_config(
@@ -3217,6 +3638,223 @@ impl AgentCore {
             .map_err(|error| error.to_string())
     }
 
+    /// 读取 transcript 中 provider 记录的错误。任务启动时克隆的 view 可能还没有
+    /// 会话 id，这里以 workflow 里的实时 session id 为准。
+    fn transcript_error(&self, task: &AgentTask) -> Option<String> {
+        let session_id = self
+            .stored_session_id(&task.id)
+            .or_else(|| task.agent_session_id.clone())?;
+        // hook 可能比最后一条 transcript 记录更早到达，留一点落盘时间。
+        std::thread::sleep(Duration::from_millis(120));
+        let source =
+            transcript::resolve_source(&task.runtime_id, &session_id, task.work_dir()).ok()?;
+        transcript::read(&source).ok()?.error
+    }
+
+    /// 读取 transcript 并按任务缓存。文件未变化时不重复解析。
+    fn chat_payload(&self, task_id: &str, known_fingerprint: Option<&str>) -> AgentChatPayload {
+        let Some(task) = self.workflow_view(task_id) else {
+            return chat_empty(task_id, "", "", Some("任务不存在".to_string()));
+        };
+        let runtime_id = task.runtime_id.clone();
+        let session_id = task.agent_session_id.clone().unwrap_or_default();
+        let Some(agent) = transcript::TranscriptAgent::from_runtime_id(&runtime_id) else {
+            return chat_empty(
+                task_id,
+                &runtime_id,
+                &session_id,
+                Some("该运行时暂不支持对话视图，请使用终端".to_string()),
+            );
+        };
+        if session_id.trim().is_empty() {
+            return chat_empty(
+                task_id,
+                &runtime_id,
+                &session_id,
+                Some("等待会话 id".to_string()),
+            );
+        }
+
+        // 已解析过且会话没变时复用缓存路径：目录扫描只在首次 / 换会话时发生。
+        let cached = self.transcript_cache.lock().ok().and_then(|cache| {
+            cache.get(task_id).map(|entry| {
+                (
+                    entry.session_id.clone(),
+                    entry.path.clone(),
+                    entry.fingerprint.clone(),
+                    entry.payload.model.clone(),
+                )
+            })
+        });
+        let mut source = match &cached {
+            Some((cached_session, path, _, _)) if cached_session == &session_id => {
+                transcript::TranscriptSource {
+                    agent,
+                    path: path.clone(),
+                    session_id: session_id.clone(),
+                }
+            }
+            _ => match transcript::resolve_source(&runtime_id, &session_id, task.work_dir()) {
+                Ok(source) => source,
+                Err(error) => {
+                    return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()))
+                }
+            },
+        };
+        let fingerprint = match transcript::fingerprint(&source) {
+            Ok(fingerprint) => fingerprint,
+            Err(first_error) => {
+                // 缓存的文件可能被轮转 / 删除；重新定位一次再判断。
+                match transcript::resolve_source(&runtime_id, &session_id, task.work_dir()) {
+                    Ok(next) => match transcript::fingerprint(&next) {
+                        Ok(fingerprint) => {
+                            source = next;
+                            fingerprint
+                        }
+                        Err(_) => {
+                            return chat_empty(
+                                task_id,
+                                &runtime_id,
+                                &session_id,
+                                Some(first_error.message()),
+                            )
+                        }
+                    },
+                    Err(_) => {
+                        return chat_empty(
+                            task_id,
+                            &runtime_id,
+                            &session_id,
+                            Some(first_error.message()),
+                        )
+                    }
+                }
+            }
+        };
+        if let Some((_, _, cached_fingerprint, cached_model)) = &cached {
+            if cached_fingerprint == &fingerprint {
+                if known_fingerprint == Some(fingerprint.as_str()) {
+                    // 前端已有同一份内容：只回指纹，不序列化 2000 条消息。
+                    return AgentChatPayload {
+                        task_id: task_id.to_string(),
+                        runtime_id,
+                        session_id,
+                        messages: Vec::new(),
+                        truncated: false,
+                        source: agent.source_label().to_string(),
+                        fingerprint,
+                        model: cached_model.clone(),
+                        unchanged: true,
+                        error: None,
+                    };
+                }
+                if let Ok(cache) = self.transcript_cache.lock() {
+                    if let Some(entry) = cache.get(task_id) {
+                        return entry.payload.clone();
+                    }
+                }
+            }
+        }
+        let read = match transcript::read(&source) {
+            Ok(read) => read,
+            Err(error) => {
+                return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()))
+            }
+        };
+        // 解析时重新算出的指纹与探测结果一致；以解析结果为准写缓存。
+        let fingerprint = read.fingerprint.clone();
+        let model = read.model.clone();
+        let path = source.path;
+        let payload = AgentChatPayload {
+            task_id: task_id.to_string(),
+            runtime_id,
+            session_id: session_id.clone(),
+            messages: read.messages,
+            truncated: read.truncated,
+            source: read.source,
+            fingerprint: fingerprint.clone(),
+            model,
+            unchanged: false,
+            error: None,
+        };
+        if let Ok(mut cache) = self.transcript_cache.lock() {
+            if cache.len() >= CHAT_CACHE_LIMIT && !cache.contains_key(task_id) {
+                cache.clear();
+            }
+            cache.insert(
+                task_id.to_string(),
+                ChatCache {
+                    session_id,
+                    path,
+                    fingerprint,
+                    payload: payload.clone(),
+                },
+            );
+        }
+        payload
+    }
+
+    /// 从 Chat 发送一条消息：写入当前 PTY，由各 CLI 自己排队/打断。
+    fn send_message(&self, task_id: &str, text: &str) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err("消息为空".to_string());
+        }
+        let task = self
+            .workflow_view(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
+            return Err("任务未在运行".to_string());
+        }
+        let waiting = self
+            .runtime_status
+            .lock()
+            .ok()
+            .and_then(|status| status.get(task_id).cloned())
+            .and_then(|status| status.prompt)
+            .is_some_and(|prompt| prompt.can_answer);
+        if waiting {
+            return Err("请先处理当前的权限确认或提问".to_string());
+        }
+        // bracketed paste 保证多行文本不会在第一个换行处提交。
+        let payload = format!("\x1b[200~{text}\x1b[201~\r");
+        self.write_input(task_id, &payload)
+    }
+
+    /// 回答权限 / 提问。按键映射是 best-effort：协议变化时返回错误让用户回终端。
+    async fn prompt_answer(
+        &self,
+        task_id: &str,
+        prompt_id: &str,
+        option_id: &str,
+    ) -> Result<String, String> {
+        let current = self
+            .runtime_status
+            .lock()
+            .ok()
+            .and_then(|status| status.get(task_id).cloned())
+            .and_then(|status| status.prompt)
+            .ok_or_else(|| "当前没有待处理的请求".to_string())?;
+        if current.prompt_id != prompt_id {
+            return Err("该请求已处理，请刷新后重试".to_string());
+        }
+        if !current.can_answer {
+            return Err("请在 Agent 终端中回答".to_string());
+        }
+        let runtime_id = self
+            .stored_runtime_id(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        let keys = prompt::answer_keys(&runtime_id, &current.kind, option_id)
+            .ok_or_else(|| "该选项无法自动回答，请在终端中操作".to_string())?;
+        for (index, key) in keys.iter().enumerate() {
+            if index > 0 {
+                // 连续按键之间留出间隔，避免被 TUI 识别成组合键。
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            self.write_input(task_id, key)?;
+        }
+        Ok(format!("已发送 {}", keys.join(" ")))
+    }
+
     /// 在系统终端里接着跑这个任务的 Agent（尽量续接上次会话），用来在任务
     /// 结束后继续处理同一个缺陷。运行中的任务不允许：内嵌 PTY 还占着同一
     /// 会话，两个客户端会互相打架。
@@ -3241,6 +3879,12 @@ impl AgentCore {
         let mut args: Vec<String> = runtime_descriptor(&task.runtime_id)
             .map(|descriptor| descriptor.args.iter().map(|arg| arg.to_string()).collect())
             .unwrap_or_default();
+        // 续接会话时保持任务选定的模型与权限。
+        args.extend(runtime_launch_options(
+            &task.runtime_id,
+            &task.model,
+            &task.permission_mode,
+        ));
         args.extend(resume_args(
             &task.runtime_id,
             task.agent_session_id.as_deref(),
@@ -3878,6 +4522,11 @@ impl AgentCore {
         descriptor: &AgentRuntimeDescriptor,
     ) -> PtyOutcome {
         let mut args: Vec<String> = descriptor.args.iter().map(|arg| arg.to_string()).collect();
+        args.extend(runtime_launch_options(
+            &task.runtime_id,
+            &task.model,
+            &task.permission_mode,
+        ));
         let mut envs: Vec<(String, String)> = Vec::new();
         let mut monitor_hook = false;
         if descriptor.session_hook {
@@ -4320,6 +4969,52 @@ fn resume_args(runtime_id: &str, session_id: Option<&str>) -> Vec<String> {
     }
 }
 
+/// 把任务选择的模型 / 权限翻译成各 CLI 的启动参数。
+///
+/// 权限 id 来自 `AgentPermissionOption`；未知组合直接忽略，让 CLI 用自己的默认值。
+fn runtime_launch_options(runtime_id: &str, model: &str, permission: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let model = model.trim();
+    if !model.is_empty()
+        && matches!(
+            runtime_id,
+            "claude" | "openclaude" | "codex" | "opencode" | "opencode2" | "omp" | "pi"
+        )
+    {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    let mut push = |values: &[&str]| {
+        args.extend(values.iter().map(|value| (*value).to_string()));
+    };
+    match permission.trim() {
+        "" | "default" => {}
+        "accept_edits" => match runtime_id {
+            "claude" | "openclaude" => push(&["--permission-mode", "acceptEdits"]),
+            "codex" => push(&["--full-auto"]),
+            "opencode" | "opencode2" => push(&["--auto"]),
+            "omp" | "pi" => push(&["--approval-mode", "write"]),
+            _ => {}
+        },
+        "full_auto" if runtime_id == "codex" => push(&["--full-auto"]),
+        "auto" if matches!(runtime_id, "opencode" | "opencode2") => push(&["--auto"]),
+        "write" if matches!(runtime_id, "omp" | "pi") => push(&["--approval-mode", "write"]),
+        "plan" if matches!(runtime_id, "claude" | "openclaude") => {
+            push(&["--permission-mode", "plan"])
+        }
+        "full_access" => match runtime_id {
+            "claude" | "openclaude" => push(&["--permission-mode", "bypassPermissions"]),
+            "codex" => push(&["--dangerously-bypass-approvals-and-sandbox"]),
+            "opencode" | "opencode2" => push(&["--auto"]),
+            "omp" | "pi" => push(&["--approval-mode", "yolo"]),
+            _ => {}
+        },
+        _ => {}
+    }
+    args
+}
+
 /// The command a task runs with: the configured path while it points at the
 /// task's runtime, otherwise the detected path for that runtime, and finally
 /// its default binary. Queued tasks keep the runtime they were enqueued with,
@@ -4736,6 +5431,42 @@ pub async fn command(
             core.write_input(request.task_id.trim(), &request.data)?;
             Ok(json!({ "ok": true }))
         }
+        "agent_chat" => {
+            let request: ChatRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的对话参数：{error}"))?;
+            let task_id = request.task_id.trim().to_string();
+            if task_id.is_empty() {
+                return Err("缺少 taskId".to_string());
+            }
+            let known = request
+                .fingerprint
+                .filter(|fingerprint| !fingerprint.is_empty());
+            // transcript 是同步文件 / SQLite 读取，放到阻塞线程池避免卡住 UI 命令。
+            let core = core.clone();
+            let payload =
+                tokio::task::spawn_blocking(move || core.chat_payload(&task_id, known.as_deref()))
+                    .await
+                    .map_err(|error| format!("读取对话失败：{error}"))?;
+            Ok(json!(payload))
+        }
+        "agent_send_message" => {
+            let request: SendMessageRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的消息参数：{error}"))?;
+            core.send_message(request.task_id.trim(), &request.text)?;
+            Ok(json!({ "sent": true }))
+        }
+        "agent_prompt_answer" => {
+            let request: PromptAnswerRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的回答参数：{error}"))?;
+            let message = core
+                .prompt_answer(
+                    request.task_id.trim(),
+                    request.prompt_id.trim(),
+                    request.option_id.trim(),
+                )
+                .await?;
+            Ok(json!({ "sent": true, "message": message }))
+        }
         "agent_resize" => {
             let request: TaskResizeRequest = serde_json::from_value(payload)
                 .map_err(|error| format!("无效的尺寸参数：{error}"))?;
@@ -4796,6 +5527,8 @@ mod tests {
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
             runtime_id: DEFAULT_RUNTIME_ID.to_string(),
+            model: String::new(),
+            permission_mode: String::new(),
             agent_session_id: None,
             approval: None,
             merge: None,
@@ -4933,6 +5666,7 @@ mod tests {
             worktree_enabled: true,
             execution_units: 99,
             restore_queued_tasks: true,
+            runtime_options: BTreeMap::new(),
         }
         .sanitized();
 
@@ -5107,6 +5841,33 @@ mod tests {
         );
         assert!(!valid_session_id(""));
         assert!(valid_session_id("01a1ce52-93ab-756a-8e95-233cb9643e75"));
+    }
+
+    #[test]
+    fn runtime_options_map_to_cli_flags() {
+        assert_eq!(
+            runtime_launch_options("claude", "sonnet", "accept_edits"),
+            vec!["--model", "sonnet", "--permission-mode", "acceptEdits"]
+        );
+        assert_eq!(
+            runtime_launch_options("claude", "", "full_access"),
+            vec!["--permission-mode", "bypassPermissions"]
+        );
+        assert_eq!(
+            runtime_launch_options("codex", "gpt-5-codex", "full_auto"),
+            vec!["--model", "gpt-5-codex", "--full-auto"]
+        );
+        assert_eq!(
+            runtime_launch_options("opencode", "opencode-go/x", "auto"),
+            vec!["--model", "opencode-go/x", "--auto"]
+        );
+        assert_eq!(
+            runtime_launch_options("omp", "glm-5.2", "full_access"),
+            vec!["--model", "glm-5.2", "--approval-mode", "yolo"]
+        );
+        // 未知运行时 / 权限不追加参数，交给 CLI 默认值。
+        assert!(runtime_launch_options("unknown", "m", "full_access").is_empty());
+        assert!(runtime_launch_options("claude", "", "default").is_empty());
     }
 
     #[test]
@@ -5911,6 +6672,8 @@ mod tests {
                 "   ".to_string(),
             ]),
             runtime_id: Some("not-a-runtime".to_string()),
+            model: None,
+            permission_mode: None,
         };
         let spec = task_spec_from_request(&request, &config, "manual").expect("spec");
         assert_eq!(spec.workspace_id, "45336192");

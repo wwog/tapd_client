@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 
-import { agentApi, type AgentRuntimeDescriptor } from "../lib/agent";
+import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
 import { useAgentScan } from "../lib/agentScan";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
@@ -28,6 +28,10 @@ export type AgentComposePayload = {
   attachments: string[];
   /** 本次任务指定运行时；为空时使用设置里的默认 Agent。 */
   runtimeId?: string;
+  /** 本次任务的模型；为空时使用该运行时的默认值。 */
+  model?: string;
+  /** 本次任务的访问权限；为空时使用该运行时的默认值。 */
+  permissionMode?: string;
 };
 
 type Props = {
@@ -54,8 +58,13 @@ export function AgentComposeSheet(props: Props) {
   const [dragging, setDragging] = useState(false);
   /** 运行时目录。 */
   const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
+  /** 配置快照，用于取每个运行时的默认模型 / 权限。 */
+  const [config, setConfig] = useState<AgentConfig | null>(null);
   /** 本次任务要用的运行时；默认跟随设置。 */
   const [runtimeId, setRuntimeId] = useState("");
+  /** 本次任务的模型与权限；切换运行时回到该运行时的默认值。 */
+  const [model, setModel] = useState("");
+  const [permissionMode, setPermissionMode] = useState("");
   const { byRuntime, snapshot: scan } = useAgentScan();
 
   // Every opening starts clean; the bug id is part of the panel key upstream,
@@ -67,6 +76,8 @@ export function AgentComposeSheet(props: Props) {
     setSaving(false);
     setDragging(false);
     setRuntimeId("");
+    setModel("");
+    setPermissionMode("");
   }, [open]);
 
   // 打开时读取目录与默认运行时，刷新「本次任务使用」的初值。
@@ -76,14 +87,45 @@ export function AgentComposeSheet(props: Props) {
     void Promise.all([agentApi.configGet(), agentApi.runtimes()])
       .then(([configResult, runtimeResult]) => {
         if (cancelled) return;
-        setRuntimes(runtimeResult.runtimes.filter((runtime) => runtime.available));
-        setRuntimeId(configResult.config.runtimeId);
+        const nextRuntimes = runtimeResult.runtimes.filter((runtime) => runtime.available);
+        setConfig(configResult.config);
+        setRuntimes(nextRuntimes);
+        const nextRuntimeId = configResult.config.runtimeId;
+        setRuntimeId(nextRuntimeId);
+        const defaults = configResult.config.runtimeOptions?.[nextRuntimeId];
+        setModel(defaults?.model ?? "");
+        setPermissionMode(
+          defaults?.permissionMode ||
+            nextRuntimes
+              .find((runtime) => runtime.id === nextRuntimeId)
+              ?.permissions[0]?.id ||
+            "",
+        );
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [open]);
+
+  /** 切换运行时同时把模型/权限切回该运行时的默认值。 */
+  const changeRuntime = useCallback(
+    (nextId: string) => {
+      setRuntimeId(nextId);
+      const defaults = config?.runtimeOptions?.[nextId];
+      setModel(defaults?.model ?? "");
+      setPermissionMode(
+        defaults?.permissionMode ||
+          runtimes.find((runtime) => runtime.id === nextId)?.permissions[0]?.id ||
+          "",
+      );
+    },
+    [config, runtimes],
+  );
+
+  const selectedRuntime =
+    runtimes.find((runtime) => runtime.id === runtimeId) ?? null;
+  const permissionOptions = selectedRuntime?.permissions ?? [];
 
   const addPaths = useCallback((paths: string[]) => {
     const next = paths.map((path) => path.trim()).filter(Boolean);
@@ -145,8 +187,10 @@ export function AgentComposeSheet(props: Props) {
       prompt: prompt.trim(),
       attachments,
       runtimeId: runtimeId || undefined,
+      model: model.trim() || undefined,
+      permissionMode: permissionMode || undefined,
     });
-  }, [attachments, onSubmit, prompt, runtimeId, saving, submitting]);
+  }, [attachments, model, onSubmit, permissionMode, prompt, runtimeId, saving, submitting]);
 
   // Escape closes, ⌘/Ctrl + Enter submits from anywhere in the sheet.
   useEffect(() => {
@@ -283,19 +327,51 @@ export function AgentComposeSheet(props: Props) {
         </div>
 
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <span className="shrink-0 text-ui-xs text-slate-400">本次任务使用</span>
             <AgentPicker
               compact
               placement="up"
-              className="w-[220px]"
+              className="w-[200px]"
               runtimes={runtimes}
               value={runtimeId}
               byRuntime={byRuntime}
               hasScan={Boolean(scan)}
               disabled={submitting || runtimes.length === 0}
-              onChange={setRuntimeId}
+              onChange={changeRuntime}
             />
+            <input
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              list={selectedRuntime ? `agent-model-${selectedRuntime.id}` : undefined}
+              disabled={submitting}
+              spellCheck={false}
+              title="本次任务的模型；留空使用运行时的默认模型"
+              placeholder="默认模型"
+              className="h-[30px] w-[170px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
+            />
+            {selectedRuntime ? (
+              <datalist id={`agent-model-${selectedRuntime.id}`}>
+                {selectedRuntime.models.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            ) : null}
+            {permissionOptions.length > 1 ? (
+              <select
+                value={permissionMode || permissionOptions[0]?.id || "default"}
+                onChange={(event) => setPermissionMode(event.target.value)}
+                disabled={submitting}
+                title="本次任务的访问权限"
+                className="h-[30px] w-[150px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
+              >
+                {permissionOptions.map((option) => (
+                  <option key={option.id} value={option.id} title={option.description}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
