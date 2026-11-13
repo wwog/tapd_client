@@ -406,7 +406,7 @@ pub(super) async fn api_media(
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    match server::fetch_tapd_media(&ctx.app, &query.url, range).await {
+    match server::fetch_tapd_media(&ctx.app, &ctx.state.paths, &query.url, range).await {
         Ok(fetch) => server::media_response(fetch),
         Err((status, message)) => err_data(status, "media", &message),
     }

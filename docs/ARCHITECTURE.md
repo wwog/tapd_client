@@ -134,6 +134,7 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - 顶部状态胶囊：常驻展示通知状态；内部 Agent 运行修复时显示具体运行时（如「Claude Code 修复中」），等待改动审核时变为「Agent 待审核」，等待合并时变为「Agent 待合并」，合并中显示「Agent 合并中」。可拖动并记住位置，单击展开通知 / 打开 Agent 任务，双击打开主窗口。悬停胶囊时向下展开摘要卡（项目、缺陷 ID、标题、严重程度/优先级与状态），并带「打开详情」直接打开缺陷详情；窗口尺寸由 Rust 侧 `set_peek` 调整，展开的通知卡片优先。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达），悬停也由那里的 `NSTrackingArea` 原生监听后推 `island://hover`，因为 WebKit 与 tao 默认的 tracking rect 都只给 key window 报悬停。
 - 请求历史：设置底部「接口历史」自动记录网页内部接口，支持查看与导出 JSON。
 - 缺陷导出：`bug.json` + `assets/`；`bug.json` 是 `BugDetail` 的 camelCase JSON，顶层 `assets` 只列成功下载的资源，视频 / 图片 / 日志按需下载。
+- 媒体缓存：缺陷导出、界面 / 手机端媒体代理、打开原图共用 `<数据目录>/media-cache/` 里按 URL 哈希寻址的缓存，同一 URL 只下载一次；代理请求的 `Range` 直接由缓存文件本地切片，重复导出与重复渲染不再回源。缓存超过 2GB 时按最久未修改淘汰到 1.5GB。
 - 账户与会话：从设置中拆成独立视图，入口是项目栏底部的用户按钮；项目栏收起时头像缓动到左侧图标栏。
 
 ### 数据与通知
@@ -198,6 +199,7 @@ apps/desktop/
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入
     export.rs                bug.json 导出、资源下载与提示词渲染
+    media_cache.rs           URL 寻址的媒体缓存（导出 / 代理 / 打开原图共用）
     diagnostics.rs           脱敏诊断包
     companion/terminal.rs    远程终端 WebSocket（回放 + 实时输出 + 输入 / 尺寸）
     server.rs                本地 HTTP（/healthz、/mcp/call、调试端点）

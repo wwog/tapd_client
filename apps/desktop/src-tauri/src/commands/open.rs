@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use tapd_i18n::{tr, tr_args};
 
-use crate::{media, open_with, session, state::SharedState};
+use crate::{media, media_cache, open_with, session, state::SharedState};
 
 /// An explicit `target`, or the saved choice for `kind`.
 pub(super) fn selected_open_target(
@@ -51,23 +51,17 @@ pub(super) fn run_open(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Downloads into `media-cache`, reusing a previous download for the same URL.
+/// Downloads into the shared media cache, reusing a previous download of the
+/// same URL, and returns a named copy the OS can open.
 pub(crate) async fn download_media(
     app: &AppHandle,
     paths: &tapd_core::paths::AppPaths,
     url: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let dir = paths.data_dir.join("media-cache");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let dir = media_cache::dir(paths);
 
-    let name = format!(
-        "{:016x}-{}",
-        media::fnv1a(url.as_bytes()),
-        media_filename(url)
-    );
-    let path = dir.join(&name);
-    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0) {
-        return Ok(path);
+    if let Some(cached) = media_cache::get(&dir, url) {
+        return materialize(paths, url, &cached);
     }
 
     let window = app
@@ -108,12 +102,43 @@ pub(crate) async fn download_media(
     if media::content_type_is_html(&content_type) && !bytes.starts_with(b"\x89PNG") {
         return Err(tr_args("app.download.rejected", &[&content_type]));
     }
+    if bytes.is_empty() {
+        return Err(tr_args("app.download.failed", &[&status]));
+    }
 
-    // `MediaKind::File` keeps the old cache-name behavior: an unknown content
-    // type does not invent an extension.
-    let name = media::with_extension(&name, &content_type, MediaKind::File);
-    let path = dir.join(name);
-    std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+    let cached = media_cache::put(&dir, url, &content_type, &bytes)
+        .ok_or_else(|| tr_args("app.download.rejected", &[&content_type]))?;
+    materialize(paths, url, &cached)
+}
+
+/// `open`/Finder pick the app from the file extension, which a blob named after
+/// the URL hash does not carry. The named file is a hard link, so the bytes are
+/// stored once.
+fn materialize(
+    paths: &tapd_core::paths::AppPaths,
+    url: &str,
+    cached: &media_cache::CachedMedia,
+) -> Result<std::path::PathBuf, String> {
+    let dir = media_cache::dir(paths).join("open");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+
+    let name = format!(
+        "{:016x}-{}",
+        media::fnv1a(url.as_bytes()),
+        media_filename(url)
+    );
+    let path = dir.join(media::with_extension(
+        &name,
+        &cached.content_type,
+        MediaKind::File,
+    ));
+    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0) {
+        return Ok(path);
+    }
+
+    std::fs::hard_link(&cached.path, &path)
+        .or_else(|_| std::fs::copy(&cached.path, &path).map(|_| ()))
+        .map_err(|error| error.to_string())?;
     Ok(path)
 }
 

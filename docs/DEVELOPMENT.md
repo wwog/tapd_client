@@ -80,6 +80,7 @@ opencode mcp list     # ✓ tapd connected
 - Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<ascii(workspace_id)>/<taskId>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`
 - 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.json` 里）
+- 媒体缓存：`<数据目录>/media-cache/`（`<url 哈希>` 存字节、同名 `.json` 存 URL 与 content type、`open/` 是交给系统的带扩展名硬链接）；导出、媒体代理与打开原图共用，上限 2GB
 - `runtime.json`：本地 API 端口与 token（0600）
 
 清理缓存：设置 → 本地数据 →「清理缓存」，删除上述数据目录下的全部内容并重启应用。`exports/` 与 WebView Cookie 不在数据目录内，会被保留。

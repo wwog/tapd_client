@@ -14,6 +14,7 @@ mod mcp;
 mod mcp_audit;
 mod mcp_import;
 mod media;
+mod media_cache;
 mod notification;
 mod notification_db;
 mod open_with;

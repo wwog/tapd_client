@@ -233,7 +233,7 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 
 - 导出目录只保留 `bug.json` 与 `assets/`；不再生成 Markdown 文件、提示词文件或技能包副本。
 - `bug.json` 在资源下载完成后写入，`assets` 只列出成功落盘的资源。
-- `assetCount` 是成功写入的资源数；`downloadedBytes` 只统计成功下载的字节。下载失败或超过总大小上限时写入 `warnings`，不影响其余资源。
+- `assetCount` 是成功写入的资源数；`downloadedBytes` 统计写入 `assets/` 的字节（同一 URL 命中媒体缓存时不再下载，但仍计入包体大小）。下载失败或超过总大小上限时写入 `warnings`，不影响其余资源。
 - 目录命名：`<exports>/<workspace-slug>-<workspace_id>/<bug_ref>[-<title-slug>]`，目录名不含中文。
 - 应用内 Agent 任务复用同一导出结果；任务提示词由客户端组装，不写入导出目录。
 

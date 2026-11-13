@@ -87,6 +87,7 @@ pub(crate) async fn export_detail(
         .map_err(|error| error.to_string())?;
 
     let media = collect_media(detail);
+    let cache_dir = crate::media_cache::dir(paths);
     let mut assets: Vec<MediaAsset> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut used_names: HashSet<String> = HashSet::new();
@@ -106,6 +107,7 @@ pub(crate) async fn export_detail(
             &item,
             media_index,
             &assets_dir,
+            &cache_dir,
             &mut used_names,
         )
         .await
