@@ -329,6 +329,26 @@ export type CompanionDevice = {
   id: string;
   name: string;
   pairedAt: string;
+  /** A heartbeat arrived within the last minute. */
+  online: boolean;
+  lastSeenAt?: string | null;
+};
+
+/** A locally installed cloudflared binary, detected via the user's PATH. */
+export type CloudflaredInfo = {
+  installed: boolean;
+  path?: string | null;
+  version?: string | null;
+};
+
+export type CompanionTunnelState = "stopped" | "starting" | "running" | "failed";
+
+/** Quick Tunnel lifecycle; `url` is only set while running. */
+export type CompanionTunnel = {
+  state: CompanionTunnelState;
+  url?: string | null;
+  error?: string | null;
+  startedAt?: string | null;
 };
 
 export type CompanionStatus = {
@@ -338,7 +358,12 @@ export type CompanionStatus = {
   port?: number;
   lanIp?: string | null;
   devices: CompanionDevice[];
+  cloudflared: CloudflaredInfo;
+  tunnel: CompanionTunnel;
 };
+
+/** Where the pairing QR points: the public tunnel (default) or LAN (test). */
+export type PairingMode = "lan" | "tunnel";
 
 /** One-time pairing code: TTL 10 minutes, single use. */
 export type PairingCode = {
@@ -470,15 +495,21 @@ export const api = {
   clearAppData: () => invoke<void>("clear_app_data"),
 };
 
-/** Mobile companion server: status, enablement, pairing and unpairing. */
+/** Mobile companion server: status, enablement, tunnel and pairing. */
 export const companionApi = {
   status: () => invoke<CompanionStatus>("companion_status"),
   setRequireCode: (require: boolean) =>
     invoke<void>("companion_set_require_code", { require }),
   setEnabled: (enabled: boolean) =>
     invoke<void>("companion_set_enabled", { enabled }),
-  pairingCode: () => invoke<PairingCode>("companion_pairing_code"),
+  /** `tunnel` needs a live Quick Tunnel URL; `lan` is the test fallback. */
+  pairingCode: (mode: PairingMode = "lan") =>
+    invoke<PairingCode>("companion_pairing_code", { mode }),
   unpair: (deviceId: string) => invoke<void>("companion_unpair", { deviceId }),
+  /** Re-detects cloudflared (after the user installs it). */
+  cloudflaredCheck: () => invoke<CloudflaredInfo>("companion_cloudflared_check"),
+  tunnelStart: () => invoke<CompanionTunnel>("companion_tunnel_start"),
+  tunnelStop: () => invoke<CompanionTunnel>("companion_tunnel_stop"),
 };
 
 export const onSessionChanged = (callback: () => void): Promise<UnlistenFn> =>

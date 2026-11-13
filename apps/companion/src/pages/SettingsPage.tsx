@@ -10,6 +10,7 @@ import {
   type NotificationSettings,
 } from "../lib/api";
 import { useAgentTasks } from "../lib/agentTasks";
+import { useDesktopPresence } from "../lib/heartbeat";
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -172,6 +173,7 @@ const TERMINAL_STATUSES = ["succeeded", "failed", "canceled"];
     button), failures revert and stay on screen. */
 export function SettingsPage() {
   const prefs = usePrefs();
+  const presence = useDesktopPresence();
   const { state: agentTasksState } = useAgentTasks();
   const [state, setState] = useState<CompanionState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -297,6 +299,39 @@ export function SettingsPage() {
         </button>
         <span className="text-ui-caption text-slate-900">设置</span>
       </header>
+
+      <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
+        <SettingRow label="桌面端">
+          <span
+            className="flex items-center gap-1.5 text-ui-caption text-slate-700"
+            title="手机每 20 秒向桌面端发送一次心跳；连续两次未送达即显示掉线。"
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                presence.online ? "bg-emerald-500" : "bg-slate-300"
+              }`}
+            />
+            {presence.online ? "在线" : "掉线"}
+          </span>
+        </SettingRow>
+        <SettingRow label="设备">
+          <span className="text-ui-caption text-slate-700">
+            {presence.deviceName ?? "—"}
+          </span>
+        </SettingRow>
+        <SettingRow label="桌面版本">
+          <span className="text-ui-caption text-slate-700">
+            {presence.version ? `v${presence.version}` : "—"}
+          </span>
+        </SettingRow>
+        <SettingRow label="最近同步">
+          <span className="text-ui-caption tabular-nums text-slate-500">
+            {presence.lastSync
+              ? new Date(presence.lastSync).toLocaleTimeString("zh-CN")
+              : "—"}
+          </span>
+        </SettingRow>
+      </section>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
         <SettingRow label="主题">

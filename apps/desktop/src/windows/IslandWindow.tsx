@@ -110,19 +110,6 @@ export function IslandWindow() {
   const clickTimer = useRef<number | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
-  // The island window is transparent: drop the app's light background and
-  // scrollbars that only make sense in the main window.
-  useEffect(() => {
-    const previousBody = document.body.style.background;
-    const previousHtml = document.documentElement.style.background;
-    document.body.style.background = "transparent";
-    document.documentElement.style.background = "transparent";
-    return () => {
-      document.body.style.background = previousBody;
-      document.documentElement.style.background = previousHtml;
-    };
-  }, []);
-
   const refreshStatus = useCallback(async () => {
     try {
       const next = await notificationApi.state();

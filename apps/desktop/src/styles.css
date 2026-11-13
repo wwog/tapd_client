@@ -69,6 +69,15 @@ body {
   overflow: hidden;
 }
 
+/* Capsule/card windows are transparent: their page must never paint the canvas
+   colour, or the very first frame shows as an opaque pill before the capsule
+   itself is painted. Set by `main.tsx` before the first render. */
+html[data-overlay="true"],
+html[data-overlay="true"] body,
+html[data-overlay="true"] #root {
+  background: transparent;
+}
+
 ::selection {
   background: rgb(14 165 233 / 0.25);
 }

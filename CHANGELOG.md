@@ -4,6 +4,9 @@
 
 ## 新增
 
+- 左侧栏「设置」上方新增移动端伴侣入口（设置开启后才显示），点击弹窗扫码；弹窗默认走外网 Quick Tunnel，自动检测并拉起 `cloudflared`、生成配对二维码。未安装 `cloudflared` 时只显示安装教程与「我已安装」确认，不显示二维码；局域网作为测试备选。
+- 配对握手与心跳：手机配对成功后桌面弹窗立即显示「已连接」，之后每 20 秒一次心跳；桌面显示设备在线状态与最近心跳，手机设置页显示桌面端在线/掉线、版本与最近同步时间。
+- 移动端伴侣默认开启；设置页只保留启用与配对码开关，不再显示二维码。
 - 新增 `crates/tapd-workflow`：sans-IO 的工作流核心，包含任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，启用 `#![forbid(unsafe_code)]`，当前有 92 个测试。桌面端已完整接入：`AgentCore` 只持有 `workflow: Mutex<Workflow>`，`AgentTask` 只是 UI 与持久化视图。
 - Agent 任务新增 `source` 字段：记录任务来源（`manual` 手动发起 / `notification` 通知卡「处理」），历史页与恢复后的记录都会展示「来源」。
 - Agent 页 →「配置」新增「启动恢复排队」开关：默认开启；关闭后重启仍保留排队任务，但队列保持暂停，等用户手动「继续队列」，不会自动继续执行。
@@ -22,6 +25,7 @@
 
 ## 修改
 
+- 外网隧道生命周期与扫码解耦：扫码成功或关闭弹窗都不会清理隧道，手机可继续使用同一地址；仅在「停止隧道」、停止移动端伴侣或退出应用时结束进程。
 - Agent 工作流全量迁移到 `tapd-workflow`：`AgentCore` 只持有 `workflow: Mutex<Workflow>` 作为任务状态 / 队列 / 审核 / 合并 / 恢复的唯一 owner，`AgentTask` 只是 UI 与持久化视图；宿主执行 crate 产出的 Effect（worktree / PTY / 导出 / git / SQLite / UI）并以 Input 回执；approve、merge_start、verify_merge 需要的 git 检查在命令路径同步执行。
 - 删除宿主重复状态机：`tasks`、`spawn_worker`、`take_next_queued`、`finish_task`、`apply_finish`、`recover_incomplete`、`persist_tasks`、`update_task`、`entered` / `shutting_down` 标志、`wake`，以及 `claim_entry` / `release_entry` / `ensure_entered` 门禁；`AgentCore` 只保留宿主配置、PTY runtimes、hook、scan、storage_error、worktree / persist 锁等平台职责。
 - 持久化改由 Effect 驱动：`PersistChanged` / `PersistDeleted` / `PersistPaused` 写现有 `agent_tasks` / `agent_queue_state`，`AppendHistory` 也 upsert 到 `agent_tasks`；写入失败设置 `storage_error` 并在 Agent 页提示，不静默吞掉。
@@ -44,6 +48,7 @@
 
 ## 修复
 
+- 启动时顶部胶囊不再先闪一个空白色块：胶囊窗口创建后保持隐藏，等界面画出第一帧（`island_ready`）才显示；胶囊页面在首帧就是透明的，不再先铺应用底色。webview 始终不报告绘制时 2 秒后兜底显示。
 - 复杂改动不再依赖模型主动调用审核工具：任务结束时有本轮新产生的未提交文件就自动进入待审核，忘记调用也不会把改动留在工作区。
 - 合并完成判定改为校验分支是否已并入主仓库当前 HEAD（`git merge-base --is-ancestor`），不再以合并进程退出码为准；合并 Agent 退出但分支未并入时保持待合并，不误判成功。
 - 合并失败、用户取消合并或客户端重启打断合并时，任务回到待合并并保留 worktree 与分支，不再直接判失败；重启后的合并中任务会带「客户端重启，合并已中止」错误恢复。

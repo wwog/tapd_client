@@ -18,6 +18,7 @@
 //!   update-field / transitions / transition / claim), which run the same
 //!   desktop command cores the bug detail panel uses.
 //! - `feature` — whitelisted proxy to the desktop `feature_command` surface.
+//! - `tunnel` — cloudflared Quick Tunnel detection, lifecycle and URL parsing.
 //!
 //! Every `#[tauri::command]` stays in this module because `lib.rs` registers
 //! it as `companion::<name>` and the handler macro resolves the generated
@@ -27,8 +28,10 @@ mod api;
 mod assets;
 mod feature;
 mod pairing;
+mod tunnel;
 
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
@@ -52,10 +55,19 @@ use api::{
 };
 use assets::static_fallback;
 use feature::{api_feature, rate_limiter};
-use pairing::{pair, RateLimiter};
+use pairing::{heartbeat, pair, RateLimiter};
 
 /// One-time pairing codes expire after ten minutes (single use on top).
 const PAIRING_TTL_SECS: i64 = 600;
+/// A device is "online" while its last heartbeat is younger than this. The
+/// phone beats every 20s, so 60s tolerates two missed beats / background
+/// timer throttling without flapping.
+pub(crate) const PRESENCE_ONLINE_SECS: i64 = 60;
+/// Emitted right after a phone consumes a pairing code (the desktop dialog
+/// switches from "waiting" to "connected" without waiting for a poll).
+pub(crate) const PAIRED_EVENT: &str = "companion://paired";
+/// Emitted on every heartbeat so the dialog's device list stays live.
+pub(crate) const PRESENCE_EVENT: &str = "companion://presence";
 
 // ---------------------------------------------------------------------------
 // Server runtime state
@@ -68,6 +80,20 @@ pub(crate) struct PairingCode {
     pub(crate) expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Last heartbeat of one paired device. In-memory only: presence is a live
+/// fact, not something worth persisting across launches.
+pub(crate) struct Presence {
+    pub(crate) last_seen: chrono::DateTime<chrono::Utc>,
+}
+
+/// Whether a heartbeat at `last_seen` still counts as online at `now`.
+fn presence_is_online(
+    last_seen: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    now.signed_duration_since(last_seen) < chrono::Duration::seconds(PRESENCE_ONLINE_SECS)
+}
+
 /// Runtime state of the companion server, guarded by the `AppState` mutex.
 #[derive(Default)]
 pub struct CompanionRuntime {
@@ -77,6 +103,12 @@ pub struct CompanionRuntime {
     pub task: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Current one-time pairing code, if one has been generated.
     pub(crate) pairing: Option<PairingCode>,
+    /// cloudflared Quick Tunnel process and its last known state.
+    pub(crate) tunnel: tunnel::TunnelRuntime,
+    /// Cached detection result; refreshed by `companion_cloudflared_check`.
+    pub(crate) cloudflared: Option<tunnel::CloudflaredInfo>,
+    /// Device id → last heartbeat, for the "online" dot in the dialog.
+    pub(crate) presence: HashMap<String, Presence>,
 }
 
 impl CompanionRuntime {
@@ -120,6 +152,9 @@ pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
         return Ok(());
     }
 
+    // A tunnel from a previous server instance points at a dead port.
+    tunnel::stop(&state, &app);
+
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", 0))
         .await
         .map_err(|error| error.to_string())?;
@@ -148,15 +183,19 @@ pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
     Ok(())
 }
 
-/// Stops the companion server and clears its runtime state (task, port and
-/// the outstanding pairing code, whose URL is useless without the server).
-pub fn stop(state: &SharedState) {
-    let mut runtime = state.companion.lock().expect("companion lock");
-    if let Some(task) = runtime.task.take() {
-        task.abort();
+/// Stops the companion server, its tunnel and all live presence. The
+/// outstanding pairing code dies with the server: its URL no longer answers.
+pub fn stop(app: &AppHandle, state: &SharedState) {
+    {
+        let mut runtime = state.companion.lock().expect("companion lock");
+        if let Some(task) = runtime.task.take() {
+            task.abort();
+        }
+        runtime.port = None;
+        runtime.pairing = None;
+        runtime.presence.clear();
     }
-    runtime.port = None;
-    runtime.pairing = None;
+    tunnel::stop(state, app);
 }
 
 async fn serve(
@@ -173,6 +212,7 @@ async fn serve(
 
     let router = Router::new()
         .route("/companion/api/pair", post(pair))
+        .route("/companion/api/heartbeat", post(heartbeat))
         .route("/companion/api/state", get(api_state))
         .route("/companion/api/workspaces", get(api_workspaces))
         .route("/companion/api/members", get(api_members))
@@ -274,6 +314,9 @@ pub struct CompanionDeviceStatus {
     id: String,
     name: String,
     paired_at: String,
+    /// Heartbeat seen within the last [`PRESENCE_ONLINE_SECS`].
+    online: bool,
+    last_seen_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -285,28 +328,45 @@ pub struct CompanionStatus {
     port: Option<u16>,
     lan_ip: Option<String>,
     devices: Vec<CompanionDeviceStatus>,
+    cloudflared: tunnel::CloudflaredInfo,
+    tunnel: tunnel::TunnelSnapshot,
 }
 
 #[tauri::command]
 pub fn companion_status(state: tauri::State<'_, SharedState>) -> CompanionStatus {
     let config = state.config_snapshot();
     let runtime = state.companion.lock().expect("companion lock");
+    let now = chrono::Utc::now();
+    // Detection is deliberately lazy: the app-start status call must not probe
+    // the login shell. The dialog's `companion_cloudflared_check` fills this.
+    let cloudflared = runtime.cloudflared.clone().unwrap_or_default();
+    let tunnel = runtime.tunnel.snapshot.clone();
+    let devices = config
+        .companion
+        .devices
+        .iter()
+        .map(|device| {
+            let presence = runtime.presence.get(&device.id);
+            let online =
+                presence.is_some_and(|presence| presence_is_online(presence.last_seen, now));
+            CompanionDeviceStatus {
+                id: device.id.clone(),
+                name: device.name.clone(),
+                paired_at: device.paired_at.clone(),
+                online,
+                last_seen_at: presence.map(|presence| presence.last_seen.to_rfc3339()),
+            }
+        })
+        .collect();
     CompanionStatus {
         enabled: config.companion.enabled,
         running: runtime.task.is_some(),
         require_pairing_code: config.companion.require_pairing_code,
         port: runtime.port,
         lan_ip: lan_ipv4().map(|ip| ip.to_string()),
-        devices: config
-            .companion
-            .devices
-            .iter()
-            .map(|device| CompanionDeviceStatus {
-                id: device.id.clone(),
-                name: device.name.clone(),
-                paired_at: device.paired_at.clone(),
-            })
-            .collect(),
+        devices,
+        cloudflared,
+        tunnel,
     }
 }
 
@@ -324,7 +384,7 @@ pub async fn companion_set_enabled(
     if enabled {
         start(app, state.inner().clone()).await
     } else {
-        stop(state.inner());
+        stop(&app, state.inner());
         Ok(())
     }
 }
@@ -349,22 +409,32 @@ pub struct PairingCodeInfo {
     expires_at: String,
 }
 
-/// Shared pairing-code generation for the settings command and the debug-only
-/// dev endpoint (same logic, one source).
-pub(crate) fn pairing_code(state: &SharedState) -> Result<PairingCodeInfo, String> {
+/// Shared pairing-code generation for the dialog and the debug-only dev
+/// endpoint (same logic, one source). `mode` is `tunnel` (default in the
+/// dialog) or `lan` (test fallback); the tunnel URL must already be live.
+pub(crate) fn pairing_code(state: &SharedState, mode: &str) -> Result<PairingCodeInfo, String> {
     if !state.config_snapshot().companion.enabled {
         return Err("请先启用移动端伴侣".to_string());
     }
-    let port = {
+    let (port, tunnel_url) = {
         let runtime = state.companion.lock().expect("companion lock");
         if runtime.task.is_none() {
             return Err("伴侣服务未运行".to_string());
         }
-        runtime
-            .port
-            .ok_or_else(|| "伴侣服务尚未就绪".to_string())?
+        (
+            runtime
+                .port
+                .ok_or_else(|| "伴侣服务尚未就绪".to_string())?,
+            runtime.tunnel.snapshot.url.clone(),
+        )
     };
-    let lan_ip = lan_ipv4().ok_or_else(|| "未能获取局域网地址，请检查网络连接".to_string())?;
+    let base = if mode == "tunnel" {
+        tunnel_url.ok_or_else(|| "外网隧道尚未就绪".to_string())?
+    } else {
+        let lan_ip =
+            lan_ipv4().ok_or_else(|| "未能获取局域网地址，请检查网络连接".to_string())?;
+        format!("http://{lan_ip}:{port}")
+    };
 
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(PAIRING_TTL_SECS);
     let code = opaque_token();
@@ -375,26 +445,82 @@ pub(crate) fn pairing_code(state: &SharedState) -> Result<PairingCodeInfo, Strin
     state.companion.lock().expect("companion lock").pairing = Some(pairing);
 
     Ok(PairingCodeInfo {
-        url: format!("http://{lan_ip}:{port}/#/pair?t={code}"),
+        url: format!("{base}/#/pair?t={code}"),
         code,
         expires_at: expires_at.to_rfc3339(),
     })
 }
 
 #[tauri::command]
-pub fn companion_pairing_code(state: tauri::State<'_, SharedState>) -> Result<PairingCodeInfo, String> {
-    pairing_code(state.inner())
+pub fn companion_pairing_code(
+    state: tauri::State<'_, SharedState>,
+    mode: Option<String>,
+) -> Result<PairingCodeInfo, String> {
+    pairing_code(state.inner(), mode.as_deref().unwrap_or("lan"))
+}
+
+/// Force-detects cloudflared (the user just installed it) and caches the
+/// result for the status snapshot.
+#[tauri::command]
+pub fn companion_cloudflared_check(
+    state: tauri::State<'_, SharedState>,
+) -> tunnel::CloudflaredInfo {
+    let info = tunnel::detect();
+    state.companion.lock().expect("companion lock").cloudflared = Some(info.clone());
+    info
+}
+
+/// Starts the Quick Tunnel if needed. Returns immediately with the `starting`
+/// snapshot; the public URL arrives on `companion://tunnel`.
+#[tauri::command]
+pub fn companion_tunnel_start(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+) -> Result<tunnel::TunnelSnapshot, String> {
+    tunnel::start(&app, state.inner())
+}
+
+#[tauri::command]
+pub fn companion_tunnel_stop(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+) -> tunnel::TunnelSnapshot {
+    tunnel::stop(state.inner(), &app)
 }
 
 /// Removes a paired device; its session token stops authorizing immediately.
 #[tauri::command]
 pub fn companion_unpair(state: tauri::State<'_, SharedState>, device_id: String) -> Result<(), String> {
-    state
+    let target = device_id.clone();
+    let result = state
         .update_config(|config| {
             config
                 .companion
                 .devices
                 .retain(|device| device.id != device_id)
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    if result.is_ok() {
+        state
+            .companion
+            .lock()
+            .expect("companion lock")
+            .presence
+            .remove(&target);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn presence_online_window_is_sixty_seconds() {
+        let now = Utc::now();
+        assert!(presence_is_online(now - Duration::seconds(59), now));
+        assert!(!presence_is_online(now - Duration::seconds(60), now));
+        assert!(!presence_is_online(now - Duration::seconds(61), now));
+    }
 }

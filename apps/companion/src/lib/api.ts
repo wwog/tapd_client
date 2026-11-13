@@ -598,6 +598,13 @@ export const api = {
       body: JSON.stringify({ token, name }),
     }),
 
+  /** Presence handshake: tells the desktop this device is still connected. */
+  heartbeat: () =>
+    request<{ version: string; deviceName: string; now: string }>(
+      "/companion/api/heartbeat",
+      { method: "POST" },
+    ),
+
   bugs: (query: BugQuery) =>
     request<BugListPage>("/companion/api/bugs", {
       method: "POST",

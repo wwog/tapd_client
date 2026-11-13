@@ -222,7 +222,7 @@ pub(super) async fn dev_companion_pairing(
     if !authorized(&ctx.state, &headers) {
         return unauthorized();
     }
-    match crate::companion::pairing_code(&ctx.state) {
+    match crate::companion::pairing_code(&ctx.state, "lan") {
         Ok(info) => (StatusCode::OK, Json(json!({ "ok": true, "data": info }))),
         Err(error) => (
             StatusCode::BAD_REQUEST,

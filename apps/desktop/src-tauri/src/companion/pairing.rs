@@ -21,11 +21,12 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use tauri::Emitter;
 use tapd_core::config::CompanionDevice;
 
 use crate::{server::opaque_token, state::SharedState};
 
-use super::{err_data, ok_data, CompanionCtx};
+use super::{err_data, ok_data, CompanionCtx, Presence, PAIRED_EVENT, PRESENCE_EVENT};
 
 /// Pairing rate limit: more than 10 attempts per IP per minute are rejected.
 const PAIR_MAX_ATTEMPTS: usize = 10;
@@ -124,6 +125,21 @@ fn token_is_paired(devices: &[CompanionDevice], token: &str) -> bool {
         .any(|device| device.token_hash == token_hash)
 }
 
+/// The paired device a session token belongs to. Heartbeats use it to record
+/// presence under the device id the dialog renders.
+fn device_for_token(state: &SharedState, token: &str) -> Option<CompanionDevice> {
+    let token_hash = sha256_hex(token);
+    state
+        .config
+        .lock()
+        .expect("config lock")
+        .companion
+        .devices
+        .iter()
+        .find(|device| device.token_hash == token_hash)
+        .cloned()
+}
+
 /// Business endpoints answer `not_logged_in` while the desktop has no TAPD
 /// session; the phone renders its offline state from this code.
 pub(super) fn require_logged_in(state: &SharedState) -> Option<Response> {
@@ -219,12 +235,29 @@ pub(super) async fn pair(
         token_hash: sha256_hex(&token),
         paired_at: chrono::Utc::now().to_rfc3339(),
     };
+    let device_id = device.id.clone();
+    let device_name = device.name.clone();
     // Replace-by-name: one phone keeps one slot, re-pairing rotates its token.
     let saved = ctx.state.update_config(|config| {
         upsert_device_by_name(&mut config.companion.devices, device)
     });
     match saved {
-        Ok(()) => ok_data(json!({ "sessionToken": token })),
+        Ok(()) => {
+            // Handshake completed: the dialog can switch to "connected" now,
+            // before the phone's first heartbeat arrives.
+            let now = chrono::Utc::now();
+            ctx.state
+                .companion
+                .lock()
+                .expect("companion lock")
+                .presence
+                .insert(device_id.clone(), Presence { last_seen: now });
+            let _ = ctx.app.emit(
+                PAIRED_EVENT,
+                json!({ "deviceId": device_id, "name": device_name, "at": now.to_rfc3339() }),
+            );
+            ok_data(json!({ "sessionToken": token }))
+        }
         Err(error) => {
             tracing::error!(%error, "failed to persist paired companion device");
             err_data(
@@ -234,6 +267,46 @@ pub(super) async fn pair(
             )
         }
     }
+}
+
+/// Authenticated heartbeat: marks the calling device online and echoes the
+/// desktop version so the phone can render its connection card. No
+/// `require_logged_in` gate: presence is about the transport, not TAPD.
+pub(super) async fn heartbeat(
+    State(ctx): State<CompanionCtx>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(token) = bearer_token(&headers) else {
+        return err_data(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "会话已失效，请重新配对",
+        );
+    };
+    let Some(device) = device_for_token(&ctx.state, &token) else {
+        return err_data(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "会话已失效，请重新配对",
+        );
+    };
+    let now = chrono::Utc::now();
+    ctx.state
+        .companion
+        .lock()
+        .expect("companion lock")
+        .presence
+        .insert(device.id.clone(), Presence { last_seen: now });
+    let response = ok_data(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "deviceName": device.name.clone(),
+        "now": now.to_rfc3339(),
+    }));
+    let _ = ctx.app.emit(
+        PRESENCE_EVENT,
+        json!({ "deviceId": device.id, "name": device.name, "at": now.to_rfc3339() }),
+    );
+    response
 }
 
 /// Display name from the phone: trimmed, capped at 24 characters, blank names
@@ -388,11 +461,18 @@ mod tests {
     }
 
     #[test]
-    fn companion_config_defaults_to_disabled_and_empty() {
+    fn companion_config_defaults_to_enabled_and_empty() {
         let parsed: CompanionConfig = serde_json::from_str("{}").expect("parse empty object");
-        assert!(!parsed.enabled);
+        assert!(parsed.enabled, "companion must default on");
         assert!(parsed.require_pairing_code, "code gate must default on");
         assert!(parsed.devices.is_empty());
+    }
+
+    #[test]
+    fn explicit_disabled_companion_config_is_preserved() {
+        let parsed: CompanionConfig =
+            serde_json::from_str(r#"{"enabled":false}"#).expect("parse explicit false");
+        assert!(!parsed.enabled, "an explicit false must not be overridden");
     }
 
     #[test]

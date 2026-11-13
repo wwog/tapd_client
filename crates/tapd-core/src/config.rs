@@ -57,7 +57,7 @@ pub struct AppConfig {
     pub companion: CompanionConfig,
 }
 
-/// Companion server settings: opt-in by default, with a small bounded list of
+/// Companion server settings: on by default, with a small bounded list of
 /// paired phones. Only the SHA-256 of each phone's session token is stored;
 /// the raw token never leaves the phone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,7 +76,10 @@ pub struct CompanionConfig {
 impl Default for CompanionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // Part of the default experience: the rail entry is there without
+            // a first trip to Settings. An explicit `false` in an existing
+            // config is preserved (serde default only applies when absent).
+            enabled: true,
             require_pairing_code: true,
             devices: Vec::new(),
         }

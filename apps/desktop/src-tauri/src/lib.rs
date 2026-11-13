@@ -115,12 +115,16 @@ pub fn run() {
             companion::companion_set_require_code,
             companion::companion_pairing_code,
             companion::companion_unpair,
+            companion::companion_cloudflared_check,
+            companion::companion_tunnel_start,
+            companion::companion_tunnel_stop,
             update::update_state,
             update::update_check,
             update::update_install,
             update::update_cancel,
             update::update_open_manual,
             window_state::ui_ready,
+            island_window::island_ready,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -186,9 +190,9 @@ pub fn run() {
                     // Persist the final geometry before the config file goes away.
                     window_state::save_now(app, &state);
                     RuntimeInfo::clear(&state.paths.runtime_file);
-                    // The companion listener and its in-memory pairing code must
-                    // not outlive the process.
-                    companion::stop(state.inner());
+                    // The companion listener, its tunnel and in-memory pairing
+                    // code must not outlive the process.
+                    companion::stop(app, state.inner());
                 }
             }
             // macOS: clicking the Dock icon brings the hidden main window back,

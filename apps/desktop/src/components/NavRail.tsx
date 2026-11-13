@@ -1,6 +1,14 @@
 import clsx from "clsx";
 import type { ReactNode } from "react";
-import { Bot, Bug, FolderGit2, Plug, Settings as SettingsIcon, Users } from "lucide-react";
+import {
+  Bot,
+  Bug,
+  FolderGit2,
+  Plug,
+  Settings as SettingsIcon,
+  Smartphone,
+  Users,
+} from "lucide-react";
 
 import { AccountChip } from "./AccountChip";
 
@@ -34,6 +42,9 @@ type Props = {
   sidebarHidden: boolean;
   meAvatar: string | null;
   name: string | null;
+  /** Companion enabled in Settings: show the phone scan entry. */
+  showCompanion: boolean;
+  onOpenCompanion: () => void;
   onActivate: (view: View) => void;
 };
 
@@ -44,6 +55,8 @@ export function NavRail({
   sidebarHidden,
   meAvatar,
   name,
+  showCompanion,
+  onOpenCompanion,
   onActivate,
 }: Props) {
   const accountAnim = railAnim?.id === "account" ? railAnim : null;
@@ -97,6 +110,17 @@ export function NavRail({
           onClick={() => onActivate("account")}
         />
       </div>
+      {showCompanion ? (
+        <button
+          type="button"
+          title="移动端伴侣"
+          aria-label="移动端伴侣"
+          onClick={onOpenCompanion}
+          className="mb-1 grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition hover:bg-overlay-soft hover:text-slate-700"
+        >
+          <Smartphone size={15} />
+        </button>
+      ) : null}
       <button
         type="button"
         title="设置"

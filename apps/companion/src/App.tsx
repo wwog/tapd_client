@@ -3,6 +3,7 @@ import { Bot, Bug, RefreshCw, Settings } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import { setAgentPollMode, useAgentTasks } from "./lib/agentTasks";
+import { startHeartbeat } from "./lib/heartbeat";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
@@ -114,6 +115,12 @@ export default function App() {
   useEffect(() => {
     setAgentPollMode(tabOf(route) === "agent" ? "active" : "idle");
   }, [route]);
+
+  // Presence handshake: the desktop marks this device online while beats
+  // arrive, and the settings page renders the same state locally.
+  useEffect(() => {
+    if (session) startHeartbeat();
+  }, [session]);
 
   // Pairing is the only entry: without a session every route is #/pair,
   // with one #/pair is only kept when it carries a fresh pairing code.

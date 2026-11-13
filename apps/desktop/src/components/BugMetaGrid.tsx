@@ -36,7 +36,7 @@ export function BugMetaGrid(props: {
   ];
 
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-3">
       <UserField
         label="处理人"
         field="current_owner"

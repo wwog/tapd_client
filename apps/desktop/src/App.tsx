@@ -10,6 +10,7 @@ import {
   type RecoveryReport,
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
+import { refreshCompanionEnabled, useCompanionEnabled } from "./lib/companion";
 import { useMembersDirectory } from "./lib/members";
 import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
@@ -21,6 +22,7 @@ import {
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
 import { BugListView } from "./components/BugListView";
+import { CompanionDialog } from "./components/CompanionDialog";
 import { CoworkerPage } from "./components/CoworkerPage";
 import { DetailPaneHost } from "./components/DetailPaneHost";
 import { FolderPicker } from "./components/FolderPicker";
@@ -92,6 +94,9 @@ export default function App() {
   const [agentFocusTaskId, setAgentFocusTaskId] = useState<string | null>(null);
   /** Incremented by the title-bar badge to open the approval queue. */
   const [agentReviewFocus, setAgentReviewFocus] = useState(0);
+  /** Mobile companion QR dialog; the rail entry exists only while enabled. */
+  const [companionOpen, setCompanionOpen] = useState(false);
+  const companionEnabled = useCompanionEnabled();
 
   /** Tasks the backend restored when this system entry began. */
   const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
@@ -102,6 +107,7 @@ export default function App() {
 
   useEffect(() => {
     startUpdateStore();
+    void refreshCompanionEnabled();
   }, []);
 
   // Pending commit reviews are surfaced in the title bar so they cannot be
@@ -651,6 +657,8 @@ export default function App() {
           sidebarHidden={sidebar.hidden}
           meAvatar={info.meAvatar}
           name={context?.user.nick || info.me}
+          showCompanion={companionEnabled}
+          onOpenCompanion={() => setCompanionOpen(true)}
           onActivate={activateView}
         />
 
@@ -792,6 +800,13 @@ export default function App() {
 
       {!info.onboarded ? (
         <Onboarding info={info} onDone={() => void refreshBase()} />
+      ) : null}
+
+      {companionOpen ? (
+        <CompanionDialog
+          onClose={() => setCompanionOpen(false)}
+          toast={showToast}
+        />
       ) : null}
 
       {/* Last layer: a forced update covers onboarding, dialogs and settings. */}

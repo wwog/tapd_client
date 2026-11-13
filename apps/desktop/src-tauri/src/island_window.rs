@@ -53,6 +53,16 @@ static EXPANDED: AtomicBool = AtomicBool::new(false);
 /// Hover peek requested by the frontend. Only the collapsed layout honours it;
 /// expanded notification cards always win.
 static PEEK: AtomicBool = AtomicBool::new(false);
+/// Whether the island webview has painted its first frame. A Tauri window is a
+/// webview and an unpainted one is white, so the capsule stays hidden until the
+/// UI reports a paint — otherwise every launch flashes an empty light pill
+/// before the real capsule appears.
+static PAINTED: AtomicBool = AtomicBool::new(false);
+/// Visibility the last layout asked for while the webview was still loading.
+static WANT_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Show regardless of the UI if the webview never reports a paint (broken
+/// bundle, dead dev server) — the capsule must not stay invisible forever.
+const REVEAL_FALLBACK_MS: u64 = 2_000;
 
 /// Records the frontend's wish to keep the idle capsule on screen.
 pub fn set_collapsed_visible(visible: bool) {
@@ -67,6 +77,25 @@ pub fn hide_collapsed(app: &AppHandle) {
     }
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.hide();
+    }
+}
+
+/// Called by the island UI once its first transparent frame is painted.
+///
+/// The window is created hidden (see [`ensure_window`]), so the empty webview
+/// never shows; this is what reveals it — but only if the current layout still
+/// wants the capsule on screen.
+#[tauri::command]
+pub fn island_ready(app: AppHandle) {
+    if PAINTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if !WANT_VISIBLE.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.set_always_on_top(true);
+        let _ = window.show();
     }
 }
 
@@ -122,6 +151,8 @@ pub(crate) fn ensure_window(app: &AppHandle, state: &SharedState) -> Result<Webv
     #[cfg(target_os = "macos")]
     macos::install(app, &window);
 
+    arm_reveal_fallback(&window);
+
     let window_for_events = window.clone();
     let app_for_events = app.clone();
     let state_for_events = state.clone();
@@ -176,6 +207,23 @@ pub(crate) fn ensure_window(app: &AppHandle, state: &SharedState) -> Result<Webv
     });
 
     Ok(window)
+}
+
+/// Reveals the capsule even if the UI never reports a paint, so a broken
+/// bundle cannot leave the window invisible forever.
+fn arm_reveal_fallback(window: &WebviewWindow) {
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(REVEAL_FALLBACK_MS)).await;
+        if PAINTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        tracing::warn!("island webview never reported a paint; revealing anyway");
+        if WANT_VISIBLE.load(Ordering::SeqCst) {
+            let _ = window.set_always_on_top(true);
+            let _ = window.show();
+        }
+    });
 }
 
 fn now_millis() -> u64 {
@@ -304,13 +352,17 @@ fn apply_island_sized(
     // The idle capsule is not a permanent indicator: stay hidden until
     // something needs attention. Expanded cards and the update panel always
     // win over this flag.
-    if !expanded && !UPDATE_MODE.load(Ordering::SeqCst) && !COLLAPSED_VISIBLE.load(Ordering::SeqCst)
-    {
+    let visible = expanded
+        || UPDATE_MODE.load(Ordering::SeqCst)
+        || COLLAPSED_VISIBLE.load(Ordering::SeqCst);
+    WANT_VISIBLE.store(visible, Ordering::SeqCst);
+    if !visible {
         let _ = window.hide();
-    } else {
+    } else if PAINTED.load(Ordering::SeqCst) {
         let _ = window.set_always_on_top(true);
         let _ = window.show();
     }
+    // Not painted yet: `island_ready` shows it (or the fallback below does).
 
     if !animated {
         remember_position(x, y);
