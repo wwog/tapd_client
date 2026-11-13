@@ -25,7 +25,7 @@
 
 ## 2. 配置
 
-Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理全部运行时」进入）：
+Agent 页 →「配置」：
 
 | 配置 | 说明 |
 | --- | --- |
@@ -38,7 +38,7 @@ Agent 页 →「配置」（也可从 设置 →「默认 Agent」→「管理�
 
 配置文件：`~/Library/Application Support/com.tapdclient.desktop/agent.json`。
 
-设置 →「Agent 执行」控制并行与隔离：
+Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 
 | 配置 | 说明 |
 | --- | --- |
@@ -161,7 +161,7 @@ MCP 提供：
 
 ## 9. 人工验收
 
-1. Agent 页 →「配置」：选择运行时，填可执行路径，点「检测版本」；为当前项目填仓库绝对路径；保存。设置 →「Agent 执行」确认 Worktree 默认关闭且执行单元显示 1。
+1. Agent 页 →「配置」：选择运行时，填可执行路径，点「检测版本」；为当前项目填仓库绝对路径；保存。同页「Agent 执行」确认 Worktree 默认关闭且执行单元显示 1。
 2. 缺陷详情 →「用 Agent 修复」：提示加入队列并切到 Agent tab。
 3. 观察状态 `queued → preparing → running`，TUI 出现后自动投递 prompt。
 4. 再入队第二个缺陷：Worktree 关闭时显示排队；开启并调高执行单元后，两个任务应各自在独立 worktree 中并行。任一战果未结束时 Worktree 开关应禁用，执行单元仍可调整。

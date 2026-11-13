@@ -82,7 +82,7 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 ### 3.4 修复队列与 Agent
 
 1. 从缺陷导出修复包（`bug.json` + `assets/`）。
-2. 队列默认串行；开启「Agent 执行 → Worktree 隔离」后按执行单元（1–8，默认 2）并行，每个任务在自己的 git worktree 中运行。
+2. 队列默认串行；在 Agent 页「配置」开启「Worktree 隔离」后按执行单元（1–8，默认 2）并行，每个任务在自己的 git worktree 中运行。
 3. 完成由进程退出、会话 hook 事件或输出静默判定；任务结束自动回收进程并继续队列。
 4. 权限确认在右侧内嵌终端里完成，桌面不代为回执。
 5. Worktree 关闭时的复杂改动：prompt 要求不 commit、不评论、不更新 TAPD；本轮结束由工作流根据 `RunFinished` 的改动事实判定，出现新的未提交文件就置为 `awaiting_approval`，工作区保留 diff，单队列停止启动新任务。
@@ -148,15 +148,15 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - Agent tab：子页为运行 / 待处理 / 历史；运行栏只显示排队 / 准备 / 运行 / 合并中，待处理显示待审核与待合并，结束或取消的任务进入历史；右侧内嵌 xterm 实时渲染 TUI，可直接键盘接管。三个列表子页的左侧列表都可收起：工具栏左侧按钮按 tab 显示对应名称，测量的分栏宽度低于「列表宽 + 详情最小宽」（运行 560 / 待处理与历史 480）时自动收起且窗口变宽不弹回，收起状态按 tab 各自记忆。
 - Agent 改动审核：待处理卡片展示摘要、文件与风险。Worktree 关闭时通过后重新入队提交、停止则按文件 `git stash` 并暂停队列；Worktree 开启时通过后进入待合并，确认后用原 Agent 合并回主仓库，合并失败保持待合并并展示手动步骤。主窗口标题栏与顶部胶囊都会提示待审核 / 待合并数量。
 - Agent 运行时：目录对齐 orca 的 TUI agent 表（40+ 运行时，支持检测别名与 argv `--` 终止符），所有运行时都在 PTY 中启动各自的 CLI（不再有 ACP / opencode 私有 server），提示词按 argv / flag / stdin 投递，完成由会话 hook、进程退出或输出静默判定；支持 hook 的客户端会写原生 hook/插件，事件 POST 到 loopback `/agent/hook`。任务 JSON 通过 `PersistChanged` upsert 到 `agent_tasks.payload`。
-- Agent 执行：默认串行；设置 →「Agent 执行」可开启 Worktree 隔离并把执行单元调到 1–8（默认 2）。开启后每个任务在独立 worktree 中运行，合并成功后删除目录保留分支，失败 / 取消 / 待审核 / 待合并保留目录，删除任务记录时清理，重试新建。队列存在非终态任务时 Worktree 开关锁定，执行单元仍可调。
+- Agent 执行：默认串行；Agent 页 →「配置」的「Agent 执行」可开启 Worktree 隔离并把执行单元调到 1–8（默认 2）。开启后每个任务在独立 worktree 中运行，合并成功后删除目录保留分支，失败 / 取消 / 待审核 / 待合并保留目录，删除任务记录时清理，重试新建。队列存在非终态任务时 Worktree 开关锁定，执行单元仍可调。
 - Agent 工作流所有权：任务状态、队列、审核 / 合并与恢复由 `tapd-workflow` 的 `Workflow` 唯一决定；`AgentCore` 只持有该状态机并执行 Effect，`AgentTask` 仅作为 UI 与 `agent_tasks.payload` 的视图。命令路径对 approve / merge_start / verify_merge 需要的 git 检查同步执行，其余副作用异步回执。
 - Agent 启动恢复：登录有效 + 引导完成前不加载任务、不启动队列；此后由 `agent_enter_system` 应用恢复规则（中断的运行任务重新排队、合并中回到待合并、待审核 / 待合并保留）；关闭「启动恢复排队」时保留排队任务但暂停队列。主界面 header 下方的 `RecoveryBanner` 展示恢复数量，可查看任务或关闭。关闭客户端时先停靠队列并持久化，再杀 PTY；重启后沿用持久化状态。
 - Agent 任务字段：`jsonPath` 指向 `bug.json`；`worktreePath` / `worktreeBranch` 只在开启隔离时出现。旧 `mdPath` 不做迁移，读作空。
 - Agent 运行时状态：hook 事件归一化为 `idle / working / waiting_permission / waiting_question / error`，记录当前工具、最后消息、模型与子 Agent 数量；只存内存并通过 `agent://runtime` 推送，任务头显示，任务结束清空。
-- Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；设置页「默认 Agent」下拉框可查看版本、切换默认、手动刷新，「管理全部运行时」跳到 Agent 页「配置」。缺陷详情的提交面板可以只为本次任务指定运行时。
+- Agent 检测与默认项：启动时若 `agent-scan.json` 超过 24 小时，后台扫描一遍本机已安装的 CLI 并记录 `--version`；Agent 页 →「配置」的「默认 Agent」下拉框可查看版本、切换默认、手动刷新。缺陷详情的提交面板可以只为本次任务指定运行时。
 - 终端输出：后端按显示帧节拍（16ms，单次上限 32KB）合批推送，**不能**用「输出静默 N ms 才发」——TUI 的 spinner 每 ~17ms 重绘一次，静默判断永远不触发，会把几秒的输出攒在内存里，表现为输入无回显；前端 xterm 走 WebGL 渲染器（DOM 渲染器跟不上 60fps 全屏重绘），无上下文时自动回退。
 - 不保留 Agent 日志：PTY 输出不落盘，面板中途打开时用一次 PTY 尺寸抖动让 TUI 整屏重绘。任务结束后在「历史」点「打开系统终端」，用运行时声明的 resume 参数（opencode/claude/OMP/Kimi/Qwen `--continue`、codex `resume`、gemini `--resume latest`）在 Terminal.app 里续接同一会话；旧版本遗留的 `agent-logs/` 在启动时删除。
-- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 参数集中在 Agent 页「配置」，执行方式在设置 →「Agent 执行」。内置默认模板不再注入项目规则，项目规则通过 `tapd_get_bug` 的 `projectRule` 返回；未配置目录时点 Agent 修复会先要求选择目录。
+- 项目级配置：每个项目的本地文件夹与「项目规则」写在自己的项目卡片里；Agent 参数与执行方式都在 Agent 页「配置」。内置默认模板不再注入项目规则，项目规则通过 `tapd_get_bug` 的 `projectRule` 返回；未配置目录时点 Agent 修复会先要求选择目录。
 
 ### MCP 与运维
 

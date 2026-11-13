@@ -13,11 +13,9 @@ import {
 import { api, type AppInfo } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
-import { AgentExecutionCard } from "./AgentExecutionCard";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { CompanionCard } from "./CompanionCard";
-import { DefaultAgentCard } from "./DefaultAgentCard";
 import { Dialog } from "./Dialog";
 import { NotificationSettings } from "./NotificationSettings";
 import { Button, cardClass } from "./ui";
@@ -27,13 +25,11 @@ type Props = {
   onOpenPath: (path: string) => void;
   onCopy: (text: string) => void;
   onShowOnboarding: () => void;
-  /** 跳到 Agent 页 →「配置」，查看全部运行时。 */
-  onManageAgents: () => void;
   toast: SettingsSectionProps["toast"];
 };
 
 export function SettingsPage(props: Props) {
-  const { info, onOpenPath, onCopy, onShowOnboarding, onManageAgents, toast } = props;
+  const { info, onOpenPath, onCopy, onShowOnboarding, toast } = props;
   const [capturesOpen, setCapturesOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
@@ -80,10 +76,6 @@ export function SettingsPage(props: Props) {
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <AppearanceCard />
-
-      <DefaultAgentCard toast={toast} onManageAgents={onManageAgents} />
-
-      <AgentExecutionCard toast={toast} />
 
       <NotificationSettings toast={toast} />
 

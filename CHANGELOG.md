@@ -6,18 +6,17 @@
 
 - 新增 `crates/tapd-workflow`：sans-IO 的工作流核心，包含任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，启用 `#![forbid(unsafe_code)]`，当前有 92 个测试。桌面端已完整接入：`AgentCore` 只持有 `workflow: Mutex<Workflow>`，`AgentTask` 只是 UI 与持久化视图。
 - Agent 任务新增 `source` 字段：记录任务来源（`manual` 手动发起 / `notification` 通知卡「处理」），历史页与恢复后的记录都会展示「来源」。
-- 设置 →「Agent 执行」新增「启动恢复排队」开关：默认开启；关闭后重启仍保留排队任务，但队列保持暂停，等用户手动「继续队列」，不会自动继续执行。
+- Agent 页 →「配置」新增「启动恢复排队」开关：默认开启；关闭后重启仍保留排队任务，但队列保持暂停，等用户手动「继续队列」，不会自动继续执行。
 - 启动恢复：登录有效且引导完成后，前端调用 `agent_enter_system`，后端对持久化队列应用恢复规则——`queued` 保留（关闭「启动恢复排队」时保留但暂停）；`preparing/running` 重新排队并标记中断，`attempt + 1`，默认最多自动重试 3 次；`merging` 回到 `awaiting_merge` 并写入「客户端重启，合并已中止」与手动步骤；`awaiting_approval/awaiting_merge` 保留。
 - 登录后恢复提示：主界面 header 下方新增 `RecoveryBanner`，展示已重新排队 / 待审核 / 待合并 / 失败数量，可「查看任务」或「知道了」；空报告不展示。
 - 进入系统门禁：登录有效 + 引导完成前不加载任务、不初始化工作流；此阶段队列命令返回「工作流尚未初始化，请先进入系统」，避免在登录页后启动持久化任务。
-- 设置页新增「Agent 执行」卡片：Worktree 隔离开关与执行单元。默认关闭且固定单任务；开启后执行单元可调 1–8、默认 2，每个任务在独立 git worktree 中运行。
+- Agent 页 →「配置」新增「Agent 执行」卡片：Worktree 隔离开关与执行单元。默认关闭且固定单任务；开启后执行单元可调 1–8、默认 2，每个任务在独立 git worktree 中运行。
 - Worktree 任务新增「待合并 / 合并中」阶段：审核通过后进入待合并，用户确认后用原 Agent 把任务分支合并回主仓库，并统一回写 TAPD；校验分支已并入当前 HEAD 后才算完成。
 - 合并失败提供手动回退：原 Agent 不可用、主仓有未提交改动或同仓库已有合并时，任务保持待合并，展示 `merge.error` 与手动步骤（cd、git status、git merge、冲突解决、测试、TAPD 回写），手动合并后可点「我已手动合并」校验。
 - Agent 任务记录新增 `worktreePath` / `worktreeBranch`：合并成功后删除 worktree 目录、保留分支；失败 / 取消 / 待审核 / 待合并保留目录；删除任务记录时清理，重试时新建。
 - 缺陷列表右键菜单新增「复制长 ID」：短 ID 用于搜索和展示，长 ID 用于接口、日志等需要完整标识的场景，两者都能直接复制。
-- 自动检测本机已安装的 Agent 与版本：启动时每天最多扫描一次，设置页可手动「刷新检测」，结果缓存在 `agent-scan.json`。
+- 自动检测本机已安装的 Agent 与版本：启动时每天最多扫描一次，Agent 页「配置」可手动「刷新检测」，结果缓存在 `agent-scan.json`。
 - 运行时目录对齐 orca：新增 Grok、Hermes、Kiro、Qoder、OpenCode 2、Droid、Jcode、DeepSeek Harness 等 30+ 个 TUI Agent，并支持检测别名与 argv `--` 终止符。
-- 设置页新增「默认 Agent」下拉选择：显示版本与检测状态；「管理全部运行时」跳到 Agent 页「配置」。
 - 缺陷详情的「补充说明」面板新增「本次任务使用」选择器，可以只为当前缺陷换一个 Agent，不影响默认设置。
 - MCP 自动注入扩展到 OMP（`~/.omp/agent/mcp.json`）、Kimi Code（`~/.kimi-code/mcp.json`）、Gemini CLI（`~/.gemini/settings.json`）与 Qwen Code（`~/.qwen/settings.json`），启动这些 Agent 时会像 opencode / Claude / Codex 一样幂等写入 tapd MCP。
 

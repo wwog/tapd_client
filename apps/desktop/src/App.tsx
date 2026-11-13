@@ -92,8 +92,6 @@ export default function App() {
   const [agentFocusTaskId, setAgentFocusTaskId] = useState<string | null>(null);
   /** Incremented by the title-bar badge to open the approval queue. */
   const [agentReviewFocus, setAgentReviewFocus] = useState(0);
-  /** Incremented by 设置 → 默认 Agent to open Agent 页 →「配置」. */
-  const [agentConfigFocus, setAgentConfigFocus] = useState(0);
 
   /** Tasks the backend restored when this system entry began. */
   const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
@@ -573,7 +571,6 @@ export default function App() {
           <AgentPage
             focusTaskId={agentFocusTaskId}
             focusReviewToken={agentReviewFocus}
-            focusConfigToken={agentConfigFocus}
             onOpenBug={openBugById}
             toast={showToast}
             onFocusConsumed={clearAgentFocus}
@@ -623,10 +620,6 @@ export default function App() {
                   .resetOnboarding()
                   .then(() => refreshBase())
                   .catch((error) => showToast("error", String(error)));
-              }}
-              onManageAgents={() => {
-                setAgentConfigFocus((current) => current + 1);
-                activateView("agent");
               }}
               toast={showToast}
             />

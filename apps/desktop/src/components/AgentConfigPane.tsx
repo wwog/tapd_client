@@ -18,6 +18,7 @@ import {
 import { useAgentScan } from "../lib/agentScan";
 import { formatDateTime } from "../lib/format";
 import type { SettingsSectionProps } from "../lib/feature";
+import { AgentExecutionCard } from "./AgentExecutionCard";
 import { AgentPicker } from "./AgentPicker";
 import { AgentSettings } from "./AgentSettings";
 import { Badge, Button, Spinner, cardClass } from "./ui";
@@ -161,6 +162,8 @@ export function AgentConfigPane({ toast }: Props) {
             </p>
           ) : null}
         </section>
+
+        <AgentExecutionCard toast={toast} />
 
         {!config || !selectedRuntime ? (
           <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
