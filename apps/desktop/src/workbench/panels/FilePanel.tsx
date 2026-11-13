@@ -1,11 +1,12 @@
 /**
- * Read-only file viewer: text/code with syntax highlighting, Markdown preview,
- * images, native audio/video controls and a metadata fallback for binary or
- * oversized files.
+ * File panel: Monaco for text/code (editable when the body is complete),
+ * Markdown preview, images, native audio/video controls and a metadata fallback
+ * for binary or oversized files.
  *
  * Bodies come from `fs_read`; media is streamed from the loopback `/file`
  * route (it needs Range support for video seeking). Reactivation compares the
- * file mtime and silently re-reads when it changed outside the app.
+ * file mtime and silently re-reads when it changed outside the app, unless the
+ * buffer has unsaved edits — then the conflict banner asks first.
  */
 import clsx from "clsx";
 import {
@@ -22,9 +23,13 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
+  Save,
+  Undo2,
   WrapText,
 } from "lucide-react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -43,10 +48,17 @@ import {
 } from "../../lib/fs";
 import { t } from "../../lib/i18n";
 import { Breadcrumb } from "../explorer/Breadcrumb";
-import { CodeView } from "../explorer/CodeView";
 import { MarkdownView } from "../explorer/MarkdownView";
-import { visualKindForPath } from "../explorer/language";
+import { monacoLanguageFor, visualKindForPath } from "../explorer/language";
 import { usePanelServices, type PanelProps } from "./context";
+import { setPanelDirty } from "./dirty";
+
+/** Monaco is a large chunk; it loads on the first text file, never at startup. */
+const MonacoView = lazy(() =>
+  import("../explorer/MonacoView").then((module) => ({
+    default: module.MonacoView,
+  })),
+);
 
 type LoadState =
   | { status: "loading" }
@@ -95,6 +107,11 @@ export function FilePanel({ panel, active }: PanelProps) {
   const [wrap, setWrap] = useState(false);
   const [markdownPreview, setMarkdownPreview] = useState(true);
   const [fit, setFit] = useState(true);
+  /** Unsaved buffer; null = the body exactly as loaded. */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  /** The file changed on disk while this panel holds unsaved edits. */
+  const [conflict, setConflict] = useState(false);
   const [src, setSrc] = useState<string | undefined>(() =>
     fileSrc(workspaceId, path),
   );
@@ -104,18 +121,24 @@ export function FilePanel({ panel, active }: PanelProps) {
   } | null>(null);
   /** Last mtime read from disk; null until the first successful read. */
   const loadedMtime = useRef<number | null>(null);
+  /** Read by the activation check without re-subscribing the effect. */
+  const dirtyRef = useRef(false);
 
-  // Reset view toggles when the panel switches files.
+  // Reset view toggles and the buffer when the panel switches files.
   useEffect(() => {
     setWrap(false);
     setMarkdownPreview(true);
     setFit(true);
     setImageSize(null);
+    setDraft(null);
+    setConflict(false);
   }, [workspaceId, path]);
 
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
+    setDraft(null);
+    setConflict(false);
     fsApi
       .read({ workspaceId, path })
       .then((content) => {
@@ -136,7 +159,8 @@ export function FilePanel({ panel, active }: PanelProps) {
 
   // Re-read on activation when the file changed on disk. Depending only on
   // `active` / `path` keeps an actively-written log from triggering a reload
-  // loop; the mtime comes from the last completed read.
+  // loop; the mtime comes from the last completed read. Unsaved edits are
+  // never overwritten silently — the conflict banner takes over instead.
   useEffect(() => {
     if (!active || loadedMtime.current === null) return;
     const loaded = loadedMtime.current;
@@ -144,9 +168,9 @@ export function FilePanel({ panel, active }: PanelProps) {
     fsApi
       .stat({ workspaceId, path })
       .then((stat) => {
-        if (!cancelled && stat.mtime !== loaded) {
-          setReloadToken((value) => value + 1);
-        }
+        if (cancelled || stat.mtime === loaded) return;
+        if (dirtyRef.current) setConflict(true);
+        else setReloadToken((value) => value + 1);
       })
       .catch(() => {
         // The file may have disappeared; the next read reports it.
@@ -171,6 +195,27 @@ export function FilePanel({ panel, active }: PanelProps) {
   }, [workspaceId, path]);
 
   const content = state.status === "ready" ? state.content : null;
+  const loadedText = content?.text ?? "";
+  /** The editor value: unsaved buffer when present, otherwise the file body. */
+  const value = draft ?? loadedText;
+  const dirty = draft !== null && draft !== loadedText;
+  dirtyRef.current = dirty;
+  /** Editing needs a complete UTF-8 body; truncated/binary/media stay read-only. */
+  const editable =
+    content !== null &&
+    !content.truncated &&
+    (content.kind === "text" || content.kind === "markdown");
+
+  useEffect(() => {
+    setPanelDirty(panel.id, dirty);
+  }, [dirty, panel.id]);
+
+  useEffect(
+    () => () => {
+      setPanelDirty(panel.id, false);
+    },
+    [panel.id],
+  );
 
   const absolutePath = useCallback(async (): Promise<string> => {
     const listing = await fsApi.list({ workspaceId, path: dirname(path) });
@@ -194,13 +239,71 @@ export function FilePanel({ panel, active }: PanelProps) {
     }
   }, [absolutePath, services]);
 
-  const refresh = useCallback(() => {
-    setReloadToken((value) => value + 1);
+  /** Drops the buffer and re-reads; used by refresh, discard and conflict. */
+  const reload = useCallback(() => {
+    setDraft(null);
+    setConflict(false);
+    setReloadToken((token) => token + 1);
   }, []);
+
+  const save = useCallback(
+    async (force = false) => {
+      if (!content || !editable || saving || !dirty) return;
+      const text = draft ?? content.text ?? "";
+      setSaving(true);
+      try {
+        const result = await fsApi.write({
+          workspaceId,
+          path,
+          text,
+          mtime: content.mtime,
+          force,
+        });
+        loadedMtime.current = result.mtime;
+        setState({
+          status: "ready",
+          content: { ...content, text, mtime: result.mtime, size: result.size },
+        });
+        setDraft(null);
+        setConflict(false);
+      } catch (error) {
+        const message = String(error);
+        // The Tauri command prefixes conflicts with `conflict:`; everything
+        // else is a real failure worth a toast.
+        if (message.includes("conflict")) setConflict(true);
+        else services.toast("error", message);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [content, draft, dirty, editable, path, saving, services, workspaceId],
+  );
 
   const showsText =
     content?.kind === "text" ||
     (content?.kind === "markdown" && !markdownPreview);
+
+  const textView = (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Suspense
+        fallback={
+          <div className="flex flex-1 items-center justify-center gap-2 text-ui-sm text-slate-400">
+            <Loader2 size={13} className="animate-spin" />
+            {t("file.loading")}
+          </div>
+        }
+      >
+        <MonacoView
+          value={value}
+          language={monacoLanguageFor(path)}
+          readOnly={!editable}
+          wrap={wrap}
+          onChange={setDraft}
+          onSave={() => void save()}
+        />
+      </Suspense>
+    </div>
+  );
 
   const body = (() => {
     if (state.status === "loading") {
@@ -219,7 +322,7 @@ export function FilePanel({ panel, active }: PanelProps) {
           </p>
           <button
             type="button"
-            onClick={refresh}
+            onClick={reload}
             className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-ui-xs text-slate-600 transition hover:bg-overlay"
           >
             <RefreshCw size={10} />
@@ -231,14 +334,12 @@ export function FilePanel({ panel, active }: PanelProps) {
 
     switch (state.content.kind) {
       case "text":
-        return (
-          <CodeView text={state.content.text ?? ""} path={path} wrap={wrap} />
-        );
+        return textView;
       case "markdown":
         return markdownPreview ? (
-          <MarkdownView text={state.content.text ?? ""} />
+          <MarkdownView text={value} />
         ) : (
-          <CodeView text={state.content.text ?? ""} path={path} wrap={wrap} />
+          textView
         );
       case "image":
         return (
@@ -354,6 +455,14 @@ export function FilePanel({ panel, active }: PanelProps) {
           {basename(path)}
         </span>
 
+        {dirty ? (
+          <span
+            aria-hidden
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+            data-file-dirty="true"
+          />
+        ) : null}
+
         {content?.kind === "markdown" ? (
           <button
             type="button"
@@ -368,6 +477,39 @@ export function FilePanel({ panel, active }: PanelProps) {
             }
           >
             {markdownPreview ? <FileCode2 size={12} /> : <Eye size={12} />}
+          </button>
+        ) : null}
+
+        {editable ? (
+          <button
+            type="button"
+            aria-label={t("file.save")}
+            title={t("file.save")}
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+            className={clsx(
+              dirty ? activeActionClass : actionClass,
+              (!dirty || saving) && "opacity-40",
+            )}
+            data-file-save="true"
+          >
+            {saving ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Save size={12} />
+            )}
+          </button>
+        ) : null}
+
+        {dirty ? (
+          <button
+            type="button"
+            aria-label={t("file.discard")}
+            title={t("file.discard")}
+            onClick={reload}
+            className={actionClass}
+          >
+            <Undo2 size={12} />
           </button>
         ) : null}
 
@@ -419,7 +561,7 @@ export function FilePanel({ panel, active }: PanelProps) {
           type="button"
           aria-label={t("explorer.refresh")}
           title={t("explorer.refresh")}
-          onClick={refresh}
+          onClick={reload}
           className={actionClass}
         >
           <RefreshCw size={12} />
@@ -442,6 +584,31 @@ export function FilePanel({ panel, active }: PanelProps) {
           </span>
         ) : null}
       </div>
+
+      {conflict ? (
+        <div
+          className="flex shrink-0 items-center gap-2 border-b border-amber-100 bg-amber-50 px-3 py-1 text-ui-xs text-amber-700"
+          data-workbench-file="conflict"
+        >
+          <span className="min-w-0 flex-1 truncate" title={t("file.conflictHint")}>
+            {t("file.conflict")}
+          </span>
+          <button
+            type="button"
+            onClick={reload}
+            className="shrink-0 rounded px-1 py-0.5 transition hover:bg-amber-100"
+          >
+            {t("file.reload")}
+          </button>
+          <button
+            type="button"
+            onClick={() => void save(true)}
+            className="shrink-0 rounded px-1 py-0.5 transition hover:bg-amber-100"
+          >
+            {t("file.overwrite")}
+          </button>
+        </div>
+      ) : null}
 
       {content?.truncated ? (
         <div

@@ -50,4 +50,13 @@ export const explorer = {
   "file.readOnly": ["只读", "Read-only"],
   "file.markdown": ["预览", "Preview"],
   "file.source": ["源码", "Source"],
+  "file.save": ["保存", "Save"],
+  "file.discard": ["放弃修改", "Discard changes"],
+  "file.conflict": ["文件已在外部修改", "File changed on disk"],
+  "file.conflictHint": [
+    "保存前需要重新加载，或用当前内容覆盖。",
+    "Reload before saving, or overwrite the file with this buffer.",
+  ],
+  "file.reload": ["重新加载", "Reload"],
+  "file.overwrite": ["覆盖保存", "Overwrite"],
 } as const satisfies Catalog;

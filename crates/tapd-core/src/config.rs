@@ -76,6 +76,10 @@ pub struct CompanionConfig {
     /// management permissions. It lets [`Self::migrate_device_permissions`]
     /// grant the first device once without undoing a later explicit revoke.
     pub device_permissions_initialized: bool,
+    /// Allow paired phones to edit text files inside project folders. Off by
+    /// default: the phone stays preview-only until the desktop (or a device
+    /// with management permission) turns it on.
+    pub allow_file_write: bool,
 }
 
 impl Default for CompanionConfig {
@@ -88,6 +92,7 @@ impl Default for CompanionConfig {
             require_pairing_code: true,
             devices: Vec::new(),
             device_permissions_initialized: false,
+            allow_file_write: false,
         }
     }
 }

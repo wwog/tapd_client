@@ -174,16 +174,18 @@
 **安全与限制**
 
 - 门槛与伴侣相同：一次性配对码换 token，解除配对立即失效；WebSocket 另用 60s 单次票据，长期 token 不再进入 URL。隧道开启时远程终端等价于公网可达的桌面 shell，只在可信设备上配对。设备管理接口额外要求 `canManage`，非管理员返回 403。
-- 不做独立认证、二次确认、端口转发或可写文件传输；项目文件只有只读浏览（见 §10）。机型上的密码输入建议用遮蔽开关或直通模式。
+- 不做独立认证、二次确认、端口转发或可写文件传输；项目文件只有受控编辑（默认关闭，见 §10）。机型上的密码输入建议用遮蔽开关或直通模式。
 - 回放是原始输出尾部，不做终端状态序列化；全屏 TUI 中途重挂只能近似重建，手机断线超过 256 KiB 的输出会丢。
 
-## 10. 文件浏览（v5，2026-11-13）
+## 10. 文件浏览与编辑（v5，2026-11-13；编辑 2026-11-14）
 
-只读浏览桌面项目配置的本地文件夹，不镜像桌面分屏布局。
+浏览桌面项目配置的本地文件夹，不镜像桌面分屏布局。编辑默认关闭。
 
 - `GET /companion/api/files?workspaceId=&path=`（Bearer）→ `{ root, path, entries, truncated }`；一层目录、dirs-first、隐藏文件带 `hidden` 标记、单目录 5000 条截断。
 - `GET /companion/api/file?workspaceId=&path=`（Bearer）→ `{ kind, path, size, mtime, text, truncated }`；文本 2 MiB 截断，图片 / 音视频只给 kind，50 MiB 以上为 `tooLarge`。
 - `GET /companion/api/file/raw?t=<token>&workspaceId=&path=`（查询 token，供 `<img>` / `<video>`）→ 原始字节，支持单段 `Range`。
+- `GET /companion/api/file/write`（Bearer）→ `{ enabled }`；`POST /companion/api/file/write-setting { enabled }`（仅 `canManage`）切换桌面配置 `companion.allowFileWrite`，默认 false。桌面伴侣弹窗也提供同一开关。
+- `POST /companion/api/file/write { workspaceId, path, text, mtime?, force? }`（Bearer，需开关打开）→ `{ path, kind, size, mtime }`；只覆盖已存在的文本文件（2 MiB），同目录临时文件 + rename，`mtime` 不一致返回 409 `conflict`，`force` 覆盖。
 - 路径与桌面同一套 `fs.rs` 解析：根为项目 `repoPath`，只接受相对路径，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；未配置文件夹返回 `no_folder:`，手机显示「在桌面端项目设置里选择本地文件夹」。
-- 手机页面：底部「文件」tab → `#/files?ws=&path=`（项目切换、面包屑、返回上级、隐藏文件开关、目录下钻）→ `#/file?ws=&path=`（文本 / Markdown 按纯文本渲染、图片、音视频、二进制元信息）。文件内容不经过 `dangerouslySetInnerHTML`。
+- 手机页面：底部「文件」tab → `#/files?ws=&path=`（项目切换、面包屑、返回上级、隐藏文件开关、目录下钻）→ `#/file?ws=&path=`（文本 / Markdown、图片、音视频、二进制元信息）。编辑开启且文件未截断时可切换等宽 textarea 编辑并保存；冲突时提示重新加载或覆盖。文件内容不经过 `dangerouslySetInnerHTML`。
 

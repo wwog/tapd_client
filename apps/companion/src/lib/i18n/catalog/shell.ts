@@ -65,6 +65,12 @@ export const shell = {
   ],
   "mobile.settings.devicesLoading": ["读取设备列表…", "Loading devices…"],
   "mobile.settings.noDevices": ["暂无已配对设备", "No paired devices"],
+  "mobile.settings.fileEditing": ["项目文件", "Project files"],
+  "mobile.settings.fileWrite": ["允许编辑项目文件", "Allow editing project files"],
+  "mobile.settings.fileWriteHint": [
+    "关闭时手机只读预览；开启后可在文件页编辑文本并保存到桌面。",
+    "When off the phone is preview-only; when on you can edit text files and save them to the desktop.",
+  ],
   "mobile.settings.desktopSettings": ["桌面端配置", "Desktop settings"],
   "mobile.settings.writeBackHint": [
     "改动会立即写回桌面端；失败时恢复原值并显示错误。",

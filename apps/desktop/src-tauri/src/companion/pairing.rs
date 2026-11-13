@@ -463,6 +463,7 @@ mod tests {
             require_pairing_code: true,
             devices: vec![device("iPhone 15", &sha256_hex("token"))],
             device_permissions_initialized: true,
+            allow_file_write: false,
         };
 
         let raw = serde_json::to_string(&config).expect("serialize companion config");

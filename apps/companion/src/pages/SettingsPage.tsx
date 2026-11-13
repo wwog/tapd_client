@@ -241,6 +241,24 @@ export function SettingsPage() {
   const [devices, setDevices] = useState<CompanionDevices | null>(null);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [deviceBusy, setDeviceBusy] = useState(false);
+  const [fileWrite, setFileWrite] = useState(false);
+  const [fileWriteBusy, setFileWriteBusy] = useState(false);
+  const [fileWriteError, setFileWriteError] = useState<string | null>(null);
+
+  // The desktop owns the switch; managers can toggle it from here.
+  useEffect(() => {
+    if (!presence.canManage) return;
+    let cancelled = false;
+    void api
+      .fileWriteEnabled()
+      .then((data) => {
+        if (!cancelled) setFileWrite(data.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [presence.canManage, presence.lastSync]);
   const [linkCopied, setLinkCopied] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const devicesSeq = useRef(0);
@@ -404,6 +422,23 @@ export function SettingsPage() {
       setDevicesError(asApiError(err).message);
     } finally {
       setDeviceBusy(false);
+    }
+  };
+
+  /** Optimistic write; a failure restores the previous value and shows why. */
+  const toggleFileWrite = async (enabled: boolean) => {
+    setFileWriteBusy(true);
+    setFileWriteError(null);
+    const previous = fileWrite;
+    setFileWrite(enabled);
+    try {
+      const next = await api.setFileWrite(enabled);
+      setFileWrite(next.enabled);
+    } catch (error) {
+      setFileWrite(previous);
+      setFileWriteError(asApiError(error).message);
+    } finally {
+      setFileWriteBusy(false);
     }
   };
 
@@ -617,6 +652,26 @@ export function SettingsPage() {
                 {t("mobile.settings.devicesLoading")}
               </p>
             )}
+          </section>
+        </>
+      ) : null}
+
+      {presence.canManage ? (
+        <>
+          <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
+            {t("mobile.settings.fileEditing")}
+          </h2>
+          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+            <SwitchRow
+              label={t("mobile.settings.fileWrite")}
+              title={t("mobile.settings.fileWriteHint")}
+              checked={fileWrite}
+              disabled={fileWriteBusy}
+              onChange={(value) => void toggleFileWrite(value)}
+            />
+            {fileWriteError ? (
+              <p className="pb-2 text-ui-xs text-rose-600">{fileWriteError}</p>
+            ) : null}
           </section>
         </>
       ) : null}

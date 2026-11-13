@@ -8,6 +8,7 @@
 import MDEditor from "@uiw/react-md-editor";
 
 import { useResolvedTheme } from "../../lib/appearance";
+import "./code.css";
 
 export function MarkdownView({ text }: { text: string }) {
   const theme = useResolvedTheme();

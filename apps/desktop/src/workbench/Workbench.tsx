@@ -15,7 +15,12 @@ import {
   type ReactNode,
 } from "react";
 
+import { AlertTriangle } from "lucide-react";
+
 import { api as appApi } from "../lib/api";
+import { t } from "../lib/i18n";
+import { Button } from "../components/ui";
+import { Dialog } from "../components/Dialog";
 import {
   LAYOUT_GUTTER,
   RAIL_WIDTH,
@@ -29,6 +34,7 @@ import {
   type PanelRef,
   type WorkbenchLayoutApi,
 } from "./layout/types";
+import { isPanelDirty, setPanelDirty } from "./panels/dirty";
 import { PANEL_DEFINITIONS } from "./panels/registry";
 import {
   PanelServicesProvider,
@@ -70,6 +76,8 @@ export function Workbench({
 }: WorkbenchProps) {
   const [bodies, setBodies] = useState<Record<string, HTMLElement | null>>({});
   const [drag, setDrag] = useState<TabDrag | null>(null);
+  /** A tab close that has to confirm unsaved edits first. */
+  const [dirtyClose, setDirtyClose] = useState<PanelRef | null>(null);
   /** A `+` click should activate the session it spawned once the list syncs. */
   const pendingTerminalActivate = useRef<number | null>(null);
 
@@ -84,7 +92,8 @@ export function Workbench({
     [],
   );
 
-  const closePanel = useCallback(
+  /** Performs the close once no unsaved-edit confirmation is pending. */
+  const doClose = useCallback(
     (panel: PanelRef) => {
       if (panel.resource.type === "terminal") {
         baseServices.terminal.close(panel.resource.sessionId);
@@ -97,6 +106,18 @@ export function Workbench({
       api.closePanel(panel.id);
     },
     [api.closePanel, baseServices.bug, baseServices.terminal],
+  );
+
+  /** Tab / drawer close: a dirty editor asks before discarding the buffer. */
+  const closePanel = useCallback(
+    (panel: PanelRef) => {
+      if (isPanelDirty(panel.id)) {
+        setDirtyClose(panel);
+        return;
+      }
+      doClose(panel);
+    },
+    [doClose],
   );
 
   const closePanelById = useCallback(
@@ -354,6 +375,41 @@ export function Workbench({
             {drag.drop ? <DropOverlay drop={drag.drop} /> : null}
             <DragGhost drag={drag} />
           </>
+        ) : null}
+
+        {dirtyClose ? (
+          <Dialog
+            title={t("layout.unsavedTitle")}
+            icon={<AlertTriangle size={15} className="text-amber-500" />}
+            onClose={() => setDirtyClose(null)}
+          >
+            <p className="text-ui-caption leading-6 text-slate-600">
+              {t("layout.unsavedBody", {
+                name: PANEL_DEFINITIONS[dirtyClose.kind].title(dirtyClose),
+              })}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setDirtyClose(null)}
+              >
+                {t("layout.keepEditing")}
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => {
+                  const panel = dirtyClose;
+                  setPanelDirty(panel.id, false);
+                  doClose(panel);
+                  setDirtyClose(null);
+                }}
+              >
+                {t("layout.discardClose")}
+              </Button>
+            </div>
+          </Dialog>
         ) : null}
       </PageHostProvider>
     </PanelServicesProvider>

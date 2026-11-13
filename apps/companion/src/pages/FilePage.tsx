@@ -5,7 +5,10 @@ import {
   Copy,
   ExternalLink,
   LoaderCircle,
+  Pencil,
   RefreshCw,
+  Save,
+  X,
 } from "lucide-react";
 
 import {
@@ -103,6 +106,37 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   const [nonce, setNonce] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  /** Desktop-side switch; false until the check resolves. */
+  const [writeEnabled, setWriteEnabled] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Editing is off by default; the desktop (or a manager phone) enables it.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .fileWriteEnabled()
+      .then((data) => {
+        if (!cancelled) setWriteEnabled(data.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setWriteEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
+
+  // Leaving the file (or reloading it) drops the local buffer.
+  useEffect(() => {
+    setEditing(false);
+    setDraft(null);
+    setConflict(false);
+    setSaveError(null);
+  }, [workspaceId, path, nonce]);
 
   useEffect(() => {
     if (!workspaceId || !path) {
@@ -169,6 +203,54 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
       : "—";
   const text = content?.text ?? "";
   const isText = content?.kind === "text" || content?.kind === "markdown";
+  /** Editing needs a complete body and the desktop-side switch. */
+  const editable = Boolean(content && isText && !content.truncated && writeEnabled);
+  const value = draft ?? text;
+  const dirty = draft !== null && draft !== text;
+
+  const startEdit = () => {
+    setDraft(text);
+    setEditing(true);
+    setConflict(false);
+    setSaveError(null);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setDraft(null);
+    setConflict(false);
+    setSaveError(null);
+  };
+
+  const save = async (force = false) => {
+    if (!workspaceId || !content || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const next = await api.writeFile(
+        workspaceId,
+        path,
+        value,
+        content.mtime,
+        force,
+      );
+      setContent({
+        ...content,
+        text: value,
+        size: next.size,
+        mtime: next.mtime,
+      });
+      setEditing(false);
+      setDraft(null);
+      setConflict(false);
+    } catch (error) {
+      const failure = asApiError(error);
+      if (failure.code === "conflict") setConflict(true);
+      else setSaveError(failure.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const renderBinary = (item: FsContent) => (
     <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
@@ -213,6 +295,44 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
           <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900">
             {name}
           </span>
+          {editable && !editing ? (
+            <button
+              type="button"
+              aria-label={t("mobile.files.edit")}
+              title={t("mobile.files.edit")}
+              onClick={startEdit}
+              className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+            >
+              <Pencil size={16} />
+            </button>
+          ) : null}
+          {editing ? (
+            <>
+              <button
+                type="button"
+                aria-label={t("mobile.files.cancel")}
+                title={t("mobile.files.cancel")}
+                onClick={cancelEdit}
+                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+              >
+                <X size={16} />
+              </button>
+              <button
+                type="button"
+                aria-label={saving ? t("mobile.files.saving") : t("mobile.files.save")}
+                title={saving ? t("mobile.files.saving") : t("mobile.files.save")}
+                disabled={saving || !dirty}
+                onClick={() => void save()}
+                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-sky-600 transition active:bg-sky-50 disabled:opacity-40"
+              >
+                {saving ? (
+                  <LoaderCircle size={16} className="animate-spin" />
+                ) : (
+                  <Check size={16} />
+                )}
+              </button>
+            </>
+          ) : null}
           <button
             type="button"
             aria-label={copied ? t("common.copied") : t("mobile.files.copyPath")}
@@ -236,6 +356,35 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
           <p className="px-4 pb-2 text-ui-xs text-rose-600">{copyError}</p>
         ) : null}
       </header>
+
+      {conflict ? (
+        <div className="mx-3 mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-xs leading-5 text-amber-700">
+          <p>{t("mobile.files.conflict")}</p>
+          <p className="mt-1 text-amber-600">{t("mobile.files.conflictHint")}</p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setNonce((value) => value + 1)}
+              className="rounded-md border border-amber-200 bg-surface px-2 py-1 text-ui-xs text-amber-700 transition active:bg-amber-100"
+            >
+              {t("mobile.files.reload")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void save(true)}
+              className="rounded-md border border-amber-200 bg-surface px-2 py-1 text-ui-xs text-amber-700 transition active:bg-amber-100"
+            >
+              {t("mobile.files.overwrite")}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {saveError ? (
+        <p className="mx-3 mt-2 text-ui-xs text-rose-600">
+          {t("mobile.files.saveFailed", { error: saveError })}
+        </p>
+      ) : null}
 
       {loading && !content ? (
         <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
@@ -285,7 +434,38 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
       ) : null}
 
       {content && isText ? (
-        text.length > 0 ? (
+        editing ? (
+          <div className="px-3 pt-3">
+            <textarea
+              value={value}
+              onChange={(event) => setDraft(event.target.value)}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              className="min-h-[55vh] w-full resize-y rounded-xl border border-border bg-surface p-3 font-mono text-ui-xs leading-5 text-slate-700 outline-none focus:border-sky-300"
+            />
+            <div className="flex items-center justify-between gap-2 py-3 text-ui-xs text-slate-400">
+              <span>
+                {dirty
+                  ? t("mobile.files.unsaved")
+                  : t("mobile.files.noChanges")}
+              </span>
+              <button
+                type="button"
+                disabled={saving || !dirty}
+                onClick={() => void save()}
+                className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-40"
+              >
+                {saving ? (
+                  <LoaderCircle size={14} className="animate-spin" />
+                ) : (
+                  <Save size={14} />
+                )}
+                {saving ? t("mobile.files.saving") : t("mobile.files.save")}
+              </button>
+            </div>
+          </div>
+        ) : text.length > 0 ? (
           <CodeBlock text={text} />
         ) : (
           <p className="px-4 py-8 text-center text-ui-caption text-slate-400">

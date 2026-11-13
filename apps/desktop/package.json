@@ -19,10 +19,10 @@
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.70.0",
+    "monaco-editor": "^0.57.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "refractor": "^5.0.0"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",

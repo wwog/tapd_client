@@ -1,10 +1,11 @@
-//! Read-only filesystem access for the Explorer and file viewer panels.
+//! Filesystem access for the Explorer and file viewer panels.
 //!
 //! The root is always the project's configured folder
 //! (`agent.json` → `projects[workspaceId].repoPath`). Every request carries a
 //! `/`-separated path relative to that root; [`resolve_in_root`] canonicalizes
 //! both sides and compares components, which also rejects symlinks that point
-//! outside the project. There is deliberately no write API.
+//! outside the project. Listing/reading are always available; writing only
+//! overwrites existing UTF-8 text files and is gated by the mobile setting.
 //!
 //! The same helpers back the desktop commands, the loopback `/file` streaming
 //! route and the mobile companion endpoints; none of them re-implement path
@@ -12,7 +13,7 @@
 
 use std::{
     fs as std_fs,
-    io::Read,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -27,6 +28,8 @@ pub const NO_FOLDER_PREFIX: &str = "no_folder:";
 pub const MAX_LIST_ENTRIES: usize = 5_000;
 /// Text previews stop after this many bytes; the UI says "first 2 MB".
 pub const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
+/// Text edits are capped at the same size the viewer can load completely.
+pub const MAX_WRITE_BYTES: u64 = 2 * 1024 * 1024;
 /// `fs_read` refuses to load anything larger than this into memory.
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// The streaming route buffers one body, so it keeps its own larger ceiling.
@@ -50,6 +53,8 @@ pub enum FsErrorKind {
     NotFound,
     /// The file body exceeds the streaming / read ceiling.
     TooLarge,
+    /// The file changed on disk since the editor loaded it.
+    Conflict,
     /// Any other I/O failure.
     Io,
 }
@@ -92,6 +97,15 @@ impl FsError {
 
     fn too_large(message: impl Into<String>) -> Self {
         Self::new(FsErrorKind::TooLarge, message)
+    }
+
+    /// The Tauri command surfaces this message verbatim; the stable `conflict:`
+    /// prefix lets the editor offer reload/overwrite without a JSON envelope.
+    fn conflict(current_mtime: i64) -> Self {
+        Self::new(
+            FsErrorKind::Conflict,
+            format!("conflict: file changed on disk ({current_mtime})"),
+        )
     }
 
     fn io(error: std::io::Error) -> Self {
@@ -449,7 +463,7 @@ pub(crate) fn read_file(root: &Path, relative: &str) -> Result<FsContent, FsErro
 
     let mut file = std_fs::File::open(&target).map_err(FsError::io)?;
     let mut bytes = Vec::new();
-    file.by_ref()
+    Read::by_ref(&mut file)
         .take(MAX_READ_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(FsError::io)?;
@@ -503,6 +517,72 @@ pub(crate) fn stat(root: &Path, relative: &str) -> Result<FsStat, FsError> {
             metadata.len()
         },
         mtime: unix_secs(&metadata),
+    })
+}
+
+/// Overwrites one existing UTF-8 text file.
+///
+/// The body goes to a sibling temp file first, keeps the original permissions
+/// and is renamed over the target, so a crash cannot leave a half-written
+/// source file. `expected_mtime` is the value the editor loaded; a mismatch
+/// means the file changed on disk and is reported as [`FsErrorKind::Conflict`]
+/// unless `force` is set. New files and directories are deliberately rejected.
+pub(crate) fn write_file(
+    root: &Path,
+    relative: &str,
+    text: &str,
+    expected_mtime: Option<i64>,
+    force: bool,
+) -> Result<FsStat, FsError> {
+    let canonical = canonical_root(root)?;
+    let target = resolve_in_root(&canonical, relative)?;
+    let metadata = std_fs::metadata(&target).map_err(FsError::io)?;
+    if !metadata.is_file() {
+        return Err(FsError::invalid("path is not a file"));
+    }
+    if text.len() as u64 > MAX_WRITE_BYTES {
+        return Err(FsError::too_large("file is too large to edit"));
+    }
+    let current_mtime = unix_secs(&metadata);
+    if !force {
+        if let Some(expected) = expected_mtime {
+            if expected != current_mtime {
+                return Err(FsError::conflict(current_mtime));
+            }
+        }
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| FsError::invalid("file has no parent directory"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp = parent.join(format!(
+        ".tapd-edit-{}-{stamp}.tmp",
+        std::process::id()
+    ));
+
+    let write_result = (|| -> Result<(), std::io::Error> {
+        let mut file = std_fs::File::create(&temp)?;
+        // Keep executable bits and other modes of the original file.
+        std_fs::set_permissions(&temp, metadata.permissions())?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std_fs::rename(&temp, &target)
+    })();
+    if let Err(error) = write_result {
+        let _ = std_fs::remove_file(&temp);
+        return Err(FsError::io(error));
+    }
+
+    let updated = std_fs::metadata(&target).map_err(FsError::io)?;
+    Ok(FsStat {
+        path: relative_display(&canonical, &target)?,
+        kind: FsEntryKind::File,
+        size: updated.len(),
+        mtime: unix_secs(&updated),
     })
 }
 
@@ -595,6 +675,22 @@ pub async fn fs_read(
 pub async fn fs_stat(app: AppHandle, workspace_id: String, path: String) -> Result<FsStat, String> {
     let root = root_for(&app, &workspace_id).map_err(|error| error.message())?;
     tokio::task::spawn_blocking(move || stat(&root, &path))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.message())
+}
+
+#[tauri::command]
+pub async fn fs_write(
+    app: AppHandle,
+    workspace_id: String,
+    path: String,
+    text: String,
+    mtime: Option<i64>,
+    force: Option<bool>,
+) -> Result<FsStat, String> {
+    let root = root_for(&app, &workspace_id).map_err(|error| error.message())?;
+    tokio::task::spawn_blocking(move || write_file(&root, &path, &text, mtime, force.unwrap_or(false)))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.message())
@@ -863,5 +959,110 @@ mod tests {
             content_type_for(Path::new("no-extension")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn writes_text_and_round_trips() {
+        let tree = TempTree::new("write");
+        tree.write("src/note.txt", b"old");
+        let root = tree.root();
+        let before = stat(&root, "src/note.txt").expect("stat before");
+
+        let updated = write_file(
+            &root,
+            "src/note.txt",
+            "new body\n",
+            Some(before.mtime),
+            false,
+        )
+        .expect("write");
+        assert_eq!(updated.kind, FsEntryKind::File);
+        assert_eq!(updated.size, 9);
+
+        let content = read_file(&root, "src/note.txt").expect("read back");
+        assert_eq!(content.text.as_deref(), Some("new body\n"));
+    }
+
+    #[test]
+    fn rejects_a_stale_mtime_unless_forced() {
+        let tree = TempTree::new("conflict");
+        tree.write("note.txt", b"old");
+        let root = tree.root();
+        let before = stat(&root, "note.txt").expect("stat");
+
+        let error = write_file(&root, "note.txt", "mine", Some(before.mtime - 1), false)
+            .expect_err("stale mtime");
+        assert_eq!(error.kind, FsErrorKind::Conflict);
+        assert!(error.message().starts_with("conflict:"));
+
+        let forced =
+            write_file(&root, "note.txt", "mine", Some(before.mtime - 1), true).expect("forced");
+        assert_eq!(forced.size, 4);
+        assert_eq!(
+            read_file(&root, "note.txt")
+                .expect("read")
+                .text
+                .as_deref(),
+            Some("mine")
+        );
+    }
+
+    #[test]
+    fn rejects_writing_directories_missing_files_and_escapes() {
+        let tree = TempTree::new("write-reject");
+        tree.mkdir("sub");
+        tree.write("note.txt", b"old");
+        let root = tree.root();
+
+        assert_eq!(
+            write_file(&root, "sub", "x", None, true)
+                .expect_err("directory")
+                .kind,
+            FsErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            write_file(&root, "missing.txt", "x", None, true)
+                .expect_err("missing file")
+                .kind,
+            FsErrorKind::NotFound
+        );
+        assert_eq!(
+            write_file(&root, "../outside.txt", "x", None, true)
+                .expect_err("escape")
+                .kind,
+            FsErrorKind::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn rejects_edits_above_the_write_limit() {
+        let tree = TempTree::new("write-large");
+        tree.write("note.txt", b"old");
+        let root = tree.root();
+        let body = "a".repeat((MAX_WRITE_BYTES + 1) as usize);
+
+        let error = write_file(&root, "note.txt", &body, None, true).expect_err("too large");
+        assert_eq!(error.kind, FsErrorKind::TooLarge);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tree = TempTree::new("write-mode");
+        tree.write("run.sh", b"#!/bin/sh\n");
+        let root = tree.root();
+        let path = root.join("run.sh");
+        std_fs::set_permissions(&path, std_fs::Permissions::from_mode(0o755))
+            .expect("chmod fixture");
+
+        write_file(&root, "run.sh", "#!/bin/sh\necho ok\n", None, true).expect("write");
+        let mode = std_fs::metadata(&path)
+            .expect("stat written file")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 }

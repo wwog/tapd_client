@@ -130,7 +130,7 @@ LayoutState（fraction 分割树）→ SplitView（实测像素）→ GroupView�
 - 主内容、右侧详情、底部终端是同一种「组」：分割树只描述空间，组只持有标签，面板内容由注册表按 kind 渲染。完整命名、不变量与拖拽协议见 [WORKBENCH.md](WORKBENCH.md)。
 - 每个面板只挂载一次：`PanelHost` 为每个面板建一个独立容器并 `createPortal`，标签在组间移动时只把该容器 `appendChild` 到新的组 body，React 不重挂载，终端回放、滚动与详情状态都保留。非激活标签 `invisible + inert`，xterm 仍保有真实尺寸。
 - 尺寸以 fraction 持久化到 `uiPrefs["workbench.layout.v1"]`；空的标准停靠组保留自己的比例，重新打开时恢复原大小，非 role 空组由 `normalize` 回收。分割条统一 1.5px 视觉 / 8px 命中区，交叉点由实测矩形求交后同时调整两个 split。
-- 文件能力只读：`../WORKBENCH.md` §8 的 `fs_list` / `fs_read` / `fs_stat` 以项目 `repoPath` 为根，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；二进制预览走本机 `/file` 与伴侣 `/companion/api/file/raw` 流式路由。
+- 文件能力：`../WORKBENCH.md` §8 的 `fs_list` / `fs_read` / `fs_stat` / `fs_write` 以项目 `repoPath` 为根，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；写入只覆盖已存在的文本文件（2 MiB、临时文件 + rename、mtime 冲突），桌面用 Monaco 编辑，手机编辑由 `companion.allowFileWrite` 控制（默认关）。二进制预览走本机 `/file` 与伴侣 `/companion/api/file/raw` 流式路由。
 
 ## 4. 已实现能力
 

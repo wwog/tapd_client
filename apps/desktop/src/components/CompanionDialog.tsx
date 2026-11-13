@@ -91,6 +91,7 @@ export function CompanionDialog({
   const [pairingError, setPairingError] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [deviceBusy, setDeviceBusy] = useState(false);
+  const [fileWriteBusy, setFileWriteBusy] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -334,6 +335,19 @@ export function CompanionDialog({
       toast("error", String(error));
     } finally {
       setDeviceBusy(false);
+    }
+  };
+
+  /** Phone editing is off by default; this is the desktop-side switch. */
+  const setFileWrite = async (allow: boolean) => {
+    setFileWriteBusy(true);
+    try {
+      await companionApi.setFileWrite(allow);
+      await loadStatus(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setFileWriteBusy(false);
     }
   };
 
@@ -735,6 +749,25 @@ export function CompanionDialog({
             ) : (
               <p className="mt-2 text-ui-xs text-slate-400">{t("settings.companion.noDevices")}</p>
             )}
+          </div>
+
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-ui-sm text-slate-900">
+                  {t("settings.companion.fileWrite")}
+                </h3>
+                <p className="mt-1 text-ui-2xs leading-5 text-slate-400">
+                  {t("settings.companion.fileWriteHint")}
+                </p>
+              </div>
+              <Switch
+                checked={status?.allowFileWrite ?? false}
+                onChange={(value) => void setFileWrite(value)}
+                disabled={fileWriteBusy || !status}
+                label={t("settings.companion.fileWrite")}
+              />
+            </div>
           </div>
 
           <div className="rounded-2xl border border-border bg-slate-50/60 p-4">

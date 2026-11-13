@@ -56,7 +56,10 @@ fn self_management() -> Response {
 }
 
 /// Resolves the authenticated device and requires management permission.
-fn manage_guard(ctx: &CompanionCtx, headers: &HeaderMap) -> Result<CompanionDevice, Response> {
+pub(super) fn manage_guard(
+    ctx: &CompanionCtx,
+    headers: &HeaderMap,
+) -> Result<CompanionDevice, Response> {
     let Some(token) = bearer_token(headers) else {
         return Err(unauthorized());
     };

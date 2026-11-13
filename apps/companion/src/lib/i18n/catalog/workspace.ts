@@ -77,4 +77,21 @@ export const workspace = {
   "mobile.files.kindVideo": ["视频", "Video"],
   "mobile.files.kindBinary": ["二进制文件", "Binary file"],
   "mobile.files.kindTooLarge": ["文件过大", "File too large"],
+
+  /* -- Editing (off until the desktop allows it) --------------------------- */
+  "mobile.files.edit": ["编辑", "Edit"],
+  "mobile.files.cancel": ["取消", "Cancel"],
+  "mobile.files.save": ["保存", "Save"],
+  "mobile.files.saving": ["保存中…", "Saving…"],
+  "mobile.files.unsaved": ["未保存", "Unsaved"],
+  "mobile.files.noChanges": ["无修改", "No changes"],
+  "mobile.files.readOnlyHint": ["预览模式", "Preview mode"],
+  "mobile.files.saveFailed": ["保存失败：{error}", "Could not save: {error}"],
+  "mobile.files.conflict": ["文件已在桌面端修改", "File changed on the desktop"],
+  "mobile.files.conflictHint": [
+    "重新加载会丢弃手机上的修改；覆盖会写入当前内容。",
+    "Reload discards edits made on the phone; overwrite writes this buffer.",
+  ],
+  "mobile.files.reload": ["重新加载", "Reload"],
+  "mobile.files.overwrite": ["覆盖保存", "Overwrite"],
 } as const satisfies Catalog;

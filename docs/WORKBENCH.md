@@ -134,7 +134,7 @@ type LayoutPrefs = { version: 1; layout: LayoutState; sidebarWidth: number };
 - 归一化：未知面板丢弃、非 role 空组删除、单子 split 提升、比例重新配平、active 指针修复。
 - 资源管理器展开目录存 `uiPrefs["explorer.tree.v1"]`（`{ [workspaceId]: string[] }`）。
 
-## 8. 文件能力（只读）
+## 8. 文件能力（读 / 写）
 
 Rust `src-tauri/src/fs.rs`：
 
@@ -142,14 +142,16 @@ Rust `src-tauri/src/fs.rs`：
 - 所有入参只接受**相对路径**；`resolve_in_root` 拒绝绝对路径、`..`、NUL、非 UTF-8，canonicalize 后按组件比较，拒绝符号链接逃逸。
 - `fs_list`（一层，dirs-first，5000 条截断）、`fs_read`（文本 2 MiB 截断；`text/markdown/image/audio/video/binary/tooLarge`）、`fs_stat`。
 - 二进制预览走本机流式路由 `GET /file?token&ws&path`（Range）；移动端 `GET /companion/api/file/raw?t&ws&path` 复用同一实现。
-- 不提供写入。
+- `fs_write`：只覆盖**已存在的文本文件**（不新建），上限 2 MiB；先写同目录临时文件、保留原文件权限再 rename，崩溃不会留下半个文件。请求带加载时的 `mtime`，不一致返回 `conflict:`（HTTP 409），`force` 才覆盖。
+- 桌面编辑器是 Monaco（懒加载 chunk + 本地 worker），⌘S 保存；未保存时标签显示圆点，关闭标签弹出「放弃并关闭 / 继续编辑」。
 
 ## 9. 移动端
 
-只读适配，不镜像桌面的分割树：
+只读预览为主，编辑需显式开启：
 
-- 底部新增「文件」tab：项目切换 → 面包屑目录列表（点击下钻/返回）→ 预览页（文本/Markdown/图片/二进制提示）。
+- 底部「文件」tab：项目切换 → 面包屑目录列表（点击下钻/返回）→ 预览页（文本/Markdown/图片/二进制提示）。
 - JSON 接口 `GET /companion/api/files`、`GET /companion/api/file`；二进制走 `file/raw`，鉴权与媒体一致（Bearer 或 `?t=`）。
+- 编辑默认关闭：桌面伴侣弹窗或手机设置页（仅 `canManage` 设备）打开 `companion.allowFileWrite` 后，文件页才显示编辑按钮；保存走 `POST /companion/api/file/write`，同样带 `mtime` 冲突校验。手机端用等宽 textarea，不加载 Monaco。
 
 ## 10. 文件所有权
 

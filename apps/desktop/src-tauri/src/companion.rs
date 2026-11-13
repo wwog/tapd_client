@@ -17,7 +17,7 @@
 //!   plus the members directory and the bug write endpoints (comment /
 //!   update-field / transitions / transition / claim), which run the same
 //!   desktop command cores the bug detail panel uses.
-//! - `files` — read-only project folder browsing and file previews.
+//! - `files` — project folder browsing, previews and gated text editing.
 //! - `feature` — whitelisted proxy to the desktop `feature_command` surface.
 //! - `terminal` — the per-session terminal WebSocket (replay + live output).
 //! - `tunnel` — cloudflared Quick Tunnel detection, lifecycle and URL parsing.
@@ -42,6 +42,7 @@ use std::{
 };
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -63,7 +64,9 @@ use api::{
 use assets::static_fallback;
 use devices::{api_device_permission, api_device_unpair, api_devices};
 use feature::{api_feature, rate_limiter};
-use files::{api_file, api_file_raw, api_files};
+use files::{
+    api_file, api_file_raw, api_file_write, api_file_write_setting, api_file_write_state, api_files,
+};
 use pairing::{heartbeat, pair, RateLimiter};
 use terminal::ws_terminal;
 
@@ -239,8 +242,18 @@ async fn serve(
         .route("/companion/api/files", get(api_files))
         .route("/companion/api/file", get(api_file))
         .route("/companion/api/file/raw", get(api_file_raw))
+        .route(
+            "/companion/api/file/write",
+            get(api_file_write_state).post(api_file_write),
+        )
+        .route(
+            "/companion/api/file/write-setting",
+            post(api_file_write_setting),
+        )
         .route("/companion/api/feature", post(api_feature))
         .route("/companion/api/terminal/ws", get(ws_terminal))
+        // Text edits carry up to 2 MiB; JSON escaping needs a little headroom.
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .fallback(static_fallback)
         .with_state(ctx);
 
@@ -342,6 +355,8 @@ pub struct CompanionStatus {
     enabled: bool,
     running: bool,
     require_pairing_code: bool,
+    /// Paired phones may edit project text files (default false).
+    allow_file_write: bool,
     port: Option<u16>,
     lan_ip: Option<String>,
     devices: Vec<CompanionDeviceStatus>,
@@ -380,6 +395,7 @@ pub fn companion_status(state: tauri::State<'_, SharedState>) -> CompanionStatus
         enabled: config.companion.enabled,
         running: runtime.task.is_some(),
         require_pairing_code: config.companion.require_pairing_code,
+        allow_file_write: config.companion.allow_file_write,
         port: runtime.port,
         lan_ip: lan_ipv4().map(|ip| ip.to_string()),
         devices,
@@ -415,6 +431,18 @@ pub fn companion_set_require_code(
 ) -> Result<(), String> {
     state
         .update_config(|config| config.companion.require_pairing_code = require)
+        .map_err(|error| error.to_string())
+}
+
+/// Toggles whether paired phones may edit project text files. Off by default;
+/// the phone's editor stays preview-only until this is enabled.
+#[tauri::command]
+pub fn companion_set_file_write(
+    state: tauri::State<'_, SharedState>,
+    allow: bool,
+) -> Result<(), String> {
+    state
+        .update_config(|config| config.companion.allow_file_write = allow)
         .map_err(|error| error.to_string())
 }
 

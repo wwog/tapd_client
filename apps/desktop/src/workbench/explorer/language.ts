@@ -1,37 +1,33 @@
 /**
  * File-type knowledge for the explorer tree and the code viewer: which icon a
- * row gets, and which refractor (Prism) grammar highlights it.
+ * row gets, and which Monaco language highlights it.
  *
- * Only the grammars the product lists in the file panel are registered; an
- * unknown extension renders plain monospace instead of guessing.
+ * Only the languages the product lists are mapped; an unknown extension opens
+ * as plain text instead of guessing.
  */
-import { refractor } from "refractor";
-import jsx from "refractor/jsx";
-import toml from "refractor/toml";
-import tsx from "refractor/tsx";
-
 import { extension } from "../../lib/fs";
 
-/** Extension -> refractor language name. */
+/** Extension -> Monaco language id. */
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   js: "javascript",
   mjs: "javascript",
   cjs: "javascript",
+  jsx: "javascript",
   ts: "typescript",
   mts: "typescript",
   cts: "typescript",
-  jsx: "jsx",
-  tsx: "tsx",
+  tsx: "typescript",
   json: "json",
   jsonc: "json",
   css: "css",
   scss: "scss",
   less: "less",
-  html: "markup",
-  htm: "markup",
-  xml: "markup",
-  svg: "markup",
-  vue: "markup",
+  html: "html",
+  htm: "html",
+  vue: "html",
+  svelte: "html",
+  xml: "xml",
+  svg: "xml",
   md: "markdown",
   markdown: "markdown",
   mdx: "markdown",
@@ -44,20 +40,40 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   sql: "sql",
   yaml: "yaml",
   yml: "yaml",
-  toml: "toml",
-  sh: "bash",
-  bash: "bash",
-  zsh: "bash",
-  c: "c",
-  h: "c",
+  toml: "ini",
+  ini: "ini",
+  cfg: "ini",
+  conf: "ini",
+  env: "ini",
+  sh: "shell",
+  bash: "shell",
+  zsh: "shell",
+  fish: "shell",
+  c: "cpp",
+  h: "cpp",
   cpp: "cpp",
   cc: "cpp",
+  cxx: "cpp",
   hpp: "cpp",
+  hxx: "cpp",
   cs: "csharp",
   rb: "ruby",
   php: "php",
   swift: "swift",
-  dockerfile: "docker",
+  proto: "protobuf",
+  graphql: "graphql",
+  gql: "graphql",
+  lua: "lua",
+  r: "r",
+  pl: "perl",
+  scala: "scala",
+  dart: "dart",
+  tf: "hcl",
+  hcl: "hcl",
+  ps1: "powershell",
+  bat: "bat",
+  cmd: "bat",
+  dockerfile: "dockerfile",
 };
 
 const IMAGE_EXTENSIONS = new Set([
@@ -86,24 +102,21 @@ const TEXT_EXTENSIONS = new Set([
   "lock",
 ]);
 
-/** Prism grammars that are not part of refractor's common bundle. */
-let registered = false;
-function registerExtraLanguages(): void {
-  if (registered) return;
-  registered = true;
-  // Order matters: tsx builds on jsx + typescript.
-  refractor.register(jsx);
-  refractor.register(tsx);
-  refractor.register(toml);
+/** Monaco language id for a path; always returns a valid id. */
+export function monacoLanguageFor(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  const ext = extension(path);
+  if (!ext) {
+    if (name === "Dockerfile" || name === "Containerfile") return "dockerfile";
+    return "plaintext";
+  }
+  return LANGUAGE_BY_EXTENSION[ext] ?? "plaintext";
 }
 
-/** Refractor language for a path, or null when the file stays plain text. */
+/** Language for the "is this code?" icon decision; null = plain text. */
 export function languageForPath(path: string): string | null {
-  const name = path.split("/").pop() ?? path;
-  // Dotfiles like `.gitignore` have no extension but benefit from plain text.
-  const ext = extension(path);
-  if (!ext) return name === "Dockerfile" ? "docker" : null;
-  return LANGUAGE_BY_EXTENSION[ext] ?? null;
+  const language = monacoLanguageFor(path);
+  return language === "plaintext" ? null : language;
 }
 
 export type FileVisualKind =
@@ -124,27 +137,4 @@ export function visualKindForPath(path: string): FileVisualKind {
   if (ext === "md" || ext === "markdown" || ext === "mdx") return "markdown";
   if (TEXT_EXTENSIONS.has(ext) || ext === "") return "text";
   return languageForPath(path) ? "code" : "file";
-}
-
-export type HastNode = {
-  type: string;
-  value?: string;
-  tagName?: string;
-  properties?: Record<string, unknown>;
-  children?: HastNode[];
-};
-
-/**
- * Highlights one body with Prism. Big bodies skip highlighting: a 2 MB file
- * would otherwise block the renderer for seconds. `null` means plain text.
- */
-export function highlightCode(code: string, path: string): HastNode | null {
-  const language = languageForPath(path);
-  if (!language || code.length > 300_000) return null;
-  try {
-    registerExtraLanguages();
-    return refractor.highlight(code, language) as unknown as HastNode;
-  } catch {
-    return null;
-  }
 }

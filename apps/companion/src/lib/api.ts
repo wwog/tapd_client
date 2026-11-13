@@ -85,6 +85,14 @@ export type FsContent = {
   truncated: boolean;
 };
 
+/** Save acknowledgement: the new mtime feeds the next conflict check. */
+export type FsWriteResult = {
+  path: string;
+  kind: FsEntryKind;
+  size: number;
+  mtime: number;
+};
+
 export type BugQuery = {
   workspaceId: string;
   /** 处理人 nicknames; several match with OR. */
@@ -731,6 +739,32 @@ export const api = {
     const params = new URLSearchParams({ workspaceId, path });
     return request<FsContent>(`/companion/api/file?${params.toString()}`);
   },
+
+  /** Whether the desktop allows phone-side editing (default false). */
+  fileWriteEnabled: () =>
+    request<{ enabled: boolean }>("/companion/api/file/write"),
+
+  /** Manager-only toggle; shared with the desktop companion dialog. */
+  setFileWrite: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/companion/api/file/write-setting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+
+  /** Overwrites one text file; `mtime` enables the conflict check. */
+  writeFile: (
+    workspaceId: string,
+    path: string,
+    text: string,
+    mtime?: number,
+    force?: boolean,
+  ) =>
+    request<FsWriteResult>("/companion/api/file/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, path, text, mtime, force }),
+    }),
 
   /* -- Bug write actions (user-initiated only) ---------------------------- */
 

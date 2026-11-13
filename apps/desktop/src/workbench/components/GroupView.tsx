@@ -19,6 +19,7 @@ import { ContextMenu, ContextMenuItem, ContextMenuSeparator } from "../../compon
 import { t } from "../../lib/i18n";
 import { PANEL_DEFINITIONS } from "../panels/registry";
 import { usePanelServices } from "../panels/context";
+import { usePanelDirty } from "../panels/dirty";
 import type { GroupNode, PanelRef, WorkbenchLayoutApi } from "../layout/types";
 import { GROUP_INSET, type Rect } from "./SplitView";
 
@@ -257,6 +258,8 @@ function TabItem({
 }) {
   const definition = PANEL_DEFINITIONS[panel.kind];
   const label = definition.title(panel);
+  /** Unsaved edits paint a dot; closing asks before discarding. */
+  const dirty = usePanelDirty(panel.id);
   /** Pointer-down origin; a moved pointer means the click was a tab drag. */
   const pressRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -303,6 +306,13 @@ function TabItem({
       >
         {label}
       </span>
+      {dirty ? (
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+          data-tab-dirty="true"
+        />
+      ) : null}
       {definition.closable ? (
         <button
           type="button"

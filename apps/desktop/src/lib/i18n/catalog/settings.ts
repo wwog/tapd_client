@@ -249,6 +249,11 @@ export const settings = {
     "每次配对成功后配对码会自动更新。电脑端可以调整或收回任意设备（包括第一台）的管理权限。",
     "The pairing code refreshes after each successful pairing. The desktop can change or revoke management for any device, including the first.",
   ],
+  "settings.companion.fileWrite": ["允许手机编辑文件", "Allow phone file editing"],
+  "settings.companion.fileWriteHint": [
+    "开启后，手机可以编辑项目文件夹里的文本文件；默认仅预览。",
+    "When on, the phone can edit text files in project folders; preview-only by default.",
+  ],
   "settings.companion.online": ["在线", "Online"],
   "settings.companion.offline": ["离线", "Offline"],
   "settings.companion.unpair": ["解除", "Unpair"],

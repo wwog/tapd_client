@@ -290,6 +290,7 @@ pub(crate) fn fs_error_status(kind: FsErrorKind) -> StatusCode {
         FsErrorKind::NoFolder | FsErrorKind::NotFound => StatusCode::NOT_FOUND,
         FsErrorKind::InvalidRequest | FsErrorKind::OutsideRoot => StatusCode::FORBIDDEN,
         FsErrorKind::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        FsErrorKind::Conflict => StatusCode::CONFLICT,
         FsErrorKind::Io => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

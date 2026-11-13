@@ -24,4 +24,11 @@ export const layout = {
   "layout.dropTop": ["向上分屏", "Split up"],
   "layout.dropBottom": ["向下分屏", "Split down"],
   "layout.dragHint": ["拖动标签可移动到其他区域", "Drag the tab to move it to another area"],
+  "layout.unsavedTitle": ["未保存的修改", "Unsaved changes"],
+  "layout.unsavedBody": [
+    "{name} 有未保存的修改，关闭后会丢失。",
+    "{name} has unsaved changes that will be lost when closed.",
+  ],
+  "layout.discardClose": ["放弃并关闭", "Discard and close"],
+  "layout.keepEditing": ["继续编辑", "Keep editing"],
 } as const satisfies Catalog;

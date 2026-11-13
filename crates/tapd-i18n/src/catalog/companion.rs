@@ -14,6 +14,8 @@ pub static MESSAGES: &[Message] = &[
     ("companion.devices.save", "设备权限保存失败", "Could not save device permission"),
     ("companion.devices.self", "不能在这里修改或解除本机", "Cannot change or unpair this device here"),
     ("companion.forbidden", "该功能未对移动端开放", "This feature is not available on mobile"),
+    ("companion.files.writeDisabled", "桌面端未开启项目文件编辑", "Project file editing is off on the desktop"),
+    ("companion.files.writeSetting", "文件编辑设置保存失败", "Could not save the file editing setting"),
     ("companion.lan.missing", "未能获取局域网地址，请检查网络连接", "Could not get the LAN address; check your network connection"),
     ("companion.notready", "伴侣服务尚未就绪", "Companion service is not ready"),
     ("companion.notrunning", "伴侣服务未运行", "Companion service is not running"),

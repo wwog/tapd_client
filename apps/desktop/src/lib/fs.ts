@@ -64,12 +64,29 @@ export type FsStat = {
 
 export type FsRequest = { workspaceId: string; path: string };
 
+/** Result of a save; the editor stores `mtime` for the next conflict check. */
+export type FsWriteResult = {
+  path: string;
+  size: number;
+  mtime: number;
+};
+
+export type FsWriteRequest = FsRequest & {
+  text: string;
+  /** The mtime the editor loaded; omit to write unconditionally. */
+  mtime?: number;
+  /** Skip the conflict check (explicit overwrite). */
+  force?: boolean;
+};
+
 export const fsApi = {
   /** One directory level, dirs first. */
   list: (request: FsRequest) => invoke<FsListing>("fs_list", request),
   /** Text body or a content kind the viewer can pick a renderer for. */
   read: (request: FsRequest) => invoke<FsContent>("fs_read", request),
   stat: (request: FsRequest) => invoke<FsStat>("fs_stat", request),
+  /** Overwrites an existing text file atomically (no new files). */
+  write: (request: FsWriteRequest) => invoke<FsWriteResult>("fs_write", request),
 };
 
 /** Media tokens are shared with the loopback media proxy. */

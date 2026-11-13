@@ -359,6 +359,8 @@ export type CompanionStatus = {
   enabled: boolean;
   running: boolean;
   requirePairingCode: boolean;
+  /** Paired phones may edit project text files (default false). */
+  allowFileWrite: boolean;
   port?: number;
   lanIp?: string | null;
   devices: CompanionDevice[];
@@ -503,6 +505,9 @@ export const companionApi = {
   status: () => invoke<CompanionStatus>("companion_status"),
   setRequireCode: (require: boolean) =>
     invoke<void>("companion_set_require_code", { require }),
+  /** Toggles phone-side text editing; off by default. */
+  setFileWrite: (allow: boolean) =>
+    invoke<void>("companion_set_file_write", { allow }),
   setEnabled: (enabled: boolean) =>
     invoke<void>("companion_set_enabled", { enabled }),
   /** `tunnel` needs a live Quick Tunnel URL; `lan` is the test fallback. */
