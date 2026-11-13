@@ -151,7 +151,7 @@ Rust `src-tauri/src/fs.rs`：
 
 - 底部「文件」tab：项目切换 → 面包屑目录列表（点击下钻/返回）→ 预览页（文本/Markdown/图片/二进制提示）。
 - JSON 接口 `GET /companion/api/files`、`GET /companion/api/file`；二进制走 `file/raw`，鉴权与媒体一致（Bearer 或 `?t=`）。
-- 编辑默认关闭：桌面伴侣弹窗或手机设置页（仅 `canManage` 设备）打开 `companion.allowFileWrite` 后，文件页才显示编辑按钮；保存走 `POST /companion/api/file/write`，同样带 `mtime` 冲突校验。手机端用等宽 textarea，不加载 Monaco。
+- 编辑默认关闭：桌面伴侣弹窗或手机设置页（仅 `canManage` 设备）打开 `companion.allowFileWrite` 后，文件页才显示编辑按钮；保存走 `POST /companion/api/file/write`，同样带 `mtime` 冲突校验。手机端不加载 Monaco：预览用 highlight.js（懒加载 chunk + 主题色板）上色，编辑用等宽 textarea（16px，避免 iOS 聚焦缩放）。
 
 ## 10. 文件所有权
 

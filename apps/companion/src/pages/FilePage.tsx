@@ -10,6 +10,7 @@ import {
   Save,
   X,
 } from "lucide-react";
+import DOMPurify from "dompurify";
 
 import {
   api,
@@ -47,7 +48,7 @@ const KIND_LABELS: Record<FsContentKind, MessageKey> = {
  */
 const MAX_NUMBERED_LINES = 5000;
 
-function CodeBlock(props: { text: string }) {
+function CodeBlock(props: { text: string; path: string; truncated: boolean }) {
   const lineCount = useMemo(
     () => (props.text.match(/\n/g)?.length ?? 0) + 1,
     [props.text],
@@ -58,6 +59,29 @@ function CodeBlock(props: { text: string }) {
     for (let line = 1; line <= lineCount; line += 1) lines.push(String(line));
     return lines.join("\n");
   }, [lineCount]);
+  // Truncated bodies are deliberately left plain: highlighting half a file
+  // would spend seconds on the phone for no benefit. The highlighter itself is
+  // a lazy chunk so the companion's first load stays small over the tunnel.
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  useEffect(() => {
+    if (props.truncated) {
+      setHighlighted(null);
+      return;
+    }
+    let cancelled = false;
+    void import("../lib/code")
+      .then(({ highlightCode }) => {
+        if (cancelled) return;
+        const html = highlightCode(props.text, props.path);
+        setHighlighted(html ? DOMPurify.sanitize(html) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setHighlighted(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.text, props.path, props.truncated]);
 
   return (
     <div className="mt-3 overflow-x-auto overscroll-x-contain border-y border-border bg-surface">
@@ -71,7 +95,14 @@ function CodeBlock(props: { text: string }) {
           </pre>
         ) : null}
         <pre className="select-text px-3 py-3 font-mono text-ui-xs leading-5 text-slate-700">
-          {props.text}
+          {highlighted ? (
+            <code
+              className="hljs bg-transparent"
+              dangerouslySetInnerHTML={{ __html: highlighted }}
+            />
+          ) : (
+            <code>{props.text}</code>
+          )}
         </pre>
       </div>
     </div>
@@ -466,7 +497,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
             </div>
           </div>
         ) : text.length > 0 ? (
-          <CodeBlock text={text} />
+          <CodeBlock text={text} path={path} truncated={content.truncated} />
         ) : (
           <p className="px-4 py-8 text-center text-ui-caption text-slate-400">
             {t("mobile.files.emptyFile")}

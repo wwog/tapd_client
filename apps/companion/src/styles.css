@@ -374,3 +374,147 @@ select,
   padding: 8px;
   overflow-x: auto;
 }
+
+/* -------------------------------------------------------------------------
+   File preview syntax highlighting (highlight.js classes).
+   Palette mirrors the desktop code viewer: light inks by default, lighter
+   inks under [data-theme="dark"].
+   ------------------------------------------------------------------------- */
+.hljs-comment,
+.hljs-quote {
+  color: #94a3b8;
+}
+
+.hljs-punctuation,
+.hljs-operator {
+  color: #64748b;
+}
+
+.hljs-property,
+.hljs-tag,
+.hljs-constant,
+.hljs-symbol,
+.hljs-deletion {
+  color: #be123c;
+}
+
+.hljs-boolean,
+.hljs-number {
+  color: #b45309;
+}
+
+.hljs-attr,
+.hljs-string,
+.hljs-built_in,
+.hljs-addition,
+.hljs-selector-class,
+.hljs-selector-attr {
+  color: #0f766e;
+}
+
+.hljs-keyword,
+.hljs-doctag,
+.hljs-meta,
+.hljs-attr-value {
+  color: #7c3aed;
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-function,
+.hljs-section {
+  color: #0369a1;
+}
+
+.hljs-regexp,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-link {
+  color: #b45309;
+}
+
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-params {
+  color: #0369a1;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: inherit;
+}
+
+[data-theme="dark"] .hljs-comment,
+[data-theme="dark"] .hljs-quote {
+  color: #8b93a1;
+}
+
+[data-theme="dark"] .hljs-punctuation,
+[data-theme="dark"] .hljs-operator {
+  color: #a2aab8;
+}
+
+[data-theme="dark"] .hljs-property,
+[data-theme="dark"] .hljs-tag,
+[data-theme="dark"] .hljs-constant,
+[data-theme="dark"] .hljs-symbol,
+[data-theme="dark"] .hljs-deletion {
+  color: #fda4af;
+}
+
+[data-theme="dark"] .hljs-boolean,
+[data-theme="dark"] .hljs-number {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .hljs-attr,
+[data-theme="dark"] .hljs-string,
+[data-theme="dark"] .hljs-built_in,
+[data-theme="dark"] .hljs-addition,
+[data-theme="dark"] .hljs-selector-class,
+[data-theme="dark"] .hljs-selector-attr {
+  color: #6ee7b7;
+}
+
+[data-theme="dark"] .hljs-keyword,
+[data-theme="dark"] .hljs-doctag,
+[data-theme="dark"] .hljs-meta,
+[data-theme="dark"] .hljs-attr-value {
+  color: #c4b5fd;
+}
+
+[data-theme="dark"] .hljs-title,
+[data-theme="dark"] .hljs-title.function_,
+[data-theme="dark"] .hljs-title.class_,
+[data-theme="dark"] .hljs-function,
+[data-theme="dark"] .hljs-section {
+  color: #7dd3fc;
+}
+
+[data-theme="dark"] .hljs-regexp,
+[data-theme="dark"] .hljs-variable,
+[data-theme="dark"] .hljs-template-variable,
+[data-theme="dark"] .hljs-link {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .hljs-type,
+[data-theme="dark"] .hljs-class .hljs-title,
+[data-theme="dark"] .hljs-params {
+  color: #7dd3fc;
+}
+
+/* iOS Safari zooms the page when a focused control's font-size is below 16px.
+   Keeping form controls at 16px on phones prevents the jump while leaving
+   pinch zoom available. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
