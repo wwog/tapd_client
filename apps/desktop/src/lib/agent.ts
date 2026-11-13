@@ -17,6 +17,14 @@ export type ProjectAgentConfig = {
   rule: string;
 };
 
+/** 每个运行时的默认模型与访问权限。 */
+export type AgentRuntimeOptions = {
+  /** 空字符串表示交给 CLI 自己决定。 */
+  model: string;
+  /** 权限选项 id；见 `AgentPermissionOption`。 */
+  permissionMode: string;
+};
+
 export type AgentConfig = {
   /** Selected runtime id from the catalog. */
   runtimeId: string;
@@ -25,6 +33,8 @@ export type AgentConfig = {
   repoMappings: Record<string, string>;
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
+  /** 每个运行时的默认模型与权限。 */
+  runtimeOptions: Record<string, AgentRuntimeOptions>;
   /** Enabled coworker ids (selection order); managed from the 同事 page. */
   coworkerIds: string[];
   readyQuietMs: number;
@@ -64,6 +74,13 @@ export type AgentRuntimeCapabilities = {
   commitReview: boolean;
 };
 
+/** 运行时可接受的访问权限；`id` 会翻译成对应的 CLI 参数。 */
+export type AgentPermissionOption = {
+  id: string;
+  label: string;
+  description: string;
+};
+
 export type AgentRuntimeDescriptor = {
   id: string;
   name: string;
@@ -75,6 +92,10 @@ export type AgentRuntimeDescriptor = {
   aliases: string[];
   /** 启动参数（不含提示词）。 */
   args: string[];
+  /** 常用模型名，仅作为输入建议；允许自由输入。 */
+  models: string[];
+  /** 可选访问权限；至少包含 `default`。 */
+  permissions: AgentPermissionOption[];
   /** 提示词交付方式。 */
   promptInjection: "argv" | "flag" | "stdin";
   /** flag 模式下承载提示词的参数名。 */
@@ -147,6 +168,10 @@ export type AgentTask = {
   source: string;
   /** Runtime snapshotted at enqueue time. */
   runtimeId?: string;
+  /** 本次运行使用的模型；空字符串表示运行时默认。 */
+  model?: string;
+  /** 本次运行的访问权限选项 id；见 `AgentPermissionOption`。 */
+  permissionMode?: string;
   /** 会话 hook 捕获的运行时 session id，用于精确续接会话。 */
   agentSessionId?: string | null;
   /** Present while the task waits for the commit decision. */
@@ -194,8 +219,91 @@ export type AgentRuntimeStatus = {
   sessionId?: string;
   /** 正在运行的子 Agent 数量。 */
   subagents: number;
+  /** 当前 phase / 工具的开始时间，用于 Working 条的已用时长。 */
+  startedAt?: string;
+  /** 最近一条 assistant 文本；transcript 尚未落盘时作为预览。 */
+  lastMessage?: string;
+  /** 阻塞中的权限确认 / 提问。 */
+  prompt?: AgentPendingPrompt;
   updatedAt: string;
 };
+
+/** 权限 / 提问卡片上的一个可回执选项。 */
+export type AgentPromptOption = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+/** 权限确认或 AskUserQuestion 的归一化结果。 */
+export type AgentPendingPrompt = {
+  /** `taskId + 事件时间`；旧卡片的 id 会被后端拒绝。 */
+  promptId: string;
+  kind: "approval" | "question";
+  tool?: string;
+  summary?: string;
+  question?: string;
+  header?: string;
+  options: AgentPromptOption[];
+  /** 当前运行时是否支持用按键回答。 */
+  canAnswer: boolean;
+  answerHint?: string;
+};
+
+export type AgentChatToolStatus = "running" | "done" | "failed";
+
+export type AgentChatTool = {
+  name: string;
+  /** 可读参数：路径 / 命令 / 模式。 */
+  input?: string;
+  /** 结果预览，默认折叠。 */
+  output?: string;
+  status: AgentChatToolStatus;
+  durationMs?: number;
+  callId?: string;
+};
+
+/** 一条扁平 Chat 消息；一个 provider 记录可能拆成多条。 */
+export type AgentChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  kind: "message" | "thinking" | "tool" | "system";
+  /** RFC3339；provider 缺少时间时为空。 */
+  at: string;
+  text?: string;
+  tool?: AgentChatTool;
+};
+
+/** `agent_chat` 的响应；`error` 有值时 `messages` 为空。 */
+export type AgentChat = {
+  taskId: string;
+  runtimeId: string;
+  sessionId: string;
+  messages: AgentChatMessage[];
+  truncated: boolean;
+  source: string;
+  /** 内容指纹；未变化时前端跳过重绘。 */
+  fingerprint: string;
+  /** transcript 里实际使用的模型；任务未显式指定时用于展示。 */
+  model?: string | null;
+  /** 为 true 时 `messages` 为空，调用方应保持现有数据。 */
+  unchanged: boolean;
+  error: string | null;
+};
+
+/** 支持对话视图的运行时；与 Rust `TranscriptAgent::from_runtime_id` 对齐。 */
+const CHAT_RUNTIME_IDS = new Set([
+  "claude",
+  "openclaude",
+  "codex",
+  "opencode",
+  "opencode2",
+  "omp",
+  "pi",
+]);
+
+export const supportsAgentChat = (runtimeId?: string | null): boolean =>
+  !!runtimeId && CHAT_RUNTIME_IDS.has(runtimeId);
 
 export type AgentTasksState = {
   tasks: AgentTask[];
@@ -263,8 +371,17 @@ export type AgentSummary = {
   bugId: string | null;
   severity: string | null;
   priority: string | null;
+  /** 当前运行时的展示信息与动作；有 prompt 时胶囊可直接审批。 */
+  runtimeId?: string | null;
   /** Runtime working the active task ("Claude Code", "OpenCode", …). */
   runtimeName: string | null;
+  phase?: AgentRuntimePhase | null;
+  statusLabel?: string | null;
+  tool?: string | null;
+  detail?: string | null;
+  startedAt?: string | null;
+  lastMessage?: string | null;
+  prompt?: AgentPendingPrompt | null;
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */
@@ -390,6 +507,10 @@ export type AgentEnqueueRequest = {
   attachments?: string[];
   /** Runtime for this task only; omitted means the default from settings. */
   runtimeId?: string | null;
+  /** 本次任务的模型；省略时使用该运行时的默认值。 */
+  model?: string | null;
+  /** 本次任务的访问权限；省略时使用该运行时的默认值。 */
+  permissionMode?: string | null;
 };
 
 export type AgentOutputPayload = {
@@ -487,6 +608,22 @@ export const agentApi = {
     featureCommand<{ ok: boolean }>("agent_input", { taskId, data }),
   resize: (taskId: string, cols: number, rows: number) =>
     featureCommand<{ ok: boolean }>("agent_resize", { taskId, cols, rows }),
+  /** 读取任务的 transcript；任务不在支持的运行时列表时 `error` 有值。 */
+  chat: (taskId: string, fingerprint?: string | null) =>
+    featureCommand<AgentChat>("agent_chat", {
+      taskId,
+      fingerprint: fingerprint ?? null,
+    }),
+  /** 从 Chat 输入框写一条消息到当前 PTY。 */
+  sendMessage: (taskId: string, text: string) =>
+    featureCommand<{ sent: boolean }>("agent_send_message", { taskId, text }),
+  /** 回答权限确认 / 提问；promptId 过期时后端拒绝。 */
+  promptAnswer: (taskId: string, promptId: string, optionId: string) =>
+    featureCommand<{ sent: boolean; message: string }>("agent_prompt_answer", {
+      taskId,
+      promptId,
+      optionId,
+    }),
   detect: (path?: string) =>
     featureCommand<{ version: string; path: string }>("agent_detect", {
       path: path ?? null,

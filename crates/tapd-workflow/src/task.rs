@@ -84,6 +84,10 @@ pub struct TaskSpec {
     pub priority: String,
     pub repo_path: String,
     pub runtime_id: String,
+    /// 本次运行使用的模型；空字符串表示运行时默认。
+    pub model: String,
+    /// 本次运行的访问权限选项 id；空字符串表示运行时默认。
+    pub permission_mode: String,
     /// Origin of the task (`manual` / `notification`), host-owned metadata.
     #[serde(default)]
     pub source: String,

@@ -237,6 +237,8 @@ mod tests {
             binary,
             aliases,
             args: Vec::new(),
+            models: Vec::new(),
+            permissions: Vec::new(),
             prompt_injection: crate::agent::PromptInjection::Stdin,
             prompt_flag: None,
             argv_separator: None,

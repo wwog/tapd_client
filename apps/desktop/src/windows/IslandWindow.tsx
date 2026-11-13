@@ -20,9 +20,12 @@ import {
 
 import {
   agentApi,
+  type AgentPromptOption,
   type AgentSummary,
 } from "../lib/agent";
+import { formatElapsed } from "../lib/agentChat";
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
+import { AgentIcon } from "../components/AgentIcon";
 import { formatBytes } from "../lib/format";
 import { bugTitle } from "../lib/bug";
 import {
@@ -227,13 +230,19 @@ export function IslandWindow() {
   const agentMerging = agentSummary?.awaitingMerge ?? 0;
   /** Name of the runtime doing the work; falls back to the generic label. */
   const agentRuntimeLabel = agentSummary?.runtimeName?.trim() || "Agent";
+  /** 权限 / 提问优先于通用运行中文案，胶囊与 peek 共用。 */
+  const agentPromptLabel = agentSummary?.prompt
+    ? agentSummary.prompt.kind === "approval"
+      ? "Agent 等待权限"
+      : "Agent 等待回答"
+    : null;
   /** Capsule wording: review first, then merge, then running. */
   const agentStatusLabel =
     agentAwaiting > 0
       ? "Agent 待审核"
       : agentMerging > 0
         ? "Agent 待合并"
-        : `${agentRuntimeLabel} 修复中`;
+        : (agentPromptLabel ?? `${agentRuntimeLabel} 修复中`);
 
   const { label: statusLabel, tone } = useMemo(() => {
     if (updateState?.available) {
@@ -244,6 +253,12 @@ export function IslandWindow() {
     }
     if ((agentSummary?.awaitingMerge ?? 0) > 0) {
       return { label: "Agent 待合并", tone: "review" as const };
+    }
+    if (agentSummary?.prompt) {
+      return {
+        label: agentPromptLabel ?? "Agent 等待确认",
+        tone: "agent" as const,
+      };
     }
     if (agentSummary?.running) {
       return {
@@ -258,6 +273,7 @@ export function IslandWindow() {
     return { label: "待命", tone: "ok" as const };
   }, [
     agentSummary,
+    agentPromptLabel,
     items.length,
     snapshot,
     updateState?.available,
@@ -765,9 +781,9 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
 
 /**
  * Hover summary under the collapsed capsule: which bug the current Agent task
- * belongs to, plus the fields worth seeing before opening it. Its height/gap
- * must match the Rust `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the
- * window.
+ * belongs to, the fields worth seeing before opening it, and any blocking
+ * permission / question. Its height/gap must match the Rust
+ * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
  */
 function AgentPeekCard({
   summary,
@@ -776,15 +792,28 @@ function AgentPeekCard({
   summary: AgentSummary;
   onOpenDetail: () => void;
 }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [, tick] = useState(0);
   const title = summary.title ? bugTitle(summary.title) : "";
   const review = summary.awaitingApproval ?? 0;
   const merge = summary.awaitingMerge ?? 0;
-  const pending = review + merge;
+  const prompt = summary.prompt ?? null;
   const canOpen = Boolean(summary.workspaceId && summary.bugId);
+
+  // 已用时长每秒刷新；摘要本身由 `agent://summary` 推送。
+  useEffect(() => {
+    if (!summary.running) return;
+    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [summary.running]);
+
   // Both counts fit side by side only while they are small; keep one kind of
   // label per state so 300px stays readable.
-  const status =
-    review > 0 && merge > 0
+  const status = prompt
+    ? prompt.kind === "approval"
+      ? "等待权限确认"
+      : "等待回答"
+    : review > 0 && merge > 0
       ? `待审核 ${review} · 待合并 ${merge}`
       : review > 0
         ? review > 1
@@ -795,46 +824,112 @@ function AgentPeekCard({
             ? `待合并 ${merge}`
             : "待合并"
           : "修复中";
+  const elapsed = formatElapsed(summary.startedAt ?? undefined, Date.now());
+  // peek 高度固定 112px，最多放 3 个按钮，其余引导回任务页处理。
+  const options = (prompt?.options ?? []).slice(0, 3);
+
+  const answer = async (option: AgentPromptOption) => {
+    if (!prompt || !summary.activeTaskId || busy) return;
+    setBusy(option.id);
+    try {
+      await agentApi.promptAnswer(summary.activeTaskId, prompt.promptId, option.id);
+    } catch {
+      // 失败时保持卡片不动；用户可以展开主窗口在终端处理。
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="mt-1.5 flex h-[112px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
       <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
+        <AgentIcon
+          runtimeId={summary.runtimeId}
+          name={summary.runtimeName}
+          size={14}
+        />
+        <span className="truncate text-island-ink">
+          {summary.runtimeName || "Agent"}
+        </span>
         <span
           className={clsx(
             "h-1.5 w-1.5 shrink-0 rounded-full",
-            pending > 0 ? "bg-rose-500" : "bg-sky-500",
+            prompt || review + merge > 0 ? "bg-amber-500" : "bg-sky-500",
           )}
         />
-        <span className="truncate text-island-ink">{summary.workspaceName || "未知项目"}</span>
-        {summary.bugId ? (
-          <span className="shrink-0 tabular-nums">#{summary.bugId}</span>
+        <span className="truncate">{status}</span>
+        {elapsed ? (
+          <span className="ml-auto shrink-0 tabular-nums">{elapsed}</span>
         ) : null}
-        <span className="ml-auto shrink-0 pl-1.5">{status}</span>
       </div>
-      <p className="mt-1 line-clamp-2 text-ui-sm" title={title || undefined}>
+
+      <p className="mt-1 line-clamp-1 text-ui-sm" title={title || undefined}>
         {title || "正在准备任务…"}
       </p>
-      <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
-        {summary.severity ? (
-          <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
-            {summary.severity}
-          </span>
-        ) : null}
-        {summary.priority ? (
-          <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-            {summary.priority}优先级
-          </span>
-        ) : null}
-        {canOpen ? (
-          <button
-            type="button"
-            onClick={onOpenDetail}
-            className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
+
+      {prompt ? (
+        <div className="mt-0.5">
+          <p
+            className="line-clamp-1 text-ui-xs text-island-muted"
+            title={prompt.question ?? prompt.summary ?? undefined}
           >
-            <Eye size={11} />
-            打开详情
-          </button>
-        ) : null}
-      </div>
+            {prompt.question ?? prompt.summary ?? "Agent 正在等待你的确认。"}
+          </p>
+          {prompt.canAnswer && options.length > 0 ? (
+            <div className="mt-1 flex items-center gap-1">
+              {options.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void answer(option);
+                  }}
+                  className={clsx(
+                    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-ui-2xs transition disabled:opacity-50",
+                    option.id === "reject"
+                      ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                      : "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100",
+                  )}
+                >
+                  {busy === option.id ? (
+                    <Loader2 size={9} className="animate-spin" />
+                  ) : null}
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1 truncate text-ui-2xs text-amber-700">
+              在 Agent 终端中回答
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
+          {summary.severity ? (
+            <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
+              {summary.severity}
+            </span>
+          ) : null}
+          {summary.priority ? (
+            <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
+              {summary.priority}优先级
+            </span>
+          ) : null}
+          {canOpen ? (
+            <button
+              type="button"
+              onClick={onOpenDetail}
+              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
+            >
+              <Eye size={11} />
+              打开详情
+            </button>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

@@ -13,6 +13,8 @@ export type SegmentedOption<T extends string> = {
   icon?: ReactNode;
   /** Optional numeric suffix; rendered with a fixed width so it cannot jump. */
   count?: number;
+  /** Disabled segments stay visible but cannot be selected. */
+  disabled?: boolean;
 };
 
 type Props<T extends string> = {
@@ -83,11 +85,20 @@ export function Segmented<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
+            aria-disabled={option.disabled || undefined}
             data-segment={option.value}
-            onClick={() => onChange(option.value)}
+            disabled={option.disabled}
+            title={option.disabled ? "该运行时暂不支持对话视图" : undefined}
+            onClick={() => {
+              if (!option.disabled) onChange(option.value);
+            }}
             className={clsx(
-              "relative z-10 inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-ui-caption transition-colors",
-              active ? "text-slate-900" : "text-slate-500 hover:text-slate-700",
+              "relative z-10 inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-ui-caption transition-colors disabled:cursor-not-allowed",
+              active
+                ? "text-slate-900"
+                : option.disabled
+                  ? "text-slate-300"
+                  : "text-slate-500 hover:text-slate-700",
             )}
           >
             {option.icon}

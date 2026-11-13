@@ -5,6 +5,7 @@ import { Bot, Check, ChevronDown, Search } from "lucide-react";
 
 import type { AgentRuntimeDescriptor, AgentScanResult } from "../lib/agent";
 import { useDismiss } from "../hooks/useDismiss";
+import { AgentIcon } from "./AgentIcon";
 
 type Props = {
   runtimes: AgentRuntimeDescriptor[];
@@ -124,14 +125,22 @@ export function AgentPicker(props: Props) {
             : "border-border hover:border-slate-300",
         )}
       >
-        <span
-          className={clsx(
-            "grid shrink-0 place-items-center rounded-lg bg-sky-50 text-sky-600",
-            compact ? "h-6 w-6" : "h-8 w-8",
-          )}
-        >
-          <Bot size={compact ? 12 : 14} />
-        </span>
+        {selected ? (
+          <AgentIcon
+            runtimeId={selected.id}
+            name={selected.name}
+            size={compact ? 24 : 32}
+          />
+        ) : (
+          <span
+            className={clsx(
+              "grid shrink-0 place-items-center rounded-lg bg-sky-50 text-sky-600",
+              compact ? "h-6 w-6" : "h-8 w-8",
+            )}
+          >
+            <Bot size={compact ? 12 : 14} />
+          </span>
+        )}
 
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -173,7 +182,7 @@ export function AgentPicker(props: Props) {
                 type="button"
                 aria-label="关闭 Agent 选择"
                 tabIndex={-1}
-                className="fixed inset-0 z-40 cursor-default"
+                className="fixed inset-0 z-[110] cursor-default"
                 onClick={close}
               />
               <div
@@ -186,7 +195,7 @@ export function AgentPicker(props: Props) {
                   bottom: position.bottom,
                   width: position.width,
                 }}
-                className="fixed z-50 overflow-hidden rounded-xl border border-border bg-surface"
+                className="fixed z-[120] overflow-hidden rounded-xl border border-border bg-surface"
               >
                 <div className="border-b border-slate-100 p-1.5">
                   <div className="relative">
