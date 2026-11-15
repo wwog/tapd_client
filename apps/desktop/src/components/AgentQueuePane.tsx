@@ -4,12 +4,13 @@ import clsx from "clsx";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  agentTaskTitle,
+  isBugAgentTask,
   type AgentChat,
   type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
 import { AgentTimeline } from "./AgentTimeline";
 import { ScrollingName } from "./ScrollingName";
@@ -171,11 +172,12 @@ function RunQueueRow(props: {
         </span>
       </div>
       <ScrollingName
-        text={bugTitle(task.title) || t("agent.untitled")}
+        text={agentTaskTitle(task) || t("agent.untitled")}
         className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
       />
       <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-        {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+        {task.workspaceName || task.workspaceId}
+        {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
       </div>
       {status ? (
         <div className="mt-0.5 truncate text-ui-xs text-sky-600" title={status.label}>

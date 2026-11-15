@@ -20,6 +20,7 @@ import {
 
 import {
   agentApi,
+  isBugAgentTask,
   type AgentPromptOption,
   type AgentSummary,
 } from "../lib/agent";
@@ -809,11 +810,17 @@ function AgentPeekCard({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [, tick] = useState(0);
-  const title = summary.title ? bugTitle(summary.title) : "";
+  const title = summary.title
+    ? isBugAgentTask(summary)
+      ? bugTitle(summary.title)
+      : summary.title
+    : "";
   const review = summary.awaitingApproval ?? 0;
   const merge = summary.awaitingMerge ?? 0;
   const prompt = summary.prompt ?? null;
-  const canOpen = Boolean(summary.workspaceId && summary.bugId);
+  // Local work items have no bug to open; the capsule only shows the task.
+  const canOpen =
+    Boolean(summary.workspaceId && summary.bugId) && isBugAgentTask(summary);
 
   // 已用时长每秒刷新；摘要本身由 `agent://summary` 推送。
   useEffect(() => {
@@ -923,6 +930,11 @@ function AgentPeekCard({
         </div>
       ) : (
         <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
+          {!isBugAgentTask(summary) && summary.workspaceName ? (
+            <span className="min-w-0 truncate text-island-muted">
+              {summary.workspaceName}
+            </span>
+          ) : null}
           {summary.severity ? (
             <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
               {summary.severity}

@@ -7,6 +7,7 @@ import {
   api,
   asApiError,
   isAgentInFlight,
+  isTapdTask,
   type AgentTask,
 } from "../lib/api";
 import { getAgentTasks, refreshAgentTasks, useAgentTasks } from "../lib/agentTasks";
@@ -217,18 +218,23 @@ export function AgentTaskPage(props: { id: string }) {
                 {t(AGENT_STATUS_LABELS[task.status])}
               </Badge>
             </MetaRow>
-            <MetaRow label={t("common.bugs")}>
-              <button
-                type="button"
-                onClick={() =>
-                  navigate(`#/bug/${task.bugId}?w=${encodeURIComponent(task.workspaceId)}`)
-                }
-                className="text-sky-700 underline-offset-2 active:underline"
-              >
-                #{task.bugId.slice(-7)}
-              </button>
+            {/* Only a TAPD task has a bug to link to; a work item has a local project. */}
+            {isTapdTask(task) ? (
+              <MetaRow label={t("common.bugs")}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(`#/bug/${task.bugId}?w=${encodeURIComponent(task.workspaceId)}`)
+                  }
+                  className="text-sky-700 underline-offset-2 active:underline"
+                >
+                  #{task.bugId.slice(-7)}
+                </button>
+              </MetaRow>
+            ) : null}
+            <MetaRow label={t(isTapdTask(task) ? "common.projects" : "magent.localProject")}>
+              {task.workspaceName || task.workspaceId}
             </MetaRow>
-            <MetaRow label={t("common.projects")}>{task.workspaceName || task.workspaceId}</MetaRow>
             <MetaRow label={t("magent.repo")}>
               <span className="font-mono">
                 {task.worktreePath || task.repoPath || t("magent.noRepo")}

@@ -11,14 +11,15 @@ import {
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  agentTaskTitle,
   canOpenAgentWorktree,
+  isBugAgentTask,
   type AgentRuntimePhase,
   type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { useAgentTaskChanges } from "../lib/agentStore";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
 import { ActivityGlyph } from "./ActivityGlyph";
 import { AgentIcon } from "./AgentIcon";
@@ -108,7 +109,7 @@ export function AgentTaskHeader(props: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
-              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
+              <ScrollingName text={agentTaskTitle(task) || t("agent.untitled")} />
             </h2>
             <Badge tone={AGENT_STATUS_TONES[task.status]}>
               {t(AGENT_STATUS_LABELS[task.status])}
@@ -127,8 +128,8 @@ export function AgentTaskHeader(props: Props) {
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
             <span className="shrink-0">
-              {task.workspaceName || task.workspaceId} · #
-              {task.bugId.slice(-7)}
+              {task.workspaceName || task.workspaceId}
+              {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
             </span>
             {/* The expanded panel shows the same totals, so the header keeps
                 them only while it is the collapse affordance. */}
@@ -268,14 +269,16 @@ export function AgentTaskHeader(props: Props) {
           >
             {t("agent.header.openExport")}
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Bug size={11} />}
-            onClick={onOpenBug}
-          >
-            {t("agent.openBug")}
-          </Button>
+          {isBugAgentTask(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Bug size={11} />}
+              onClick={onOpenBug}
+            >
+              {t("agent.openBug")}
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>

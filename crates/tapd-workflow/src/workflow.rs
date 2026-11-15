@@ -538,7 +538,7 @@ impl Workflow {
         // earlier stop resumes unless another review still blocks it.
         self.paused = false;
 
-        let (is_worktree, dirty, repo, branch) = {
+        let (is_worktree, dirty, repo, branch, source_kind) = {
             let task = &self.tasks[index];
             (
                 task.is_worktree(),
@@ -548,6 +548,7 @@ impl Workflow {
                     .unwrap_or(false),
                 task.spec.repo_path.clone(),
                 task.branch().unwrap_or("").to_string(),
+                task.spec.source_kind,
             )
         };
         let task = &mut self.tasks[index];
@@ -563,7 +564,7 @@ impl Workflow {
             task.commit_only = false;
             let merge = task.merge.get_or_insert_with(TaskMerge::default);
             merge.error = None;
-            merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+            merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
             merge.started_at = None;
             merge.finished_at = None;
             merge.commit = None;
@@ -874,11 +875,12 @@ impl Workflow {
             self.push_persist(effects, &changed);
             self.push_history(effects, &changed);
         } else {
-            let (repo, branch) = {
+            let (repo, branch, source_kind) = {
                 let task = &self.tasks[index];
                 (
                     task.spec.repo_path.clone(),
                     task.branch().unwrap_or("").to_string(),
+                    task.spec.source_kind,
                 )
             };
             let message = error
@@ -890,7 +892,7 @@ impl Workflow {
             task.error = None;
             let merge = task.merge.get_or_insert_with(TaskMerge::default);
             merge.error = Some(message.clone());
-            merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+            merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
             merge.started_at = None;
             merge.finished_at = None;
             // Not merged, so any earlier hash must not look like it landed.
@@ -918,11 +920,12 @@ impl Workflow {
         if self.tasks[index].status != TaskStatus::AwaitingMerge {
             return;
         }
+        let source_kind = self.tasks[index].spec.source_kind;
         let task = &mut self.tasks[index];
         task.finished_at = None;
         let merge = task.merge.get_or_insert_with(TaskMerge::default);
         merge.error = Some(message);
-        merge.instructions = Some(manual_merge_instructions(repo, branch));
+        merge.instructions = Some(manual_merge_instructions(repo, branch, source_kind));
         merge.started_at = None;
         merge.finished_at = None;
         merge.commit = None;
@@ -946,11 +949,12 @@ impl Workflow {
         ) {
             return;
         }
-        let (repo, branch) = {
+        let (repo, branch, source_kind) = {
             let task = &self.tasks[index];
             (
                 task.spec.repo_path.clone(),
                 task.branch().unwrap_or("").to_string(),
+                task.spec.source_kind,
             )
         };
         if cancel_agent {
@@ -964,7 +968,7 @@ impl Workflow {
         task.error = None;
         let merge = task.merge.get_or_insert_with(TaskMerge::default);
         merge.error = Some(error);
-        merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+        merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
         merge.started_at = None;
         merge.finished_at = None;
         merge.commit = None;
@@ -1241,9 +1245,11 @@ impl Workflow {
                     task.commit_only = false;
                     let repo = task.spec.repo_path.clone();
                     let branch = task.branch().unwrap_or("").to_string();
+                    let source_kind = task.spec.source_kind;
                     let merge = task.merge.get_or_insert_with(TaskMerge::default);
                     merge.error = None;
-                    merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+                    merge.instructions =
+                        Some(manual_merge_instructions(&repo, &branch, source_kind));
                     merge.started_at = None;
                     merge.finished_at = None;
                     merge.commit = None;

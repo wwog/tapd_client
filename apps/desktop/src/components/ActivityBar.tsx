@@ -4,6 +4,7 @@ import {
   Bot,
   Bug,
   FolderGit2,
+  ListChecks,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -14,7 +15,15 @@ import {
 import { AccountChip } from "./AccountChip";
 import { t, type MessageKey } from "../lib/i18n";
 
-export type View = "bugs" | "projects" | "agent" | "coworker" | "mcp" | "settings" | "account";
+export type View =
+  | "bugs"
+  | "local"
+  | "projects"
+  | "agent"
+  | "coworker"
+  | "mcp"
+  | "settings"
+  | "account";
 
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
@@ -32,6 +41,7 @@ const RAIL_ANIM: Record<string, string> = {
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
+  { id: "local", label: "app.nav.local", icon: <ListChecks size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },

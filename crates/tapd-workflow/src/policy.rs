@@ -4,16 +4,23 @@
 use tapd_i18n::tr_args;
 
 use crate::config::WorkflowConfig;
-use crate::task::{Task, TaskStatus};
+use crate::task::{Task, TaskSource, TaskStatus};
 
-/// Manual fallback shown when an agent merge cannot run.
-pub fn manual_merge_instructions(repo: &str, branch: &str) -> String {
-    tr_args("flow.merge.manualsteps", &[&repo, &branch])
+/// Manual fallback shown when an agent merge cannot run. Local work items have
+/// no TAPD write-back, so the steps stop at the client's merge confirmation.
+pub fn manual_merge_instructions(repo: &str, branch: &str, source: TaskSource) -> String {
+    match source {
+        TaskSource::TapdBug => tr_args("flow.merge.manualsteps", &[&repo, &branch]),
+        TaskSource::LocalWorkItem => tr_args("flow.merge.local.manualsteps", &[&repo, &branch]),
+    }
 }
 
 /// Prompt for the merge runner. The host renders it into the runtime request.
-pub fn merge_prompt(repo: &str, branch: &str) -> String {
-    tr_args("flow.merge.prompt", &[&repo, &branch, &branch])
+pub fn merge_prompt(repo: &str, branch: &str, source: TaskSource) -> String {
+    match source {
+        TaskSource::TapdBug => tr_args("flow.merge.prompt", &[&repo, &branch, &branch]),
+        TaskSource::LocalWorkItem => tr_args("flow.merge.local.prompt", &[&repo, &branch, &branch]),
+    }
 }
 
 /// Switching the worktree mode is locked while any task is live. Changing

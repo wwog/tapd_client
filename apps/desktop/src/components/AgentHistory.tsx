@@ -15,6 +15,8 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
   agentApi,
+  agentTaskTitle,
+  isBugAgentTask,
   supportsAgentChat,
   type AgentRuntimeDescriptor,
   type AgentTask,
@@ -350,7 +352,7 @@ export function AgentHistory({
             <div className="p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
-                  <ScrollingName text={bugTitle(selected.title) || t("agent.untitled")} />
+                  <ScrollingName text={agentTaskTitle(selected) || t("agent.untitled")} />
                 </h2>
                 <Badge tone={AGENT_STATUS_TONES[selected.status]}>
                   {t(AGENT_STATUS_LABELS[selected.status])}
@@ -358,14 +360,16 @@ export function AgentHistory({
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={<Bug size={12} />}
-                  onClick={() => onOpenBug(selected.workspaceId, selected.bugId)}
-                >
-                  {t("agent.openBug")}
-                </Button>
+                {isBugAgentTask(selected) ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<Bug size={12} />}
+                    onClick={() => onOpenBug(selected.workspaceId, selected.bugId)}
+                  >
+                    {t("agent.openBug")}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   variant="secondary"
@@ -420,7 +424,9 @@ export function AgentHistory({
                   label={t("agent.history.workspace")}
                   value={selected.workspaceName || selected.workspaceId}
                 />
-                <Meta label={t("agent.history.bugId")} value={selected.bugId} mono />
+                {isBugAgentTask(selected) ? (
+                  <Meta label={t("agent.history.bugId")} value={selected.bugId} mono />
+                ) : null}
                 <Meta label={t("agent.history.source")} value={selected.source || "—"} />
                 <Meta label="Agent" value={runtimeName(selected.runtimeId)} />
                 <Meta
@@ -640,12 +646,13 @@ const HistoryRow = memo(function HistoryRow(props: {
         </span>
       </div>
       <ScrollingName
-        text={bugTitle(task.title) || t("agent.untitled")}
+        text={agentTaskTitle(task) || t("agent.untitled")}
         className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
       />
       <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs">
         <span className="min-w-0 truncate font-mono text-slate-400">
-          {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+          {task.workspaceName || task.workspaceId}
+          {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
         </span>
         {task.changes ? (
           <span className="ml-auto flex shrink-0 items-center gap-1 tabular-nums">

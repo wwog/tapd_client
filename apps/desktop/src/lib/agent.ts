@@ -1,3 +1,4 @@
+import { bugTitle } from "./bug";
 import { featureCommand } from "./feature";
 import { t, type MessageKey } from "./i18n";
 
@@ -185,12 +186,17 @@ export type AgentTaskChanges = {
   commit?: string | null;
 };
 
+/** Where a task came from. Local work items never link back to TAPD bugs. */
+export type AgentTaskSourceKind = "tapd_bug" | "local_work_item";
+
 export type AgentTask = {
   id: string;
   workspaceId: string;
   workspaceName: string;
   bugId: string;
   title: string;
+  /** What the task was launched from; absent on records written before it existed. */
+  sourceKind?: AgentTaskSourceKind;
   severity: string;
   priority: string;
   jsonPath: string;
@@ -227,6 +233,8 @@ export type AgentTask = {
   extraPrompt?: string;
   /** Local resource paths supplied with the task. */
   attachments?: string[];
+  /** Project rule snapshotted when a local item was handed over. */
+  projectRule?: string;
 };
 
 /**
@@ -416,6 +424,8 @@ export type AgentSummary = {
   bugId: string | null;
   severity: string | null;
   priority: string | null;
+  /** Defaults to `tapd_bug` on the caller side for older backends. */
+  sourceKind?: AgentTaskSourceKind;
   /** 当前运行时的展示信息与动作；有 prompt 时胶囊可直接审批。 */
   runtimeId?: string | null;
   /** Runtime working the active task ("Claude Code", "OpenCode", …). */
@@ -427,6 +437,8 @@ export type AgentSummary = {
   startedAt?: string | null;
   lastMessage?: string | null;
   prompt?: AgentPendingPrompt | null;
+  /** Project rule of the active local task; not shown on the capsule. */
+  projectRule?: string;
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */
@@ -450,6 +462,20 @@ export const isAgentInFlight = (task: AgentTask): boolean =>
 export const isAgentTerminalStatus = (status: AgentTaskStatus): boolean =>
   status === "succeeded" || status === "failed" || status === "canceled";
 
+/**
+ * True for tasks launched from a TAPD bug. Records written before `sourceKind`
+ * existed are bugs, so the absent value means the same thing.
+ */
+export const isBugAgentTask = (record: {
+  sourceKind?: AgentTaskSourceKind;
+}): boolean => (record.sourceKind ?? "tapd_bug") === "tapd_bug";
+
+/** Tab/card title: bug titles get punctuation cleanup, local titles stay as typed. */
+export const agentTaskTitle = (task: {
+  title: string;
+  sourceKind?: AgentTaskSourceKind;
+}): string => (isBugAgentTask(task) ? bugTitle(task.title) : task.title);
+
 /** A worktree folder still exists and is worth opening in an editor. */
 export const canOpenAgentWorktree = (task: AgentTask): boolean =>
   Boolean(task.worktreePath) && !isAgentTerminalStatus(task.status);
@@ -472,7 +498,9 @@ export function inFlightAgentTasks(tasks: AgentTask[]): Map<string, AgentInFligh
   const queued = tasks.filter((task) => task.status === "queued");
   const map = new Map<string, AgentInFlight>();
   for (const task of tasks) {
-    if (!isAgentInFlight(task)) continue;
+    // The map answers "does this bug already own a task"; local work items
+    // share the queue but never block a bug row.
+    if (!isAgentInFlight(task) || !isBugAgentTask(task)) continue;
     const key = agentBugKey(task.workspaceId, task.bugId);
     const current = map.get(key);
     // Legacy snapshots can contain duplicates; the most advanced state wins.

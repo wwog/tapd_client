@@ -30,6 +30,7 @@ static EN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
 const BUCKETS: &[&[Message]] = &[
     catalog::common::MESSAGES,
     catalog::core::MESSAGES,
+    catalog::local::MESSAGES,
     catalog::mcp::MESSAGES,
     catalog::agent::MESSAGES,
     catalog::bug::MESSAGES,

@@ -1,0 +1,12 @@
+[package]
+name = "tapd-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local-only projects and their work items, without IO"
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

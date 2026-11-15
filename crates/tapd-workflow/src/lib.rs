@@ -29,8 +29,8 @@ pub use policy::{merge_prompt, worktree_toggle_locked};
 pub use recovery::{suspend, RecoveryOutcome, RESTARTED_MERGE_ERROR};
 pub use scheduler::{active_count, next_queued_index, task_counts, TaskCounts};
 pub use task::{
-    ChangeSet, Snapshot, Task, TaskApproval, TaskId, TaskMerge, TaskSpec, TaskStatus, Timestamp,
-    WorktreeRef,
+    ChangeSet, Snapshot, Task, TaskApproval, TaskId, TaskMerge, TaskSource, TaskSpec, TaskStatus,
+    Timestamp, WorktreeRef,
 };
 pub use workflow::{status_key, Workflow};
 

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use tapd_workflow::{
-    ChangeSet, Effect, Input, RecoveryPolicy, RunOutcome, Snapshot, Task, TaskId, TaskSpec,
-    TaskStatus, Workflow, WorkflowConfig, WorktreeRef,
+    ChangeSet, Effect, Input, RecoveryPolicy, RunOutcome, Snapshot, Task, TaskId, TaskSource,
+    TaskSpec, TaskStatus, Workflow, WorkflowConfig, WorktreeRef,
 };
 
 pub fn now(seconds: u32) -> String {
@@ -11,6 +11,7 @@ pub fn now(seconds: u32) -> String {
 
 pub fn spec(bug: &str) -> TaskSpec {
     TaskSpec {
+        source_kind: TaskSource::TapdBug,
         workspace_id: "ws".to_string(),
         workspace_name: "项目".to_string(),
         bug_id: bug.to_string(),
@@ -22,7 +23,29 @@ pub fn spec(bug: &str) -> TaskSpec {
         model: String::new(),
         permission_mode: String::new(),
         source: "manual".to_string(),
+        project_rule: String::new(),
         extra_prompt: String::new(),
+        attachments: Vec::new(),
+    }
+}
+
+/// Local work-item spec: no TAPD ids, no severity/priority, own branch prefix.
+pub fn local_spec(item: &str) -> TaskSpec {
+    TaskSpec {
+        source_kind: TaskSource::LocalWorkItem,
+        workspace_id: "local-project".to_string(),
+        workspace_name: "本地项目".to_string(),
+        bug_id: item.to_string(),
+        title: format!("事项 {item}"),
+        severity: String::new(),
+        priority: String::new(),
+        repo_path: "/repo".to_string(),
+        runtime_id: "runtime".to_string(),
+        model: String::new(),
+        permission_mode: String::new(),
+        source: "local".to_string(),
+        project_rule: String::new(),
+        extra_prompt: "事项描述".to_string(),
         attachments: Vec::new(),
     }
 }

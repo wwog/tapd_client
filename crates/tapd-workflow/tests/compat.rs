@@ -56,6 +56,7 @@ fn legacy_task_json_without_new_fields_deserializes() {
     assert_eq!(task.json_path, "/data/bug.json");
     assert_eq!(task.prompt, "please fix");
     assert_eq!(task.spec.source, "manual");
+    assert_eq!(task.spec.source_kind, tapd_workflow::TaskSource::TapdBug);
     assert_eq!(task.agent_session_id.as_deref(), Some("session-1"));
     assert_eq!(task.exit_code, Some(0));
     assert_eq!(task.baseline_dirty, vec!["src/untracked.rs"]);

@@ -1,8 +1,11 @@
 import { Bug, Hourglass, Loader2, X } from "lucide-react";
 
-import type { AgentTask } from "../lib/agent";
+import {
+  agentTaskTitle,
+  isBugAgentTask,
+  type AgentTask,
+} from "../lib/agent";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
 import { ScrollingName } from "./ScrollingName";
 import { Badge, Button } from "./ui";
@@ -32,14 +35,15 @@ export function AgentQueuedDetail(props: Props) {
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
-                <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
+                <ScrollingName text={agentTaskTitle(task) || t("agent.untitled")} />
               </h2>
               <Badge tone="neutral">{t("agent.status.queued")}</Badge>
               {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
               <span className="shrink-0">
-                {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+                {task.workspaceName || task.workspaceId}
+                {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
               </span>
               {task.worktreeBranch ? (
                 <span
@@ -77,14 +81,16 @@ export function AgentQueuedDetail(props: Props) {
             >
               {t("agent.queue.cancel")}
             </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={<Bug size={11} />}
-              onClick={props.onOpenBug}
-            >
-              {t("agent.openBug")}
-            </Button>
+            {isBugAgentTask(task) ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<Bug size={11} />}
+                onClick={props.onOpenBug}
+              >
+                {t("agent.openBug")}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>

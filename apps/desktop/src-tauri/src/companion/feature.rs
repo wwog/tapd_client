@@ -4,9 +4,10 @@
 //! (`feature_router::dispatch`, names like `agent_*` / `notification_*` /
 //! `coworker_*`). Mobile v2 reuses that surface for its new capabilities —
 //! Agent task view/review/history/enqueue/cancel/retry, Agent config, check-in
-//! notification settings, coworker packages and the terminal session list
+//! notification settings, coworker packages, the terminal session list
 //! (attach tickets come from `terminal_ticket`; input/resize travel over
-//! `companion::terminal`'s WebSocket instead) —
+//! `companion::terminal`'s WebSocket instead) and local projects / work items
+//! (directory browsing there is limited to home and existing project folders) —
 //! through the narrow allowlist below, so the LAN endpoint can never become a
 //! generic command relay.
 //!
@@ -76,6 +77,17 @@ const ALLOWED_FEATURES: &[&str] = &[
     "terminal_close",
     // WebSocket 接入的一次性票据（60s、单次、绑定会话）
     "terminal_ticket",
+    // 本地项目与事项（不依赖 TAPD 登录；目录浏览受主目录 / 项目仓库限制）
+    "local_projects_list",
+    "local_project_create",
+    "local_project_update",
+    "local_project_delete",
+    "local_items_list",
+    "local_item_create",
+    "local_item_update",
+    "local_item_delete",
+    "local_item_enqueue",
+    "local_browse_dirs",
 ];
 
 /// Feature-proxy budget: at most 60 requests per IP per minute.
@@ -195,6 +207,16 @@ mod tests {
         "terminal_create",
         "terminal_close",
         "terminal_ticket",
+        "local_projects_list",
+        "local_project_create",
+        "local_project_update",
+        "local_project_delete",
+        "local_items_list",
+        "local_item_create",
+        "local_item_update",
+        "local_item_delete",
+        "local_item_enqueue",
+        "local_browse_dirs",
     ];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {

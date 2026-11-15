@@ -51,6 +51,7 @@ export const agent = {
   "magent.taskDeletedHint": ["任务可能已被删除。", "The task may have been deleted."],
   "magent.taskNotFound": ["未找到该任务", "Task not found"],
   "magent.repo": ["仓库", "Repository"],
+  "magent.localProject": ["本地项目", "Local project"],
   "magent.branch": ["分支", "Branch"],
   "magent.source": ["来源", "Source"],
   "magent.runtime": ["运行时", "Runtime"],

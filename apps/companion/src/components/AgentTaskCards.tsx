@@ -8,7 +8,14 @@ import {
   CircleExclamationPoint,
 } from "lucide-react";
 
-import { AGENT_STATUS_LABELS, api, asApiError, type AgentDiffView, type AgentTask } from "../lib/api";
+import {
+  AGENT_STATUS_LABELS,
+  api,
+  asApiError,
+  isTapdTask,
+  type AgentDiffView,
+  type AgentTask,
+} from "../lib/api";
 import { bugTitle } from "../lib/format";
 import { t } from "../lib/i18n";
 import { Badge } from "./Badge";
@@ -40,6 +47,15 @@ function ChangeTotals(props: { additions: number; deletions: number; fileCount?:
 
 /** Task title with the tester punctuation normalized; empty-safe. */
 const titleOf = (task: AgentTask): string => bugTitle(task.title) || t("magent.untitled");
+
+/**
+ * Card subtitle: the project, plus the bug ref only for TAPD-sourced tasks —
+ * a task raised from a local work item has no bug id to show.
+ */
+const originOf = (task: AgentTask): string => {
+  const project = task.workspaceName || task.workspaceId;
+  return isTapdTask(task) ? `${project} · #${task.bugId.slice(-7)}` : project;
+};
 
 /** Small push-page affordance in a card footer. */
 function DetailLink(props: { onOpen: () => void }) {
@@ -108,7 +124,7 @@ export function ReviewCard(props: {
             {titleOf(task)}
           </h3>
           <p className="mt-0.5 text-ui-xs text-slate-400">
-            {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+            {originOf(task)}
           </p>
         </div>
         <Badge tone="amber">{t(AGENT_STATUS_LABELS.awaiting_approval)}</Badge>
@@ -302,7 +318,7 @@ export function MergeCard(props: {
             {titleOf(task)}
           </h3>
           <p className="mt-0.5 text-ui-xs text-slate-400">
-            {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+            {originOf(task)}
           </p>
         </div>
         <Badge tone="cyan">{t(AGENT_STATUS_LABELS.awaiting_merge)}</Badge>

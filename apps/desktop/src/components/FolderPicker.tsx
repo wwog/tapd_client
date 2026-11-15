@@ -18,6 +18,8 @@ export function FolderPicker(props: {
   title?: string;
   description?: string;
   confirmLabel?: string;
+  /** Opened from inside a dialog, so it must paint above the dialog layer. */
+  elevated?: boolean;
   onCancel: () => void;
   onSelect: (path: string) => void;
 }) {
@@ -27,6 +29,7 @@ export function FolderPicker(props: {
     title = t("folder.pickTitle"),
     description,
     confirmLabel = t("folder.useThis"),
+    elevated = false,
     onCancel,
     onSelect,
   } = props;
@@ -75,7 +78,8 @@ export function FolderPicker(props: {
   return (
     <div
       className={clsx(
-        "modal-overlay fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
+        "modal-overlay fixed inset-0 flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
+        elevated ? "z-[85]" : "z-[70]",
         closing && "modal-overlay-out",
       )}
     >

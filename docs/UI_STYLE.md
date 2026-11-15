@@ -85,6 +85,7 @@
 | Agent 底部面板 | `z-65` | Compose sheet |
 | 文件夹选择器 | `z-70` | FolderPicker |
 | 通用弹窗 | `z-80` | Dialog |
+| 弹窗内的文件夹选择器 | `z-85` | FolderPicker `elevated`（项目创建 / 编辑弹窗） |
 | 首次引导 | `z-90` | Onboarding |
 
 模态框交互：

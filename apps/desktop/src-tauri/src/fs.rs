@@ -1,7 +1,8 @@
 //! Filesystem access for the Explorer and file viewer panels.
 //!
-//! The root is always the project's configured folder
-//! (`agent.json` → `projects[workspaceId].repoPath`). Every request carries a
+//! The root is the project's configured folder
+//! (`agent.json` → `projects[workspaceId].repoPath`), or the filesystem root
+//! for the [`ROOT_WORKSPACE_ID`] sentinel. Every request carries a
 //! `/`-separated path relative to that root; [`resolve_in_root`] canonicalizes
 //! both sides and compares components, which also rejects symlinks that point
 //! outside the project. Listing/reading are always available; writing only
@@ -20,8 +21,11 @@ use std::{
 
 use serde::Serialize;
 use tapd_i18n::{tr, tr_args};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
+/// Workspace id the paired phone uses to browse the filesystem root. Reading
+/// is allowed; the companion's text write route rejects this id.
+pub(crate) const ROOT_WORKSPACE_ID: &str = "__root__";
 /// Stable prefix the UI matches to render its "configure a folder" empty state.
 pub const NO_FOLDER_PREFIX: &str = "no_folder:";
 /// One directory level stops after this many entries.
@@ -131,9 +135,15 @@ impl std::error::Error for FsError {}
 // ---------------------------------------------------------------------------
 
 /// Root of one workspace: `agent.json`'s configured repository folder with a
-/// leading `~` expanded. An empty config is the UI's recognized empty state.
+/// leading `~` expanded. When the id names no TAPD workspace folder, a local
+/// project with the same id supplies the root. [`ROOT_WORKSPACE_ID`] bypasses
+/// both lookups and maps to the filesystem root. An empty config is the UI's
+/// recognized empty state.
 pub(crate) fn root_for(app: &AppHandle, workspace_id: &str) -> Result<PathBuf, FsError> {
     let workspace_id = workspace_id.trim();
+    if let Some(root) = root_override(workspace_id) {
+        return Ok(root);
+    }
     if workspace_id.is_empty() {
         return Err(FsError::no_folder());
     }
@@ -143,7 +153,24 @@ pub(crate) fn root_for(app: &AppHandle, workspace_id: &str) -> Result<PathBuf, F
         .get(workspace_id)
         .map(|project| project.repo_path.as_str())
         .unwrap_or_default();
-    root_from_repo_path(repo_path)
+    match root_from_repo_path(repo_path) {
+        Ok(root) => Ok(root),
+        Err(error) => local_root(app, workspace_id).ok_or(error),
+    }
+}
+
+/// Roots that come from neither TAPD nor a local project. Only the filesystem
+/// root today; a pure lookup so the sentinel is testable without an app handle.
+fn root_override(id: &str) -> Option<PathBuf> {
+    (id == ROOT_WORKSPACE_ID).then(|| PathBuf::from("/"))
+}
+
+/// File root for a local project id. Missing state (very early startup) or a
+/// disabled local store simply contributes no fallback.
+fn local_root(app: &AppHandle, workspace_id: &str) -> Option<PathBuf> {
+    let state = app.try_state::<crate::state::SharedState>()?;
+    let repo_path = state.local.repo_path(workspace_id)?;
+    root_from_repo_path(&repo_path).ok()
 }
 
 /// Turns the configured string into an existing canonical directory.
@@ -566,6 +593,15 @@ pub(crate) fn write_file(
     force: bool,
 ) -> Result<FsStat, FsError> {
     let canonical = canonical_root(root)?;
+    // Root browsing is read-only. Enforcing this in the fs layer covers every
+    // caller (the phone route, Tauri commands, future bridges), not just the
+    // `__root__` HTTP sentinel.
+    if canonical.parent().is_none() {
+        return Err(FsError::new(
+            FsErrorKind::OutsideRoot,
+            tr("companion.files.rootReadOnly"),
+        ));
+    }
     let target = resolve_in_root(&canonical, relative)?;
     let metadata = std_fs::metadata(&target).map_err(FsError::io)?;
     if !metadata.is_file() {
@@ -788,6 +824,14 @@ mod tests {
     impl Drop for TempTree {
         fn drop(&mut self) {
             let _ = std_fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    fn the_root_sentinel_maps_to_the_filesystem_root_only() {
+        assert_eq!(root_override(ROOT_WORKSPACE_ID), Some(PathBuf::from("/")));
+        for ordinary in ["42", "__root", "root", ""] {
+            assert_eq!(root_override(ordinary), None, "{ordinary}");
         }
     }
 
@@ -1143,5 +1187,12 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn writes_at_the_filesystem_root_are_rejected() {
+        let error = write_file(Path::new("/"), "tmp/never-touched", "text", None, true)
+            .expect_err("root write must be rejected");
+        assert_eq!(error.kind, FsErrorKind::OutsideRoot);
     }
 }

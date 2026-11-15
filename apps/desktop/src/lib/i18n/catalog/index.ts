@@ -7,6 +7,7 @@ import { bugs } from "./bugs";
 import { common } from "./common";
 import { explorer } from "./explorer";
 import { layout } from "./layout";
+import { local } from "./local";
 import { misc } from "./misc";
 import { settings } from "./settings";
 import { shell } from "./shell";
@@ -23,6 +24,7 @@ export const CATALOG = {
   ...terminal,
   ...layout,
   ...explorer,
+  ...local,
   ...misc,
 } as const;
 

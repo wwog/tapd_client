@@ -78,11 +78,12 @@ pub fn recover(tasks: &mut [Task], config: &WorkflowConfig, restored_at: &str) -
                 task.error = None;
                 let repo = task.spec.repo_path.clone();
                 let branch = task.branch().unwrap_or("").to_string();
+                let source_kind = task.spec.source_kind;
                 let merge = task.merge.get_or_insert_with(Default::default);
                 merge.error = Some(tr(RESTARTED_MERGE_KEY).to_string());
                 merge.started_at = None;
                 merge.finished_at = None;
-                merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+                merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
                 outcome.awaiting_merge += 1;
                 outcome.changed.push(index);
             }
@@ -127,11 +128,12 @@ pub fn suspend(tasks: &mut [Task], now: &str) -> Vec<usize> {
                 task.error = None;
                 let repo = task.spec.repo_path.clone();
                 let branch = task.branch().unwrap_or("").to_string();
+                let source_kind = task.spec.source_kind;
                 let merge = task.merge.get_or_insert_with(TaskMerge::default);
                 merge.error = Some(tr(RESTARTED_MERGE_KEY).to_string());
                 merge.started_at = None;
                 merge.finished_at = None;
-                merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+                merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
                 changed.push(index);
             }
             _ => {}

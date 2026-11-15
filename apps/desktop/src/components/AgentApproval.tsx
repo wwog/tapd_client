@@ -12,9 +12,13 @@ import {
   X,
 } from "lucide-react";
 
-import { canOpenAgentWorktree, type AgentTask } from "../lib/agent";
+import {
+  agentTaskTitle,
+  canOpenAgentWorktree,
+  isBugAgentTask,
+  type AgentTask,
+} from "../lib/agent";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
 import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
 import { ScrollingName } from "./ScrollingName";
@@ -159,13 +163,15 @@ export function AgentApproval(props: Props) {
                           </span>
                         </div>
                         <ScrollingName
-                          text={bugTitle(task.title) || t("agent.untitled")}
+                          text={agentTaskTitle(task) || t("agent.untitled")}
                           className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
                         />
                         <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs text-slate-400">
                           <span className="min-w-0 truncate">
-                            {task.workspaceName || task.workspaceId} · #
-                            {task.bugId.slice(-7)}
+                            {task.workspaceName || task.workspaceId}
+                            {isBugAgentTask(task)
+                              ? ` · #${task.bugId.slice(-7)}`
+                              : null}
                           </span>
                           {task.approval?.files?.length ? (
                             <span className="shrink-0">
@@ -239,13 +245,14 @@ function ReviewCard({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
-              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
+              <ScrollingName text={agentTaskTitle(task) || t("agent.untitled")} />
             </h3>
             <Badge tone="amber">{t("agent.status.awaitingApproval")}</Badge>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
             <span className="shrink-0">
-              {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+              {task.workspaceName || task.workspaceId}
+              {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
             </span>
             {task.worktreeBranch ? (
               <span
@@ -298,15 +305,17 @@ function ReviewCard({
               {t("agent.changes.openWorktree")}
             </Button>
           ) : null}
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Bug size={11} />}
-            disabled={busy !== null}
-            onClick={() => onOpenBug(task.workspaceId, task.bugId)}
-          >
-            {t("agent.openBug")}
-          </Button>
+          {isBugAgentTask(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Bug size={11} />}
+              disabled={busy !== null}
+              onClick={() => onOpenBug(task.workspaceId, task.bugId)}
+            >
+              {t("agent.openBug")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="ghost"
@@ -403,13 +412,14 @@ function MergeCard({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
-              <ScrollingName text={bugTitle(task.title) || t("agent.untitled")} />
+              <ScrollingName text={agentTaskTitle(task) || t("agent.untitled")} />
             </h3>
             <Badge tone="cyan">{t("agent.status.awaitingMerge")}</Badge>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
             <span className="shrink-0">
-              {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+              {task.workspaceName || task.workspaceId}
+              {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
             </span>
             {task.worktreeBranch ? (
               <span
@@ -439,15 +449,17 @@ function MergeCard({
               {t("agent.changes.openWorktree")}
             </Button>
           ) : null}
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Bug size={11} />}
-            disabled={busy !== null}
-            onClick={() => onOpenBug(task.workspaceId, task.bugId)}
-          >
-            {t("agent.openBug")}
-          </Button>
+          {isBugAgentTask(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Bug size={11} />}
+              disabled={busy !== null}
+              onClick={() => onOpenBug(task.workspaceId, task.bugId)}
+            >
+              {t("agent.openBug")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="ghost"

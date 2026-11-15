@@ -40,8 +40,12 @@ export type AgentComposePayload = {
 
 type Props = {
   open: boolean;
-  /** Bug title, used as the sheet subtitle. */
+  /** Bug title or work item title, used as the sheet subtitle. */
   title: string;
+  /** Work item titles are already user text; skip the bug punctuation pass. */
+  plainTitle?: boolean;
+  /** Overrides the "Fix with Agent" heading for local work items. */
+  heading?: string;
   submitting: boolean;
   onClose: () => void;
   onSubmit: (payload: AgentComposePayload) => void;
@@ -54,7 +58,16 @@ type Props = {
  * inline image/video data.
  */
 export function AgentComposeSheet(props: Props) {
-  const { open, title, submitting, onClose, onSubmit, toast } = props;
+  const {
+    open,
+    title,
+    plainTitle = false,
+    heading,
+    submitting,
+    onClose,
+    onSubmit,
+    toast,
+  } = props;
   const theme = useResolvedTheme();
   const { closing, requestClose, reset } = useLayerClose(onClose);
   const [prompt, setPrompt] = useState("");
@@ -72,8 +85,8 @@ export function AgentComposeSheet(props: Props) {
   const [permissionMode, setPermissionMode] = useState("");
   const { byRuntime, snapshot: scan } = useAgentScan();
 
-  // Every opening starts clean; the bug id is part of the panel key upstream,
-  // so switching targets also remounts this sheet.
+  // Every opening starts clean; the bug / item id is part of the panel key
+  // upstream, so switching targets also remounts this sheet.
   useEffect(() => {
     if (!open) return;
     setPrompt("");
@@ -279,7 +292,7 @@ export function AgentComposeSheet(props: Props) {
       <section
         role="dialog"
         aria-modal="true"
-        aria-label={t("chat.fixWithAgent")}
+        aria-label={heading ?? t("chat.fixWithAgent")}
         data-agent-compose
         className={clsx(
           "agent-sheet-up absolute inset-x-0 bottom-0 flex h-[min(64vh,560px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface ",
@@ -297,9 +310,12 @@ export function AgentComposeSheet(props: Props) {
           </span>
           <div className="min-w-0 flex-1" data-tauri-drag-region>
             <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
-              {t("chat.fixWithAgent")}
+              {heading ?? t("chat.fixWithAgent")}
             </h2>
-            <ScrollingName text={bugTitle(title)} className="text-ui-sm text-slate-500" />
+            <ScrollingName
+              text={plainTitle ? title : bugTitle(title)}
+              className="text-ui-sm text-slate-500"
+            />
           </div>
           <button
             type="button"

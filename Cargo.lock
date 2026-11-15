@@ -4188,6 +4188,7 @@ dependencies = [
  "sha2 0.10.9",
  "tapd-core",
  "tapd-i18n",
+ "tapd-local",
  "tapd-workflow",
  "tapd-workspace",
  "tauri",
@@ -4215,6 +4216,14 @@ dependencies = [
 [[package]]
 name = "tapd-i18n"
 version = "1.2.0"
+
+[[package]]
+name = "tapd-local"
+version = "1.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "tapd-mcp"

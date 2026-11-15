@@ -1145,7 +1145,9 @@ fn session_shell() -> String {
         .unwrap_or_else(|| shell_path::default_shell().to_string_lossy().into_owned())
 }
 
-/// Working directory for a new session.
+/// Working directory for a new session: explicit path, then the TAPD
+/// workspace's configured folder, then a local project with the same id, then
+/// home.
 fn session_cwd(app: &AppHandle, workspace_id: Option<&str>, explicit: Option<&str>) -> PathBuf {
     let explicit = real_dir(explicit.map(Path::new));
     let project = workspace_id.and_then(|workspace_id| {
@@ -1156,8 +1158,17 @@ fn session_cwd(app: &AppHandle, workspace_id: Option<&str>, explicit: Option<&st
             .clone();
         real_dir(Some(Path::new(&repo_path)))
     });
+    let project = project.or_else(|| workspace_id.and_then(|id| local_repo_dir(app, id)));
     let home = tapd_core::paths::home_dir().ok();
     pick_cwd(explicit, project, real_dir(home.as_deref()))
+}
+
+/// Local project folder for an id; no TAPD workspace folder needed. Missing
+/// state or a disabled local store contributes no fallback.
+fn local_repo_dir(app: &AppHandle, workspace_id: &str) -> Option<PathBuf> {
+    let state = app.try_state::<crate::state::SharedState>()?;
+    let repo_path = state.local.repo_path(workspace_id)?;
+    real_dir(Some(Path::new(&repo_path)))
 }
 
 /// Precedence rule, pure so it is testable without a PTY: explicit path, then

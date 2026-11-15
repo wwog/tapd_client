@@ -1,10 +1,20 @@
 import clsx from "clsx";
-import type { MouseEvent as ReactMouseEvent } from "react";
-import { EyeOff, FolderCog, FolderTree, RefreshCw } from "lucide-react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  EyeOff,
+  Folder,
+  FolderCog,
+  FolderPlus,
+  FolderTree,
+  Pencil,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 
 import type { Workspace, WorkspaceContext } from "../lib/api";
 import type { ProjectMenu } from "../hooks/useWorkspaceData";
 import { t } from "../lib/i18n";
+import type { LocalProject } from "../lib/local";
 import { AccountChip } from "./AccountChip";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { ScrollingName } from "./ScrollingName";
@@ -17,6 +27,9 @@ type Props = {
   contextLoading: boolean;
   visibleWorkspaces: Workspace[];
   workspaceId: string;
+  /** Local (non-TAPD) projects; `localProjectId` clears the TAPD selection. */
+  localProjects: LocalProject[];
+  localProjectId: string | null;
   view: View;
   account: {
     meAvatar: string | null;
@@ -30,6 +43,10 @@ type Props = {
   projectMenu: ProjectMenu | null;
   onRetry: () => void;
   onSelectWorkspace: (id: string) => void;
+  onSelectLocalProject: (id: string) => void;
+  onCreateLocalProject: () => void;
+  onEditLocalProject: (project: LocalProject) => void;
+  onDeleteLocalProject: (project: LocalProject) => void;
   onOpenAccount: () => void;
   onOpenProjectMenu: (menu: ProjectMenu) => void;
   onCloseProjectMenu: () => void;
@@ -47,6 +64,8 @@ export function ProjectSidebar({
   contextLoading,
   visibleWorkspaces,
   workspaceId,
+  localProjects,
+  localProjectId,
   view,
   account,
   autoCollapse,
@@ -55,6 +74,10 @@ export function ProjectSidebar({
   projectMenu,
   onRetry,
   onSelectWorkspace,
+  onSelectLocalProject,
+  onCreateLocalProject,
+  onEditLocalProject,
+  onDeleteLocalProject,
   onOpenAccount,
   onOpenProjectMenu,
   onCloseProjectMenu,
@@ -63,6 +86,12 @@ export function ProjectSidebar({
   onBrowseFiles,
   onResizeStart,
 }: Props) {
+  /** Local rows have their own two-entry menu; TAPD rows use App's `projectMenu`. */
+  const [localMenu, setLocalMenu] = useState<{
+    project: LocalProject;
+    x: number;
+    y: number;
+  } | null>(null);
   return (
     <>
       <div
@@ -121,7 +150,9 @@ export function ProjectSidebar({
             ) : null}
 
             {visibleWorkspaces.map((item) => {
-              const active = item.id === workspaceId;
+              // A selected local project owns the "active" state, so one row
+              // is highlighted at a time across both sections.
+              const active = item.id === workspaceId && localProjectId === null;
               return (
                 <div key={item.id} className="group relative">
                   <button
@@ -174,6 +205,55 @@ export function ProjectSidebar({
                 </div>
               );
             })}
+
+            {localProjects.length > 0 ? (
+              <div className="mt-1 border-t border-border pt-1">
+                <div
+                  className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
+                  title={t("local.projects.hint")}
+                >
+                  <span>{t("local.projects.title")}</span>
+                  <span className="tabular-nums">{localProjects.length}</span>
+                </div>
+                {localProjects.map((project) => {
+                  const active = project.id === localProjectId;
+                  return (
+                    <div key={project.id} className="group relative">
+                      <button
+                        type="button"
+                        onClick={() => onSelectLocalProject(project.id)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setLocalMenu({
+                            project,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                        className={clsx(
+                          "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left text-ui-base transition",
+                          active
+                            ? "bg-overlay font-normal text-slate-900"
+                            : "text-slate-600 hover:bg-overlay-soft",
+                        )}
+                      >
+                        <Folder
+                          size={13}
+                          className={clsx(
+                            "shrink-0",
+                            active ? "text-sky-600" : "text-slate-400",
+                          )}
+                        />
+                        <ScrollingName text={project.name} className="flex-1" />
+                        {active ? (
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                        ) : null}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -236,6 +316,47 @@ export function ProjectSidebar({
                 label={t("settings.sidebar.manage")}
                 onClick={() => {
                   onManageProjects();
+                  requestClose();
+                }}
+              />
+              <ContextMenuItem
+                icon={<FolderPlus size={13} />}
+                label={t("local.projects.create")}
+                title={t("local.projects.hint")}
+                onClick={() => {
+                  onCreateLocalProject();
+                  requestClose();
+                }}
+              />
+            </>
+          )}
+        </ContextMenu>
+      ) : null}
+
+      {localMenu ? (
+        <ContextMenu
+          key={`${localMenu.project.id}-${localMenu.x}-${localMenu.y}`}
+          x={localMenu.x}
+          y={localMenu.y}
+          label={localMenu.project.name}
+          onClose={() => setLocalMenu(null)}
+        >
+          {(requestClose) => (
+            <>
+              <ContextMenuItem
+                icon={<Pencil size={13} />}
+                label={t("local.projects.edit")}
+                onClick={() => {
+                  onEditLocalProject(localMenu.project);
+                  requestClose();
+                }}
+              />
+              <ContextMenuItem
+                icon={<Trash2 size={13} />}
+                label={t("local.projects.delete")}
+                tone="danger"
+                onClick={() => {
+                  onDeleteLocalProject(localMenu.project);
                   requestClose();
                 }}
               />

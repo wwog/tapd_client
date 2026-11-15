@@ -27,6 +27,7 @@ import {
   formatSize,
   isNoFolderError,
   normalizePath,
+  ROOT_SOURCE_ID,
 } from "../lib/files";
 import { relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
@@ -129,6 +130,8 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   const path = normalizePath(props.path);
   const name = basename(path);
   const parent = dirname(path);
+  /** The root source is browsable, but the backend rejects writes under it. */
+  const rootBrowsing = workspaceId === ROOT_SOURCE_ID;
 
   const [content, setContent] = useState<FsContent | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,7 +149,12 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Editing is off by default; the desktop (or a manager phone) enables it.
+  // Root browsing is always read-only, so the switch does not apply.
   useEffect(() => {
+    if (rootBrowsing) {
+      setWriteEnabled(false);
+      return;
+    }
     let cancelled = false;
     void api
       .fileWriteEnabled()
@@ -159,7 +167,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, rootBrowsing]);
 
   // Leaving the file (or reloading it) drops the local buffer.
   useEffect(() => {
@@ -234,8 +242,10 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
       : "—";
   const text = content?.text ?? "";
   const isText = content?.kind === "text" || content?.kind === "markdown";
-  /** Editing needs a complete body and the desktop-side switch. */
-  const editable = Boolean(content && isText && !content.truncated && writeEnabled);
+  /** Editing needs a complete body, the desktop-side switch and a project root. */
+  const editable = Boolean(
+    content && isText && !content.truncated && writeEnabled && !rootBrowsing,
+  );
   const value = draft ?? text;
   const dirty = draft !== null && draft !== text;
   /** Latest buffer for the save response; typing may continue while saving. */
@@ -257,7 +267,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   };
 
   const save = async (force = false) => {
-    if (!workspaceId || !content || saving) return;
+    if (rootBrowsing || !workspaceId || !content || saving) return;
     setSaving(true);
     setSaveError(null);
     const saved = value;
@@ -335,6 +345,14 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
           <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900">
             {name}
           </span>
+          {rootBrowsing ? (
+            <span
+              className="shrink-0 rounded-md border border-border px-1.5 py-px text-ui-2xs text-slate-500"
+              title={t("mobile.files.rootReadOnly")}
+            >
+              {t("mobile.files.readOnly")}
+            </span>
+          ) : null}
           {editable && !editing ? (
             <button
               type="button"

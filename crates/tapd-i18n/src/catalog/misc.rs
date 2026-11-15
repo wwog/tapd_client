@@ -14,6 +14,9 @@ pub static MESSAGES: &[Message] = &[
     ("flow.merge.canceled", "已取消合并", "Merge canceled"),
     ("flow.merge.aborted", "合并已中止", "Merge aborted"),
     ("flow.merge.branchunmerged", "分支尚未并入主仓库", "The branch has not been merged into the main repository"),
+    // Local work items have no bug tracker: no write-back in the merge stage.
+    ("flow.merge.local.manualsteps", "手动合并步骤：\n1. cd \"{}\"\n2. git status  # 工作区必须干净；有改动先 commit 或 git stash；上次合并中断可先 git merge --abort\n3. git merge \"{}\"\n4. 如有冲突：解决后 git add -A && git commit\n5. 运行相关测试\n6. 回到本任务点「我已手动合并」", "Manual merge steps:\n1. cd \"{}\"\n2. git status  # the working tree must be clean; commit or git stash any changes first; after an interrupted merge run git merge --abort\n3. git merge \"{}\"\n4. On conflicts: resolve, then git add -A && git commit\n5. Run the relevant tests\n6. Return to this task and click \"I merged manually\""),
+    ("flow.merge.local.prompt", "请把已审核通过的修复分支合并到当前仓库。\n仓库：{}\n分支：{}\n\n要求：\n1. 先 git status 确认工作区干净；有未提交改动就停止并说明，不要提交或丢弃用户改动。\n2. git merge {}；有冲突时解决冲突，保留双方意图。\n3. 运行相关测试。\n4. 不要 push，也不要调用任何写回类工具。\n5. 完成后说明结果。", "Merge the approved fix branch into the current repository.\nRepository: {}\nBranch: {}\n\nRequirements:\n1. Run git status first to confirm the working tree is clean; stop and explain if there are uncommitted changes, and never commit or discard the user's changes.\n2. git merge {}; resolve any conflicts, keeping both sides' intent.\n3. Run the relevant tests.\n4. Do not push, and do not call any write-back tools.\n5. Explain the result when done."),
     // -- recovery ----------------------------------------------------------
     ("flow.recovery.mergerestarted", "客户端重启，合并已中止", "The client restarted; the merge was aborted"),
     ("flow.recovery.retryexhausted", "客户端重启，自动重试次数已用尽", "The client restarted; automatic retries are exhausted"),

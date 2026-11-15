@@ -10,6 +10,7 @@ mod export;
 mod feature_router;
 mod fs;
 mod island_window;
+mod local;
 mod locale;
 mod mcp;
 mod mcp_audit;

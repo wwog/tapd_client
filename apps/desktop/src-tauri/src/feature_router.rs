@@ -26,6 +26,8 @@ pub async fn dispatch(
         crate::cache::command(state, name, payload).await
     } else if name.starts_with("mcp_") {
         crate::mcp_import::command(state, name, payload).await
+    } else if name.starts_with("local_") {
+        crate::local::command::dispatch(app, state, name, payload).await
     } else {
         Err(format!("unknown feature command: {name}"))
     }

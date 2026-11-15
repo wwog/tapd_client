@@ -1,6 +1,7 @@
 /** Every message group, merged into one catalogue. */
 import { agent } from "./agent";
 import { common } from "./common";
+import { local } from "./local";
 import { misc } from "./misc";
 import { shell } from "./shell";
 import { terminal } from "./terminal";
@@ -12,6 +13,7 @@ export const CATALOG = {
   ...agent,
   ...terminal,
   ...workspace,
+  ...local,
   ...misc,
 } as const;
 

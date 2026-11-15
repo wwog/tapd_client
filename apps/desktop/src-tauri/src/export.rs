@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::{media, session, state::SharedState};
 
 mod download;
+pub(crate) mod local;
 pub(crate) mod paths;
 pub(crate) mod prompt;
 
@@ -116,7 +117,9 @@ pub(crate) async fn export_detail(
                 total_bytes += asset.size;
                 assets.push(asset);
             }
-            Err(error) => warnings.push(tr_args("app.error.labeled", &[&item.filename_hint, &error])),
+            Err(error) => {
+                warnings.push(tr_args("app.error.labeled", &[&item.filename_hint, &error]))
+            }
         }
     }
 

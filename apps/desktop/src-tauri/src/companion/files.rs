@@ -4,7 +4,9 @@
 //! configured folder, `path` is relative to it and resolves through
 //! [`crate::fs`] (absolute paths, `..`, NUL and symlink escapes are rejected).
 //! Reading is always available; writing overwrites existing text files and is
-//! off until the desktop (or a manager phone) enables it.
+//! off until the desktop (or a manager phone) enables it. The
+//! [`crate::fs::ROOT_WORKSPACE_ID`] sentinel browses the filesystem root and
+//! stays read-only regardless of that setting.
 //! JSON routes use the paired-device bearer token; `file/raw` also accepts the
 //! media-style `?t=` capability because `<img>`/`<video>` cannot set headers.
 
@@ -140,6 +142,30 @@ pub(super) async fn api_file_write_state(
     ok_data(json!({ "enabled": enabled }))
 }
 
+/// Why a phone text write is refused. The root sentinel is checked first: it
+/// is read-only by design, so pointing the phone at the desktop setting would
+/// be a misleading hint. `None` means the write may proceed.
+fn write_rejection(
+    workspace_id: &str,
+    allow_file_write: bool,
+) -> Option<(StatusCode, &'static str, &'static str)> {
+    if workspace_id.trim() == fs::ROOT_WORKSPACE_ID {
+        return Some((
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            tr("companion.files.rootReadOnly"),
+        ));
+    }
+    if !allow_file_write {
+        return Some((
+            StatusCode::FORBIDDEN,
+            "write_disabled",
+            tr("companion.files.writeDisabled"),
+        ));
+    }
+    None
+}
+
 /// `POST /companion/api/file/write` — overwrite one existing text file.
 pub(super) async fn api_file_write(
     State(ctx): State<CompanionCtx>,
@@ -149,12 +175,10 @@ pub(super) async fn api_file_write(
     if let Some(response) = authorize(&ctx.state, &headers) {
         return response;
     }
-    if !ctx.state.config_snapshot().companion.allow_file_write {
-        return err_data(
-            StatusCode::FORBIDDEN,
-            "write_disabled",
-            tr("companion.files.writeDisabled"),
-        );
+    let allow_file_write = ctx.state.config_snapshot().companion.allow_file_write;
+    if let Some((status, code, message)) = write_rejection(&request.workspace_id, allow_file_write)
+    {
+        return err_data(status, code, message);
     }
     let root = match fs::root_for(&ctx.app, &request.workspace_id) {
         Ok(root) => root,
@@ -221,7 +245,11 @@ fn fs_error(error: &FsError) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::FilesQuery;
+    use axum::http::StatusCode;
+    use tapd_i18n::tr;
+
+    use super::{write_rejection, FilesQuery};
+    use crate::fs::ROOT_WORKSPACE_ID;
 
     #[test]
     fn path_defaults_to_the_project_root() {
@@ -237,5 +265,22 @@ mod tests {
             serde_json::from_str(r#"{"workspaceId":"42","path":"src/main.rs"}"#)
                 .expect("parse query");
         assert_eq!(query.path, "src/main.rs");
+    }
+
+    #[test]
+    fn root_workspace_writes_are_forbidden_before_the_capability_check() {
+        let (status, code, message) =
+            write_rejection(ROOT_WORKSPACE_ID, true).expect("root write refused");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(code, "forbidden");
+        assert_eq!(message, tr("companion.files.rootReadOnly"));
+
+        // A disabled setting still reports the setting for ordinary projects.
+        let (status, code, _) = write_rejection("42", false).expect("editing disabled");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(code, "write_disabled");
+
+        assert!(write_rejection("42", true).is_none());
+        assert!(write_rejection("__root", true).is_none());
     }
 }

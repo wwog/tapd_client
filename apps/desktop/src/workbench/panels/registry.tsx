@@ -10,6 +10,7 @@ import {
   FileCode2,
   FolderGit2,
   FolderTree,
+  ListChecks,
   Plug,
   Settings as SettingsIcon,
   SquareTerminal,
@@ -34,6 +35,7 @@ import type { PanelProps } from "./context";
 
 const PAGE_TITLES: Record<PageView, MessageKey> = {
   bugs: "common.bugs",
+  local: "app.nav.local",
   projects: "common.projects",
   agent: "app.nav.agent",
   coworker: "app.nav.coworker",
@@ -44,6 +46,7 @@ const PAGE_TITLES: Record<PageView, MessageKey> = {
 
 const PAGE_ICONS: Record<PageView, ReactNode> = {
   bugs: <Bug size={13} />,
+  local: <ListChecks size={13} />,
   projects: <FolderGit2 size={13} />,
   agent: <Bot size={13} />,
   coworker: <Users size={13} />,

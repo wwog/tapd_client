@@ -21,6 +21,8 @@ import {
   asApiError,
   type FsEntry,
   type FsListing,
+  type LocalProject,
+  type ProjectAgentConfig,
   type Workspace,
 } from "../lib/api";
 import {
@@ -31,6 +33,7 @@ import {
   isNoFolderError,
   normalizePath,
   pathSegments,
+  ROOT_SOURCE_ID,
   visualKind,
   type FileVisualKind,
 } from "../lib/files";
@@ -47,6 +50,14 @@ import { navigate } from "../lib/router";
 
 /** Last project the user browsed; kept across tab switches and reloads. */
 const WORKSPACE_KEY = "companion.files.workspace";
+
+/** One entry of the merged project selector. */
+type FileSource = {
+  id: string;
+  /** Folder name; null only for the synthetic root (labelled at render time). */
+  name: string | null;
+  group: "tapd" | "local" | "root";
+};
 
 const readRememberedWorkspace = (): string | null => {
   try {
@@ -130,6 +141,16 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
   const [rememberedId, setRememberedId] = useState<string | null>(
     readRememberedWorkspace,
   );
+  const [localProjects, setLocalProjects] = useState<LocalProject[]>([]);
+  const [localLoaded, setLocalLoaded] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  /** TAPD folder map; null means "unknown", in which case nothing is hidden. */
+  const [tapdRepoPaths, setTapdRepoPaths] = useState<Record<
+    string,
+    ProjectAgentConfig
+  > | null>(null);
+  const [configSettled, setConfigSettled] = useState(false);
+  const [sourcesNonce, setSourcesNonce] = useState(0);
 
   const [listing, setListing] = useState<FsListing | null>(null);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
@@ -166,20 +187,108 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
       cancelled = true;
       off();
     };
-  }, []);
+  }, [sourcesNonce]);
 
-  // Route project wins; otherwise the remembered one, then the most recent.
+  // Local projects always carry a folder, so they are always browseable.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .localProjects()
+      .then((data) => {
+        if (cancelled) return;
+        setLocalProjects(data.projects);
+        setLocalError(null);
+      })
+      .catch((err) => {
+        if (!cancelled) setLocalError(asApiError(err).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLocalLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourcesNonce]);
+
+  // Only TAPD workspaces with a configured folder can be browsed. A failed
+  // read leaves the map unknown: show them all rather than hiding everything.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .agentConfig()
+      .then((config) => {
+        // No `projects` map at all means "unknown", not "nothing configured".
+        if (!cancelled) setTapdRepoPaths(config.projects ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setTapdRepoPaths(null);
+      })
+      .finally(() => {
+        if (!cancelled) setConfigSettled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourcesNonce]);
+
+  const sources = useMemo<FileSource[]>(() => {
+    const hasFolder = (workspaceId: string) =>
+      !tapdRepoPaths || Boolean(tapdRepoPaths[workspaceId]?.repoPath?.trim());
+    return [
+      ...workspaces
+        .filter((workspace) => hasFolder(workspace.id))
+        .map((workspace) => ({
+          id: workspace.id,
+          name: workspace.name || workspace.prettyName,
+          group: "tapd" as const,
+        })),
+      ...localProjects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        group: "local" as const,
+      })),
+      { id: ROOT_SOURCE_ID, name: null, group: "root" as const },
+    ];
+  }, [workspaces, tapdRepoPaths, localProjects]);
+
+  const sourceGroups = useMemo(
+    () => ({
+      tapd: sources.filter((source) => source.group === "tapd"),
+      local: sources.filter((source) => source.group === "local"),
+      root: sources.filter((source) => source.group === "root"),
+    }),
+    [sources],
+  );
+
+  /** Root has no data name; its label comes from the catalogue. */
+  const sourceLabel = (source: FileSource): string =>
+    source.name ?? t("mobile.files.rootDir");
+
+  // The selector cannot be resolved until every source list is known, or a
+  // remembered project would be replaced by the root before its list loads.
+  const sourcesSettled = workspaceLoaded && localLoaded && configSettled;
+
+  // Route project wins; otherwise the remembered one, then the first source.
   const selectedId = useMemo(() => {
+    if (!sourcesSettled) return null;
     const known = (id: string | null): string | null =>
-      id && workspaces.some((workspace) => workspace.id === id) ? id : null;
-    return known(props.workspaceId) ?? known(rememberedId) ?? workspaces[0]?.id ?? null;
-  }, [props.workspaceId, rememberedId, workspaces]);
+      id && sources.some((source) => source.id === id) ? id : null;
+    return known(props.workspaceId) ?? known(rememberedId) ?? sources[0]?.id ?? null;
+  }, [sourcesSettled, props.workspaceId, rememberedId, sources]);
 
   // Remember whichever project is actually being browsed (including the
   // default), so the tab reopens where the user left off.
   useEffect(() => {
     if (selectedId) writeRememberedWorkspace(selectedId);
   }, [selectedId]);
+
+  const selectedSource =
+    sources.find((source) => source.id === selectedId) ?? null;
+
+  const reloadSources = () => {
+    invalidate(WORKSPACES_KEY);
+    setSourcesNonce((value) => value + 1);
+  };
 
   const requestKey = `${selectedId ?? ""}|${path}`;
   // A listing only renders for the request that produced it; a refresh keeps
@@ -239,11 +348,6 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
     });
   }, [visibleListing, showHidden]);
 
-  const workspaceName =
-    workspaces.find((workspace) => workspace.id === selectedId)?.name ||
-    workspaces.find((workspace) => workspace.id === selectedId)?.prettyName ||
-    "";
-
   const selectWorkspace = (workspaceId: string) => {
     setRememberedId(workspaceId);
     writeRememberedWorkspace(workspaceId);
@@ -260,15 +364,18 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
   };
 
   const crumbs = [
-    { name: workspaceName || t("mobile.files.root"), path: "" },
+    {
+      // The root source is filesystem `/`, not a project folder.
+      name: selectedSource ? sourceLabel(selectedSource) : t("mobile.files.root"),
+      path: "",
+    },
     ...pathSegments(path).map((name, index, all) => ({
       name,
       path: all.slice(0, index + 1).join("/"),
     })),
   ];
 
-  const workspacesLoading = !workspaceLoaded && workspaces.length === 0;
-  const noProjects = workspaceLoaded && workspaces.length === 0;
+  const sourceError = workspaceError ?? localError ?? null;
   // Hiding dotfiles can empty an otherwise populated folder; say so instead of
   // claiming the folder has no entries at all.
   const onlyHidden =
@@ -292,22 +399,43 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
           </button>
         </div>
         <div className="flex items-center gap-2 px-4 pb-2">
-          {workspaces.length > 1 ? (
+          {sources.length > 1 ? (
             <select
-              aria-label={t("common.projects")}
+              aria-label={t("mobile.files.sources")}
               value={selectedId ?? ""}
+              disabled={!sourcesSettled}
               onChange={(event) => selectWorkspace(event.target.value)}
-              className="min-h-11 min-w-0 max-w-[45%] truncate rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="min-h-11 min-w-0 max-w-[60%] truncate rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
             >
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name || workspace.prettyName}
-                </option>
-              ))}
+              {sourceGroups.tapd.length > 0 ? (
+                <optgroup label={t("mobile.files.groupTapd")}>
+                  {sourceGroups.tapd.map((source) => (
+                    <option key={`${source.group}:${source.id}`} value={source.id}>
+                      {sourceLabel(source)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {sourceGroups.local.length > 0 ? (
+                <optgroup label={t("mobile.files.groupLocal")}>
+                  {sourceGroups.local.map((source) => (
+                    <option key={`${source.group}:${source.id}`} value={source.id}>
+                      {sourceLabel(source)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <optgroup label={t("mobile.files.groupRoot")}>
+                {sourceGroups.root.map((source) => (
+                  <option key={`${source.group}:${source.id}`} value={source.id}>
+                    {sourceLabel(source)}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           ) : (
             <span className="min-w-0 flex-1 truncate text-ui-sm text-slate-500">
-              {workspaceName}
+              {selectedSource ? sourceLabel(selectedSource) : t("common.loadingDots")}
             </span>
           )}
           <button
@@ -363,29 +491,30 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
         </div>
       </header>
 
-      {workspacesLoading ? (
+      {!sourcesSettled ? (
         <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
           <LoaderCircle size={14} className="animate-spin" />
           {t("common.loadingDots")}
         </div>
       ) : null}
 
-      {workspaceError && workspaces.length === 0 ? (
-        <div className="px-4 py-8 text-center">
-          <p className="text-ui-caption text-rose-600" title={t("mobile.files.workspaceLoadFailed")}>
-            {workspaceError}
+      {sourceError ? (
+        <div className="flex items-center gap-2 border-b border-border px-4 py-1">
+          <p
+            className="min-w-0 flex-1 truncate text-ui-xs text-rose-600"
+            title={t("mobile.files.sourcesLoadFailed")}
+          >
+            {sourceError}
           </p>
-          <RetryButton onClick={() => invalidate(WORKSPACES_KEY)} />
+          <button
+            type="button"
+            onClick={reloadSources}
+            className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-ui-xs text-slate-600 transition active:bg-overlay-soft"
+          >
+            <RefreshCw size={13} />
+            {t("common.retry")}
+          </button>
         </div>
-      ) : null}
-
-      {noProjects ? (
-        <p
-          className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title={t("mobile.files.noProjectsHint")}
-        >
-          {t("mobile.files.noProjects")}
-        </p>
       ) : null}
 
       {selectedId && loading && !visibleListing && !error ? <ListSkeleton /> : null}

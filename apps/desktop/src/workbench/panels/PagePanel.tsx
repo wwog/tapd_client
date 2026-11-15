@@ -6,6 +6,7 @@ import { AccountPage } from "../../components/AccountPage";
 import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
 import { CoworkerPage } from "../../components/CoworkerPage";
+import { LocalItemsPage } from "../../components/LocalItemsPage";
 import { McpPage } from "../../components/McpPage";
 import { ProjectSettings } from "../../components/ProjectSettings";
 import { SettingsPage } from "../../components/SettingsPage";
@@ -24,6 +25,35 @@ export function PagePanel({ panel }: PanelProps) {
     panel.resource.type === "page" ? panel.resource.view : "bugs";
 
   switch (view) {
+    // Local projects are never gated by the TAPD context: the page renders as
+    // soon as a local project exists, with its own loading/error states.
+    case "local":
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {host.localProject ? (
+            <LocalItemsPage
+              key={host.localProject.id}
+              project={host.localProject}
+              refreshToken={host.localItemsToken}
+              toast={host.toast}
+              onComposeAgent={host.onComposeLocalItem}
+              onOpenAgentTask={host.onOpenAgentTask}
+            />
+          ) : host.localLoading ? (
+            // The project list is still arriving; claiming "nothing selected"
+            // here would be a placeholder dressed up as data.
+            <div className="min-h-0 flex-1" />
+          ) : (
+            <div
+              className="grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400"
+              title={t("local.items.noProjectHint")}
+            >
+              {t("local.items.noProject")}
+            </div>
+          )}
+        </div>
+      );
+
     case "bugs":
       return (
         <div className="flex h-full min-h-0 flex-col">
@@ -81,6 +111,14 @@ export function PagePanel({ panel }: PanelProps) {
               context={host.context}
               hiddenWorkspaceIds={host.hiddenWorkspaceIds}
               onSetWorkspaceVisible={host.onSetWorkspaceVisible}
+              localProjects={host.localProjects}
+              localProjectId={host.localProject?.id ?? null}
+              localLoading={host.localLoading}
+              localError={host.localError}
+              onSelectLocalProject={host.onSelectLocalProject}
+              onCreateLocalProject={host.onCreateLocalProject}
+              onEditLocalProject={host.onEditLocalProject}
+              onDeleteLocalProject={host.onDeleteLocalProject}
               toast={host.toast}
             />
           </div>

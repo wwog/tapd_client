@@ -34,6 +34,7 @@ semver = "1"
 sha2 = "0.10"
 toml_edit = "0.22"
 tapd-core = { path = "../../../crates/tapd-core" }
+tapd-local = { path = "../../../crates/tapd-local" }
 tapd-workflow = { path = "../../../crates/tapd-workflow" }
 tapd-workspace = { path = "../../../crates/tapd-workspace" }
 tauri-plugin-dialog = "2"

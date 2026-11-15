@@ -4,6 +4,11 @@ import type { Catalog } from "../types";
 export const workspace = {
   /* -- File browser -------------------------------------------------------- */
   "mobile.files.title": ["文件", "Files"],
+  "mobile.files.sources": ["文件来源", "File source"],
+  "mobile.files.groupTapd": ["TAPD", "TAPD"],
+  "mobile.files.groupLocal": ["本地项目", "Local projects"],
+  "mobile.files.groupRoot": ["根目录", "Root"],
+  "mobile.files.rootDir": ["根目录", "Root directory"],
   "mobile.files.showHidden": ["显示隐藏文件", "Show hidden files"],
   "mobile.files.parent": ["上一级", "Parent folder"],
   "mobile.files.root": ["项目根目录", "Project root"],
@@ -30,14 +35,9 @@ export const workspace = {
     "打开桌面端的项目设置，为这个项目选择本地文件夹后点刷新。",
     "Choose a local folder for this project in the desktop settings, then refresh.",
   ],
-  "mobile.files.noProjects": ["还没有可浏览的项目", "No projects to browse"],
-  "mobile.files.noProjectsHint": [
-    "先在桌面端登录并选择项目",
-    "Sign in on the desktop and pick a project first",
-  ],
-  "mobile.files.workspaceLoadFailed": [
-    "读取项目列表失败",
-    "Couldn't load projects",
+  "mobile.files.sourcesLoadFailed": [
+    "读取文件来源失败",
+    "Couldn't load file sources",
   ],
 
   /* -- File preview -------------------------------------------------------- */
@@ -86,6 +86,11 @@ export const workspace = {
   "mobile.files.unsaved": ["未保存", "Unsaved"],
   "mobile.files.noChanges": ["无修改", "No changes"],
   "mobile.files.readOnlyHint": ["预览模式", "Preview mode"],
+  "mobile.files.readOnly": ["只读", "Read-only"],
+  "mobile.files.rootReadOnly": [
+    "根目录只能浏览，无法编辑",
+    "Root browsing is read-only",
+  ],
   "mobile.files.saveFailed": ["保存失败：{error}", "Could not save: {error}"],
   "mobile.files.conflict": ["文件已在桌面端修改", "File changed on the desktop"],
   "mobile.files.conflictHint": [

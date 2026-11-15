@@ -12,6 +12,7 @@ import {
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
 import { t } from "./lib/i18n";
+import { localApi, type LocalProject, type WorkItem } from "./lib/local";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -28,9 +29,11 @@ import {
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
 import { CompanionDialog } from "./components/CompanionDialog";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
+import { LocalProjectDialog } from "./components/LocalProjectDialog";
 import { LoginGate } from "./components/LoginGate";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
@@ -40,6 +43,7 @@ import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
 import { useAgentQueue } from "./hooks/useAgentQueue";
+import { useLocalProjects } from "./hooks/useLocalProjects";
 import { usePoll } from "./hooks/usePoll";
 import { useDetailPane } from "./hooks/useDetailPane";
 import { useSidebarLayout } from "./hooks/useSidebarLayout";
@@ -68,7 +72,8 @@ import { clearDirtyPanels, hasDirtyPanels } from "./workbench/panels/dirty";
 import type { PageHostServices } from "./workbench/components/pageContext";
 
 /** Minimal bug shape needed to enqueue an Agent task. */
-type AgentTarget = {
+type BugAgentTarget = {
+  kind: "bug";
   workspaceId: string;
   id: string;
   title: string;
@@ -76,6 +81,28 @@ type AgentTarget = {
   priorityLabel: string;
   workspaceName?: string;
 };
+
+/** A local work item handed to an Agent; never has a bug or TAPD workspace. */
+type LocalAgentTarget = {
+  kind: "local";
+  projectId: string;
+  itemId: string;
+  title: string;
+};
+
+type AgentTarget = BugAgentTarget | LocalAgentTarget;
+
+const bugTarget = (
+  bug: BugSummary & { workspaceName?: string },
+): BugAgentTarget => ({
+  kind: "bug",
+  workspaceId: bug.workspaceId,
+  id: bug.id,
+  title: bug.title,
+  severityLabel: bug.severityLabel,
+  priorityLabel: bug.priorityLabel,
+  workspaceName: bug.workspaceName,
+});
 
 /** The singleton bug detail panel, if the layout has one. */
 function findBugPanel(layout: WorkbenchLayoutApi): PanelRef | null {
@@ -117,7 +144,7 @@ export default function App() {
   const railAnimTimer = useRef<number | null>(null);
   /** Set when the user asks for an Agent fix without a configured folder. */
   const [pendingAgent, setPendingAgent] = useState<{
-    target: AgentTarget;
+    target: BugAgentTarget;
     payload: AgentComposePayload | null;
   } | null>(null);
   /** Bug whose compose sheet (prompt + resources) is open. */
@@ -134,6 +161,21 @@ export default function App() {
   const companionEnabled = useCompanionEnabled();
   /** Any paired phone heartbeat within the last minute. */
   const companionOnline = useCompanionOnline();
+
+  /** Local projects; the selection is mutually exclusive with a TAPD workspace. */
+  const local = useLocalProjects();
+  const localProject =
+    local.projects.find((project) => project.id === local.selectedId) ?? null;
+  /** Create (`project: null`) / edit dialog, opened from the side bar or projects page. */
+  const [localProjectDialog, setLocalProjectDialog] = useState<{
+    project: LocalProject | null;
+  } | null>(null);
+  const [localProjectDelete, setLocalProjectDelete] = useState<LocalProject | null>(
+    null,
+  );
+  const [localProjectDeleting, setLocalProjectDeleting] = useState(false);
+  /** Bumped after an enqueue so the items page refetches its Agent task links. */
+  const [localItemsToken, setLocalItemsToken] = useState(0);
 
   /** Tasks the backend restored when this system entry began. */
   const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
@@ -201,14 +243,26 @@ export default function App() {
     setProjectMenu,
     visibleWorkspaces,
     projectsKnown,
-    projectListHidden,
+    projectListHidden: workspaceListHidden,
     workspace,
     setWorkspaceVisible,
     hideWorkspace,
     handleLogout,
   } = useWorkspaceData({ view, setView, showToast, pane: paneBridgeRef });
 
-  useMembersDirectory(info?.loggedIn ?? false, workspaceId);
+  /**
+   * The column hides only for a single TAPD project with no local projects:
+   * local rows are part of the same list, so they must keep it visible.
+   */
+  const projectListHidden = workspaceListHidden && local.projects.length === 0;
+
+  // Members belong to the page's TAPD workspace. A local selection is only
+  // relevant while the local page is active, so it must not suppress members
+  // when the user switches back to the bug list.
+  useMembersDirectory(
+    info?.loggedIn ?? false,
+    view === "local" ? "" : workspaceId,
+  );
 
   // The workflow may only be initialized after login + onboarding; the backend
   // rejects an earlier call. One request per system entry, and a failure clears
@@ -422,6 +476,18 @@ export default function App() {
     layoutRef.current.setPanelLabel(bugsPagePanel.id, label);
   }, [bugsPagePanel?.id, bugsPagePanel?.label, workspace?.name]);
 
+  // The items page tab follows the selected local project, falling back to the
+  // generic page name when nothing is selected.
+  const localPagePanel = layoutApi.groups
+    .flatMap((group) => group.panels)
+    .find((panel) => panel.id === panelId.page("local"));
+  useEffect(() => {
+    if (!localPagePanel) return;
+    const label = localProject?.name ?? t("app.nav.local");
+    if (localPagePanel.label === label) return;
+    layoutRef.current.setPanelLabel(localPagePanel.id, label);
+  }, [localPagePanel?.id, localPagePanel?.label, localProject?.name]);
+
   /** Switch views and replay the destination's rail icon animation. */
   const activateView = useCallback((id: View) => {
     setView(id);
@@ -474,10 +540,20 @@ export default function App() {
 
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
+    // Keep the local page's last project as a separate context: the sidebar
+    // highlights whichever page is active, and the row is still there when
+    // the user comes back to 事项.
     setView("bugs");
     // Detail belongs to the previous project: drop both the panel and its data.
     detailPane.closeDetail();
     void api.setLastWorkspace(id);
+  };
+
+  const selectLocalProject = (id: string) => {
+    local.select(id);
+    // The bug detail belongs to TAPD; the local page has no such panel.
+    detailPane.closeDetail();
+    setView("local");
   };
 
   const openBug = useCallback(
@@ -497,12 +573,34 @@ export default function App() {
 
   const doEnqueueAgent = useCallback(
     async (target: AgentTarget, payload: AgentComposePayload | null) => {
-      const workspaceName =
-        target.workspaceName ||
-        context?.workspaces.find((item) => item.id === target.workspaceId)?.name ||
-        null;
-
       try {
+        // Local work items read the folder from the project itself, so the
+        // missing-folder prompt below does not apply to them.
+        if (target.kind === "local") {
+          // The item description already travels in quest.json; the compose
+          // prompt is only the user's additional instructions for this run.
+          const prompt = payload?.prompt.trim() ?? "";
+          const { task } = await localApi.enqueueItem(target.itemId, {
+            extraPrompt: prompt.length > 0 ? prompt : null,
+            attachments: payload?.attachments.length
+              ? payload.attachments
+              : undefined,
+            runtimeId: payload?.runtimeId ?? null,
+            model: payload?.model ?? null,
+            permissionMode: payload?.permissionMode ?? null,
+          });
+          setAgentFocusTaskId(task.id);
+          // The item now carries the new task id; refetch the item list.
+          setLocalItemsToken((token) => token + 1);
+          setView("agent");
+          return true;
+        }
+
+        const workspaceName =
+          target.workspaceName ||
+          context?.workspaces.find((item) => item.id === target.workspaceId)?.name ||
+          null;
+
         const { task } = await agentApi.enqueueBug({
           workspaceId: target.workspaceId,
           bugId: target.id,
@@ -540,6 +638,10 @@ export default function App() {
       target: AgentTarget,
       payload: AgentComposePayload | null = null,
     ): Promise<"queued" | "needs_folder" | "error"> => {
+      if (target.kind === "local") {
+        return (await doEnqueueAgent(target, payload)) ? "queued" : "error";
+      }
+
       // The bug is already queued/running: focus that task instead of creating
       // a duplicate. The list and drawer also disable the action, this covers
       // stale snapshots and notification-triggered flows.
@@ -567,7 +669,7 @@ export default function App() {
 
   const applyAgentFolder = useCallback(
     async (
-      pending: { target: AgentTarget; payload: AgentComposePayload | null },
+      pending: { target: BugAgentTarget; payload: AgentComposePayload | null },
       path: string,
     ) => {
       setPendingAgent(null);
@@ -596,13 +698,18 @@ export default function App() {
   );
 
   const handleAgentFix = useCallback(
-    (target: Parameters<typeof enqueueAgent>[0]) => void enqueueAgent(target),
+    (bug: BugSummary & { workspaceName?: string }) =>
+      void enqueueAgent(bugTarget(bug)),
     [enqueueAgent],
   );
 
   /** Open the compose sheet, or jump to the existing task for this bug. */
   const openAgentCompose = useCallback(
     (target: AgentTarget) => {
+      if (target.kind === "local") {
+        setComposeAgent(target);
+        return;
+      }
       const existing = agentInFlight.get(agentBugKey(target.workspaceId, target.id));
       if (existing) {
         openAgentTask(existing.task.id);
@@ -612,6 +719,35 @@ export default function App() {
     },
     [agentInFlight, openAgentTask],
   );
+
+  /** Compose entry for a bug row / detail drawer (wraps it in a bug target). */
+  const composeBugAgent = useCallback(
+    (bug: BugSummary & { workspaceName?: string }) => openAgentCompose(bugTarget(bug)),
+    [openAgentCompose],
+  );
+
+  /** Compose entry for one local work item; the description stays in quest.json. */
+  const composeLocalItem = useCallback((project: LocalProject, item: WorkItem) => {
+    setComposeAgent({
+      kind: "local",
+      projectId: project.id,
+      itemId: item.id,
+      title: item.title,
+    });
+  }, []);
+
+  const deleteLocalProject = async () => {
+    if (!localProjectDelete || localProjectDeleting) return;
+    setLocalProjectDeleting(true);
+    try {
+      await local.remove(localProjectDelete.id);
+      setLocalProjectDelete(null);
+    } catch (error) {
+      showToast("error", String(error));
+    } finally {
+      setLocalProjectDeleting(false);
+    }
+  };
 
   const submitAgentCompose = useCallback(
     async (payload: AgentComposePayload) => {
@@ -765,6 +901,11 @@ export default function App() {
     scope,
     setScope,
     activeBugId,
+    localProjects: local.projects,
+    localProject,
+    localItemsToken,
+    localLoading: local.loading,
+    localError: local.error,
     projectsKnown,
     hiddenWorkspaceIds,
     agentInFlight,
@@ -778,12 +919,17 @@ export default function App() {
     onOpenPath: openPath,
     onCopy: copy,
     onClaim: detailPane.claimFromList,
-    onAgentFix: enqueueAgent,
-    onAgentCompose: openAgentCompose,
+    onAgentFix: handleAgentFix,
+    onAgentCompose: composeBugAgent,
     onOpenAgentTask: openAgentTask,
     onCancelTask: cancelAgentTask,
     onClearAgentFocus: clearAgentFocus,
     onSetWorkspaceVisible: setWorkspaceVisible,
+    onSelectLocalProject: selectLocalProject,
+    onCreateLocalProject: () => setLocalProjectDialog({ project: null }),
+    onEditLocalProject: (project) => setLocalProjectDialog({ project }),
+    onDeleteLocalProject: (project) => setLocalProjectDelete(project),
+    onComposeLocalItem: composeLocalItem,
     onOpenMedia: openMedia,
     loadContext,
     refreshBase,
@@ -825,7 +971,7 @@ export default function App() {
       onCopy: copy,
       onExport: detailPane.exportDetail,
       onAgentFix: handleAgentFix,
-      onAgentCompose: openAgentCompose,
+      onAgentCompose: composeBugAgent,
       onOpenAgentTask: openAgentTask,
       onOpenPath: openPath,
       onOpenMedia: openMedia,
@@ -904,6 +1050,8 @@ export default function App() {
           contextLoading={contextLoading}
           visibleWorkspaces={visibleWorkspaces}
           workspaceId={workspaceId}
+          localProjects={local.projects}
+          localProjectId={view === "local" ? local.selectedId : null}
           view={view}
           account={{
             meAvatar: info.meAvatar,
@@ -916,6 +1064,10 @@ export default function App() {
           projectMenu={projectMenu}
           onRetry={() => void loadContext()}
           onSelectWorkspace={selectWorkspace}
+          onSelectLocalProject={selectLocalProject}
+          onCreateLocalProject={() => setLocalProjectDialog({ project: null })}
+          onEditLocalProject={(project) => setLocalProjectDialog({ project })}
+          onDeleteLocalProject={setLocalProjectDelete}
           onOpenAccount={() => activateView("account")}
           onOpenProjectMenu={setProjectMenu}
           onCloseProjectMenu={() => setProjectMenu(null)}
@@ -958,9 +1110,19 @@ export default function App() {
       </div>
 
       <AgentComposeSheet
-        key={composeAgent ? `${composeAgent.workspaceId}:${composeAgent.id}` : "agent-compose"}
+        key={
+          composeAgent
+            ? composeAgent.kind === "local"
+              ? `local:${composeAgent.projectId}:${composeAgent.itemId}`
+              : `${composeAgent.workspaceId}:${composeAgent.id}`
+            : "agent-compose"
+        }
         open={composeAgent !== null}
         title={composeAgent?.title ?? ""}
+        plainTitle={composeAgent?.kind === "local"}
+        heading={
+          composeAgent?.kind === "local" ? t("local.items.toAgent") : undefined
+        }
         submitting={composeSubmitting}
         onClose={() => setComposeAgent(null)}
         onSubmit={(payload) => void submitAgentCompose(payload)}
@@ -1030,6 +1192,46 @@ export default function App() {
             </Button>
           </div>
         </Dialog>
+      ) : null}
+
+      {localProjectDialog ? (
+        <LocalProjectDialog
+          key={localProjectDialog.project?.id ?? "new-local-project"}
+          project={localProjectDialog.project}
+          onClose={() => setLocalProjectDialog(null)}
+          onSubmit={async (values) => {
+            const editing = localProjectDialog.project;
+            if (editing) {
+              // An empty name is rejected by the backend; the dialog shows it.
+              await local.update(editing.id, {
+                name: values.name,
+                repoPath: values.repoPath,
+                rule: values.rule,
+              });
+              return;
+            }
+            const project = await local.create({
+              repoPath: values.repoPath,
+              rule: values.rule,
+              ...(values.name ? { name: values.name } : {}),
+            });
+            // The new project is the one the user wants to work in.
+            local.select(project.id);
+            setView("local");
+          }}
+        />
+      ) : null}
+
+      {localProjectDelete ? (
+        <ConfirmDialog
+          title={t("local.projects.delete")}
+          message={t("local.projects.deleteConfirm", {
+            name: localProjectDelete.name,
+          })}
+          busy={localProjectDeleting}
+          onCancel={() => setLocalProjectDelete(null)}
+          onConfirm={() => void deleteLocalProject()}
+        />
       ) : null}
 
       {/* Last layer: a forced update covers onboarding, dialogs and settings. */}

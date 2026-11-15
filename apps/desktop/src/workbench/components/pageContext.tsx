@@ -14,6 +14,7 @@ import type {
 } from "../../lib/api";
 import type { AgentInFlight } from "../../lib/agent";
 import type { ToastFn } from "../../lib/feature";
+import type { LocalProject, WorkItem } from "../../lib/local";
 import type { BugScope } from "../../components/bugListPrefs";
 
 export type PageHostServices = {
@@ -27,6 +28,13 @@ export type PageHostServices = {
   setScope: (scope: BugScope) => void;
   /** Bug detail currently loaded by the workbench, for the list highlight. */
   activeBugId: string | null;
+  /** Local (non-TAPD) projects and the one selected in the side bar. */
+  localProjects: LocalProject[];
+  localProject: LocalProject | null;
+  localLoading: boolean;
+  localError: string | null;
+  /** Bumped after an enqueue so the items page refetches its task links. */
+  localItemsToken: number;
   projectsKnown: boolean;
   hiddenWorkspaceIds: string[];
   agentInFlight: Map<string, AgentInFlight>;
@@ -48,6 +56,12 @@ export type PageHostServices = {
   onCancelTask: (taskId: string) => Promise<void> | void;
   onClearAgentFocus: () => void;
   onSetWorkspaceVisible: (workspaceId: string, visible: boolean) => void;
+  onSelectLocalProject: (id: string) => void;
+  onCreateLocalProject: () => void;
+  onEditLocalProject: (project: LocalProject) => void;
+  onDeleteLocalProject: (project: LocalProject) => void;
+  /** Opens the compose sheet for a work item, prefilled with its description. */
+  onComposeLocalItem: (project: LocalProject, item: WorkItem) => void;
   onOpenMedia: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
   loadContext: () => Promise<void> | void;
   refreshBase: () => Promise<void> | void;

@@ -96,6 +96,45 @@ export type FsWriteResult = {
   mtimeMs: number;
 };
 
+/* -------------------------------------------------------------------------
+   Local projects and work items. A local project is a folder on the desktop
+   machine; work items belong to it and can be handed to an Agent without ever
+   touching TAPD. Shapes mirror the desktop's local_* feature commands.
+   ------------------------------------------------------------------------- */
+
+export type LocalProject = {
+  id: string;
+  name: string;
+  /** Absolute desktop folder; chosen through the directory picker. */
+  repoPath: string;
+  /** Markdown rules appended to every Agent task of this project. */
+  rule: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkItemStatus = "pending" | "in_progress" | "done";
+
+export type WorkItem = {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: WorkItemStatus;
+  /** Agent task currently (or last) attached to this item; null when never queued. */
+  agentTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One directory level of a browseable folder; `parent` is null at the root. */
+export type DirListing = {
+  path: string;
+  parent: string | null;
+  /** Directories only; files are not browsable here. */
+  entries: Array<{ name: string; path: string }>;
+};
+
 export type BugQuery = {
   workspaceId: string;
   /** 处理人 nicknames; several match with OR. */
@@ -408,6 +447,8 @@ export type AgentTask = {
   error?: string;
   prompt?: string;
   source?: string;
+  /** Where the task came from; a local work item has no TAPD bug behind it. */
+  sourceKind?: "tapd_bug" | "local_work_item";
   runtimeId?: string;
   agentSessionId?: string | null;
   approval?: AgentApproval | null;
@@ -416,6 +457,8 @@ export type AgentTask = {
   merge?: AgentMerge | null;
   commitOnly?: boolean;
   extraPrompt?: string;
+  /** Project rule copied onto the task when it was queued. */
+  projectRule?: string;
   attachments?: string[];
 };
 
@@ -556,6 +599,10 @@ const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
 export const isAgentInFlight = (task: AgentTask): boolean =>
   IN_FLIGHT_STATUSES.includes(task.status);
 
+/** Bug links and bug ids only apply to tasks raised from a TAPD bug. */
+export const isTapdTask = (task: AgentTask): boolean =>
+  (task.sourceKind ?? "tapd_bug") === "tapd_bug";
+
 /* -------------------------------------------------------------------------
    Notification settings, copied from `apps/desktop/src/lib/notification.ts`.
    ------------------------------------------------------------------------- */
@@ -650,7 +697,21 @@ const getConnection = (): Connection => connection;
 
 export const retryConnection = (): void => setConnection("ok");
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = {
+  /**
+   * Local-project and filesystem endpoints succeed without a TAPD session.
+   * Promoting those successes to the global connection would drop the
+   * not_logged_in gate while the TAPD list still fails, remounting the page in
+   * a loop. Only TAPD-backed calls (or the heartbeat) recover the connection.
+   */
+  trackConnection?: boolean;
+};
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  options: RequestOptions = {},
+): Promise<T> {
   const token = getSession();
   let response: Response;
   try {
@@ -697,8 +758,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(envelope.code || "error", envelope.error || t("mobile.api.requestFailed"));
   }
 
-  // Any success recovers the app automatically (desktop logged back in etc.).
-  setConnection("ok");
+  // TAPD-backed successes recover the app automatically (desktop logged back
+  // in etc.); local-only calls opt out so they cannot fight the login gate.
+  if (options.trackConnection !== false) setConnection("ok");
   return envelope.data;
 }
 
@@ -708,11 +770,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * consumes. The typed helpers on `api` wrap it.
  */
 export const feature = <T>(name: string, payload: Record<string, unknown> = {}): Promise<T> =>
-  request<T>("/companion/api/feature", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, payload }),
-  });
+  request<T>(
+    "/companion/api/feature",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, payload }),
+    },
+    { trackConnection: false },
+  );
 
 export const api = {
   state: () => request<CompanionState>("/companion/api/state"),
@@ -736,7 +802,7 @@ export const api = {
       deviceId: string;
       canManage: boolean;
       now: string;
-    }>("/companion/api/heartbeat", { method: "POST" }),
+    }>("/companion/api/heartbeat", { method: "POST" }, { trackConnection: false }),
 
   /** Manager-only: paired devices and their management permissions. */
   devices: () => request<CompanionDevices>("/companion/api/devices"),
@@ -778,18 +844,30 @@ export const api = {
   /** One directory level of the project's configured folder, dirs first. */
   files: (workspaceId: string, path: string) => {
     const params = new URLSearchParams({ workspaceId, path });
-    return request<FsListing>(`/companion/api/files?${params.toString()}`);
+    return request<FsListing>(
+      `/companion/api/files?${params.toString()}`,
+      undefined,
+      { trackConnection: false },
+    );
   },
 
   /** File body for text/markdown, or a kind the viewer picks a renderer for. */
   file: (workspaceId: string, path: string) => {
     const params = new URLSearchParams({ workspaceId, path });
-    return request<FsContent>(`/companion/api/file?${params.toString()}`);
+    return request<FsContent>(
+      `/companion/api/file?${params.toString()}`,
+      undefined,
+      { trackConnection: false },
+    );
   },
 
   /** Whether the desktop allows phone-side editing (default false). */
   fileWriteEnabled: () =>
-    request<{ enabled: boolean }>("/companion/api/file/write"),
+    request<{ enabled: boolean }>(
+      "/companion/api/file/write",
+      undefined,
+      { trackConnection: false },
+    ),
 
   /** Manager-only toggle; shared with the desktop companion dialog. */
   setFileWrite: (enabled: boolean) =>
@@ -812,6 +890,54 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspaceId, path, text, mtimeMs, force }),
     }),
+
+  /* -- Local projects & work items --------------------------------------- */
+
+  localProjects: () => feature<{ projects: LocalProject[] }>("local_projects_list", {}),
+
+  /** `name` may be omitted: the desktop then derives it from the folder. */
+  createLocalProject: (req: { name?: string | null; repoPath: string; rule?: string }) =>
+    feature<{ project: LocalProject }>("local_project_create", { ...req }),
+
+  updateLocalProject: (
+    id: string,
+    patch: { name?: string; repoPath?: string; rule?: string },
+  ) => feature<{ project: LocalProject }>("local_project_update", { id, ...patch }),
+
+  deleteLocalProject: (id: string) =>
+    feature<{ deleted: boolean }>("local_project_delete", { id }),
+
+  localItems: (projectId: string) =>
+    feature<{ items: WorkItem[] }>("local_items_list", { projectId }),
+
+  createLocalItem: (req: { projectId: string; title: string; description?: string | null }) =>
+    feature<{ item: WorkItem }>("local_item_create", { ...req }),
+
+  /** An empty `description` clears it; omitting the field leaves it alone. */
+  updateLocalItem: (
+    id: string,
+    patch: { title?: string; description?: string; status?: WorkItemStatus },
+  ) => feature<{ item: WorkItem }>("local_item_update", { id, ...patch }),
+
+  deleteLocalItem: (id: string) =>
+    feature<{ deleted: boolean }>("local_item_delete", { id }),
+
+  /**
+   * Hands an item to the Agent. The desktop also flips the item to
+   * `in_progress`, so the returned item is the fresh state to render.
+   */
+  enqueueLocalItem: (req: {
+    id: string;
+    extraPrompt?: string | null;
+    runtimeId?: string | null;
+    model?: string | null;
+    permissionMode?: string | null;
+    attachments?: string[] | null;
+  }) => feature<{ task: AgentTask; item: WorkItem }>("local_item_enqueue", { ...req }),
+
+  /** One directory level under $HOME (or a configured local project). */
+  browseDirs: (path?: string | null) =>
+    feature<DirListing>("local_browse_dirs", { path: path ?? null }),
 
   /* -- Bug write actions (user-initiated only) ---------------------------- */
 

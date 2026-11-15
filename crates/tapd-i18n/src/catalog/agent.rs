@@ -78,6 +78,10 @@ pub static MESSAGES: &[Message] = &[
     ("agent.limits.mcp.manual", "尚未自动注入 tapd MCP，需要手动配置后才能回写 TAPD。", "tapd MCP is not injected automatically; configure it manually before writing back to TAPD."),
     ("agent.limits.permission", "权限确认在右侧嵌入式终端内完成，桌面不会代为回执。", "Approvals happen in the embedded terminal on the right; the desktop does not answer them."),
     ("agent.limits.turn", "本轮结束以进程退出为准；未退出时按会话 hook 或输出静默兜底。", "A turn ends when the process exits; otherwise the session hook or output silence ends it."),
+    ("agent.local.export.failed", "写入本地事项包失败：{}", "Failed to write the local work-item package: {}"),
+    ("agent.local.missing.ids", "缺少本地项目 ID 或事项 ID", "Missing the local project id or work item id"),
+    ("agent.local.repo.notgit", "本地仓库不是 git 工作区：{}", "The local repository is not a git work tree: {}"),
+    ("agent.local.title.missing", "本地事项标题不能为空", "The local work item title cannot be empty"),
     ("agent.merge.not.landed", "分支尚未合并到主仓库当前 HEAD", "The branch is not merged into the main repository's HEAD"),
     ("agent.merge.pending.writeback", "合并尚未完成，请先完成合并再更新 TAPD", "The merge is not complete; finish it before updating TAPD"),
     ("agent.merge.verify.failed", "校验合并结果失败：{}", "Failed to verify the merge: {}"),
@@ -143,6 +147,48 @@ Requirements:
     ("agent.prompt.keys.codex", "按 y 允许 · n 拒绝", "Press y to allow, n to reject"),
     ("agent.prompt.keys.opencode", "回车允许 · Esc 拒绝", "Enter to allow, Esc to reject"),
     ("agent.prompt.keys.options", "按选项序号回答", "Press the option number to answer"),
+    ("agent.prompt.local", "请处理本地工作事项：{{title}}\n\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 事项 {{bug_id}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 quest.json 中的标题、描述与项目信息。\n2. 这是一个只保存在本地的项目，不存在缺陷系统：不要调用任何写回类工具，也不要评论或更新事项状态。\n3. 定位根因，做最小必要修改，并遵循仓库现有的代码规范。\n4. 修改后运行相关测试或构建。\n5. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push）。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n6. 结束时说明改动内容、涉及文件与验证方式。", "Handle this local work item: {{title}}
+
+Item details: {{json_path}}
+Local repository: {{repo_path}}
+Project: {{workspace_name}} / item {{bug_id}}
+
+{{coworker}}
+
+Requirements:
+1. Read the title, description and project info in quest.json in full first.
+2. This project exists only on this machine and has no bug tracker: do not call any write-back tools, and do not comment on or update the item status.
+3. Find the root cause, make the smallest necessary change, and follow the repository's existing conventions.
+4. Run the relevant tests or build after changing code.
+5. Judge the complexity of the change:
+   - Simple task: one file or a few files, a local change that does not touch public interfaces / data models / dependencies / build configuration, and the tests pass. Run git commit directly (do not push).
+   - Complex task: many files, cross-module, touching public interfaces / data models / dependencies / build configuration, or high risk or failing tests. Do not commit; explain the root cause, the plan, the impact and the risk, then end the turn. The client puts uncommitted changes into the review list for the user.
+6. Explain the change, the files involved and how it was verified when done."),
+    ("agent.prompt.local.commit", "审核已通过，请完成本地工作事项：{{title}}\n\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 事项 {{bug_id}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与事项相关。\n3. 提交代码（git commit，不要 push）。\n4. 本地项目没有缺陷系统：不要调用任何写回类工具，也不要评论或更新事项状态。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接结束，不要重复提交。", "Review approved; finish the local work item: {{title}}
+
+Item details: {{json_path}}
+Local repository: {{repo_path}}
+Project: {{workspace_name}} / item {{bug_id}}
+
+Requirements:
+1. The working tree still holds the changes reviewed last turn. Run git status / git diff to check them; do not redo or widen the change.
+2. Run the necessary tests or build to confirm the change relates to the item.
+3. Commit the code (git commit, do not push).
+4. The project is local and has no bug tracker: do not call any write-back tools, and do not comment on or update the item status.
+5. If the working tree has no uncommitted changes, the previous turn already committed: check the commit log and end the turn without committing again."),
+    ("agent.prompt.local.rule", "\n\n项目规则（必须遵守）：\n", "\n\nProject rules (must follow):\n"),
+    ("agent.prompt.local.worktree.commit", "审核已通过，请在当前 worktree 提交上一轮审核过的修改。\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 事项 {{bug_id}}\n\n要求：\n1. 先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建。\n3. 提交代码（git commit，不要 push）。\n4. 本地项目没有缺陷系统：本轮不要写回；合并由客户端处理。\n5. 如果工作区已经没有未提交改动，说明已提交，直接结束。", "Review approved; commit the changes reviewed last turn in the current worktree.
+Item details: {{json_path}}
+Local repository: {{repo_path}}
+Project: {{workspace_name}} / item {{bug_id}}
+
+Requirements:
+1. Run git status / git diff to check the changes first; do not redo or widen the change.
+2. Run the necessary tests or build.
+3. Commit the code (git commit, do not push).
+4. The project is local and has no bug tracker: no write-back this turn; the client handles the merge.
+5. If the working tree has no uncommitted changes, it is already committed; just end the turn."),
+    ("agent.prompt.local.worktree.note", "本轮在独立 worktree 中运行：这是一个本地项目，本轮不需要任何写回。简单任务只提交；复杂任务保留未提交改动。审核与合并由客户端处理。", "This turn runs in a separate worktree: the project is local, so no write-back happens this turn. Simple tasks only commit; complex tasks keep their changes uncommitted. The client handles review and merge."),
     ("agent.prompt.reject", "拒绝", "Reject"),
     ("agent.prompt.user.notes", "\n\n用户补充说明：\n", "\n\nAdditional notes from the user:\n"),
     ("agent.prompt.worktree.commit", "审核已通过，请在当前 worktree 提交上一轮审核过的修改。\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建。\n3. 提交代码（git commit，不要 push）。\n4. 不要评论或更新 TAPD；合并阶段会统一回写。\n5. 如果工作区已经没有未提交改动，说明已提交，直接结束。", "Review approved; commit the changes reviewed last turn in the current worktree.

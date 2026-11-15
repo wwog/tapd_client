@@ -10,6 +10,7 @@ use std::{
 };
 
 use tapd_i18n::{tr, tr_args};
+use tapd_workflow::TaskSource;
 
 pub(super) struct Worktree {
     pub(super) path: PathBuf,
@@ -24,9 +25,10 @@ fn ascii_token(value: &str) -> String {
         .collect()
 }
 
-/// `tapd/<bug tail 8>-<task head 8>`. A component with no ASCII characters
-/// becomes `agent` instead of producing a dangling separator.
-pub(super) fn branch_name(bug_id: &str, task_id: &str) -> String {
+/// `<source prefix>/<item tail 8>-<task head 8>`. A component with no ASCII
+/// characters becomes `agent` instead of producing a dangling separator. Local
+/// work items use their own namespace so their branches never look like TAPD's.
+pub(super) fn branch_name(bug_id: &str, task_id: &str, source: TaskSource) -> String {
     let bug = ascii_token(bug_id);
     let bug = if bug.is_empty() {
         "agent".to_string()
@@ -40,7 +42,7 @@ pub(super) fn branch_name(bug_id: &str, task_id: &str) -> String {
     } else {
         task[..task.len().min(8)].to_string()
     };
-    format!("tapd/{bug}-{task}")
+    format!("{}{bug}-{task}", source.branch_prefix())
 }
 
 /// `<worktrees_dir>/<ascii(workspace_id)>/<task_id>`.
@@ -83,6 +85,7 @@ pub(super) fn create(
     workspace_id: &str,
     bug_id: &str,
     task_id: &str,
+    source: TaskSource,
 ) -> Result<Worktree, String> {
     let repo = repo.trim();
     if repo.is_empty() {
@@ -106,7 +109,7 @@ pub(super) fn create(
     run_git(repo, &["rev-parse", "--verify", "HEAD"])
         .map_err(|error| tr_args("agent.worktree.head.missing", &[&error]))?;
 
-    let branch = branch_name(bug_id, task_id);
+    let branch = branch_name(bug_id, task_id, source);
     let path_text = path.to_string_lossy().to_string();
     run_git(
         repo,
@@ -145,15 +148,27 @@ mod tests {
     #[test]
     fn branch_name_keeps_ascii_tail_and_head() {
         assert_eq!(
-            branch_name("1145336192001234567", "abcdef0123456789"),
+            branch_name(
+                "1145336192001234567",
+                "abcdef0123456789",
+                TaskSource::TapdBug
+            ),
             "tapd/01234567-abcdef01"
         );
         // 非 ASCII 字符被丢弃，仍按剩余字符截取。
         assert_eq!(
-            branch_name("bug-中文-987654321", "task-ABC-123"),
+            branch_name("bug-中文-987654321", "task-ABC-123", TaskSource::TapdBug),
             "tapd/87654321-taskABC1"
         );
-        assert_eq!(branch_name("", ""), "tapd/agent-agent");
+        assert_eq!(branch_name("", "", TaskSource::TapdBug), "tapd/agent-agent");
+    }
+
+    #[test]
+    fn local_work_items_use_the_local_branch_namespace() {
+        assert_eq!(
+            branch_name("wi-7f3a91", "task0001", TaskSource::LocalWorkItem),
+            "local/wi7f3a91-task0001"
+        );
     }
 
     #[test]
@@ -200,6 +215,7 @@ mod tests {
             "45336192",
             "1145336192001234567",
             "task0001",
+            TaskSource::TapdBug,
         )
         .expect("create worktree");
         assert_eq!(created.branch, "tapd/01234567-task0001");

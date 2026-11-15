@@ -12,6 +12,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 - **`tapd-core`**：与 Tauri 无关的模型、过滤器、响应解析、媒体收集与配置存储。
 - **`tapd-workflow`**：sans-IO 的任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，宿主通过 `Input` / `Effect` 驱动。
 - **`tapd-workspace`**：任务工作区的 git 事实（变更文件、增删行数、diff、HEAD）。单任务的主仓库与 Worktree 任务共用同一实现；worktree 目录被清理后按分支重算。
+- **`tapd-local`**：纯领域类型，本地项目与事项（`WorkItem`）的校验和状态迁移；不做文件、时钟或数据库 IO。
 - **`tapd-mcp`**：stdio MCP sidecar，随 App 打包，供 MCP 客户端调用。
 
 ```
@@ -133,6 +134,21 @@ LayoutState（fraction 分割树）→ SplitView（实测像素）→ GroupView�
 - 尺寸以 fraction 持久化到 `uiPrefs["workbench.layout.v1"]`；空的标准停靠组保留自己的比例，重新打开时恢复原大小，非 role 空组由 `normalize` 回收。分割条统一 1.5px 视觉 / 8px 命中区，交叉点由实测矩形求交后同时调整两个 split。
 - 文件能力：`../WORKBENCH.md` §8 的 `fs_list` / `fs_read` / `fs_stat` / `fs_write` 以项目 `repoPath` 为根，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；写入只覆盖已存在的文本文件（2 MiB、临时文件 + rename、mtime 冲突），桌面用 Monaco 编辑，手机编辑由 `companion.allowFileWrite` 控制（默认关）。二进制预览走本机 `/file` 与伴侣 `/companion/api/file/raw` 流式路由。
 
+### 3.8 本地项目与事项
+
+```
+React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
+                                      → tapd-local（领域类型 / 状态迁移）
+                                      → Agent 队列（sourceKind = local_work_item）
+```
+
+- 本地项目只是一个本机目录，没有 TAPD workspace；事项（`WorkItem`）有 `pending` / `in_progress` / `done` 三个状态。关联 Agent 任务成功时由宿主自动置为 `done`，也可手动标记完成 / 重新打开。
+- 每个本地项目有独立的 `rule`（项目规则），创建 / 编辑时写入；交给 Agent 时随 `quest.json` 导出并追加到本地修复、提交与合并提示词，TAPD 任务不受影响。
+- 数据写 `<数据目录>/local.sqlite3`（`local_projects` / `local_work_items`，schema v2 增加 `rule`），与 `cache.sqlite3` 分开：TAPD 退出登录、清缓存和 `Cache::clear()` 都不会删除自己的项目；「清理缓存」显式保留该文件及 WAL 旁文件。
+- 桌面在项目侧栏右键 / 项目页创建，移动端可浏览桌面目录后创建；文件浏览与终端共用同一目录解析：TAPD 项目配置优先，其次本地项目仓库。移动端文件 / 终端只列出有文件夹的 TAPD 项目，并加入本地项目。
+- 事项交给 Agent 时使用合成 ID（`lp_…` / `lw_…`）与 `sourceKind = local_work_item`，复用队列 / 审核 / 合并状态机；准备阶段导出 `quest.json` 而不是 `bug.json`，不注入 TAPD MCP，也不回写 TAPD。
+- 移动端文件页额外提供 `__root__` 源，从 `/` 只读浏览；写接口对根目录直接 403。项目目录选择仍限制 `$HOME` 或已配置的本地仓库；伴侣目录浏览在列目录前先校验允许根。
+
 ## 4. 已实现能力
 
 ### 窗口与交互
@@ -199,6 +215,7 @@ apps/desktop/
     feature_router.rs        通知 / Agent / 同事 / 终端 / 缓存 / MCP 的统一命令路由
     terminal.rs              用户终端会话（PTY、回放环、输出事件与命令面）
     cache.rs                 SQLite 离线快照缓存
+    local.rs                 local_* 命令：本地项目 / 事项 SQLite、目录浏览边界
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
@@ -213,7 +230,7 @@ apps/desktop/
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入
-    export.rs                bug.json 导出、资源下载与提示词渲染
+    export.rs                bug.json / quest.json 导出、资源下载与提示词渲染
     media_cache.rs           URL 寻址的媒体缓存（导出 / 代理 / 打开原图共用）
     diagnostics.rs           脱敏诊断包
     companion/terminal.rs    远程终端 WebSocket（回放 + 实时输出 + 输入 / 尺寸）
@@ -223,6 +240,7 @@ apps/desktop/
 crates/tapd-core/            模型、过滤器、响应解析、媒体收集、配置与存储
 crates/tapd-workflow/        sans-IO 工作流核心（状态机 / 调度 / 审核合并 / 恢复 / 历史，仅依赖 serde）
 crates/tapd-workspace/       任务工作区的 git 事实（变更 / 行数 / diff / HEAD），单任务与 worktree 共用
+crates/tapd-local/           本地项目 / 事项领域类型、校验与状态迁移（无 IO）
 crates/tapd-mcp/             MCP stdio sidecar
 docs/                        架构、开发、计划、接口、通知、Agent、MCP、发版
 fixtures/                    假 agent 等测试辅助
@@ -242,6 +260,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
+- **本地项目与 TAPD 分开存储**：本地项目是用户数据而不是 TAPD 缓存，单独用 `local.sqlite3` 并跳过清缓存；本地事项不伪装成缺陷，用 `WorkItem` 与 `sourceKind` 复用 Agent 队列。
 
 ## 7. 当前限制
 
@@ -252,6 +271,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - 终端回放是原始输出尾部（不做终端状态序列化），全屏 TUI 中途重挂只能近似重建；手机断线期间超出 256 KiB 的输出会丢。
 - 远程终端与伴侣共用配对 token，没有独立的二次确认；隧道开启时等价于把桌面用户的 shell 暴露到公网，只在可信设备上配对。
 - 发布包默认未签名、未公证；首次打开需在「系统设置 → 隐私与安全性」中允许。
+- 本地事项的「已完成」既可由 Agent 任务成功自动写入，也可手动标记 / 重新打开；交给 Agent 前目录必须是带 `HEAD` 的 git 仓库。移动端文件页的根目录只读，不能编辑系统文件。
 - TAPD 网页内部接口未公开，改版时需要更新适配层。
 
 ## 8. 下一步

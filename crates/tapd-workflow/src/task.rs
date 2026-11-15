@@ -71,11 +71,35 @@ impl TaskStatus {
     }
 }
 
+/// Where a task's work item comes from. Local work items live only in this
+/// client: they never call TAPD tools, export a bug package or write back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSource {
+    #[default]
+    TapdBug,
+    LocalWorkItem,
+}
+
+impl TaskSource {
+    /// Branch namespace for worktree tasks; also keeps local branches visibly
+    /// separate from TAPD ones.
+    pub fn branch_prefix(self) -> &'static str {
+        match self {
+            Self::TapdBug => "tapd/",
+            Self::LocalWorkItem => "local/",
+        }
+    }
+}
+
 /// Everything a host needs to start a fix run. Flattened into [`Task`] so the
 /// JSON stays compatible with the existing `AgentTask` record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TaskSpec {
+    /// Bug (TAPD) vs. local work item. Old JSON without it is a TAPD bug.
+    #[serde(default)]
+    pub source_kind: TaskSource,
     pub workspace_id: String,
     pub workspace_name: String,
     pub bug_id: String,
@@ -91,6 +115,10 @@ pub struct TaskSpec {
     /// Origin of the task (`manual` / `notification`), host-owned metadata.
     #[serde(default)]
     pub source: String,
+    /// Rules of the local project, appended to local prompts. Empty for TAPD
+    /// bugs and for old JSON without the field.
+    #[serde(default)]
+    pub project_rule: String,
     pub extra_prompt: String,
     pub attachments: Vec<String>,
 }

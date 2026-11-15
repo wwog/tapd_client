@@ -5,6 +5,12 @@
  */
 import type { FsEntry } from "./api";
 
+/**
+ * Backend sentinel source id: lists `/` instead of a configured folder. Writes
+ * under it are rejected by the desktop, so the phone treats it as read-only.
+ */
+export const ROOT_SOURCE_ID = "__root__";
+
 /** Relative paths cross the companion boundary `/`-separated, no leading slash. */
 export const normalizePath = (path: string): string =>
   path

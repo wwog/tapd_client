@@ -52,7 +52,7 @@ use serde_json::{json, Value};
 use tapd_core::store::{read_json, write_json_atomic};
 use tapd_i18n::{tr, tr_args};
 use tapd_workflow::{
-    Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSpec,
+    Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSource, TaskSpec,
     TaskStatus as WorkflowStatus, Workflow,
 };
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -288,6 +288,15 @@ pub const DEFAULT_WORKTREE_COMMIT_PROMPT_KEY: &str = "agent.prompt.worktree.comm
 
 /// 追加到 Worktree 修复阶段的交付说明：修复轮不写 TAPD。
 const WORKTREE_FIX_NOTE_KEY: &str = "agent.prompt.worktree.note";
+
+/// Local work items have no TAPD counterpart, so their prompts are built-in and
+/// never use the user's TAPD template (which may reference write-back tools).
+pub const LOCAL_PROMPT_KEY: &str = "agent.prompt.local";
+pub const LOCAL_COMMIT_PROMPT_KEY: &str = "agent.prompt.local.commit";
+pub const LOCAL_WORKTREE_COMMIT_PROMPT_KEY: &str = "agent.prompt.local.worktree.commit";
+const LOCAL_WORKTREE_FIX_NOTE_KEY: &str = "agent.prompt.local.worktree.note";
+/// Header for the project rules appended to every local prompt.
+const LOCAL_RULE_KEY: &str = "agent.prompt.local.rule";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -1706,6 +1715,10 @@ pub struct AgentTask {
     pub error: Option<String>,
     pub prompt: String,
     pub source: String,
+    /// TAPD bug vs. local work item. Missing in old records, which are TAPD
+    /// bugs. `source` stays the enqueue origin (`manual` / `notification`).
+    #[serde(default)]
+    pub source_kind: TaskSource,
     /// Runtime selected when the task was enqueued, so switching settings later
     /// cannot change how an existing/queued task runs.
     #[serde(default = "default_task_runtime")]
@@ -1716,6 +1729,10 @@ pub struct AgentTask {
     /// 本次运行的访问权限选项 id；空字符串表示运行时默认。
     #[serde(default)]
     pub permission_mode: String,
+    /// Local project rules, copied from the project at enqueue time and
+    /// appended to local prompts. Empty for TAPD bugs and old records.
+    #[serde(default)]
+    pub project_rule: String,
     /// 会话 hook 捕获的运行时 session id，用于「打开系统终端」精确续接对应
     /// 会话；缺失时退回各 CLI 的「继续最近会话」参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1845,6 +1862,29 @@ struct EnqueueRequest {
     pub permission_mode: Option<String>,
 }
 
+/// A local work item submitted to the same queue as TAPD bugs. Local ids,
+/// paths and text come straight from the client; no TAPD lookup happens.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LocalEnqueueRequest {
+    pub project_id: String,
+    pub project_name: String,
+    pub work_item_id: String,
+    pub title: String,
+    pub description: String,
+    pub repo_path: String,
+    pub created_at: String,
+    /// Rules of the local project, appended to this task's prompts.
+    #[serde(default)]
+    pub project_rule: String,
+    pub extra_prompt: Option<String>,
+    pub attachments: Option<Vec<String>>,
+    pub runtime_id: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub source: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTasksState {
@@ -1911,6 +1951,8 @@ pub struct AgentSummary {
     bug_id: Option<String>,
     severity: Option<String>,
     priority: Option<String>,
+    /// 当前任务来自 TAPD 缺陷还是本地事项；胶囊据此决定文案。
+    pub source_kind: TaskSource,
     /// 当前运行时的品牌信息，胶囊折叠态与 peek 使用。
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
@@ -2215,34 +2257,12 @@ fn task_spec_from_request(
         return Err(tr("agent.enqueue.missing.ids").to_string());
     }
 
-    let runtime_id = request
-        .runtime_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .filter(|id| runtime_descriptor(id).is_some())
-        .map(str::to_string)
-        .unwrap_or_else(|| config.runtime_id.clone());
-    // 任务级选择优先；未指定时沿用该运行时的默认模型 / 权限。
-    let runtime_options = config
-        .runtime_options
-        .get(&runtime_id)
-        .cloned()
-        .unwrap_or_default();
-    let model = request
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&runtime_options.model)
-        .to_string();
-    let permission_mode = request
-        .permission_mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| runtime_options.permission_mode.clone());
+    let choice = runtime_choice(
+        request.runtime_id.as_deref(),
+        request.model.as_deref(),
+        request.permission_mode.as_deref(),
+        config,
+    );
     let workspace_name = request
         .workspace_name
         .as_deref()
@@ -2263,17 +2283,9 @@ fn task_spec_from_request(
         .unwrap_or("")
         .trim()
         .to_string();
-    let mut seen = HashSet::new();
-    let attachments: Vec<String> = request
-        .attachments
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
-        .collect();
 
     Ok(TaskSpec {
+        source_kind: TaskSource::TapdBug,
         workspace_id: workspace_id.to_string(),
         workspace_name,
         bug_id: bug_id.to_string(),
@@ -2291,13 +2303,69 @@ fn task_spec_from_request(
             .trim()
             .to_string(),
         repo_path: config.repo_path_for(workspace_id),
+        runtime_id: choice.runtime_id,
+        model: choice.model,
+        permission_mode: choice.permission_mode,
+        source: source.trim().to_string(),
+        project_rule: String::new(),
+        extra_prompt,
+        attachments: clean_attachments(request.attachments.clone()),
+    })
+}
+
+/// Runtime/model/permission choice shared by TAPD and local enqueues. An
+/// unknown runtime falls back to the configured default, so a stale UI value
+/// cannot stall the queue.
+struct RuntimeChoice {
+    runtime_id: String,
+    model: String,
+    permission_mode: String,
+}
+
+fn runtime_choice(
+    runtime_id: Option<&str>,
+    model: Option<&str>,
+    permission_mode: Option<&str>,
+    config: &AgentConfig,
+) -> RuntimeChoice {
+    let runtime_id = runtime_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| runtime_descriptor(id).is_some())
+        .map(str::to_string)
+        .unwrap_or_else(|| config.runtime_id.clone());
+    // 任务级选择优先；未指定时沿用该运行时的默认模型 / 权限。
+    let runtime_options = config
+        .runtime_options
+        .get(&runtime_id)
+        .cloned()
+        .unwrap_or_default();
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&runtime_options.model)
+        .to_string();
+    let permission_mode = permission_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| runtime_options.permission_mode.clone());
+    RuntimeChoice {
         runtime_id,
         model,
         permission_mode,
-        source: source.trim().to_string(),
-        extra_prompt,
-        attachments,
-    })
+    }
+}
+
+/// Trims, drops blanks and de-duplicates attachment paths while keeping order.
+fn clean_attachments(paths: Option<Vec<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    paths
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
+        .collect()
 }
 
 /// Host-side repository facts for the workflow: files changed by this run,
@@ -2368,16 +2436,65 @@ fn normalize_coworker_ids(values: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Built-in template for a run. `None` means the user's configurable TAPD
+/// template applies; local items never use it because it may reference TAPD
+/// write-back tools.
+fn builtin_fix_prompt(task: &AgentTask) -> Option<&'static str> {
+    let worktree = task.worktree_branch.is_some();
+    match task.source_kind {
+        TaskSource::LocalWorkItem => Some(if task.commit_only {
+            if worktree {
+                LOCAL_WORKTREE_COMMIT_PROMPT_KEY
+            } else {
+                LOCAL_COMMIT_PROMPT_KEY
+            }
+        } else {
+            LOCAL_PROMPT_KEY
+        }),
+        TaskSource::TapdBug if task.commit_only => Some(if worktree {
+            DEFAULT_WORKTREE_COMMIT_PROMPT_KEY
+        } else {
+            DEFAULT_COMMIT_PROMPT_KEY
+        }),
+        TaskSource::TapdBug => None,
+    }
+}
+
+/// Extra delivery note appended to worktree fix rounds (not commit rounds).
+fn worktree_fix_note(task: &AgentTask) -> Option<&'static str> {
+    if task.worktree_branch.is_none() || task.commit_only {
+        return None;
+    }
+    Some(match task.source_kind {
+        TaskSource::LocalWorkItem => LOCAL_WORKTREE_FIX_NOTE_KEY,
+        TaskSource::TapdBug => WORKTREE_FIX_NOTE_KEY,
+    })
+}
+
 /// Prompt for the merge runner: merge the reviewed branch and then (and only
 /// then) write back to TAPD.
-fn merge_prompt(repo: &str, branch: &str) -> String {
-    tapd_workflow::merge_prompt(repo, branch)
+fn merge_prompt(repo: &str, branch: &str, source: TaskSource) -> String {
+    tapd_workflow::merge_prompt(repo, branch, source)
+}
+
+/// Appends the project rules as the prompt's final section. Only local work
+/// items have rules; TAPD prompts must stay exactly as configured.
+fn append_project_rule(prompt: &mut String, source: TaskSource, rule: &str) {
+    if source != TaskSource::LocalWorkItem {
+        return;
+    }
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return;
+    }
+    prompt.push_str(tr(LOCAL_RULE_KEY));
+    prompt.push_str(rule);
 }
 
 /// Manual fallback shown in the merge card when the agent cannot merge (or the
 /// user prefers to do it themselves).
-fn manual_merge_instructions(repo: &str, branch: &str) -> String {
-    tapd_workflow::manual_merge_instructions(repo, branch)
+fn manual_merge_instructions(repo: &str, branch: &str, source: TaskSource) -> String {
+    tapd_workflow::manual_merge_instructions(repo, branch, source)
 }
 
 // ---------------------------------------------------------------------------
@@ -2895,8 +3012,27 @@ impl AgentCore {
             tracing::warn!(task_id = %record.task_id, "failed to map the history task");
             return;
         };
+        let succeeded = view.status == TaskStatus::Succeeded;
         let paused = self.workflow_paused();
         self.persist_views(&[view], paused, &[]);
+        // A successful local run completes the item it ran for. Matching by
+        // (project, item) survives retry, which creates a new task id; the
+        // update also repoints the item at the task that actually succeeded.
+        // TAPD records are skipped entirely.
+        if succeeded && record.source_kind == TaskSource::LocalWorkItem {
+            if let Err(error) = self.state.local.complete_work_item(
+                &record.workspace_id,
+                &record.bug_id,
+                &record.task_id,
+                &now(),
+            ) {
+                tracing::warn!(
+                    task_id = %record.task_id,
+                    %error,
+                    "failed to complete the linked local work item"
+                );
+            }
+        }
         tracing::info!(
             task_id = %record.task_id,
             status = ?record.status,
@@ -3282,6 +3418,7 @@ impl AgentCore {
             bug_id: active.map(|task| task.spec.bug_id.clone()),
             severity: active.map(|task| task.spec.severity.clone()),
             priority: active.map(|task| task.spec.priority.clone()),
+            source_kind: active.map(|task| task.spec.source_kind).unwrap_or_default(),
             runtime_id: active.map(|task| task.spec.runtime_id.clone()),
             runtime_name: active.map(|task| runtime_display_name(&task.spec.runtime_id)),
             phase: runtime_status.as_ref().map(|status| status.phase),
@@ -3359,10 +3496,18 @@ impl AgentCore {
     ) -> Result<AgentTask, String> {
         let config = self.config_snapshot();
         let spec = task_spec_from_request(request, &config, source)?;
+        self.enqueue_spec(spec, source).await
+    }
 
-        // One bug owns at most one live task. A double click, the notification
-        // flow and a manual enqueue can race; returning the existing record
-        // keeps the operation idempotent. The workflow enforces the same rule.
+    /// Admission shared by every source: one work item owns at most one live
+    /// task. A double click, the notification flow, a local submission and a
+    /// manual enqueue can race; returning the existing record keeps the
+    /// operation idempotent. The workflow enforces the same rule.
+    async fn enqueue_spec(
+        self: &Arc<Self>,
+        spec: TaskSpec,
+        source: &str,
+    ) -> Result<AgentTask, String> {
         if let Some(existing) = self.live_task_for_bug(&spec.workspace_id, &spec.bug_id) {
             return workflow_bridge::from_workflow_task(&existing);
         }
@@ -3666,6 +3811,10 @@ impl AgentCore {
             task_id: TaskId::new(task_id),
         })?;
         self.dispatch_effects(effects).await;
+        // A deleted task must not leave a local item pointing at a ghost id.
+        if let Err(error) = self.state.local.forget_task(task_id, &now()) {
+            tracing::warn!(%error, task_id, "failed to unlink a deleted local task");
+        }
         Ok(())
     }
 
@@ -3677,8 +3826,17 @@ impl AgentCore {
             now: now(),
         })?;
         self.dispatch_effects(effects).await;
-        self.workflow_view(new_id.as_str())
-            .ok_or_else(|| tr("agent.task.missing").to_string())
+        let view = self
+            .workflow_view(new_id.as_str())
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
+        if let Err(error) = self
+            .state
+            .local
+            .relink_task(task_id, new_id.as_str(), &now())
+        {
+            tracing::warn!(%error, task_id, "failed to relink a retried local task");
+        }
+        Ok(view)
     }
 
     fn write_input(&self, task_id: &str, data: &str) -> Result<(), String> {
@@ -4046,10 +4204,18 @@ impl AgentCore {
             bug_id
         };
         let task_text = task_id.0.clone();
+        let source_kind = task.spec.source_kind;
 
         let _guard = self.worktree_lock.lock().await;
         let created = tokio::task::spawn_blocking(move || {
-            worktree::create(&worktrees_dir, &repo, &workspace_id, &bug_id, &task_text)
+            worktree::create(
+                &worktrees_dir,
+                &repo,
+                &workspace_id,
+                &bug_id,
+                &task_text,
+                source_kind,
+            )
         })
         .await;
         match created {
@@ -4257,28 +4423,59 @@ impl AgentCore {
             runtime_id
         };
 
-        // 1. Export the bug package (bug.json + assets).
-        let export = crate::export::run_export(
-            &self.app,
-            &self.state.paths,
-            &task.workspace_id,
-            &task.bug_id,
-            Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
-        )
-        .await;
-        let export = match export {
-            Ok(export) => export,
-            Err(error) => {
-                self.feed(Input::AgentStartFailed {
-                    task_id,
-                    error: tr_args("agent.bug.export.failed", &[&error]),
-                });
-                return;
+        let is_local = task.source_kind == TaskSource::LocalWorkItem;
+
+        // 1. Write the package the agent reads: a local `quest.json`, or the
+        //    TAPD bug export (`bug.json` + assets). Local items never touch
+        //    TAPD, so they skip the fetch entirely.
+        let json_path = if is_local {
+            let paths = self.state.paths.clone();
+            let doc = local_export_document(&task);
+            let written = tokio::task::spawn_blocking(move || {
+                crate::export::local::run_local_export(&paths, &doc)
+            })
+            .await;
+            match written {
+                Ok(Ok(path)) => path.to_string_lossy().to_string(),
+                Ok(Err(error)) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.local.export.failed", &[&error]),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.local.export.failed", &[&error]),
+                    });
+                    return;
+                }
             }
+        } else {
+            let export = crate::export::run_export(
+                &self.app,
+                &self.state.paths,
+                &task.workspace_id,
+                &task.bug_id,
+                Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
+            )
+            .await;
+            let export = match export {
+                Ok(export) => export,
+                Err(error) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.bug.export.failed", &[&error]),
+                    });
+                    return;
+                }
+            };
+            for warning in &export.warnings {
+                tracing::warn!(task_id = %task_id, %warning, "bug export warning");
+            }
+            export.bug_json
         };
-        for warning in &export.warnings {
-            tracing::warn!(task_id = %task_id, %warning, "bug export warning");
-        }
         if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Preparing) {
             // Cancelled while exporting.
             return;
@@ -4316,33 +4513,37 @@ impl AgentCore {
         }
 
         // 4. Make sure the runtime's user-level config exposes the tapd MCP.
-        self.ensure_runtime_mcp(&runtime_id, task_id.as_str()).await;
+        //    Local work items deliberately do not get TAPD tools injected.
+        if !is_local {
+            self.ensure_runtime_mcp(&runtime_id, task_id.as_str()).await;
+        }
 
         // 5. Render the prompt.
         let mut view = task.clone();
         view.runtime_id = runtime_id;
-        view.json_path = export.bug_json.clone();
+        view.json_path = json_path.clone();
         let mut vars = PromptVars::from_task(&view);
         vars.coworker = crate::coworker::prompt_section(&self.app, &config.coworker_ids);
-        let is_worktree = view.worktree_branch.is_some();
-        let template = if view.commit_only {
+        let template = match builtin_fix_prompt(&view) {
+            Some(key) => tr(key).to_string(),
+            None => config.prompt_template.clone(),
+        };
+        if view.commit_only {
             // The commit phase only finishes the reviewed change; the original
             // compose instructions must not run a second time.
             vars.user_prompt.clear();
             vars.attachments.clear();
-            if is_worktree {
-                tr(DEFAULT_WORKTREE_COMMIT_PROMPT_KEY)
-            } else {
-                tr(DEFAULT_COMMIT_PROMPT_KEY)
-            }
-        } else {
-            config.prompt_template.as_str()
-        };
-        let mut prompt = render_prompt(template, &vars);
-        if is_worktree && !view.commit_only {
-            prompt.push_str("\n\n");
-            prompt.push_str(tr(WORKTREE_FIX_NOTE_KEY));
+        } else if is_local {
+            // The composed description (item text + notes) already lives in
+            // quest.json; appending it again duplicates the work item.
+            vars.user_prompt.clear();
         }
+        let mut prompt = render_prompt(&template, &vars);
+        if let Some(key) = worktree_fix_note(&view) {
+            prompt.push_str("\n\n");
+            prompt.push_str(tr(key));
+        }
+        append_project_rule(&mut prompt, view.source_kind, &view.project_rule);
         view.prompt = prompt.clone();
 
         // 6. Capture the baseline so the change safety net only reacts to files
@@ -4372,7 +4573,7 @@ impl AgentCore {
         match self.apply_input(Input::TaskPrepared {
             task_id: task_id.clone(),
             prompt,
-            json_path: export.bug_json,
+            json_path,
             baseline_dirty,
             baseline_head,
         }) {
@@ -4527,8 +4728,10 @@ impl AgentCore {
                 return;
             }
         }
-        self.ensure_runtime_mcp(&task.runtime_id, task_id.as_str())
-            .await;
+        if task.source_kind == TaskSource::TapdBug {
+            self.ensure_runtime_mcp(&task.runtime_id, task_id.as_str())
+                .await;
+        }
 
         // A cancel may have rolled the task back while MCP was being prepared;
         // never start a merge agent the workflow no longer waits for.
@@ -4541,7 +4744,13 @@ impl AgentCore {
         let mut merge_view = task.clone();
         merge_view.worktree_path = None;
         merge_view.commit_only = false;
-        merge_view.prompt = merge_prompt(&repo, &branch);
+        let mut prompt = merge_prompt(&repo, &branch, merge_view.source_kind);
+        append_project_rule(
+            &mut prompt,
+            merge_view.source_kind,
+            &merge_view.project_rule,
+        );
+        merge_view.prompt = prompt;
         let descriptor = runtime_descriptor(&merge_view.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
         let outcome = self.run_tui_task(&merge_view, &config, &descriptor).await;
@@ -4739,6 +4948,7 @@ impl AgentCore {
                     manual_merge_instructions(
                         &task.repo_path,
                         task.worktree_branch.as_deref().unwrap_or(""),
+                        task.source_kind,
                     )
                 })
         } else {
@@ -5250,6 +5460,170 @@ pub fn mcp_agent_config(app: &AppHandle) -> AgentConfig {
         .unwrap_or_default()
 }
 
+/// Enqueues a local work item through the same admission path as a TAPD bug.
+/// The repository is validated here (the client never guesses paths); task
+/// state, scheduling, review and merge stay the workflow's job.
+pub async fn enqueue_local(
+    app: &AppHandle,
+    _state: &SharedState,
+    request: LocalEnqueueRequest,
+) -> Result<AgentTask, String> {
+    let core = app
+        .try_state::<Arc<AgentCore>>()
+        .ok_or_else(|| tr("agent.module.uninitialized").to_string())?
+        .inner()
+        .clone();
+
+    let config = core.config_snapshot();
+    let spec = local_task_spec(&request, &config)?;
+    let repo_check = spec.repo_path.clone();
+    tokio::task::spawn_blocking(move || validate_local_repo(&repo_check))
+        .await
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))??;
+
+    let source = spec.source.clone();
+    core.enqueue_spec(spec, &source).await
+}
+
+/// Maps a local submission onto the workflow's spec. Only ids, title and path
+/// are required; runtime/model/permission fall back to the same defaults TAPD
+/// tasks use.
+fn local_task_spec(
+    request: &LocalEnqueueRequest,
+    config: &AgentConfig,
+) -> Result<TaskSpec, String> {
+    let project_id = request.project_id.trim().to_string();
+    let work_item_id = request.work_item_id.trim().to_string();
+    if project_id.is_empty() || work_item_id.is_empty() {
+        return Err(tr("agent.local.missing.ids").to_string());
+    }
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return Err(tr("agent.local.title.missing").to_string());
+    }
+    let repo_path = tapd_core::paths::expand_home(request.repo_path.trim())
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    if repo_path.is_empty() {
+        return Err(tr("agent.worktree.repo.unconfigured").to_string());
+    }
+    let choice = runtime_choice(
+        request.runtime_id.as_deref(),
+        request.model.as_deref(),
+        request.permission_mode.as_deref(),
+        config,
+    );
+    let project_name = request.project_name.trim();
+    Ok(TaskSpec {
+        source_kind: TaskSource::LocalWorkItem,
+        workspace_name: if project_name.is_empty() {
+            project_id.clone()
+        } else {
+            project_name.to_string()
+        },
+        workspace_id: project_id,
+        bug_id: work_item_id,
+        title,
+        // Local items have no severity/priority scale.
+        severity: String::new(),
+        priority: String::new(),
+        repo_path,
+        runtime_id: choice.runtime_id,
+        model: choice.model,
+        permission_mode: choice.permission_mode,
+        // `source` keeps the enqueue origin; `source_kind` is the discriminator.
+        source: request
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("local")
+            .to_string(),
+        project_rule: request.project_rule.trim().to_string(),
+        extra_prompt: compose_local_description(
+            &request.description,
+            request.extra_prompt.as_deref(),
+        ),
+        attachments: clean_attachments(request.attachments.clone()),
+    })
+}
+
+/// A local project must already be a git work tree with a commit: a worktree
+/// task and the change safety net both need `HEAD`.
+fn validate_local_repo(repo: &str) -> Result<(), String> {
+    if !Path::new(repo).is_dir() {
+        return Err(tr_args("agent.worktree.repo.invalid", &[&repo]));
+    }
+    git_check(repo, &["rev-parse", "--is-inside-work-tree"])
+        .map_err(|error| tr_args("agent.local.repo.notgit", &[&error]))?;
+    git_check(repo, &["rev-parse", "--verify", "HEAD"])
+        .map_err(|error| tr_args("agent.worktree.head.missing", &[&error]))?;
+    Ok(())
+}
+
+/// Runs a git probe with the user-shell `PATH` (a Finder-launched app has a
+/// minimal one), returning git's stderr as the readable failure.
+fn git_check(repo: &str, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .env("PATH", shell_path::user_path())
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        tr_args(
+            "agent.git.command.failed",
+            &[&args.first().copied().unwrap_or("")],
+        )
+    } else {
+        stderr
+    })
+}
+
+/// Work item description plus the compose-sheet note, separated by a blank
+/// line. `quest.json` carries the result as its single description field.
+fn compose_local_description(description: &str, extra: Option<&str>) -> String {
+    let description = description.trim();
+    let extra = extra.map(str::trim).unwrap_or("");
+    match (description.is_empty(), extra.is_empty()) {
+        (true, _) => extra.to_string(),
+        (false, true) => description.to_string(),
+        (false, false) => format!("{description}\n\n{extra}"),
+    }
+}
+
+fn local_export_document(task: &AgentTask) -> crate::export::local::LocalExportDocument {
+    crate::export::local::LocalExportDocument {
+        id: task.bug_id.clone(),
+        title: task.title.clone(),
+        description: task.extra_prompt.clone(),
+        project_id: task.workspace_id.clone(),
+        project_name: task.workspace_name.clone(),
+        repo_path: task.repo_path.clone(),
+        project_rule: task.project_rule.clone(),
+        created_at: task.created_at.clone(),
+    }
+}
+
+/// Whether a live task owns the (workspace, bug) pair a TAPD write targets.
+/// Only TAPD bugs qualify: local work items never take part in write-back,
+/// even if their ids happened to look alike.
+fn tapd_write_block_applies(task: &WorkflowTask, bug_id: &str, workspace_id: Option<&str>) -> bool {
+    task.spec.source_kind == TaskSource::TapdBug
+        && task.spec.bug_id == bug_id
+        && workspace_id.map_or(true, |workspace| task.spec.workspace_id == workspace)
+        && matches!(
+            task.status,
+            WorkflowStatus::Running | WorkflowStatus::Merging
+        )
+}
+
 /// Blocks TAPD comment/status writes from the local agent while its worktree
 /// still has files changed by this run. This enforces "commit first, then write
 /// back" even if the model ignores the prompt. Unrelated dirty files recorded
@@ -5274,14 +5648,7 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
         .tasks()
         .iter()
         .rev()
-        .find(|task| {
-            task.spec.bug_id == bug_id
-                && workspace_id.map_or(true, |workspace| task.spec.workspace_id == workspace)
-                && matches!(
-                    task.status,
-                    WorkflowStatus::Running | WorkflowStatus::Merging
-                )
-        })
+        .find(|task| tapd_write_block_applies(task, bug_id, workspace_id))
         .cloned()
         .and_then(|task| workflow_bridge::from_workflow_task(&task).ok())?;
 
@@ -5604,9 +5971,11 @@ mod tests {
             error: None,
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
+            source_kind: TaskSource::TapdBug,
             runtime_id: DEFAULT_RUNTIME_ID.to_string(),
             model: String::new(),
             permission_mode: String::new(),
+            project_rule: String::new(),
             agent_session_id: None,
             approval: None,
             merge: None,
@@ -6230,6 +6599,7 @@ mod tests {
             "baselineHead",
             "worktreePath",
             "worktreeBranch",
+            "sourceKind",
             "attempt",
             "interrupted",
             "changes",
@@ -6237,6 +6607,11 @@ mod tests {
             object.remove(key);
         }
         let parsed: AgentTask = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            parsed.source_kind,
+            TaskSource::TapdBug,
+            "old records are TAPD bugs"
+        );
         assert_eq!(parsed.approval, None);
         assert_eq!(parsed.merge, None);
         assert!(!parsed.commit_only);
@@ -6376,7 +6751,8 @@ mod tests {
 
     #[test]
     fn manual_merge_steps_include_repo_and_branch() {
-        let steps = manual_merge_instructions("/repo", "tapd/01234567-abcdef01");
+        let steps =
+            manual_merge_instructions("/repo", "tapd/01234567-abcdef01", TaskSource::TapdBug);
         assert!(steps.contains("cd \"/repo\""), "{steps}");
         assert!(
             steps.contains("git merge \"tapd/01234567-abcdef01\""),
@@ -6385,7 +6761,7 @@ mod tests {
         assert!(steps.contains("TAPD"), "{steps}");
         assert!(steps.contains("我已手动合并"), "{steps}");
 
-        let prompt = merge_prompt("/repo", "tapd/01234567-abcdef01");
+        let prompt = merge_prompt("/repo", "tapd/01234567-abcdef01", TaskSource::TapdBug);
         assert!(prompt.contains("仓库：/repo"));
         assert!(prompt.contains("分支：tapd/01234567-abcdef01"));
         assert!(prompt.contains("tapd_update_bug_status"));
@@ -6411,6 +6787,299 @@ mod tests {
 
         let back = workflow_bridge::from_workflow_task(&workflow).expect("from core");
         assert_eq!(back, task);
+    }
+
+    #[test]
+    fn bridge_keeps_the_local_source_kind() {
+        let mut task = sample_task("task-local", TaskStatus::Queued);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.workspace_id = "local-project".to_string();
+        task.bug_id = "wi-1".to_string();
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let workflow = workflow_bridge::to_workflow_task(&task).expect("to core");
+        assert_eq!(workflow.spec.source_kind, TaskSource::LocalWorkItem);
+        assert_eq!(workflow.spec.project_rule, "先跑 cargo test");
+        let back = workflow_bridge::from_workflow_task(&workflow).expect("from core");
+        assert_eq!(back, task);
+        assert_eq!(back.source_kind, TaskSource::LocalWorkItem);
+    }
+
+    #[test]
+    fn local_prompts_never_use_the_tapd_template() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        assert_eq!(builtin_fix_prompt(&task), Some(LOCAL_PROMPT_KEY));
+        assert_eq!(worktree_fix_note(&task), None);
+
+        task.worktree_path = Some("/wt/task-local".to_string());
+        task.worktree_branch = Some("local/wi1-taskloca".to_string());
+        assert_eq!(worktree_fix_note(&task), Some(LOCAL_WORKTREE_FIX_NOTE_KEY));
+
+        task.commit_only = true;
+        assert_eq!(
+            builtin_fix_prompt(&task),
+            Some(LOCAL_WORKTREE_COMMIT_PROMPT_KEY)
+        );
+        assert_eq!(worktree_fix_note(&task), None);
+
+        task.worktree_path = None;
+        task.worktree_branch = None;
+        assert_eq!(builtin_fix_prompt(&task), Some(LOCAL_COMMIT_PROMPT_KEY));
+
+        // TAPD fix rounds keep the user's configurable template.
+        let mut tapd = sample_task("task-tapd", TaskStatus::Running);
+        assert_eq!(builtin_fix_prompt(&tapd), None);
+        assert_eq!(worktree_fix_note(&tapd), None);
+        tapd.worktree_branch = Some("tapd/bug-task".to_string());
+        assert_eq!(worktree_fix_note(&tapd), Some(WORKTREE_FIX_NOTE_KEY));
+        tapd.commit_only = true;
+        assert_eq!(
+            builtin_fix_prompt(&tapd),
+            Some(DEFAULT_WORKTREE_COMMIT_PROMPT_KEY)
+        );
+    }
+
+    #[test]
+    fn local_prompt_text_carries_no_tracker_tools() {
+        for key in [
+            LOCAL_PROMPT_KEY,
+            LOCAL_COMMIT_PROMPT_KEY,
+            LOCAL_WORKTREE_COMMIT_PROMPT_KEY,
+            LOCAL_WORKTREE_FIX_NOTE_KEY,
+        ] {
+            let text = tr(key);
+            assert_ne!(text, key, "key {key} is in the catalog");
+            assert!(!text.contains("tapd_"), "{key}: {text}");
+            assert!(!text.contains("TAPD"), "{key}: {text}");
+        }
+
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        let prompt = render_prompt(tr(LOCAL_PROMPT_KEY), &PromptVars::from_task(&task));
+        assert!(prompt.contains("quest.json"), "{prompt}");
+        assert!(
+            !prompt.contains("{{"),
+            "placeholders are replaced: {prompt}"
+        );
+        assert!(!prompt.contains("tapd_"), "{prompt}");
+    }
+
+    #[test]
+    fn tapd_write_block_only_applies_to_tapd_bugs() {
+        let mut local_task = sample_task("local-1", TaskStatus::Running);
+        local_task.source_kind = TaskSource::LocalWorkItem;
+        let local = workflow_bridge::to_workflow_task(&local_task).expect("core task");
+
+        let tapd_task = sample_task("tapd-1", TaskStatus::Running);
+        let tapd = workflow_bridge::to_workflow_task(&tapd_task).expect("core task");
+
+        let pair = ("1145336192001234567", Some("45336192"));
+        assert!(
+            !tapd_write_block_applies(&local, pair.0, pair.1),
+            "a local task never holds a TAPD write"
+        );
+        assert!(tapd_write_block_applies(&tapd, pair.0, pair.1));
+
+        let mut queued = tapd.clone();
+        queued.status = WorkflowStatus::Queued;
+        assert!(!tapd_write_block_applies(&queued, pair.0, None));
+        assert!(!tapd_write_block_applies(&tapd, pair.0, Some("another")));
+        assert!(!tapd_write_block_applies(&tapd, "other-bug", None));
+    }
+
+    #[test]
+    fn local_export_document_is_camel_case_with_an_ascii_path() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.workspace_id = "local-project".to_string();
+        task.workspace_name = "本地项目".to_string();
+        task.bug_id = "wi-7f3a91".to_string();
+        task.title = "修复登录页".to_string();
+        task.extra_prompt = "登录按钮溢出".to_string();
+        task.repo_path = "/repo".to_string();
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let doc = local_export_document(&task);
+        let value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(value["id"], "wi-7f3a91");
+        assert_eq!(value["projectId"], "local-project");
+        assert_eq!(value["description"], "登录按钮溢出");
+        assert_eq!(value["repoPath"], "/repo");
+        assert_eq!(value["projectRule"], "先跑 cargo test");
+        assert!(value.get("project_id").is_none(), "keys are camelCase");
+
+        let paths = tapd_core::paths::AppPaths {
+            data_dir: PathBuf::from("/tmp/tapd"),
+            logs_dir: PathBuf::from("/tmp/tapd/logs"),
+            captures_dir: PathBuf::from("/tmp/tapd/captures"),
+            exports_dir: PathBuf::from("/exports"),
+            worktrees_dir: PathBuf::from("/tmp/tapd/worktrees"),
+            runtime_file: PathBuf::from("/tmp/tapd/runtime.json"),
+            config_file: PathBuf::from("/tmp/tapd/config.json"),
+        };
+        let dir = crate::export::local::local_export_dir(&paths, &doc);
+        assert_eq!(dir.to_string_lossy(), "/exports/local-project/wi-7f3a91");
+        assert!(dir.to_string_lossy().is_ascii());
+    }
+
+    #[test]
+    fn local_description_and_attachments_are_normalized() {
+        assert_eq!(compose_local_description(" 描述 ", None), "描述");
+        assert_eq!(
+            compose_local_description("描述", Some(" 补充 ")),
+            "描述\n\n补充"
+        );
+        assert_eq!(compose_local_description("", Some(" 补充 ")), "补充");
+
+        assert_eq!(
+            clean_attachments(Some(vec![
+                " /tmp/a.png ".to_string(),
+                "/tmp/a.png".to_string(),
+                "  ".to_string(),
+            ])),
+            vec!["/tmp/a.png".to_string()]
+        );
+
+        let request: LocalEnqueueRequest = serde_json::from_value(json!({
+            "projectId": "p",
+            "workItemId": "w",
+            "title": "t"
+        }))
+        .expect("camelCase request");
+        assert_eq!(request.project_id, "p");
+        assert_eq!(request.work_item_id, "w");
+        assert!(request.attachments.is_none());
+        assert_eq!(request.source, None);
+        assert_eq!(request.project_rule, "", "old callers default to no rule");
+
+        let with_rule: LocalEnqueueRequest = serde_json::from_value(json!({
+            "projectId": "p",
+            "workItemId": "w",
+            "title": "t",
+            "projectRule": "跑测试"
+        }))
+        .expect("projectRule is camelCase");
+        assert_eq!(with_rule.project_rule, "跑测试");
+    }
+
+    #[test]
+    fn project_rule_is_appended_to_local_prompts_only() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let mut prompt = render_prompt(tr(LOCAL_PROMPT_KEY), &PromptVars::from_task(&task));
+        let plain = prompt.clone();
+        append_project_rule(&mut prompt, task.source_kind, &task.project_rule);
+        assert!(prompt.starts_with(&plain));
+        assert!(prompt.contains(tr(LOCAL_RULE_KEY)));
+        assert!(prompt.ends_with("先跑 cargo test"), "{prompt}");
+
+        // An empty rule changes nothing.
+        let mut blank = plain.clone();
+        append_project_rule(&mut blank, task.source_kind, "   ");
+        assert_eq!(blank, plain);
+
+        // TAPD prompts never take a project rule.
+        let mut tapd = plain.clone();
+        append_project_rule(&mut tapd, TaskSource::TapdBug, &task.project_rule);
+        assert_eq!(tapd, plain);
+        assert!(!tapd.contains(tr(LOCAL_RULE_KEY)));
+
+        // The merge prompt follows the same rule.
+        let mut merge = merge_prompt("/repo", "local/wi1", TaskSource::LocalWorkItem);
+        append_project_rule(&mut merge, TaskSource::LocalWorkItem, &task.project_rule);
+        assert!(merge.ends_with("先跑 cargo test"), "{merge}");
+    }
+
+    #[test]
+    fn local_task_spec_maps_the_item_onto_a_local_spec() {
+        let config = AgentConfig {
+            runtime_id: "claude".to_string(),
+            ..AgentConfig::default()
+        };
+        let request = LocalEnqueueRequest {
+            project_id: " local-project ".to_string(),
+            project_name: " ".to_string(),
+            work_item_id: " wi-1 ".to_string(),
+            title: " 修复登录页 ".to_string(),
+            description: " 描述 ".to_string(),
+            repo_path: " /repo ".to_string(),
+            project_rule: " 先跑 cargo test ".to_string(),
+            created_at: "2026-11-16T00:00:00Z".to_string(),
+            extra_prompt: Some(" 补充 ".to_string()),
+            attachments: Some(vec!["/tmp/a.png".to_string(), " /tmp/a.png ".to_string()]),
+            runtime_id: Some("not-a-runtime".to_string()),
+            model: None,
+            permission_mode: None,
+            source: None,
+        };
+        let spec = local_task_spec(&request, &config).expect("local spec");
+        assert_eq!(spec.source_kind, TaskSource::LocalWorkItem);
+        assert_eq!(spec.workspace_id, "local-project");
+        assert_eq!(
+            spec.workspace_name, "local-project",
+            "blank name falls back to the id"
+        );
+        assert_eq!(spec.bug_id, "wi-1");
+        assert_eq!(spec.title, "修复登录页");
+        assert!(spec.severity.is_empty());
+        assert!(spec.priority.is_empty());
+        assert_eq!(spec.repo_path, "/repo");
+        assert_eq!(spec.source, "local", "origin label, not the source kind");
+        assert_eq!(spec.project_rule, "先跑 cargo test", "rule is trimmed");
+        assert_eq!(spec.extra_prompt, "描述\n\n补充");
+        assert_eq!(spec.attachments, vec!["/tmp/a.png".to_string()]);
+        assert_eq!(spec.runtime_id, "claude", "unknown runtime falls back");
+
+        let no_title = LocalEnqueueRequest {
+            title: "  ".to_string(),
+            ..request.clone()
+        };
+        assert!(local_task_spec(&no_title, &config).is_err());
+        let no_ids = LocalEnqueueRequest {
+            project_id: "  ".to_string(),
+            ..request.clone()
+        };
+        assert!(local_task_spec(&no_ids, &config).is_err());
+        let no_repo = LocalEnqueueRequest {
+            repo_path: "  ".to_string(),
+            ..request
+        };
+        assert!(local_task_spec(&no_repo, &config).is_err());
+    }
+
+    #[test]
+    fn local_repo_must_be_a_git_work_tree_with_head() {
+        let root = std::env::temp_dir().join(format!(
+            "tapd-agent-local-repo-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.to_string_lossy().to_string();
+
+        assert!(validate_local_repo(&repo).is_err(), "plain dir is rejected");
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["-c", "user.email=test@example.com", "-c", "user.name=Test"])
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        assert!(validate_local_repo(&repo).is_err(), "no HEAD yet");
+
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        validate_local_repo(&repo).expect("git work tree with HEAD is accepted");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
