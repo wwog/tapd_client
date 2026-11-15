@@ -222,6 +222,105 @@ export function TerminalSessionPage(props: { id: string }) {
     term.open(host);
     termRef.current = term;
 
+    /**
+     * xterm's touch support is for text selection only — a finger drag never
+     * scrolls the viewport, which leaves long output unreachable on a phone.
+     * Translate vertical drags into `scrollLines` ourselves, with a short
+     * fling, and keep the gesture away from the page and from selection.
+     */
+    let fling: number | null = null;
+    let gesture: {
+      startY: number;
+      lastY: number;
+      lastT: number;
+      applied: number;
+      velocity: number;
+      scrolling: boolean;
+    } | null = null;
+
+    const rowHeight = () => Math.max(6, host.clientHeight / Math.max(1, term.rows));
+    const stopFling = () => {
+      if (fling !== null) cancelAnimationFrame(fling);
+      fling = null;
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      stopFling();
+      const target = event.target as Element | null;
+      // The scrollbar is xterm's own drag target; leave it alone.
+      if (event.touches.length !== 1 || target?.closest?.(".scrollbar")) {
+        gesture = null;
+        return;
+      }
+      const touch = event.touches[0];
+      gesture = {
+        startY: touch.clientY,
+        lastY: touch.clientY,
+        lastT: performance.now(),
+        applied: 0,
+        velocity: 0,
+        scrolling: false,
+      };
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!gesture || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      // Finger up = positive = reveal newer lines, matching a mouse wheel.
+      const distance = gesture.startY - touch.clientY;
+      if (!gesture.scrolling) {
+        if (Math.abs(distance) < 6) return;
+        gesture.scrolling = true;
+      }
+      // Cancel the page pan / selection for this gesture only.
+      event.preventDefault();
+      event.stopPropagation();
+      const lines = Math.round(distance / rowHeight());
+      if (lines !== gesture.applied) {
+        term.scrollLines(lines - gesture.applied);
+        gesture.applied = lines;
+      }
+      const now = performance.now();
+      const dt = now - gesture.lastT;
+      if (dt > 0) {
+        gesture.velocity = (gesture.lastY - touch.clientY) / rowHeight() / dt;
+        gesture.lastT = now;
+        gesture.lastY = touch.clientY;
+      }
+    };
+
+    const onTouchEnd = (event: TouchEvent) => {
+      const current = gesture;
+      gesture = null;
+      if (!current?.scrolling) return;
+      // Suppress the synthetic click: otherwise finishing a scroll focuses the
+      // input and pops the keyboard.
+      event.preventDefault();
+      event.stopPropagation();
+      // A pause before lifting is not a fling; and a synthetic/merged event
+      // must not launch the buffer across the whole scrollback.
+      if (performance.now() - current.lastT > 100) return;
+      let velocity = Math.max(-0.12, Math.min(0.12, current.velocity));
+      if (Math.abs(velocity) < 0.004) return;
+      let carry = 0;
+      const step = () => {
+        velocity *= 0.92;
+        carry += velocity * 16;
+        const lines = Math.trunc(carry);
+        if (lines !== 0) {
+          term.scrollLines(lines);
+          carry -= lines;
+        }
+        fling = Math.abs(velocity) > 0.004 ? requestAnimationFrame(step) : null;
+      };
+      fling = requestAnimationFrame(step);
+    };
+
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: false });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: false });
+
     const applyFit = () => {
       try {
         fit.fit();
@@ -279,6 +378,11 @@ export function TerminalSessionPage(props: { id: string }) {
     socketRef.current = socket;
 
     return () => {
+      stopFling();
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       observer.disconnect();
       viewport?.removeEventListener("resize", scheduleFit);
@@ -536,7 +640,10 @@ export function TerminalSessionPage(props: { id: string }) {
       <div className="relative min-h-0 flex-1 overflow-hidden bg-surface">
         <div
           ref={hostRef}
+          data-terminal-host
           className="h-full w-full"
+          // All touch gestures in the terminal are handled by the scroller.
+          style={{ touchAction: "none" }}
           onClickCapture={(event) => {
             if (!lineMode) return;
             // Typing belongs to the composer in line mode; stop xterm's hidden
