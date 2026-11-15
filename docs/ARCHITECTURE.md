@@ -11,6 +11,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 - **后端**：Rust，负责窗口、命令、会话桥、缓存、轮询、Agent 与本地 HTTP。
 - **`tapd-core`**：与 Tauri 无关的模型、过滤器、响应解析、媒体收集与配置存储。
 - **`tapd-workflow`**：sans-IO 的任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，宿主通过 `Input` / `Effect` 驱动。
+- **`tapd-workspace`**：任务工作区的 git 事实（变更文件、增删行数、diff、HEAD）。单任务的主仓库与 Worktree 任务共用同一实现；worktree 目录被清理后按分支重算。
 - **`tapd-mcp`**：stdio MCP sidecar，随 App 打包，供 MCP 客户端调用。
 
 ```
@@ -204,7 +205,8 @@ apps/desktop/
     agent.rs                 Agent 宿主：运行时目录、PTY、导出 / git / SQLite 适配器，持有 `workflow: Mutex<Workflow>`
     agent/workflow_bridge.rs `AgentTask` 与 `tapd-workflow` `Task` 的 JSON 往返与宿主配置映射
     agent/persist.rs         Effect 驱动的增量持久化（`agent_tasks` / `agent_queue_state`）
-    agent/git.rs             git 辅助（未提交文件、分支差异、分支是否已并入 HEAD）
+    task_changes.rs          `tapd-workspace` 的唯一桥：任务 → 工作区、变更缓存与 hook 置脏
+    agent/git.rs             git 辅助（未提交文件、分支是否已并入 HEAD、审核储藏）
     agent/pty.rs             PTY 运行与收尾
     agent/worktree.rs        每任务 git worktree 的创建与清理
     coworker.rs              同事包注册表、技能 frontmatter、提示词注入与 skill map
@@ -220,6 +222,7 @@ apps/desktop/
     reset.rs / open_with.rs  本地数据清理 / 按默认应用打开资源
 crates/tapd-core/            模型、过滤器、响应解析、媒体收集、配置与存储
 crates/tapd-workflow/        sans-IO 工作流核心（状态机 / 调度 / 审核合并 / 恢复 / 历史，仅依赖 serde）
+crates/tapd-workspace/       任务工作区的 git 事实（变更 / 行数 / diff / HEAD），单任务与 worktree 共用
 crates/tapd-mcp/             MCP stdio sidecar
 docs/                        架构、开发、计划、接口、通知、Agent、MCP、发版
 fixtures/                    假 agent 等测试辅助
@@ -235,6 +238,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - **终端会话归后端，视图可丢弃**：PTY、输出环形缓冲和订阅广播都在 `terminal.rs`，关面板 / 切页面只销毁 xterm 视图，shell 继续运行；重开时回放尾部 256 KiB 并按累计字节数去重，手机与桌面可以同时挂同一会话。
 - **右 / 下容器先开者优先**：主视图区是一个 Grid（`main` / `term` / `detail` 三个稳定节点），先打开的容器保持整幅跨度，后打开者让出空间；只切 `grid-template-areas`，不重建 React 树，所以切换时缺陷列表、详情与终端都不丢状态。
 - **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行；桌面 `AgentCore` 只持有 `Mutex<Workflow>`，任务 / 队列 / 审核 / 合并 / 恢复没有第二份实现，便于穷举并发、审核、合并与恢复场景。
+- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此运行中、审核、待合并与历史使用同一套计算。实时刷新由会话 hook 的编辑类 tool 事件置脏，去抖 800ms、单飞、在阻塞线程跑 git，命令优先返回缓存。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。

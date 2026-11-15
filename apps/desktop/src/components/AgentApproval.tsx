@@ -5,19 +5,20 @@ import {
   Bug,
   Check,
   Eye,
+  FolderGit2,
   FolderOpen,
   GitMerge,
-  Loader2,
   ShieldAlert,
   X,
 } from "lucide-react";
 
-import { agentApi, type AgentTask } from "../lib/agent";
+import { canOpenAgentWorktree, type AgentTask } from "../lib/agent";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
 import { ScrollingName } from "./ScrollingName";
+import { CommitHash, TaskChangesPanel } from "./TaskChangesPanel";
 import { Badge, Button } from "./ui";
 
 /** Manual merge steps returned by `mergeStart` when the agent cannot merge. */
@@ -37,6 +38,8 @@ type Props = {
   onResumeQueue: () => void;
   onOpenBug: (workspaceId: string, bugId: string) => void;
   onOpenExportDir: (task: AgentTask) => void;
+  /** Opens the task's worktree with the saved editor choice. */
+  onOpenWorktree: (task: AgentTask) => void;
   /** One-shot task selection, e.g. a task that just entered AwaitingMerge. */
   focusTaskId?: string | null;
   onFocusConsumed?: () => void;
@@ -219,35 +222,13 @@ function ReviewCard({
   onStop,
   onOpenBug,
   onOpenExportDir,
+  onOpenWorktree,
 }: Props & { task: AgentTask }) {
   const approval = task.approval;
   const worktree = Boolean(task.worktreeBranch);
   const approveBusy = busy === `approve:${task.id}`;
   const stopBusy = busy === `stop:${task.id}`;
-  const files = approval?.files ?? [];
-  const [diff, setDiff] = useState<string | null>(null);
-  const [diffOpen, setDiffOpen] = useState(false);
-  const [diffBusy, setDiffBusy] = useState(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
-
-  const toggleDiff = async () => {
-    if (diffOpen) {
-      setDiffOpen(false);
-      return;
-    }
-    setDiffOpen(true);
-    if (diff !== null || diffBusy) return;
-    setDiffBusy(true);
-    setDiffError(null);
-    try {
-      const result = await agentApi.reviewDiff(task.id);
-      setDiff(result.diff);
-    } catch (error) {
-      setDiffError(String(error));
-    } finally {
-      setDiffBusy(false);
-    }
-  };
+  const [changesOpen, setChangesOpen] = useState(true);
 
   return (
     <article className="min-w-0">
@@ -300,10 +281,23 @@ function ReviewCard({
             variant="secondary"
             icon={<Eye size={11} />}
             disabled={busy !== null}
-            onClick={() => void toggleDiff()}
+            onClick={() => setChangesOpen((current) => !current)}
           >
-            {diffOpen ? t("agent.approval.hideDiff") : t("agent.approval.viewDiff")}
+            {changesOpen
+              ? t("agent.approval.hideDiff")
+              : t("agent.approval.viewDiff")}
           </Button>
+          {canOpenAgentWorktree(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<FolderGit2 size={11} />}
+              disabled={busy !== null}
+              onClick={() => onOpenWorktree(task)}
+            >
+              {t("agent.changes.openWorktree")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="secondary"
@@ -332,58 +326,18 @@ function ReviewCard({
             : t("agent.approval.reviewSummary"))}
       </div>
 
-      {files.length > 0 ? (
-        <div className="mt-2">
-          <div className="text-ui-xs font-normal text-slate-400">
-            {t("agent.approval.filesChanged", { count: files.length })}
-          </div>
-          <div className="mt-1 flex flex-wrap gap-1">
-            {files.slice(0, 12).map((file) => (
-              <span
-                key={file}
-                title={file}
-                className="max-w-[260px] truncate rounded bg-slate-100 px-1.5 py-0.5 font-mono text-ui-xs text-slate-600"
-              >
-                {file}
-              </span>
-            ))}
-            {files.length > 12 ? (
-              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-ui-xs text-slate-500">
-                +{files.length - 12}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
       {approval?.risk ? (
         <div className="select-text mt-2 rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-ui-sm leading-5 text-amber-800">
           {t("agent.approval.risk", { risk: approval.risk })}
         </div>
       ) : null}
 
-      {diffOpen ? (
-        <div className="mt-2 rounded-lg bg-zinc-950 p-2.5">
-          <div className="mb-1.5 flex items-center gap-2 text-ui-xs text-zinc-400">
-            <span className="font-mono">{t("agent.approval.diffTitle")}</span>
-            <span className="ml-auto">
-              {t("agent.approval.diffHint")}
-            </span>
-          </div>
-          {diffBusy ? (
-            <div className="flex items-center gap-1.5 py-3 text-ui-sm text-zinc-400">
-              <Loader2 size={12} className="animate-spin" />
-              {t("agent.approval.readingDiff")}
-            </div>
-          ) : diffError ? (
-            <div className="select-text break-all py-2 text-ui-sm text-rose-300">{diffError}</div>
-          ) : (
-            <pre className="select-text max-h-72 overflow-auto whitespace-pre font-mono text-ui-xs leading-4 text-zinc-200">
-              {diff ?? ""}
-            </pre>
-          )}
-        </div>
-      ) : null}
+      <TaskChangesPanel
+        taskId={task.id}
+        open={changesOpen}
+        onToggle={() => setChangesOpen((current) => !current)}
+        className="mt-2"
+      />
 
       <div
         className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3"
@@ -428,6 +382,7 @@ function MergeCard({
   onCancelMerge,
   onOpenBug,
   onOpenExportDir,
+  onOpenWorktree,
 }: Props & { task: AgentTask }) {
   const merge = task.merge;
   const mergeBusy = busy === `merge:${task.id}`;
@@ -473,6 +428,17 @@ function MergeCard({
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {canOpenAgentWorktree(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<FolderGit2 size={11} />}
+              disabled={busy !== null}
+              onClick={() => onOpenWorktree(task)}
+            >
+              {t("agent.changes.openWorktree")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="secondary"
@@ -497,6 +463,15 @@ function MergeCard({
       <p className="select-text mt-3 text-ui-caption leading-5 text-slate-600">
         {t("agent.approval.mergeSummary")}
       </p>
+
+      {merge?.commit ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-ui-xs text-slate-400">
+          <span>{t("agent.changes.mergedCommit")}</span>
+          <CommitHash hash={merge.commit} />
+        </div>
+      ) : null}
+
+      <TaskChangesPanel taskId={task.id} open={false} className="mt-2" />
 
       {merge?.error ? (
         <div className="select-text mt-2 break-words rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-1.5 text-ui-sm leading-5 text-rose-700">

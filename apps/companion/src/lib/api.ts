@@ -318,11 +318,53 @@ export type AgentApproval = {
   stash?: string;
 };
 
+/** Per-file change status reported by `agent_task_changes`. */
+export type AgentChangeKind = "added" | "modified" | "deleted";
+
+/** One file in the change list; paths are repo-relative. */
+export type AgentChangedFile = {
+  path: string;
+  status: AgentChangeKind;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+/** `agent_task_changes` response: capped at 200 files, `fileCount` is the truth. */
+export type AgentChangeSummary = {
+  files: AgentChangedFile[];
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  dirty: boolean;
+  committed: boolean;
+  commit?: string | null;
+};
+
+/** `agent_task_diff` response for one file, or the whole task when omitted. */
+export type AgentDiffView = {
+  text: string;
+  truncated: boolean;
+  empty: boolean;
+};
+
+/** Compact stats stored on the task itself (no per-file detail). */
+export type AgentTaskChanges = {
+  files: string[];
+  dirty: boolean;
+  committed: boolean;
+  additions: number;
+  deletions: number;
+  commit?: string | null;
+};
+
 export type AgentMerge = {
   error?: string | null;
   instructions?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  /** Commit created by the merge, shown in the merge card and history. */
+  commit?: string | null;
 };
 
 export type AgentRuntimePhase =
@@ -369,6 +411,8 @@ export type AgentTask = {
   runtimeId?: string;
   agentSessionId?: string | null;
   approval?: AgentApproval | null;
+  /** Diff stats of this task, refreshed by the desktop as the agent works. */
+  changes?: AgentTaskChanges | null;
   merge?: AgentMerge | null;
   commitOnly?: boolean;
   extraPrompt?: string;
@@ -823,15 +867,13 @@ export const api = {
   agentStop: (taskId: string) =>
     feature<{ task?: AgentTask }>("agent_review_stop", { taskId }),
 
-  agentDiff: async (taskId: string): Promise<string> => {
-    const data = await feature<unknown>("agent_review_diff", { taskId });
-    if (typeof data === "string") return data;
-    if (data && typeof data === "object" && "diff" in data) {
-      const diff = (data as { diff?: unknown }).diff;
-      if (typeof diff === "string") return diff;
-    }
-    return "";
-  },
+  /** Per-file change stats for the task's worktree / repo. */
+  agentTaskChanges: (taskId: string) =>
+    feature<AgentChangeSummary>("agent_task_changes", { taskId }),
+
+  /** Unified diff for one changed file, or the whole task when omitted. */
+  agentTaskDiff: (taskId: string, file?: string): Promise<AgentDiffView> =>
+    feature<AgentDiffView>("agent_task_diff", { taskId, file: file ?? null }),
 
   agentMergeStart: (taskId: string) =>
     feature<AgentMergeStart>("agent_merge_start", { taskId }),

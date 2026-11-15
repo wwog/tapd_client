@@ -8,10 +8,35 @@ import {
   CircleExclamationPoint,
 } from "lucide-react";
 
-import { AGENT_STATUS_LABELS, api, type AgentTask } from "../lib/api";
+import { AGENT_STATUS_LABELS, api, asApiError, type AgentDiffView, type AgentTask } from "../lib/api";
 import { bugTitle } from "../lib/format";
 import { t } from "../lib/i18n";
 import { Badge } from "./Badge";
+import {
+  CHANGE_LETTERS,
+  CHANGE_TONES,
+  CommitHash,
+  useAgentChangeSummary,
+} from "./AgentChanges";
+
+/** `+A −D`, optionally preceded by the file count; a zero side is omitted. */
+function ChangeTotals(props: { additions: number; deletions: number; fileCount?: number }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5 text-ui-xs">
+      {props.fileCount === undefined ? null : (
+        <span className="shrink-0 text-slate-400">
+          {t("magent.changes.files", { count: props.fileCount })}
+        </span>
+      )}
+      {props.additions > 0 ? (
+        <span className="shrink-0 tabular-nums text-emerald-700">+{props.additions}</span>
+      ) : null}
+      {props.deletions > 0 ? (
+        <span className="shrink-0 tabular-nums text-rose-700">−{props.deletions}</span>
+      ) : null}
+    </span>
+  );
+}
 
 /** Task title with the tester punctuation normalized; empty-safe. */
 const titleOf = (task: AgentTask): string => bugTitle(task.title) || t("magent.untitled");
@@ -46,8 +71,11 @@ export function ReviewCard(props: {
   const { task, busy } = props;
   const approval = task.approval;
   const files = approval?.files ?? [];
+  const changes = task.changes ?? null;
+  // Per-file stats come from the change command; the approval only lists paths.
+  const summary = useAgentChangeSummary(task.id);
   const [diffOpen, setDiffOpen] = useState(false);
-  const [diff, setDiff] = useState<string | null>(null);
+  const [diff, setDiff] = useState<AgentDiffView | null>(null);
   const [diffBusy, setDiffBusy] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
 
@@ -61,9 +89,9 @@ export function ReviewCard(props: {
     setDiffBusy(true);
     setDiffError(null);
     try {
-      setDiff(await api.agentDiff(task.id));
+      setDiff(await api.agentTaskDiff(task.id));
     } catch (err) {
-      setDiffError(String(err));
+      setDiffError(asApiError(err).message);
     } finally {
       setDiffBusy(false);
     }
@@ -93,9 +121,57 @@ export function ReviewCard(props: {
         {approval?.summary || t("magent.awaitingReviewHint")}
       </p>
 
-      {files.length > 0 ? (
+      {summary ? (
         <div className="mt-2">
-          <div className="text-ui-xs text-slate-400">
+          <ChangeTotals
+            fileCount={summary.fileCount}
+            additions={summary.additions}
+            deletions={summary.deletions}
+          />
+          {summary.files.length > 0 ? (
+            <div className="mt-1 border-t border-border">
+              {summary.files.slice(0, 12).map((file) => (
+                <div
+                  key={file.path}
+                  className="flex items-center gap-2 border-b border-border py-1 last:border-b-0"
+                >
+                  <span
+                    className="min-w-0 flex-1 truncate font-mono text-ui-2xs text-slate-600"
+                    title={file.path}
+                  >
+                    {file.path}
+                  </span>
+                  <Badge tone={CHANGE_TONES[file.status]}>{CHANGE_LETTERS[file.status]}</Badge>
+                  {file.binary ? (
+                    <span className="shrink-0 text-ui-2xs text-slate-400">
+                      {t("magent.changes.binary")}
+                    </span>
+                  ) : (
+                    <span className="flex shrink-0 items-center gap-1 tabular-nums text-ui-2xs">
+                      {file.additions > 0 ? (
+                        <span className="text-emerald-700">+{file.additions}</span>
+                      ) : null}
+                      {file.deletions > 0 ? (
+                        <span className="text-rose-700">−{file.deletions}</span>
+                      ) : null}
+                    </span>
+                  )}
+                </div>
+              ))}
+              {summary.files.length > 12 ? (
+                <div className="py-1 text-ui-2xs text-slate-500">
+                  +{summary.files.length - 12}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : files.length > 0 ? (
+        <div className="mt-2">
+          {changes ? (
+            <ChangeTotals additions={changes.additions} deletions={changes.deletions} />
+          ) : null}
+          <div className={`text-ui-xs text-slate-400${changes ? " mt-1" : ""}`}>
             {t("magent.files.count", { n: files.length })}
           </div>
           <div className="mt-1 flex flex-wrap gap-1">
@@ -114,6 +190,14 @@ export function ReviewCard(props: {
               </span>
             ) : null}
           </div>
+        </div>
+      ) : changes ? (
+        <div className="mt-2">
+          <ChangeTotals
+            fileCount={changes.files.length}
+            additions={changes.additions}
+            deletions={changes.deletions}
+          />
         </div>
       ) : null}
 
@@ -138,10 +222,19 @@ export function ReviewCard(props: {
             </div>
           ) : diffError ? (
             <div className="select-text break-all py-2 text-ui-sm text-rose-300">{diffError}</div>
+          ) : diff?.empty ? (
+            <div className="py-2 text-ui-sm text-zinc-400">{t("magent.changes.noDiff")}</div>
           ) : (
-            <pre className="select-text max-h-72 overflow-auto whitespace-pre font-mono text-ui-2xs leading-4 text-zinc-200">
-              {diff ?? ""}
-            </pre>
+            <>
+              <pre className="select-text max-h-72 overflow-auto whitespace-pre font-mono text-ui-2xs leading-4 text-zinc-200">
+                {diff?.text ?? ""}
+              </pre>
+              {diff?.truncated ? (
+                <div className="mt-1 text-ui-2xs text-zinc-500">
+                  {t("magent.changes.diffTruncated")}
+                </div>
+              ) : null}
+            </>
           )}
         </div>
       ) : null}
@@ -229,6 +322,25 @@ export function MergeCard(props: {
         >
           ⎇ {task.worktreeBranch}
         </p>
+      ) : null}
+
+      {task.changes ? (
+        <div className="mt-1">
+          <ChangeTotals
+            fileCount={task.changes.files.length}
+            additions={task.changes.additions}
+            deletions={task.changes.deletions}
+          />
+        </div>
+      ) : null}
+
+      {task.merge?.commit ? (
+        <div className="mt-1 flex items-center gap-1.5">
+          <span className="shrink-0 text-ui-xs text-slate-400">
+            {t("magent.changes.mergedCommit")}
+          </span>
+          <CommitHash hash={task.merge.commit} />
+        </div>
       ) : null}
 
       {task.merge?.error ? (

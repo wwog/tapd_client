@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { exportDirFor, type AgentTask } from "./agent";
+import { api } from "./api";
 import type { ToastFn } from "./feature";
 import { t } from "./i18n";
 
@@ -44,4 +45,14 @@ export const openTaskExportDir = (task: AgentTask, toast: ToastFn): void => {
   void invoke("open_path", { path: dir }).catch((error) =>
     toast("error", String(error)),
   );
+};
+
+/**
+ * Opens the task's worktree like a project folder: the same
+ * `open_directory` command and saved editor choice as 「打开项目」.
+ */
+export const openTaskWorktree = (task: AgentTask, toast: ToastFn): void => {
+  const path = task.worktreePath;
+  if (!path) return;
+  void api.openDirectory(path).catch((error) => toast("error", String(error)));
 };

@@ -145,6 +145,46 @@ export type AgentApproval = {
   stash?: string;
 };
 
+/** Per-file change status reported by `agent_task_changes`. */
+export type AgentChangeKind = "added" | "modified" | "deleted";
+
+/** One file in the change panel; paths are repo-relative. */
+export type AgentChangedFile = {
+  path: string;
+  status: AgentChangeKind;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+/** `agent_task_changes` response: at most 200 files, `fileCount` is the truth. */
+export type AgentChangeSummary = {
+  files: AgentChangedFile[];
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  dirty: boolean;
+  committed: boolean;
+  commit?: string | null;
+};
+
+/** `agent_task_diff` response for one file or the whole task. */
+export type AgentDiffView = {
+  text: string;
+  truncated: boolean;
+  empty: boolean;
+};
+
+/** Compact change stats stored on the task itself (no per-file detail). */
+export type AgentTaskChanges = {
+  files: string[];
+  dirty: boolean;
+  committed: boolean;
+  additions: number;
+  deletions: number;
+  commit?: string | null;
+};
+
 export type AgentTask = {
   id: string;
   workspaceId: string;
@@ -177,6 +217,8 @@ export type AgentTask = {
   agentSessionId?: string | null;
   /** Present while the task waits for the commit decision. */
   approval?: AgentApproval | null;
+  /** Diff stats of this task, refreshed by the backend as it works. */
+  changes?: AgentTaskChanges | null;
   /** Merge phase state: agent failure text, manual steps and timing. */
   merge?: AgentMerge | null;
   /** The next run is the post-approval commit phase. */
@@ -196,6 +238,8 @@ export type AgentMerge = {
   instructions?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  /** Commit created by the merge, shown in the merge card and history. */
+  commit?: string | null;
 };
 
 /** 运行中 Agent 的状态，只存在于内存；任务结束后清空。 */
@@ -402,6 +446,14 @@ export const isAgentApprovalStatus = (status: AgentTaskStatus): boolean =>
 export const isAgentInFlight = (task: AgentTask): boolean =>
   IN_FLIGHT_STATUSES.includes(task.status);
 
+/** Task reached a terminal state; worktree files may already be cleaned. */
+export const isAgentTerminalStatus = (status: AgentTaskStatus): boolean =>
+  status === "succeeded" || status === "failed" || status === "canceled";
+
+/** A worktree folder still exists and is worth opening in an editor. */
+export const canOpenAgentWorktree = (task: AgentTask): boolean =>
+  Boolean(task.worktreePath) && !isAgentTerminalStatus(task.status);
+
 /** Stable key for "this bug already has an agent task". */
 export const agentBugKey = (workspaceId: string, bugId: string): string =>
   `${workspaceId}::${bugId}`;
@@ -598,9 +650,15 @@ export const agentApi = {
   /** Confirm the branch is already merged (manual merge fallback). */
   mergeVerify: (taskId: string) =>
     featureCommand<{ task?: AgentTask }>("agent_merge_verify", { taskId }),
-  /** Unified diff of the paused change, for the review card. */
-  reviewDiff: (taskId: string) =>
-    featureCommand<{ diff: string }>("agent_review_diff", { taskId }),
+  /** Per-file change stats for the task's worktree / repo. */
+  taskChanges: (taskId: string) =>
+    featureCommand<AgentChangeSummary>("agent_task_changes", { taskId }),
+  /** Unified diff for one changed file, or the whole task when omitted. */
+  taskDiff: (taskId: string, file?: string) =>
+    featureCommand<AgentDiffView>("agent_task_diff", {
+      taskId,
+      file: file ?? null,
+    }),
   /** 在系统终端里续接该任务结束后的 Agent 会话。 */
   openTerminal: (taskId: string) =>
     featureCommand<{ ok: boolean }>("agent_open_terminal", { taskId }),

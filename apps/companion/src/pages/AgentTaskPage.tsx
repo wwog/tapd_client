@@ -14,6 +14,7 @@ import { t } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { absoluteTime, bugTitle, taskDuration } from "../lib/format";
 import { Badge } from "../components/Badge";
+import { AgentChanges, CommitHash } from "../components/AgentChanges";
 import { MergeCard, ReviewCard } from "../components/AgentTaskCards";
 
 /** Single page cap when paging through history to locate one record. */
@@ -186,6 +187,13 @@ export function AgentTaskPage(props: { id: string }) {
             {bugTitle(task.title) || t("magent.untitled")}
           </h1>
 
+          {/* 移动端没有实时推送：进入页面或任务状态变化时取一次变更。 */}
+          <AgentChanges
+            key={task.id}
+            taskId={task.id}
+            refreshKey={`${task.id}:${task.status}`}
+          />
+
           {task.status === "awaiting_approval" ? (
             <section className="px-3 pt-3">
               <ReviewCard task={task} busy={busy} onApprove={approve} onStop={stop} />
@@ -229,6 +237,11 @@ export function AgentTaskPage(props: { id: string }) {
             {task.worktreeBranch ? (
               <MetaRow label={t("magent.branch")}>
                 <span className="font-mono">{task.worktreeBranch}</span>
+              </MetaRow>
+            ) : null}
+            {task.merge?.commit ? (
+              <MetaRow label={t("magent.changes.mergedCommit")}>
+                <CommitHash hash={task.merge.commit} />
               </MetaRow>
             ) : null}
             <MetaRow label={t("magent.runtime")}>

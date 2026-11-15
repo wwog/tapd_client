@@ -52,7 +52,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     // Agent 审核 / 合并
     "agent_review_approve",
     "agent_review_stop",
-    "agent_review_diff",
+    "agent_task_changes",
+    "agent_task_diff",
     "agent_merge_start",
     "agent_merge_verify",
     // Agent 任务控制
@@ -176,7 +177,8 @@ mod tests {
         "agent_enqueue_bug",
         "agent_review_approve",
         "agent_review_stop",
-        "agent_review_diff",
+        "agent_task_changes",
+        "agent_task_diff",
         "agent_merge_start",
         "agent_merge_verify",
         "agent_task_cancel",

@@ -263,6 +263,33 @@ export const agent = {
   "agent.header.stop": ["中断", "Stop"],
   "agent.header.openExport": ["打开导出目录", "Open export folder"],
 
+  // Task changes (TaskChangesPanel, header badge, history).
+  "agent.changes.title": ["变更", "Changes"],
+  "agent.changes.files": [
+    "{count} 个文件",
+    ({ count }) => `${count} file${Number(count) === 1 ? "" : "s"}`,
+  ],
+  "agent.changes.added": ["新增", "Added"],
+  "agent.changes.modified": ["修改", "Modified"],
+  "agent.changes.deleted": ["删除", "Deleted"],
+  "agent.changes.binary": ["二进制", "Binary"],
+  "agent.changes.loading": ["正在读取变更…", "Reading changes…"],
+  "agent.changes.empty": ["暂无变更", "No changes"],
+  "agent.changes.truncated": [
+    "仅列出前 {count} 个",
+    "Showing the first {count}",
+  ],
+  "agent.changes.refresh": ["刷新变更", "Refresh changes"],
+  "agent.changes.toggle": ["显示或隐藏变更", "Show or hide changes"],
+  "agent.changes.readingDiff": ["正在读取差异…", "Reading diff…"],
+  "agent.changes.noDiff": ["该文件没有差异", "No diff for this file"],
+  "agent.changes.diffTruncated": ["差异已截断", "Diff truncated"],
+  "agent.changes.copied": ["已复制", "Copied"],
+  "agent.changes.copyHash": ["复制完整 hash", "Copy full hash"],
+  "agent.changes.commit": ["提交", "Commit"],
+  "agent.changes.mergedCommit": ["合并提交", "Merge commit"],
+  "agent.changes.openWorktree": ["打开 worktree", "Open worktree"],
+
   // Approval queue.
   "agent.approval.list": ["待处理列表", "Pending list"],
   "agent.approval.detail": ["处理详情", "Pending details"],
@@ -296,14 +323,7 @@ export const agent = {
     "Agent 已暂停，等待确认后提交。",
     "The agent is paused, waiting for confirmation to commit.",
   ],
-  "agent.approval.filesChanged": ["涉及文件 {count} 个", "Files changed: {count}"],
   "agent.approval.risk": ["风险：{risk}", "Risk: {risk}"],
-  "agent.approval.diffTitle": ["相对任务起点的差异", "Diff since the task started"],
-  "agent.approval.diffHint": [
-    "只包含已跟踪文件；未跟踪文件见上方列表",
-    "Tracked files only; untracked files are listed above",
-  ],
-  "agent.approval.readingDiff": ["正在读取差异…", "Reading diff…"],
   "agent.approval.approveHintWorktree": [
     "通过后进入合并确认，再用原 Agent 合并回主仓库；停止会取消任务，未提交改动存入 git stash，已提交分支保留。",
     "Approving moves to merge confirmation, then the original agent merges into the main repo; stopping cancels the task, stashes uncommitted changes in git stash and keeps the committed branch.",

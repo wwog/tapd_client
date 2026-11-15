@@ -6,6 +6,7 @@ members = [
     "crates/tapd-mcp",
     "crates/tapd-workflow",
     "crates/tapd-i18n",
+    "crates/tapd-workspace",
 ]
 
 [workspace.package]

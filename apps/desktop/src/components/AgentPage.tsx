@@ -15,7 +15,7 @@ import {
   useAgentTasksStore,
 } from "../lib/agentStore";
 import { useAgentChat } from "../hooks/useAgentChat";
-import { openTaskExportDir } from "../lib/desktop";
+import { openTaskExportDir, openTaskWorktree } from "../lib/desktop";
 import { t } from "../lib/i18n";
 import { AgentApproval, type ManualMerge } from "./AgentApproval";
 import { AgentChatPane } from "./AgentChatPane";
@@ -26,6 +26,7 @@ import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
 import { AgentTaskHeader, type AgentChatView } from "./AgentTaskHeader";
 import { AgentTerminal } from "./AgentTerminal";
+import { TaskChangesPanel } from "./TaskChangesPanel";
 import { Button } from "./ui";
 
 const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running", "merging"];
@@ -89,6 +90,8 @@ export function AgentPage({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Manual steps returned by 用原 Agent 合并 when the agent cannot merge. */
   const [manualMerge, setManualMerge] = useState<ManualMerge | null>(null);
+  /** Change panel in the run tab; the header's `+A −D` badge toggles it. */
+  const [changesOpen, setChangesOpen] = useState(false);
   /** One-shot selection for the 待处理 tab (e.g. just entered AwaitingMerge). */
   const [approvalFocusId, setApprovalFocusId] = useState<string | null>(null);
   /** Worktree task approved with a pending commit; prompt merge when it lands. */
@@ -270,6 +273,11 @@ export function AgentPage({
       : null) ?? fallbackId;
   const selectedTask = runTasks.find((task) => task.id === selectedId) ?? null;
   const selectedQueuePosition = selectedTask ? queuePosition(selectedTask) : null;
+
+  // Switching tasks closes the change panel: it belongs to the previous task.
+  useEffect(() => {
+    setChangesOpen(false);
+  }, [selectedTask?.id]);
   /** Human-readable runtime name for a task; falls back to the stored id. */
   const runtimeName = (id?: string) =>
     runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "Agent";
@@ -496,6 +504,7 @@ export function AgentPage({
           onResumeQueue={handleResumeQueue}
           onOpenBug={onOpenBug}
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
+          onOpenWorktree={(task) => openTaskWorktree(task, toast)}
           focusTaskId={approvalFocusId}
           onFocusConsumed={() => setApprovalFocusId(null)}
           areaRef={listAreaRef}
@@ -573,6 +582,9 @@ export function AgentPage({
                   model={currentModel}
                   permissionLabel={selectedPermission?.label}
                   permissionId={selectedTask.permissionMode || "default"}
+                  changesOpen={changesOpen}
+                  onToggleChanges={() => setChangesOpen((current) => !current)}
+                  onOpenWorktree={() => openTaskWorktree(selectedTask, toast)}
                   onViewChange={(next) =>
                     setViewChoice((current) => ({
                       ...current,
@@ -588,6 +600,13 @@ export function AgentPage({
                   onOpenBug={() =>
                     onOpenBug(selectedTask.workspaceId, selectedTask.bugId)
                   }
+                />
+
+                <TaskChangesPanel
+                  taskId={selectedTask.id}
+                  open={changesOpen}
+                  onToggle={() => setChangesOpen((current) => !current)}
+                  className="mx-1.5 mt-1.5 shrink-0"
                 />
 
                 {selectedTask.error ? (

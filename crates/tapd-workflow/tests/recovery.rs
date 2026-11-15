@@ -388,6 +388,7 @@ fn suspend_pure_function_aborts_merging_to_manual_merge() {
         instructions: Some("old instructions".to_string()),
         started_at: Some(now(12)),
         finished_at: Some(now(13)),
+        commit: None,
     });
     let mut tasks = vec![merging];
 
@@ -433,6 +434,7 @@ fn suspend_pure_function_leaves_resting_and_terminal_tasks_untouched() {
         instructions: Some("keep".to_string()),
         started_at: Some(now(5)),
         finished_at: None,
+        commit: None,
     });
     let succeeded = task_with_status("s", "bug-s", TaskStatus::Succeeded);
     let failed = task_with_status("f", "bug-f", TaskStatus::Failed);

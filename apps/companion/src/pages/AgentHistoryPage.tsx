@@ -198,6 +198,48 @@ export function AgentHistoryPage() {
                       </span>
                     ) : null}
                   </span>
+                  {view.changes || view.merge?.commit ? (
+                    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-ui-xs">
+                      {view.changes ? (
+                        <>
+                          {view.changes.additions > 0 ? (
+                            <span className="tabular-nums text-emerald-700">
+                              +{view.changes.additions}
+                            </span>
+                          ) : null}
+                          {view.changes.deletions > 0 ? (
+                            <span className="tabular-nums text-rose-700">
+                              −{view.changes.deletions}
+                            </span>
+                          ) : null}
+                          <span className="text-slate-300">·</span>
+                          <span className="tabular-nums text-slate-400">
+                            {t("magent.changes.files", { count: view.changes.files.length })}
+                          </span>
+                        </>
+                      ) : null}
+                      {view.changes?.commit ? (
+                        <>
+                          <span className="text-slate-300">·</span>
+                          <span className="text-slate-400">{t("magent.changes.commit")}</span>
+                          <span className="font-mono text-slate-500">
+                            {view.changes.commit.slice(0, 8)}
+                          </span>
+                        </>
+                      ) : null}
+                      {view.merge?.commit ? (
+                        <>
+                          <span className="text-slate-300">·</span>
+                          <span className="text-slate-400">
+                            {t("magent.changes.mergedCommit")}
+                          </span>
+                          <span className="font-mono text-slate-500">
+                            {view.merge.commit.slice(0, 8)}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  ) : null}
                 </button>
                 <div className="flex shrink-0 items-center pr-3">
                   <button

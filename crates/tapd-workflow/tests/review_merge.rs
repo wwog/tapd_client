@@ -293,6 +293,7 @@ fn merge_agent_success_retains_branch_and_removes_directory() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
     let task = workflow.task(&id("a")).unwrap();
@@ -337,6 +338,7 @@ fn canceled_merge_agent_still_verifies_the_branch() {
         task_id: id("a"),
         merged: false,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
 }
@@ -355,6 +357,7 @@ fn merge_agent_failure_rolls_back_to_awaiting_merge_with_manual_steps() {
         task_id: id("a"),
         merged: false,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
     let merge = workflow.task(&id("a")).unwrap().merge.as_ref().unwrap();
@@ -382,6 +385,7 @@ fn manual_verify_merge_succeeds_without_a_merge_agent() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
     assert_eq!(history_records(&effects).len(), 1);
@@ -399,6 +403,7 @@ fn manual_verify_merge_failure_stays_awaiting_merge() {
         task_id: id("a"),
         merged: false,
         error: Some("not an ancestor".to_string()),
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
     assert_eq!(
@@ -529,6 +534,81 @@ fn cancel_merging_aborts_to_awaiting_merge_and_keeps_branch() {
 }
 
 #[test]
+fn verified_merge_records_the_landed_commit_in_task_persist_and_history() {
+    let mut workflow = boot(worktree_config(2));
+    awaiting_merge(&mut workflow, "a", "bug-a");
+    begin_merge(&mut workflow, "a");
+    workflow.apply(Input::MergeAgentFinished {
+        task_id: id("a"),
+        outcome: RunOutcome::success(None),
+        now: now(40),
+    });
+
+    let effects = workflow.apply(Input::BranchMergeVerified {
+        task_id: id("a"),
+        merged: true,
+        error: None,
+        commit: Some("mergeq1".to_string()),
+    });
+    assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
+    assert_eq!(
+        workflow
+            .task(&id("a"))
+            .unwrap()
+            .merge
+            .as_ref()
+            .unwrap()
+            .commit
+            .as_deref(),
+        Some("mergeq1")
+    );
+    assert!(persisted_tasks(&effects).iter().any(|task| task
+        .merge
+        .as_ref()
+        .and_then(|merge| merge.commit.as_deref())
+        == Some("mergeq1")));
+    let record = history_records(&effects)[0];
+    assert_eq!(
+        record
+            .merge
+            .as_ref()
+            .and_then(|merge| merge.commit.as_deref()),
+        Some("mergeq1")
+    );
+}
+
+#[test]
+fn failed_merge_verification_clears_a_stale_landed_commit() {
+    let mut task = worktree_task_with_status("a", "bug-a", TaskStatus::AwaitingMerge);
+    task.merge = Some(tapd_workflow::TaskMerge {
+        commit: Some("oldmerge".to_string()),
+        ..Default::default()
+    });
+    let (mut workflow, _) = boot_with(worktree_config(1), vec![task], false);
+    workflow.apply(Input::VerifyMerge {
+        task_id: id("a"),
+        now: now(30),
+    });
+    workflow.apply(Input::BranchMergeVerified {
+        task_id: id("a"),
+        merged: false,
+        error: None,
+        commit: None,
+    });
+    assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
+    assert_eq!(
+        workflow
+            .task(&id("a"))
+            .unwrap()
+            .merge
+            .as_ref()
+            .unwrap()
+            .commit,
+        None
+    );
+}
+
+#[test]
 fn history_is_appended_exactly_once_per_terminal_transition() {
     let mut workflow = boot(worktree_config(2));
     awaiting_merge(&mut workflow, "a", "bug-a");
@@ -542,6 +622,7 @@ fn history_is_appended_exactly_once_per_terminal_transition() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(history_records(&effects).len(), 1);
 
@@ -550,6 +631,7 @@ fn history_is_appended_exactly_once_per_terminal_transition() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert!(history_records(&duplicate).is_empty());
     let late = finish_outcome(&mut workflow, "a", RunOutcome::failure("late", None));

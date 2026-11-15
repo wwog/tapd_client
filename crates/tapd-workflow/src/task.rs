@@ -103,15 +103,42 @@ pub struct ChangeSet {
     pub dirty: bool,
     /// At least one commit was produced after the run baseline.
     pub committed: bool,
+    /// Lines added by this task's change. The host computes it with git on
+    /// demand; only the totals are a fact, per-file counts are never stored.
+    #[serde(default)]
+    pub additions: usize,
+    /// Lines deleted by this task's change, from the same git summary.
+    #[serde(default)]
+    pub deletions: usize,
+    /// The commit holding this task's product: the worktree branch tip, or the
+    /// main repository HEAD when the change was committed there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl ChangeSet {
+    /// Builds the change facts; [`Self::with_totals`] and
+    /// [`Self::with_commit`] fill in the git summary the host observed.
     pub fn new(files: Vec<String>, dirty: bool, committed: bool) -> Self {
         Self {
             files,
             dirty,
             committed,
+            additions: 0,
+            deletions: 0,
+            commit: None,
         }
+    }
+
+    pub fn with_totals(mut self, additions: usize, deletions: usize) -> Self {
+        self.additions = additions;
+        self.deletions = deletions;
+        self
+    }
+
+    pub fn with_commit(mut self, commit: Option<String>) -> Self {
+        self.commit = commit;
+        self
     }
 
     pub fn has_changes(&self) -> bool {
@@ -159,6 +186,10 @@ pub struct TaskMerge {
     pub started_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<Timestamp>,
+    /// Main-repository HEAD after the branch was merged. Only set once the
+    /// host verified the merge, so history shows the landed commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

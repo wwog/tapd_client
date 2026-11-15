@@ -292,7 +292,8 @@ impl Workflow {
                 task_id,
                 merged,
                 error,
-            } => self.on_branch_merge_verified(task_id, merged, error, effects),
+                commit,
+            } => self.on_branch_merge_verified(task_id, merged, error, commit, effects),
         }
         self.schedule(effects);
     }
@@ -565,6 +566,7 @@ impl Workflow {
             merge.instructions = Some(manual_merge_instructions(&repo, &branch));
             merge.started_at = None;
             merge.finished_at = None;
+            merge.commit = None;
         } else {
             task.status = TaskStatus::Queued;
             task.commit_only = true;
@@ -712,6 +714,7 @@ impl Workflow {
                 merge.instructions = None;
                 merge.started_at = Some(requested_at);
                 merge.finished_at = None;
+                merge.commit = None;
                 let changed = task.clone();
                 self.push_persist(effects, &changed);
                 let effect = self.effect_id();
@@ -813,6 +816,7 @@ impl Workflow {
         task_id: TaskId,
         merged: bool,
         error: Option<String>,
+        commit: Option<String>,
         effects: &mut Vec<Effect>,
     ) {
         let Some(verified_at) = self
@@ -856,6 +860,7 @@ impl Workflow {
             merge.error = None;
             merge.instructions = None;
             merge.finished_at = Some(verified_at);
+            merge.commit = commit;
             let changed = task.clone();
             if let Some(path) = worktree_path.filter(|path| !path.trim().is_empty()) {
                 let effect = self.effect_id();
@@ -888,6 +893,8 @@ impl Workflow {
             merge.instructions = Some(manual_merge_instructions(&repo, &branch));
             merge.started_at = None;
             merge.finished_at = None;
+            // Not merged, so any earlier hash must not look like it landed.
+            merge.commit = None;
             let changed = task.clone();
             self.push_persist(effects, &changed);
             effects.push(Effect::EmitNotice {
@@ -918,6 +925,7 @@ impl Workflow {
         merge.instructions = Some(manual_merge_instructions(repo, branch));
         merge.started_at = None;
         merge.finished_at = None;
+        merge.commit = None;
         let changed = task.clone();
         self.push_persist(effects, &changed);
     }
@@ -959,6 +967,7 @@ impl Workflow {
         merge.instructions = Some(manual_merge_instructions(&repo, &branch));
         merge.started_at = None;
         merge.finished_at = None;
+        merge.commit = None;
         let changed = task.clone();
         self.push_persist(effects, &changed);
     }
@@ -1237,6 +1246,7 @@ impl Workflow {
                     merge.instructions = Some(manual_merge_instructions(&repo, &branch));
                     merge.started_at = None;
                     merge.finished_at = None;
+                    merge.commit = None;
                 }
             } else if dirty || committed {
                 let files = task

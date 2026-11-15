@@ -1,13 +1,9 @@
 //! Git safety net: dirty-file snapshots, HEAD checks, and review stashing.
+//!
+//! Change summaries and diffs live in `crate::task_changes` / `tapd_workspace`;
+//! what remains here are the checks the workflow host still runs itself.
 
 use tapd_i18n::{tr, tr_args};
-
-use super::AgentTask;
-
-/// The empty tree object, used as the diff base for a repository's first
-/// commit. Keeping it here gives `changed_files_since` and review diff one
-/// definition of "no previous HEAD".
-pub(super) const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Parses `git status --porcelain` output into changed file paths.
 pub(super) fn parse_porcelain_files(output: &str) -> Vec<String> {
@@ -76,54 +72,6 @@ pub(super) fn git_head(repo_path: &str) -> Result<Option<String>, String> {
     }
     let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!sha.is_empty()).then_some(sha))
-}
-
-/// True when the task's repository gained a commit since the run started.
-pub(super) fn committed_since_baseline(task: &AgentTask) -> Result<bool, String> {
-    let Some(before) = task.baseline_head.as_deref() else {
-        // A worktree created from an empty repository has no baseline HEAD;
-        // any HEAD now means the agent made the first commit.
-        return Ok(task.worktree_branch.is_some() && git_head(task.work_dir())?.is_some());
-    };
-    Ok(git_head(task.work_dir())?.is_some_and(|after| after != before))
-}
-
-/// Files changed since `baseline` (a commit-ish), including files the agent
-/// committed plus anything still uncommitted. `None` diffs against the empty
-/// tree so a first commit is still visible.
-pub(super) fn changed_files_since(
-    repo_path: &str,
-    baseline: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let baseline = baseline
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(EMPTY_TREE);
-    let repo_path = repo_path.trim();
-    if repo_path.is_empty() {
-        return Ok(Vec::new());
-    }
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["diff", "--name-only", baseline])
-        .output()
-        .map_err(|error| tr_args("agent.git.diff.exec.failed", &[&error]))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            tr("agent.git.diff.failed").to_string()
-        } else {
-            stderr
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .take(50)
-        .map(str::to_string)
-        .collect())
 }
 
 /// True when `branch` is already an ancestor of the repository's current HEAD,

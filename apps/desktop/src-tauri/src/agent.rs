@@ -57,11 +57,8 @@ use tapd_workflow::{
 };
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
-use crate::{shell_path, state::SharedState};
-use git::{
-    branch_merged, changed_files_since, committed_since_baseline, git_head, stash_changes,
-    uncommitted_files,
-};
+use crate::{shell_path, state::SharedState, task_changes};
+use git::{branch_merged, git_head, stash_changes, uncommitted_files};
 use hooks::SessionHookKind;
 use pty::{AgentRuntime, PromptGuard, PtyOutcome};
 // Shared with the interactive terminals: both PTY readers must not split a
@@ -272,8 +269,11 @@ const DEFAULT_RUNTIME_ID: &str = "opencode";
 /// TUI 运行时在提示词注入后，输出静默多久视为本轮结束。
 /// 进程退出与会话 hook 是主信号，这里只是防止 Agent 长时间无输出时任务永远卡住。
 const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
-/// Cap the diff preview so a huge refactor cannot freeze the review panel.
-const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
+/// Debounce before a hook-driven change refresh runs; a turn that edits ten
+/// files in a row costs one git summary.
+const CHANGES_DEBOUNCE: Duration = Duration::from_millis(800);
+/// A cached change summary this young is served without touching git.
+const CHANGES_CACHE_FRESH: Duration = Duration::from_secs(2);
 
 pub const DEFAULT_PROMPT_KEY: &str = "agent.prompt.default";
 
@@ -1939,6 +1939,16 @@ struct TaskIdRequest {
     task_id: String,
 }
 
+/// `agent_task_diff`: the task plus an optional repo-relative file. `file`
+/// absent (or `null`, which the UI sends for the whole task) means the full
+/// change diff.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct TaskDiffRequest {
+    task_id: String,
+    file: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskInputRequest {
@@ -2292,28 +2302,49 @@ fn task_spec_from_request(
 
 /// Host-side repository facts for the workflow: files changed by this run,
 /// whether uncommitted work remains, and whether a commit was produced.
-/// `baseline_dirty` files belong to the user and are excluded.
+/// `tapd_workspace` owns the git work and already excludes `baseline_dirty`;
+/// `work_dir` is the path the run reported (a worktree override).
 fn inspect_changes(task: &AgentTask, work_dir: &str) -> Result<tapd_workflow::ChangeSet, String> {
-    let dirty: Vec<String> = uncommitted_files(work_dir)?
-        .into_iter()
-        .filter(|file| !task.baseline_dirty.contains(file))
-        .collect();
-    let committed = committed_since_baseline(task)?;
-    let mut files = if committed {
-        changed_files_since(work_dir, task.baseline_head.as_deref())?
-    } else {
-        dirty.clone()
-    };
-    for file in &dirty {
-        if !files.contains(file) {
-            files.push(file.clone());
-        }
-    }
-    Ok(tapd_workflow::ChangeSet {
-        files,
-        dirty: !dirty.is_empty(),
-        committed,
+    task_changes::summary_blocking(task, Some(work_dir))
+        .map(|summary| task_changes::change_set_from(&summary))
+}
+
+/// What the main repository says about a merge attempt: whether the branch is
+/// now an ancestor of HEAD, and which commit HEAD is when it landed.
+struct MergeVerification {
+    merged: bool,
+    commit: Option<String>,
+    error: Option<String>,
+}
+
+/// Runs the verdict and the HEAD lookup in one blocking hop. It never decides
+/// anything: the workflow core receives the facts.
+async fn verify_branch_landed(repo_path: String, branch: String) -> MergeVerification {
+    let checked = tokio::task::spawn_blocking(move || {
+        let merged = branch_merged(&repo_path, &branch)?;
+        let commit = if merged {
+            task_changes::head_commit(&repo_path)?
+        } else {
+            None
+        };
+        Ok::<_, String>((merged, commit))
     })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|checked| checked);
+
+    match checked {
+        Ok((merged, commit)) => MergeVerification {
+            merged,
+            commit,
+            error: None,
+        },
+        Err(error) => MergeVerification {
+            merged: false,
+            commit: None,
+            error: Some(tr_args("agent.merge.verify.failed", &[&error])),
+        },
+    }
 }
 
 fn default_task_runtime() -> String {
@@ -2455,6 +2486,9 @@ pub struct AgentCore {
     runtime_status: Mutex<HashMap<String, AgentRuntimeStatus>>,
     /// 按任务缓存的 transcript 解析结果，key 是 task id。
     transcript_cache: Mutex<HashMap<String, ChatCache>>,
+    /// Live change summary per task: refreshed from hook events, served to the
+    /// change panel. See `crate::task_changes`.
+    changes: crate::task_changes::ChangesTracker,
 }
 
 impl AgentCore {
@@ -2477,6 +2511,7 @@ impl AgentCore {
             hook_events: Mutex::new(HashMap::new()),
             runtime_status: Mutex::new(HashMap::new()),
             transcript_cache: Mutex::new(HashMap::new()),
+            changes: crate::task_changes::ChangesTracker::default(),
         }
     }
 
@@ -3010,6 +3045,13 @@ impl AgentCore {
             }
             self.set_runtime_status(task_id, next);
         }
+        // A tool call that wrote files invalidates the change cache. This is
+        // the only hook-side work: one lock, no IO, no git. The actual refresh
+        // is de-bounced and single-flighted in `schedule_changes_refresh`.
+        if task_changes::edits_files(event, payload.as_ref()) {
+            self.changes.mark_stale(task_id);
+            self.schedule_changes_refresh(task_id);
+        }
         if !activity.complete && activity.error.is_none() {
             return Ok(());
         }
@@ -3032,6 +3074,47 @@ impl AgentCore {
             },
         );
         Ok(())
+    }
+
+    /// Schedules one background change-summary refresh for a task whose cache
+    /// was just marked stale. De-bounced (a burst of edits costs one run) and
+    /// single-flighted (`begin_refresh` claims the slot). The hook handler
+    /// returns immediately: nothing here blocks it.
+    fn schedule_changes_refresh(self: &Arc<Self>, task_id: &str) {
+        if !self.changes.begin_refresh(task_id) {
+            return;
+        }
+        let core = Arc::clone(self);
+        let task_id = task_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(CHANGES_DEBOUNCE).await;
+            let Some(task) = core.workflow_view(&task_id) else {
+                core.changes.abort_refresh(&task_id);
+                return;
+            };
+            match task_changes::summary(&task, None).await {
+                Ok(summary) => {
+                    core.changes.store(&task_id, summary.clone());
+                    // Keep following a live task after the panel's first open,
+                    // and re-run once for edits that landed while this refresh
+                    // was computing (`store` leaves `stale` set in that case).
+                    if task.status.is_active() {
+                        core.changes.touch(&task_id);
+                    }
+                    core.schedule_changes_refresh(&task_id);
+                    let _ = core.app.emit(
+                        "agent://task_changes",
+                        json!({ "taskId": task_id, "changes": summary }),
+                    );
+                }
+                Err(error) => {
+                    // The panel keeps its last good summary; a failed refresh
+                    // is not worth a user-facing error.
+                    tracing::debug!(task_id = %task_id, %error, "agent change refresh failed");
+                    core.changes.abort_refresh(&task_id);
+                }
+            }
+        });
     }
 
     /// 更新内存里的运行时状态并广播；状态没变化时不推送。
@@ -3565,53 +3648,6 @@ impl AgentCore {
         tracing::info!(task_id, stash = %stash, "agent review stopped and changes stashed");
         self.workflow_view(task_id)
             .ok_or_else(|| tr("agent.task.missing").to_string())
-    }
-
-    /// Unified diff of the reviewed change. Uses the run's `baseline_head` when
-    /// present so committed changes remain visible; otherwise falls back to
-    /// `git diff HEAD`. Read-only; the review card uses it so the user can
-    /// inspect the diff before approving.
-    fn review_diff(&self, task_id: &str) -> Result<String, String> {
-        let task = self
-            .workflow_view(task_id)
-            .ok_or_else(|| tr("agent.task.missing").to_string())?;
-        if task.status != TaskStatus::AwaitingApproval {
-            return Err(tr("agent.review.notAwaiting").to_string());
-        }
-        if !Path::new(task.work_dir().trim()).is_dir() {
-            return Err(tr_args("agent.workdir.missing", &[&task.work_dir()]));
-        }
-        let baseline = task
-            .baseline_head
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(git::EMPTY_TREE);
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(task.work_dir().trim())
-            .args(["diff", "--no-color", baseline])
-            .output()
-            .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                tr("agent.git.diff.failed").to_string()
-            } else {
-                stderr
-            });
-        }
-
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.trim().is_empty() {
-            return Ok(tr("agent.review.diff.empty").to_string());
-        }
-        let count = text.chars().count();
-        if count > MAX_REVIEW_DIFF_CHARS {
-            let prefix: String = text.chars().take(MAX_REVIEW_DIFF_CHARS).collect();
-            return Ok(tr_args("agent.review.diff.truncated", &[&prefix, &count]));
-        }
-        Ok(text.into_owned())
     }
 
     /// Clears the queue pause. Tasks still awaiting review keep blocking the
@@ -4396,8 +4432,17 @@ impl AgentCore {
             match self.workflow_view(task_id) {
                 Some(view) => {
                     let dir = view.work_dir().to_string();
-                    match tokio::task::spawn_blocking(move || inspect_changes(&view, &dir)).await {
-                        Ok(Ok(changes)) => Some(changes),
+                    match tokio::task::spawn_blocking(move || {
+                        task_changes::summary_blocking(&view, Some(&dir))
+                    })
+                    .await
+                    {
+                        // Keep the summary for the change panel: the review
+                        // card would otherwise re-run git right after the run.
+                        Ok(Ok(summary)) => {
+                            self.changes.store(task_id, summary.clone());
+                            Some(task_changes::change_set_from(&summary))
+                        }
                         Ok(Err(error)) => {
                             return tapd_workflow::RunOutcome {
                                 canceled,
@@ -4525,16 +4570,12 @@ impl AgentCore {
         repo_path: String,
         branch: String,
     ) {
-        let checked = tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
-        let (merged, error) = match checked {
-            Ok(Ok(merged)) => (merged, None),
-            Ok(Err(error)) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
-            Err(error) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
-        };
+        let check = verify_branch_landed(repo_path, branch).await;
         self.feed(Input::BranchMergeVerified {
             task_id,
-            merged,
-            error,
+            merged: check.merged,
+            commit: check.commit,
+            error: check.error,
         });
     }
 
@@ -4736,17 +4777,12 @@ impl AgentCore {
             .collect();
         effects.retain(|effect| !matches!(effect, Effect::VerifyBranchMerged { .. }));
         for (verify_id, repo_path, branch) in verifications {
-            let checked =
-                tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
-            let (merged, error) = match checked {
-                Ok(Ok(merged)) => (merged, None),
-                Ok(Err(error)) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
-                Err(error) => (false, Some(tr_args("agent.merge.verify.failed", &[&error]))),
-            };
+            let check = verify_branch_landed(repo_path, branch).await;
             let receipts = self.apply_input(Input::BranchMergeVerified {
                 task_id: verify_id,
-                merged,
-                error,
+                merged: check.merged,
+                commit: check.commit,
+                error: check.error,
             })?;
             effects.extend(receipts);
         }
@@ -5422,18 +5458,40 @@ pub async fn command(
             Ok(json!({ "task": task }))
         }
         "agent_queue_resume" => Ok(json!(core.resume_queue().await)),
-        "agent_review_diff" => {
+        // Live change summary for the task's worktree / repository. Switching
+        // the panel on marks the task watched, which is what allows hook-driven
+        // refreshes to run. A very recent cache is served as-is.
+        "agent_task_changes" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| tr_args("agent.request.invalid.diff", &[&error]))?;
-            if request.task_id.trim().is_empty() {
+                .map_err(|error| tr_args("agent.request.invalid.task", &[&error]))?;
+            let task_id = request.task_id.trim().to_string();
+            if task_id.is_empty() {
                 return Err(tr("agent.request.missing.taskId").to_string());
             }
+            let task = core
+                .workflow_view(&task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            core.changes.watch(&task_id);
+            if let Some(summary) = core.changes.fresh(&task_id, CHANGES_CACHE_FRESH) {
+                return Ok(json!(summary));
+            }
+            let summary = task_changes::summary(&task, None).await?;
+            core.changes.store(&task_id, summary.clone());
+            Ok(json!(summary))
+        }
+        // Unified diff for the whole task or one file. Any task state is
+        // allowed: the panel also inspects finished and failed runs.
+        "agent_task_diff" => {
+            let request: TaskDiffRequest = serde_json::from_value(payload)
+                .map_err(|error| tr_args("agent.request.invalid.diff", &[&error]))?;
             let task_id = request.task_id.trim().to_string();
-            let core = core.clone();
-            let diff = tokio::task::spawn_blocking(move || core.review_diff(&task_id))
-                .await
-                .map_err(|error| tr_args("agent.request.diff.read.failed", &[&error]))??;
-            Ok(json!({ "diff": diff }))
+            if task_id.is_empty() {
+                return Err(tr("agent.request.missing.taskId").to_string());
+            }
+            let task = core
+                .workflow_view(&task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            Ok(json!(task_changes::diff(&task, request.file).await?))
         }
         "agent_open_terminal" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
@@ -6339,11 +6397,11 @@ mod tests {
         let mut task = sample_task("task-1", TaskStatus::Running);
         task.attempt = 2;
         task.interrupted = true;
-        task.changes = Some(tapd_workflow::ChangeSet {
-            files: vec!["src/a.rs".to_string()],
-            dirty: true,
-            committed: false,
-        });
+        task.changes = Some(tapd_workflow::ChangeSet::new(
+            vec!["src/a.rs".to_string()],
+            true,
+            false,
+        ));
 
         let workflow = workflow_bridge::to_workflow_task(&task).expect("to core");
         assert_eq!(workflow.id.as_str(), "task-1");
@@ -6796,11 +6854,7 @@ mod tests {
         let mut review = sample_task("review", TaskStatus::AwaitingApproval);
         review.worktree_path = Some("/tmp/wt".to_string());
         review.worktree_branch = Some("tapd/01234567-task0001".to_string());
-        review.changes = Some(tapd_workflow::ChangeSet {
-            files: Vec::new(),
-            dirty: false,
-            committed: true,
-        });
+        review.changes = Some(tapd_workflow::ChangeSet::new(Vec::new(), false, true));
         let (mut workflow, _) = boot(vec![review], &config);
 
         let effects = workflow.apply(Input::ApproveReview {
@@ -6850,6 +6904,7 @@ mod tests {
         let effects = workflow.apply(Input::BranchMergeVerified {
             task_id: TaskId::new("review"),
             merged: true,
+            commit: Some("0123456789abcdef".to_string()),
             error: None,
         });
         assert_eq!(
@@ -7040,11 +7095,11 @@ mod tests {
                 canceled: false,
                 success: true,
                 error: None,
-                changes: Some(tapd_workflow::ChangeSet {
-                    files: vec!["src/a.rs".to_string()],
-                    dirty: false,
-                    committed: true,
-                }),
+                changes: Some(tapd_workflow::ChangeSet::new(
+                    vec!["src/a.rs".to_string()],
+                    false,
+                    true,
+                )),
                 exit_code: Some(0),
             },
             now: NOW.to_string(),

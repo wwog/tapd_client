@@ -197,9 +197,13 @@ pub enum Input {
         outcome: RunOutcome,
         now: Timestamp,
     },
+    /// The host checked whether the task branch reached the main repository.
+    /// When `merged` is true, `commit` is the resulting main-repository HEAD;
+    /// the core records it as a fact and never derives it itself.
     BranchMergeVerified {
         task_id: TaskId,
         merged: bool,
         error: Option<String>,
+        commit: Option<String>,
     },
 }

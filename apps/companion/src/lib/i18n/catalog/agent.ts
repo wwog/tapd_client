@@ -144,4 +144,30 @@ export const agent = {
   ],
   "magent.manualMergeSteps": ["手动合并步骤", "Manual merge steps"],
   "magent.mergeStart": ["用原 Agent 合并", "Merge with original Agent"],
+
+  // Task changes / per-file diff
+  "magent.changes.title": ["变更", "Changes"],
+  "magent.changes.files": [
+    "{count} 个文件",
+    ({ count }) => `${count} file${Number(count) === 1 ? "" : "s"}`,
+  ],
+  "magent.changes.binary": ["二进制", "Binary"],
+  "magent.changes.loading": ["正在读取变更…", "Reading changes…"],
+  "magent.changes.empty": ["本次任务没有变更", "No changes in this task"],
+  "magent.changes.truncated": [
+    "仅显示前 {count} 个文件",
+    "Showing the first {count} files",
+  ],
+  "magent.changes.refresh": ["刷新变更", "Refresh changes"],
+  "magent.changes.loadFailed": [
+    "读取变更失败：{error}",
+    "Failed to read changes: {error}",
+  ],
+  "magent.changes.readingDiff": ["正在读取差异…", "Reading diff…"],
+  "magent.changes.noDiff": ["该文件没有差异", "No diff for this file"],
+  "magent.changes.diffTruncated": ["差异已截断", "Diff truncated"],
+  "magent.changes.commit": ["提交", "Commit"],
+  "magent.changes.mergedCommit": ["合并提交", "Merge commit"],
+  "magent.changes.copied": ["已复制", "Copied"],
+  "magent.changes.copyHash": ["复制完整 hash", "Copy full hash"],
 } as const satisfies Catalog;

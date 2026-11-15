@@ -1,12 +1,22 @@
-import { Bug, FolderOpen, Loader2, MessagesSquare, Square, Terminal } from "lucide-react";
+import {
+  Bug,
+  FolderGit2,
+  FolderOpen,
+  Loader2,
+  MessagesSquare,
+  Square,
+  Terminal,
+} from "lucide-react";
 
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  canOpenAgentWorktree,
   type AgentRuntimePhase,
   type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
+import { useAgentTaskChanges } from "../lib/agentStore";
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { t } from "../lib/i18n";
@@ -47,6 +57,10 @@ type Props = {
   /** 任务选定的访问权限。 */
   permissionLabel?: string | null;
   permissionId?: string | null;
+  /** Change panel state, controlled by the page from the +A −D badge. */
+  changesOpen?: boolean;
+  onToggleChanges?: () => void;
+  onOpenWorktree?: () => void;
   onViewChange?: (view: AgentChatView) => void;
   onCancel: () => void;
   onOpenExportDir: () => void;
@@ -67,11 +81,19 @@ export function AgentTaskHeader(props: Props) {
     model,
     permissionLabel,
     permissionId,
+    changesOpen,
+    onToggleChanges,
+    onOpenWorktree,
     onViewChange,
     onCancel,
     onOpenExportDir,
     onOpenBug,
   } = props;
+
+  // Live push first: it is the freshest summary while the task runs; the task
+  // snapshot's own `changes` covers everything else.
+  const pushedChanges = useAgentTaskChanges(task.id);
+  const changes = pushedChanges ?? task.changes ?? null;
 
   return (
     <div className="shrink-0 border-b border-slate-100 px-3.5 py-2.5">
@@ -108,6 +130,28 @@ export function AgentTaskHeader(props: Props) {
               {task.workspaceName || task.workspaceId} · #
               {task.bugId.slice(-7)}
             </span>
+            {/* The expanded panel shows the same totals, so the header keeps
+                them only while it is the collapse affordance. */}
+            {changes && onToggleChanges && !changesOpen ? (
+              <button
+                type="button"
+                onClick={onToggleChanges}
+                aria-expanded={false}
+                title={t("agent.changes.toggle")}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md transition hover:bg-slate-100"
+              >
+                {changes.additions > 0 || changes.deletions > 0 ? (
+                  <ChangeStats
+                    additions={changes.additions}
+                    deletions={changes.deletions}
+                  />
+                ) : (
+                  <span className="rounded-md bg-slate-100 px-1.5 py-0.5 tabular-nums text-slate-500">
+                    {t("agent.changes.files", { count: changes.files.length })}
+                  </span>
+                )}
+              </button>
+            ) : null}
             {task.worktreeBranch ? (
               <span
                 className="min-w-0 max-w-full truncate font-mono text-sky-700"
@@ -190,6 +234,16 @@ export function AgentTaskHeader(props: Props) {
               ]}
             />
           ) : null}
+          {onOpenWorktree && canOpenAgentWorktree(task) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<FolderGit2 size={11} />}
+              onClick={onOpenWorktree}
+            >
+              {t("agent.changes.openWorktree")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="secondary"
@@ -225,5 +279,29 @@ export function AgentTaskHeader(props: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** `+A −D` pair; a side with no lines is omitted instead of printing `0`. */
+function ChangeStats({
+  additions,
+  deletions,
+}: {
+  additions: number;
+  deletions: number;
+}) {
+  return (
+    <>
+      {additions > 0 ? (
+        <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-ui-xs tabular-nums text-emerald-700">
+          +{additions}
+        </span>
+      ) : null}
+      {deletions > 0 ? (
+        <span className="rounded-md bg-rose-50 px-1.5 py-0.5 text-ui-xs tabular-nums text-rose-700">
+          −{deletions}
+        </span>
+      ) : null}
+    </>
   );
 }

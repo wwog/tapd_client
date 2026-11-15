@@ -189,6 +189,63 @@ fn task_merge_and_approval_default_missing_fields() {
 }
 
 #[test]
+fn legacy_task_json_without_change_totals_and_merge_commit_loads() {
+    let json = r#"{
+        "id": "old-3",
+        "workspaceId": "ws",
+        "workspaceName": "项目",
+        "bugId": "1",
+        "title": "t",
+        "severity": "normal",
+        "priority": "high",
+        "repoPath": "/repo",
+        "worktreePath": "/wt/old-3",
+        "worktreeBranch": "tapd/old-3",
+        "status": "awaiting_merge",
+        "createdAt": "2026-01-01T00:00:00Z",
+        "changes": {
+            "files": ["src/a.rs"],
+            "dirty": false,
+            "committed": true
+        },
+        "merge": {
+            "error": "conflict",
+            "instructions": "merge by hand",
+            "startedAt": "2026-01-01T00:00:04Z",
+            "finishedAt": null
+        }
+    }"#;
+
+    let task: Task = serde_json::from_str(json).expect("legacy task loads");
+    let changes = task.changes.as_ref().expect("changes");
+    assert_eq!(changes.files, vec!["src/a.rs"]);
+    assert!(!changes.dirty);
+    assert!(changes.committed);
+    assert_eq!(changes.additions, 0);
+    assert_eq!(changes.deletions, 0);
+    assert!(changes.commit.is_none());
+    assert!(task.merge.as_ref().unwrap().commit.is_none());
+}
+
+#[test]
+fn change_set_git_summary_serializes_camel_case_without_absent_commit() {
+    let changes = tapd_workflow::ChangeSet::new(vec!["src/a.rs".to_string()], false, true)
+        .with_totals(12, 3)
+        .with_commit(Some("abc123".to_string()));
+    let value: serde_json::Value = serde_json::to_value(&changes).unwrap();
+    assert_eq!(value["additions"], 12);
+    assert_eq!(value["deletions"], 3);
+    assert_eq!(value["commit"], "abc123");
+
+    let without_commit =
+        tapd_workflow::ChangeSet::new(vec!["src/a.rs".to_string()], true, false).with_totals(4, 0);
+    let value: serde_json::Value = serde_json::to_value(&without_commit).unwrap();
+    assert_eq!(value["additions"], 4);
+    assert_eq!(value["deletions"], 0);
+    assert!(value.get("commit").is_none());
+}
+
+#[test]
 fn config_defaults_match_the_desktop_settings() {
     let config = WorkflowConfig::default();
     assert!(!config.worktree_enabled);

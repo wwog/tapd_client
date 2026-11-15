@@ -24,6 +24,7 @@ mod server;
 mod session;
 mod shell_path;
 mod state;
+mod task_changes;
 mod terminal;
 mod update;
 mod window_state;

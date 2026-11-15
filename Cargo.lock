@@ -4189,6 +4189,7 @@ dependencies = [
  "tapd-core",
  "tapd-i18n",
  "tapd-workflow",
+ "tapd-workspace",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4235,6 +4236,14 @@ version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tapd-i18n",
+]
+
+[[package]]
+name = "tapd-workspace"
+version = "1.2.0"
+dependencies = [
+ "serde",
  "tapd-i18n",
 ]
 

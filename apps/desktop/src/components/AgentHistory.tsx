@@ -30,6 +30,7 @@ import { AgentChatPane } from "./AgentChatPane";
 import { AgentIcon } from "./AgentIcon";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { ScrollingName } from "./ScrollingName";
+import { CommitHash, TaskChangesPanel } from "./TaskChangesPanel";
 import { Badge, Button, selectClass } from "./ui";
 import { Dialog } from "./Dialog";
 
@@ -161,6 +162,11 @@ export function AgentHistory({
     () => tasks.find((task) => task.id === selectedId) ?? null,
     [tasks, selectedId],
   );
+
+  // Two distinct commits: the task's own product and, for worktree tasks, the
+  // main-repository HEAD the merge landed on.
+  const changesCommit = selected?.changes?.commit || null;
+  const mergeCommit = selected?.merge?.commit || null;
 
   // A focus request from the island/enqueue flow wins over the current page.
   useEffect(() => {
@@ -451,7 +457,54 @@ export function AgentHistory({
                 {selected.worktreeBranch ? (
                   <Meta label={t("agent.history.branch")} value={selected.worktreeBranch} mono />
                 ) : null}
+                {changesCommit ? (
+                  <div className="min-w-0">
+                    <dt className="text-ui-xs text-slate-400">
+                      {t("agent.changes.commit")}
+                    </dt>
+                    <dd className="truncate">
+                      <CommitHash hash={changesCommit} className="-ml-1" />
+                    </dd>
+                  </div>
+                ) : null}
+                {mergeCommit ? (
+                  <div className="min-w-0">
+                    <dt className="text-ui-xs text-slate-400">
+                      {t("agent.changes.mergedCommit")}
+                    </dt>
+                    <dd className="truncate">
+                      <CommitHash hash={mergeCommit} className="-ml-1" />
+                    </dd>
+                  </div>
+                ) : null}
               </dl>
+
+              {selected.changes ? (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 text-ui-xs">
+                  {selected.changes.additions > 0 ? (
+                    <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 tabular-nums text-emerald-700">
+                      +{selected.changes.additions}
+                    </span>
+                  ) : null}
+                  {selected.changes.deletions > 0 ? (
+                    <span className="inline-flex items-center rounded-md bg-rose-50 px-1.5 py-0.5 tabular-nums text-rose-700">
+                      −{selected.changes.deletions}
+                    </span>
+                  ) : null}
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-400">
+                    {t("agent.changes.files", {
+                      count: selected.changes.files.length,
+                    })}
+                  </span>
+                </div>
+              ) : null}
+
+              <TaskChangesPanel
+                taskId={selected.id}
+                open={false}
+                className="mt-3"
+              />
 
               {selected.error ? (
                 <div className="select-text mt-3 break-all rounded-lg bg-rose-50 px-2.5 py-2 text-ui-sm leading-5 text-rose-700 border border-rose-100">
@@ -590,8 +643,20 @@ const HistoryRow = memo(function HistoryRow(props: {
         text={bugTitle(task.title) || t("agent.untitled")}
         className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
       />
-      <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-        {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+      <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs">
+        <span className="min-w-0 truncate font-mono text-slate-400">
+          {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+        </span>
+        {task.changes ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1 tabular-nums">
+            {task.changes.additions > 0 ? (
+              <span className="text-emerald-600">+{task.changes.additions}</span>
+            ) : null}
+            {task.changes.deletions > 0 ? (
+              <span className="text-rose-600">−{task.changes.deletions}</span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
     </button>
   );
