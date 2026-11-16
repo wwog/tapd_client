@@ -196,9 +196,10 @@ pub(super) async fn dev_companion(
         return unauthorized();
     }
     let runtime = ctx.state.companion.lock().expect("companion lock");
-    let pairing = runtime.pairing.as_ref().map(|pairing| {
-        json!({ "code": pairing.code, "expiresAt": pairing.expires_at.to_rfc3339() })
-    });
+    let pairing = runtime
+        .pairing
+        .as_ref()
+        .map(|pairing| json!({ "code": pairing.code }));
     (
         StatusCode::OK,
         Json(json!({

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Loader2, PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
 import {
@@ -10,6 +11,8 @@ import {
   type RecoveryReport,
 } from "./lib/agent";
 import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
+import { t } from "./lib/i18n";
+import { localApi, type LocalProject, type WorkItem } from "./lib/local";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -20,52 +23,60 @@ import { useMembersDirectory } from "./lib/members";
 import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
-import { AccountPage } from "./components/AccountPage";
-import { AgentPage } from "./components/AgentPage";
+import { ActivityBar, type View } from "./components/ActivityBar";
 import {
   AgentComposeSheet,
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
-import { BugListView } from "./components/BugListView";
-import { ChatPage } from "./components/ChatPage";
 import { CompanionDialog } from "./components/CompanionDialog";
-import { CoworkerPage } from "./components/CoworkerPage";
-import { DetailPaneHost } from "./components/DetailPaneHost";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { Dialog } from "./components/Dialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
+import { LocalProjectDialog } from "./components/LocalProjectDialog";
 import { LoginGate } from "./components/LoginGate";
-import { McpPage } from "./components/McpPage";
-import { NavRail, type View } from "./components/NavRail";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
-import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectSidebar } from "./components/ProjectSidebar";
 import { RecoveryBanner } from "./components/RecoveryBanner";
-import { SettingsPage } from "./components/SettingsPage";
-import { SkeletonRows } from "./components/Skeleton";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
 import { useAgentQueue } from "./hooks/useAgentQueue";
+import { useLocalProjects } from "./hooks/useLocalProjects";
 import { usePoll } from "./hooks/usePoll";
+import { useDetailPane } from "./hooks/useDetailPane";
 import {
-  useDetailPane,
-  type DetailLayoutRef,
-  type DetailPaneBridge,
-} from "./hooks/useDetailPane";
-import {
-  DETAIL_PANEL_WIDTH,
-  defaultSidebarWidth,
+  LAYOUT_GUTTER,
+  RAIL_WIDTH,
   useSidebarLayout,
 } from "./hooks/useSidebarLayout";
+import { useTerminalPanel } from "./hooks/useTerminalPanel";
 import {
   useWorkspaceData,
   type WorkspacePaneBridge,
 } from "./hooks/useWorkspaceData";
 import type { BugScope } from "./components/bugListPrefs";
+import {
+  GROUP_GAP,
+  PANEL_MIN_SIZE,
+  groupMinSize,
+} from "./workbench/layout/defaults";
+import type {
+  PageView,
+  PanelRef,
+  WorkbenchLayoutApi,
+} from "./workbench/layout/types";
+import { activePage } from "./workbench/layout/ops";
+import { useWorkbenchLayout } from "./workbench/layout/useWorkbenchLayout";
+import { Workbench } from "./workbench/Workbench";
+import { Sash } from "./workbench/components/Sash";
+import { clearDirtyPanels, hasDirtyPanels } from "./workbench/panels/dirty";
+import type { PageHostServices } from "./workbench/components/pageContext";
 
 /** Minimal bug shape needed to enqueue an Agent task. */
-type AgentTarget = {
+type BugAgentTarget = {
+  kind: "bug";
   workspaceId: string;
   id: string;
   title: string;
@@ -74,25 +85,82 @@ type AgentTarget = {
   workspaceName?: string;
 };
 
-/** Header title for every view whose title is static. */
-const VIEW_TITLES: Record<Exclude<View, "bugs">, string> = {
-  projects: "项目管理",
-  chat: "对话",
-  agent: "Agent",
-  coworker: "同事",
-  mcp: "MCP",
-  account: "账户与会话",
-  settings: "设置",
+/** A local work item handed to an Agent; never has a bug or TAPD workspace. */
+type LocalAgentTarget = {
+  kind: "local";
+  projectId: string;
+  itemId: string;
+  title: string;
 };
+
+type AgentTarget = BugAgentTarget | LocalAgentTarget;
+
+const bugTarget = (
+  bug: BugSummary & { workspaceName?: string },
+): BugAgentTarget => ({
+  kind: "bug",
+  workspaceId: bug.workspaceId,
+  id: bug.id,
+  title: bug.title,
+  severityLabel: bug.severityLabel,
+  priorityLabel: bug.priorityLabel,
+  workspaceName: bug.workspaceName,
+});
+
+/** The singleton bug detail panel, if the layout has one. */
+function findBugPanel(layout: WorkbenchLayoutApi): PanelRef | null {
+  for (const group of layout.groups) {
+    const panel = group.panels.find((item) => item.kind === "bug");
+    if (panel) return panel;
+  }
+  return null;
+}
+
+/** Width the layout area needs beside the side bar, including canonical docks. */
+function layoutContentMinWidth(layout: WorkbenchLayoutApi): number {
+  const primary = layout.groups.find((group) => group.role === "primary");
+  const secondary = layout.groups.find((group) => group.role === "secondary");
+  const primaryMin = primary
+    ? groupMinSize(primary).width
+    : PANEL_MIN_SIZE.page.width;
+  const secondaryMin =
+    secondary && secondary.panels.length
+      ? groupMinSize(secondary).width + GROUP_GAP
+      : 0;
+  return Math.max(primaryMin + secondaryMin + GROUP_GAP, 460);
+}
 
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
-  const [view, setView] = useState<View>("bugs");
+  const layoutApi = useWorkbenchLayout();
+  /** Latest layout API for stable callbacks defined before the domain hooks. */
+  const layoutRef = useRef(layoutApi);
+  layoutRef.current = layoutApi;
+  /** Latest TAPD selection, readable from stable callbacks. */
+  const workspaceIdRef = useRef("");
+  const active = activePage(layoutApi.layout);
+  const view = active.view;
+  const activeProjectId = active.projectId ?? null;
+  const setView = useCallback(
+    (next: View) => {
+      // Switching pages must reveal the primary dock even if another group was
+      // maximized (notification jumps, activity-bar clicks).
+      if (layoutApi.layout.maximizedGroupId) layoutApi.maximizeGroup(null);
+      // 缺陷 is a project page now: the rail entry opens the current project's
+      // tab instead of a generic one.
+      if (next === "bugs" && workspaceIdRef.current) {
+        layoutApi.openPage("bugs", workspaceIdRef.current);
+        return;
+      }
+      layoutApi.openPage(next);
+    },
+    [layoutApi.maximizeGroup, layoutApi.openPage, layoutApi.layout.maximizedGroupId],
+  );
   const [railAnim, setRailAnim] = useState<{ id: string; token: number } | null>(null);
   const railAnimTimer = useRef<number | null>(null);
   /** Set when the user asks for an Agent fix without a configured folder. */
   const [pendingAgent, setPendingAgent] = useState<{
-    target: AgentTarget;
+    target: BugAgentTarget;
     payload: AgentComposePayload | null;
   } | null>(null);
   /** Bug whose compose sheet (prompt + resources) is open. */
@@ -104,9 +172,26 @@ export default function App() {
   const [agentReviewFocus, setAgentReviewFocus] = useState(0);
   /** Mobile companion QR dialog; the rail entry exists only while enabled. */
   const [companionOpen, setCompanionOpen] = useState(false);
+  /** Unsaved edits block logout / window close until the user decides. */
+  const [unsavedExit, setUnsavedExit] = useState<"logout" | "quit" | null>(null);
   const companionEnabled = useCompanionEnabled();
   /** Any paired phone heartbeat within the last minute. */
   const companionOnline = useCompanionOnline();
+
+  /** Local projects; the selection is mutually exclusive with a TAPD workspace. */
+  const local = useLocalProjects();
+  const localProject =
+    local.projects.find((project) => project.id === local.selectedId) ?? null;
+  /** Create (`project: null`) / edit dialog, opened from the side bar or projects page. */
+  const [localProjectDialog, setLocalProjectDialog] = useState<{
+    project: LocalProject | null;
+  } | null>(null);
+  const [localProjectDelete, setLocalProjectDelete] = useState<LocalProject | null>(
+    null,
+  );
+  const [localProjectDeleting, setLocalProjectDeleting] = useState(false);
+  /** Bumped after an enqueue so the items page refetches its Agent task links. */
+  const [localItemsToken, setLocalItemsToken] = useState(0);
 
   /** Tasks the backend restored when this system entry began. */
   const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
@@ -120,7 +205,25 @@ export default function App() {
     void refreshCompanionStatus();
   }, []);
 
-  // Green rail icon while a phone is online. Pairing/presence events flip it
+  // Closing the window with unsaved edits asks first. `destroy` in the dialog
+  // bypasses this handler, so confirming cannot loop.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested((event) => {
+        if (!hasDirtyPanels()) return;
+        event.preventDefault();
+        setUnsavedExit("quit");
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Green rail icon while a phone is online. Pairing/presence events flip i
   // immediately; the poll clears it after the 60s heartbeat window expires.
   usePoll(
     () => void refreshCompanionStatus(),
@@ -140,6 +243,14 @@ export default function App() {
     closeDetail: () => undefined,
   });
 
+  /** Opens a TAPD project's page tab (notifications jump across projects). */
+  const openWorkspacePage = useCallback((targetWorkspaceId: string) => {
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.openPage("bugs", targetWorkspaceId);
+  }, []);
+
   const {
     info,
     context,
@@ -156,14 +267,41 @@ export default function App() {
     setProjectMenu,
     visibleWorkspaces,
     projectsKnown,
-    projectListHidden,
+    projectListHidden: workspaceListHidden,
     workspace,
     setWorkspaceVisible,
     hideWorkspace,
     handleLogout,
-  } = useWorkspaceData({ view, setView, showToast, pane: paneBridgeRef });
+  } = useWorkspaceData({
+    view,
+    setView,
+    showToast,
+    pane: paneBridgeRef,
+    openWorkspacePage,
+  });
 
-  useMembersDirectory(info?.loggedIn ?? false, workspaceId);
+  // Stable callbacks above (rail clicks, ⌘J) read the selection from here.
+  workspaceIdRef.current = workspaceId;
+
+  /**
+   * The column hides only for a single TAPD project with no local projects:
+   * local rows are part of the same list, so they must keep it visible. Both
+   * sides are bootstrapped before the first render (`shellBootstrap`), so this
+   * answer is already correct on the first frame.
+   */
+  const projectListHidden = workspaceListHidden && local.projects.length === 0;
+
+  /** TAPD project the visible page belongs to (project tabs carry their own). */
+  const pageWorkspaceId =
+    view === "bugs" ? (activeProjectId ?? workspaceId) : workspaceId;
+
+  // Members belong to the page's TAPD workspace. A local selection is only
+  // relevant while the local page is active, so it must not suppress members
+  // when the user switches back to the bug list.
+  useMembersDirectory(
+    info?.loggedIn ?? false,
+    view === "local" ? "" : pageWorkspaceId,
+  );
 
   // The workflow may only be initialized after login + onboarding; the backend
   // rejects an earlier call. One request per system entry, and a failure clears
@@ -201,26 +339,35 @@ export default function App() {
   }, []);
 
   // 处理中 exists only while an agent works on this project; when the last one
-  // finishes (or the user switches project) fall back to 我负责的 so the list
+  // finishes (or the user switches project) fall back to 我负责的 so the lis
   // can never sit on a scope whose segment is gone.
-  const processingCount = agentActiveBugIds(workspaceId, agentInFlight).length;
+  const processingCount = agentActiveBugIds(pageWorkspaceId, agentInFlight).length;
   useEffect(() => {
     if (scope === "processing" && processingCount === 0) setScope("mine");
   }, [scope, processingCount]);
 
-  /** Layout values readable from the stable detail callback. */
-  const detailLayoutRef = useRef<DetailLayoutRef>({
-    viewportWidth: 1280,
-    sidebarWidth: defaultSidebarWidth(1280),
-    detailWidth: DETAIL_PANEL_WIDTH,
-    projectListHidden: false,
-  });
-  /** Sidebar controls the detail pane needs when it opens / resizes. */
-  const detailBridgeRef = useRef<DetailPaneBridge>({
-    setSidebarCollapsed: () => undefined,
-    setSidebarPeek: () => undefined,
-    getSidebarWidth: () => 0,
-  });
+  /** Opens/focuses the singleton bug panel in the secondary dock. */
+  const openBugPanel = (
+    targetWorkspaceId: string,
+    bugId: string,
+    label?: string,
+  ) => {
+    // A maximized group may be covering the secondary dock.
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "bug", workspaceId: targetWorkspaceId, bugId },
+      target: "secondary",
+      label,
+    });
+  };
+
+  /** Removes the bug panel; called by the drawer close and tab close paths. */
+  const closeBugPanel = () => {
+    const panel = findBugPanel(layoutRef.current);
+    if (panel) layoutRef.current.closePanel(panel.id);
+  };
 
   const detailPane = useDetailPane({
     workspaceId,
@@ -228,33 +375,271 @@ export default function App() {
     me: context?.user.nick ?? info?.me ?? null,
     bumpList,
     showToast,
-    layoutRef: detailLayoutRef,
-    bridge: detailBridgeRef,
+    openPanel: openBugPanel,
+    closePanel: closeBugPanel,
   });
+
+  const { loadDetail: loadBugDetail, reset: resetBugDetail } = detailPane;
+
+  // App owns the trigger: whenever the active bug panel resource changes, the
+  // detail fetch follows. A target that already matches was opened through
+  // `openDetail`, which loaded it directly; closing the tab resets the hook.
+  const bugPanel = findBugPanel(layoutApi);
+  const detailTarget = detailPane.target;
+  /** Dedupes the loader across StrictMode's double effect invocation. */
+  const requestedBugRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!bugPanel || bugPanel.resource.type !== "bug") {
+      requestedBugRef.current = null;
+      resetBugDetail();
+      return;
+    }
+    const { workspaceId: targetWorkspaceId, bugId } = bugPanel.resource;
+    const key = `${targetWorkspaceId}:${bugId}`;
+    if (
+      detailTarget &&
+      detailTarget.workspaceId === targetWorkspaceId &&
+      detailTarget.bugId === bugId
+    ) {
+      requestedBugRef.current = key;
+      return;
+    }
+    if (requestedBugRef.current === key) return;
+    requestedBugRef.current = key;
+    loadBugDetail(targetWorkspaceId, bugId);
+  }, [bugPanel?.id, detailTarget, loadBugDetail, resetBugDetail]);
+
+  /** Width the layout area needs beside the rail and the project column. */
+  const contentMinWidth = layoutContentMinWidth(layoutApi);
+  /**
+   * Window width the current docks need. The extra `GROUP_GAP * 2` is slack:
+   * `ensure_window_width` resizes to whole logical pixels and `innerWidth`
+   * floors the result, so an exact fit would read as "too narrow" and collapse
+   * the column right after growing.
+   */
+  const requiredWindowWidth =
+    RAIL_WIDTH +
+    layoutApi.sidebarWidth +
+    contentMinWidth +
+    LAYOUT_GUTTER +
+    GROUP_GAP * 2;
+
+  /** Secondary dock contents; a change fills or empties the dock. */
+  const secondaryKindKey =
+    layoutApi.groups
+      .find((group) => group.role === "secondary")
+      ?.panels.map((panel) => panel.kind)
+      .join("|") ?? "";
+  /** Dock content key whose window growth was already requested this entry. */
+  const growthRequestedKey = useRef(secondaryKindKey);
+  /** Viewport width a programmatic growth is heading for. */
+  const [growingViewportWidth, setGrowingViewportWidth] = useState<number | null>(
+    null,
+  );
+
+  /**
+   * The render that fills the dock also grows `contentMinWidth`, but the resize
+   * is requested by an effect (after paint). Treat the window as already wide
+   * enough for that commit so the column keeps its width instead of collapsing
+   * and popping back once the resize lands.
+   */
+  const pendingViewportWidth =
+    growingViewportWidth ??
+    (growthRequestedKey.current === secondaryKindKey
+      ? null
+      : requiredWindowWidth);
 
   const sidebar = useSidebarLayout({
     projectListHidden,
-    detailRendered: detailPane.rendered,
-    detailWidth: detailPane.width,
+    sidebarWidth: layoutApi.sidebarWidth,
+    setSidebarWidth: layoutApi.setSidebarWidth,
+    contentMinWidth,
+    pendingViewportWidth,
   });
 
-  // The two panes depend on each other's latest values at event time only;
-  // wiring the bridges after both hooks keeps render values in the same frame.
+  /**
+   * Window growth: a newly filled secondary dock needs room for the primary
+   * minimum, the secondary minimum and the rail/column. Watching the dock's
+   * panel kinds catches every path (bug panel, `services.open`, drag into the
+   * dock); a restored layout is skipped so startup never resizes the window.
+   */
+  const requiredWindowWidthRef = useRef(requiredWindowWidth);
+  requiredWindowWidthRef.current = requiredWindowWidth;
+  useEffect(() => {
+    if (growthRequestedKey.current === secondaryKindKey) return;
+    growthRequestedKey.current = secondaryKindKey;
+    if (!secondaryKindKey) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    const target = requiredWindowWidthRef.current;
+    if (target <= window.innerWidth + 1) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    setGrowingViewportWidth(target);
+    void api
+      .ensureWindowWidth(target)
+      // A monitor clamp returns the capped width: the column then collapses
+      // (correctly) after the resize lands, instead of flickering before it.
+      .then((achieved) => setGrowingViewportWidth(achieved))
+      .catch(() => setGrowingViewportWidth(null));
+  }, [secondaryKindKey]);
+
+  // Release the reservation once the window reports the new width, or after a
+  // moment when no resize arrives (the OS refused the growth).
+  useEffect(() => {
+    if (pendingViewportWidth === null) return;
+    if (sidebar.viewportWidth + 2 >= pendingViewportWidth) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setGrowingViewportWidth(null), 1_200);
+    return () => window.clearTimeout(timer);
+  }, [pendingViewportWidth, sidebar.viewportWidth]);
+
+  const terminal = useTerminalPanel({ workspaceId, showToast });
+
+  // Layout mirrors the backend-owned PTY list; hiding the dock removes its
+  // panels (the PTYs stay alive) and showing it restores every session.
+  const syncTerminalPanels = layoutApi.syncTerminalPanels;
+  useEffect(() => {
+    syncTerminalPanels(
+      terminal.hidden
+        ? []
+        : terminal.sessions.map((session) => ({
+            id: session.id,
+            label: session.title || session.cwd,
+          })),
+    );
+    // The sync callback is read from the current render; only the session
+    // list and visibility decide when the layout changes.
+  }, [syncTerminalPanels, terminal.hidden, terminal.sessions]);
+
+  /** Show => focus the bottom dock (spawning a first shell when empty). */
+  const wantTerminalFocus = useRef(false);
+  useEffect(() => {
+    if (terminal.hidden || !wantTerminalFocus.current) return;
+    if (terminal.sessions.length === 0) return;
+    wantTerminalFocus.current = false;
+    const target = terminal.activeId ?? terminal.sessions[0]!.id;
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "terminal", sessionId: target },
+      target: "bottom",
+    });
+  }, [terminal.hidden, terminal.sessions, terminal.activeId]);
+
+  const hasTerminalPanels = layoutApi.groups.some((group) =>
+    group.panels.some((panel) => panel.kind === "terminal"),
+  );
+  const terminalOpen = !terminal.hidden && hasTerminalPanels;
+
+  /**
+   * ⌘J / rail toggle. Hiding keeps every PTY alive; showing restores the tabs,
+   * spawns the first shell when there is none, and focuses the bottom dock.
+   */
+  const toggleTerminal = useCallback(() => {
+    if (!terminal.hidden && hasTerminalPanels) {
+      terminal.hide();
+      return;
+    }
+    terminal.show();
+    wantTerminalFocus.current = true;
+    if (terminal.sessions.length === 0) terminal.create();
+  }, [
+    hasTerminalPanels,
+    terminal.create,
+    terminal.hide,
+    terminal.hidden,
+    terminal.sessions.length,
+    terminal.show,
+  ]);
+
+  // ⌘J is the shell dock's only global shortcut. Captured so a focused editor
+  // cannot swallow it; Ctrl+J is a newline inside a shell, so only the platform
+  // modifier is accepted.
+  useEffect(() => {
+    const primaryModifier = navigator.userAgent.includes("Mac");
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = primaryModifier ? event.metaKey : event.ctrlKey;
+      if (!modifier || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "j") return;
+      event.preventDefault();
+      toggleTerminal();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [toggleTerminal]);
+
+  // Detail actions read by workspace events (notifications, logout) without a
+  // hook-order cycle.
   paneBridgeRef.current = {
     loadBugDetail: detailPane.openDetail,
     closeDetail: detailPane.closeDetail,
   };
-  detailBridgeRef.current = {
-    setSidebarCollapsed: sidebar.setCollapsed,
-    setSidebarPeek: sidebar.setPeek,
-    getSidebarWidth: sidebar.getEffectiveWidth,
-  };
-  detailLayoutRef.current = {
-    viewportWidth: sidebar.viewportWidth,
-    sidebarWidth: sidebar.expandedWidth,
-    detailWidth: detailPane.width,
-    projectListHidden,
-  };
+
+  // Project tabs are named after their project; a rename must follow through.
+  useEffect(() => {
+    for (const group of layoutApi.groups) {
+      for (const panel of group.panels) {
+        if (panel.resource.type !== "page" || !panel.resource.projectId) continue;
+        const { view: pageView, projectId } = panel.resource;
+        const label =
+          pageView === "bugs"
+            ? context?.workspaces.find((item) => item.id === projectId)?.name
+            : local.projects.find((item) => item.id === projectId)?.name;
+        if (label && panel.label !== label) {
+          layoutRef.current.setPanelLabel(panel.id, label);
+        }
+      }
+    }
+  }, [layoutApi.groups, context, local.projects]);
+
+  // A layout restored from disk can hold a generic page written before the
+  // project was known; adopt it once the selection arrives. Never while
+  // logged out: a restored tree must not adopt the ended session's workspace.
+  useEffect(() => {
+    if (!workspaceId || !info?.loggedIn) return;
+    layoutRef.current.retargetPage("bugs", workspaceId);
+  }, [workspaceId, info?.loggedIn, layoutApi.layout]);
+
+  useEffect(() => {
+    if (local.loading || !local.selectedId) return;
+    layoutRef.current.retargetPage("local", local.selectedId);
+  }, [local.loading, local.selectedId, layoutApi.layout]);
+
+  // A deleted local project takes its tab with it.
+  useEffect(() => {
+    if (local.loading || local.error) return;
+    const known = new Set(local.projects.map((project) => project.id));
+    for (const group of layoutApi.groups) {
+      for (const panel of group.panels) {
+        if (
+          panel.resource.type === "page" &&
+          panel.resource.view === "local" &&
+          panel.resource.projectId &&
+          !known.has(panel.resource.projectId)
+        ) {
+          layoutRef.current.closePanel(panel.id);
+        }
+      }
+    }
+  }, [local.loading, local.error, local.projects, layoutApi.groups]);
+
+  // Activating a tab is a project switch: keep the side bar highlight and the
+  // pages' shared selection in step with the visible tab.
+  useEffect(() => {
+    if (!activeProjectId) return;
+    if (view === "bugs" && activeProjectId !== workspaceIdRef.current) {
+      setWorkspaceId(activeProjectId);
+      void api.setLastWorkspace(activeProjectId);
+    } else if (view === "local" && activeProjectId !== local.selectedId) {
+      local.select(activeProjectId);
+    }
+  }, [view, activeProjectId, setWorkspaceId, local.select, local.selectedId]);
 
   /** Switch views and replay the destination's rail icon animation. */
   const activateView = useCallback((id: View) => {
@@ -264,7 +649,7 @@ export default function App() {
       window.clearTimeout(railAnimTimer.current);
     }
     railAnimTimer.current = window.setTimeout(() => setRailAnim(null), 720);
-  }, []);
+  }, [setView]);
 
   useEffect(
     () => () => {
@@ -285,7 +670,7 @@ export default function App() {
   const openAgentTask = useCallback((taskId: string) => {
     setAgentFocusTaskId(taskId);
     setView("agent");
-  }, []);
+  }, [setView]);
 
   /** The focus request is one-shot: the Agent page clears it after applying. */
   const clearAgentFocus = useCallback(() => {
@@ -306,21 +691,32 @@ export default function App() {
     [showToast],
   );
 
+  /** Project rows are the entry point: each one opens its own page tab. */
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
-    setView("bugs");
+    workspaceIdRef.current = id;
+    openWorkspacePage(id);
+    // Detail belongs to the previous project: drop both the panel and its data.
     detailPane.closeDetail();
     void api.setLastWorkspace(id);
   };
 
+  const selectLocalProject = (id: string) => {
+    local.select(id);
+    const name = local.projects.find((project) => project.id === id)?.name;
+    layoutRef.current.openPage("local", id, name);
+    // The bug detail belongs to TAPD; the local page has no such panel.
+    detailPane.closeDetail();
+  };
+
   const openBug = useCallback(
     (bug: BugSummary) => {
-      detailPane.openDetail(bug.workspaceId, bug.id);
+      detailPane.openDetail(bug.workspaceId, bug.id, bug.title);
     },
     [detailPane.openDetail],
   );
 
-  /** Opens/switches the right-side detail pane without leaving the current view. */
+  /** Opens/switches the bug detail panel without leaving the current view. */
   const openBugById = useCallback(
     (targetWorkspaceId: string, bugId: string) => {
       detailPane.openDetail(targetWorkspaceId, bugId);
@@ -330,12 +726,34 @@ export default function App() {
 
   const doEnqueueAgent = useCallback(
     async (target: AgentTarget, payload: AgentComposePayload | null) => {
-      const workspaceName =
-        target.workspaceName ||
-        context?.workspaces.find((item) => item.id === target.workspaceId)?.name ||
-        null;
-
       try {
+        // Local work items read the folder from the project itself, so the
+        // missing-folder prompt below does not apply to them.
+        if (target.kind === "local") {
+          // The item description already travels in quest.json; the compose
+          // prompt is only the user's additional instructions for this run.
+          const prompt = payload?.prompt.trim() ?? "";
+          const { task } = await localApi.enqueueItem(target.itemId, {
+            extraPrompt: prompt.length > 0 ? prompt : null,
+            attachments: payload?.attachments.length
+              ? payload.attachments
+              : undefined,
+            runtimeId: payload?.runtimeId ?? null,
+            model: payload?.model ?? null,
+            permissionMode: payload?.permissionMode ?? null,
+          });
+          setAgentFocusTaskId(task.id);
+          // The item now carries the new task id; refetch the item list.
+          setLocalItemsToken((token) => token + 1);
+          setView("agent");
+          return true;
+        }
+
+        const workspaceName =
+          target.workspaceName ||
+          context?.workspaces.find((item) => item.id === target.workspaceId)?.name ||
+          null;
+
         const { task } = await agentApi.enqueueBug({
           workspaceId: target.workspaceId,
           bugId: target.id,
@@ -350,7 +768,7 @@ export default function App() {
           model: payload?.model ?? null,
           permissionMode: payload?.permissionMode ?? null,
         });
-        // The view switches to the Agent tab and focuses this task; a toast
+        // The view switches to the Agent tab and focuses this task; a toas
         // on top of that is just noise.
         setAgentFocusTaskId(task.id);
         setView("agent");
@@ -360,7 +778,7 @@ export default function App() {
         return false;
       }
     },
-    [context, showToast],
+    [context, setView, showToast],
   );
 
   /**
@@ -373,6 +791,10 @@ export default function App() {
       target: AgentTarget,
       payload: AgentComposePayload | null = null,
     ): Promise<"queued" | "needs_folder" | "error"> => {
+      if (target.kind === "local") {
+        return (await doEnqueueAgent(target, payload)) ? "queued" : "error";
+      }
+
       // The bug is already queued/running: focus that task instead of creating
       // a duplicate. The list and drawer also disable the action, this covers
       // stale snapshots and notification-triggered flows.
@@ -400,7 +822,7 @@ export default function App() {
 
   const applyAgentFolder = useCallback(
     async (
-      pending: { target: AgentTarget; payload: AgentComposePayload | null },
+      pending: { target: BugAgentTarget; payload: AgentComposePayload | null },
       path: string,
     ) => {
       setPendingAgent(null);
@@ -429,13 +851,18 @@ export default function App() {
   );
 
   const handleAgentFix = useCallback(
-    (target: Parameters<typeof enqueueAgent>[0]) => void enqueueAgent(target),
+    (bug: BugSummary & { workspaceName?: string }) =>
+      void enqueueAgent(bugTarget(bug)),
     [enqueueAgent],
   );
 
   /** Open the compose sheet, or jump to the existing task for this bug. */
   const openAgentCompose = useCallback(
     (target: AgentTarget) => {
+      if (target.kind === "local") {
+        setComposeAgent(target);
+        return;
+      }
       const existing = agentInFlight.get(agentBugKey(target.workspaceId, target.id));
       if (existing) {
         openAgentTask(existing.task.id);
@@ -445,6 +872,35 @@ export default function App() {
     },
     [agentInFlight, openAgentTask],
   );
+
+  /** Compose entry for a bug row / detail drawer (wraps it in a bug target). */
+  const composeBugAgent = useCallback(
+    (bug: BugSummary & { workspaceName?: string }) => openAgentCompose(bugTarget(bug)),
+    [openAgentCompose],
+  );
+
+  /** Compose entry for one local work item; the description stays in quest.json. */
+  const composeLocalItem = useCallback((project: LocalProject, item: WorkItem) => {
+    setComposeAgent({
+      kind: "local",
+      projectId: project.id,
+      itemId: item.id,
+      title: item.title,
+    });
+  }, []);
+
+  const deleteLocalProject = async () => {
+    if (!localProjectDelete || localProjectDeleting) return;
+    setLocalProjectDeleting(true);
+    try {
+      await local.remove(localProjectDelete.id);
+      setLocalProjectDelete(null);
+    } catch (error) {
+      showToast("error", String(error));
+    } finally {
+      setLocalProjectDeleting(false);
+    }
+  };
 
   const submitAgentCompose = useCallback(
     async (payload: AgentComposePayload) => {
@@ -469,6 +925,18 @@ export default function App() {
     [showToast],
   );
 
+  const openFile = useCallback(
+    async (path: string, kind?: string, target?: string) => {
+      try {
+        // The app comes to the front on success; only failures need a toast.
+        await api.openFile(path, kind, target);
+      } catch (error) {
+        showToast("error", String(error));
+      }
+    },
+    [showToast],
+  );
+
   const openMedia = useCallback(
     async (url: string, mode: OpenMediaMode, kind?: string, target?: string) => {
       try {
@@ -486,9 +954,8 @@ export default function App() {
     async (text: string) => {
       try {
         await navigator.clipboard.writeText(text);
-        showToast("ok", "已复制");
       } catch (error) {
-        showToast("error", `复制失败：${String(error)}`);
+        showToast("error", t("app.copy.failed", { error: String(error) }));
       }
     },
     [showToast],
@@ -499,7 +966,7 @@ export default function App() {
       <>
         <div className="flex h-full items-center justify-center gap-2 bg-slate-50 text-ui-caption text-slate-400">
           <Loader2 size={16} className="animate-spin" />
-          正在启动客户端…
+          {t("app.startup.loading")}
         </div>
         <ForceUpdateModal />
       </>
@@ -520,156 +987,213 @@ export default function App() {
     );
   }
 
-  const title =
-    view === "bugs" ? (workspace?.name ?? "缺陷") : VIEW_TITLES[view];
-  const subtitle =
-    view === "bugs" && !workspace
-      ? projectsKnown
-        ? "选择左侧项目开始"
-        : "正在读取项目…"
-      : "";
+  const primaryGroup =
+    layoutApi.groups.find((group) => group.role === "primary") ??
+    layoutApi.groups[0];
+  const primaryActivePanel = primaryGroup?.panels.find(
+    (panel) => panel.id === primaryGroup.activePanelId,
+  );
+  const primaryResource =
+    primaryActivePanel?.resource.type === "page"
+      ? primaryActivePanel.resource
+      : null;
+  const primaryView: PageView | null = primaryResource?.view ?? null;
+  /** Project of the primary tab (its own id, else the active selection). */
+  const primaryProjectId = primaryResource?.projectId ?? workspace?.id ?? null;
 
-  const renderView = () => {
-    switch (view) {
-      case "bugs":
-        return contextError ? (
-          <div className="p-5">
-            <div className="rounded-xl bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700 border border-rose-100">
-              <div className="font-normal">项目列表加载失败</div>
-              <div className="mt-1 break-all">{contextError}</div>
-              <Button
-                size="sm"
-                className="mt-3"
-                onClick={() => void loadContext()}
-                icon={<RefreshCw size={13} />}
-              >
-                重新加载
-              </Button>
-            </div>
-          </div>
-        ) : workspace ? (
-          <BugListView
-            key={workspace.id}
-            workspace={workspace}
-            me={context?.user.nick ?? info.me}
-            scope={scope}
-            onScopeChange={setScope}
-            onOpenBug={openBug}
-            activeBugId={
-              // `rendered` (not `open`) keeps the highlight through the close
-              // animation, so it fades out with the pane instead of snapping.
-              detailPane.rendered && detailPane.target?.workspaceId === workspace.id
-                ? detailPane.target.bugId
-                : null
-            }
-            onOpenWeb={openPath}
-            onCopy={copy}
-            onAgentFix={enqueueAgent}
-            onAgentCompose={openAgentCompose}
-            agentInFlight={agentInFlight}
-            onOpenAgentTask={openAgentTask}
-            onCancelTask={cancelAgentTask}
-            onClaim={detailPane.claimFromList}
-            refreshToken={refreshToken}
-          />
-        ) : (
-          <div className="min-h-0 flex-1 p-4">
-            <SkeletonRows
-              rows={10}
-              columns={["w-2/5", "w-16", "w-12", "w-16", "w-20", "w-16", "w-24"]}
-              label="正在加载项目…"
-            />
-          </div>
-        );
-      case "projects":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <div className="mx-auto max-w-4xl">
-              <ProjectSettings
-                context={context}
-                hiddenWorkspaceIds={hiddenWorkspaceIds}
-                onSetWorkspaceVisible={setWorkspaceVisible}
-                toast={showToast}
-              />
-            </div>
-          </div>
-        );
-      case "chat":
-        return (
-          <ChatPage
-            defaultWorkspaceId={workspaceId}
-            workspaces={context?.workspaces ?? []}
-            toast={showToast}
-            onOpenProjects={() => setView("projects")}
-          />
-        );
-      case "agent":
-        return (
-          <AgentPage
-            focusTaskId={agentFocusTaskId}
-            focusReviewToken={agentReviewFocus}
-            onOpenBug={openBugById}
-            toast={showToast}
-            onFocusConsumed={clearAgentFocus}
-          />
-        );
-      case "coworker":
-        return <CoworkerPage toast={showToast} />;
-      case "mcp":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <McpPage
-              workspaces={context?.workspaces ?? []}
-              onCopy={copy}
-              toast={showToast}
-            />
-          </div>
-        );
-      case "account":
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <AccountPage
-              info={info}
-              context={context}
-              onShowLogin={() => {
-                void api
-                  .sessionShow()
-                  .catch((error) => showToast("error", String(error)));
-              }}
-              onLogout={handleLogout}
-              onRefresh={() => {
-                void refreshBase();
-                void loadContext();
-              }}
-              toast={showToast}
-            />
-          </div>
-        );
-      default:
-        return (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <SettingsPage
-              info={info}
-              onOpenPath={openPath}
-              onCopy={(text) => void copy(text)}
-              onShowOnboarding={() => {
-                void api
-                  .resetOnboarding()
-                  .then(() => refreshBase())
-                  .catch((error) => showToast("error", String(error)));
-              }}
-              toast={showToast}
-            />
-          </div>
-        );
+  /** Leading strip action: the side bar toggle sits above the tabs. */
+  const primaryLeading = !projectListHidden ? (
+    <button
+      type="button"
+      aria-label={
+        sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
+      }
+      title={
+        sidebar.autoCollapse
+          ? sidebar.peek
+            ? t("app.sidebar.collapse")
+            : t("app.sidebar.expandNarrow")
+          : sidebar.hidden
+            ? t("app.sidebar.expand")
+            : t("app.sidebar.collapse")
+      }
+      onClick={sidebar.toggle}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+    >
+      {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+    </button>
+  ) : null;
+
+  const primaryActions =
+    primaryView === "bugs" && primaryProjectId ? (
+      <ProjectOpenButton
+        key={primaryProjectId}
+        workspaceId={primaryProjectId}
+        onError={(text) => showToast("error", text)}
+      />
+    ) : null;
+
+  /** Sign out after the unsaved-edit confirmation (if any). */
+  const performLogout = () => {
+    // Clear the selection *before* closing panels: closing a project page
+    // re-renders App, and a still-set workspaceId would immediately retarget
+    // the fresh `page:bugs` back to the ended session's project (and persist
+    // that tab for the next account).
+    workspaceIdRef.current = "";
+    setWorkspaceId("");
+    const panels = layoutRef.current.groups.flatMap((group) => group.panels);
+    for (const panel of panels) {
+      // Project pages belong to the ended session; the global navigation tab
+      // stays and turns back into the pre-login bugs page.
+      const projectPage =
+        panel.resource.type === "page" && Boolean(panel.resource.projectId);
+      if (panel.kind !== "page" || projectPage) {
+        layoutRef.current.closePanel(panel.id);
+      }
     }
+    layoutRef.current.openPage("bugs");
+    handleLogout();
+    setUnsavedExit(null);
+  };
+
+  /** Sign out: drop every project-scoped panel, then let the session layer run. */
+  const logout = () => {
+    if (hasDirtyPanels()) {
+      setUnsavedExit("logout");
+      return;
+    }
+    performLogout();
+  };
+
+  const page: PageHostServices = {
+    info,
+    context,
+    contextLoading,
+    contextError,
+    workspace,
+    workspaceId,
+    scope,
+    setScope,
+    activeBug: detailPane.target,
+    localProjects: local.projects,
+    localProject,
+    localItemsToken,
+    localLoading: local.loading,
+    localError: local.error,
+    projectsKnown,
+    hiddenWorkspaceIds,
+    agentInFlight,
+    agentFocusTaskId,
+    agentReviewFocus,
+    refreshToken,
+    toast: showToast,
+    onOpenBug: openBug,
+    onOpenBugById: openBugById,
+    onOpenWeb: openPath,
+    onOpenPath: openPath,
+    onCopy: copy,
+    onClaim: detailPane.claimFromList,
+    onAgentFix: handleAgentFix,
+    onAgentCompose: composeBugAgent,
+    onOpenAgentTask: openAgentTask,
+    onCancelTask: cancelAgentTask,
+    onClearAgentFocus: clearAgentFocus,
+    onSetWorkspaceVisible: setWorkspaceVisible,
+    onSelectLocalProject: selectLocalProject,
+    onCreateLocalProject: () => setLocalProjectDialog({ project: null }),
+    onEditLocalProject: (project) => setLocalProjectDialog({ project }),
+    onDeleteLocalProject: (project) => setLocalProjectDelete(project),
+    onComposeLocalItem: composeLocalItem,
+    onOpenMedia: openMedia,
+    onOpenProjects: () => layoutRef.current.openPage("projects"),
+    loadContext,
+    refreshBase,
+    onShowLogin: () => {
+      void api.sessionShow().catch((error) => showToast("error", String(error)));
+    },
+    onLogout: logout,
+    onRefresh: () => {
+      void refreshBase();
+      void loadContext();
+    },
+    onShowOnboarding: () => {
+      void api
+        .resetOnboarding()
+        .then(() => refreshBase())
+        .catch((error) => showToast("error", String(error)));
+    },
+  };
+
+  const services = {
+    toast: showToast,
+    copy,
+    openFile,
+    workspaceName: (targetWorkspaceId: string) =>
+      context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+      targetWorkspaceId,
+    currentWorkspaceId: workspaceId,
+    bug: {
+      detail: detailPane.detail,
+      loading: detailPane.loading,
+      error: detailPane.error,
+      exporting: detailPane.exporting,
+      lastExport: detailPane.lastExport,
+      me: context?.user.nick ?? info.me,
+      members: detailPane.members,
+      membersLoading: detailPane.membersLoading,
+      agentInFlight,
+      onOpenWeb: openPath,
+      onCopy: copy,
+      onExport: detailPane.exportDetail,
+      onAgentFix: handleAgentFix,
+      onAgentCompose: composeBugAgent,
+      onOpenAgentTask: openAgentTask,
+      onOpenPath: openPath,
+      onOpenMedia: openMedia,
+      onRefreshMembers: detailPane.refreshMembers,
+      onClaim: detailPane.claimFromDetail,
+      onAddComment: detailPane.addComment,
+      onChangeField: detailPane.changeField,
+      onTransition: detailPane.transition,
+      onClose: detailPane.closeDetail,
+    },
+    terminal: {
+      sessions: terminal.sessions,
+      create: terminal.create,
+      close: terminal.closeSession,
+      restart: terminal.restart,
+    },
+  };
+
+  const banner = recoveryReport ? (
+    <RecoveryBanner
+      report={recoveryReport}
+      onOpenTasks={() => activateView("agent")}
+      onDismiss={dismissRecoveryReport}
+    />
+  ) : null;
+
+  /** Project menu entry: the read-only explorer opens in the secondary dock. */
+  const openExplorer = (targetWorkspaceId: string) => {
+    const name =
+      context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+      local.projects.find((item) => item.id === targetWorkspaceId)?.name ??
+      targetWorkspaceId;
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: { type: "explorer", workspaceId: targetWorkspaceId },
+      label: name,
+      target: "secondary",
+    });
   };
 
   return (
     <div
       className={clsx(
         "flex h-full flex-col overflow-hidden bg-canvas text-slate-900",
-        (sidebar.resizing || detailPane.resizing) && "select-none",
+        sidebar.resizing && "select-none",
       )}
     >
       <TitleBar
@@ -682,7 +1206,7 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1">
-        <NavRail
+        <ActivityBar
           view={view}
           railAnim={railAnim}
           sidebarHidden={sidebar.hidden}
@@ -690,6 +1214,8 @@ export default function App() {
           name={context?.user.nick || info.me}
           showCompanion={companionEnabled}
           companionOnline={companionOnline}
+          terminalOpen={terminalOpen}
+          onToggleTerminal={toggleTerminal}
           onOpenCompanion={() => setCompanionOpen(true)}
           onActivate={activateView}
         />
@@ -699,12 +1225,14 @@ export default function App() {
           contextError={contextError}
           contextLoading={contextLoading}
           visibleWorkspaces={visibleWorkspaces}
-          workspaceId={workspaceId}
+          workspaceId={pageWorkspaceId}
+          localProjects={local.projects}
+          localProjectId={view === "local" ? activeProjectId : null}
           view={view}
           account={{
             meAvatar: info.meAvatar,
-            name: context?.user.nick || info.me || "已登录",
-            company: context?.user.company || "账户与会话",
+            name: context?.user.nick || info.me || t("app.account.signedIn"),
+            company: context?.user.company || t("app.account.title"),
           }}
           autoCollapse={sidebar.autoCollapse}
           resizing={sidebar.resizing}
@@ -712,105 +1240,66 @@ export default function App() {
           projectMenu={projectMenu}
           onRetry={() => void loadContext()}
           onSelectWorkspace={selectWorkspace}
+          onSelectLocalProject={selectLocalProject}
+          onCreateLocalProject={() => setLocalProjectDialog({ project: null })}
+          onEditLocalProject={(project) => setLocalProjectDialog({ project })}
+          onDeleteLocalProject={setLocalProjectDelete}
           onOpenAccount={() => activateView("account")}
           onOpenProjectMenu={setProjectMenu}
+          onCloseProjectMenu={() => setProjectMenu(null)}
           onHideWorkspace={hideWorkspace}
           onManageProjects={() => {
-            setProjectMenu(null);
+            // The context menu closes itself after its exit animation.
             setView("projects");
           }}
-          onResizeStart={sidebar.startResize}
+          onBrowseFiles={openExplorer}
+          // The shared Sash overlays the old handle; its mousedown is inert.
+          onResizeStart={(event) => event.preventDefault()}
         />
 
-        {/* Content panel */}
-        <main className="mb-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-surface  border border-border">
-          <header className="flex h-12 shrink-0 items-center gap-1.5 px-2" data-tauri-drag-region>
-            {!projectListHidden ? (
-              <button
-                type="button"
-                aria-label={sidebar.hidden ? "展开项目列表" : "收起项目列表"}
-                title={
-                  sidebar.autoCollapse
-                    ? sidebar.peek
-                      ? "收起项目列表"
-                      : "展开项目列表（窗口过窄，会自动收起）"
-                    : sidebar.hidden
-                      ? "展开项目列表"
-                      : "收起项目列表"
-                }
-                onClick={sidebar.toggle}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
-              >
-                {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-              </button>
-            ) : null}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <Workbench
+            layout={layoutApi}
+            services={services}
+            page={page}
+            primaryLeading={primaryLeading}
+            primaryActions={primaryActions}
+            banner={banner}
+          />
 
-            <div className="min-w-0 flex-1 px-1">
-              <h1 className="truncate text-ui-base font-normal leading-5 text-slate-900">
-                {title}
-              </h1>
-              {subtitle ? (
-                <p className="truncate text-ui-sm leading-4 text-slate-400">{subtitle}</p>
-              ) : null}
-            </div>
-
-            {view === "bugs" && workspace ? (
-              <ProjectOpenButton
-                key={workspace.id}
-                workspaceId={workspace.id}
-                onError={(text) => showToast("error", text)}
-              />
-            ) : null}
-
-          </header>
-
-          {recoveryReport ? (
-            <RecoveryBanner
-              report={recoveryReport}
-              onOpenTasks={() => activateView("agent")}
-              onDismiss={dismissRecoveryReport}
+          {!sidebar.hidden && !projectListHidden ? (
+            <Sash
+              axis="x"
+              label={t("settings.sidebar.resizeLabel")}
+              className="z-20"
+              style={{ left: -6, top: 0, width: 8, height: "100%" }}
+              onDragStart={() => {
+                sidebar.beginResize();
+                return {
+                  move: (delta) => sidebar.resize(delta),
+                  end: sidebar.endResize,
+                };
+              }}
+              onReset={sidebar.resetWidth}
             />
           ) : null}
-
-          {renderView()}
-        </main>
-
-        <DetailPaneHost
-          rendered={detailPane.rendered}
-          open={detailPane.open}
-          width={detailPane.width}
-          resizing={detailPane.resizing}
-          onResizeStart={detailPane.startResize}
-          detail={detailPane.detail}
-          loading={detailPane.loading}
-          error={detailPane.error}
-          exporting={detailPane.exporting}
-          lastExport={detailPane.lastExport}
-          onClose={detailPane.closeDetail}
-          onOpenWeb={openPath}
-          onCopy={copy}
-          onExport={detailPane.exportDetail}
-          onAgentFix={handleAgentFix}
-          onAgentCompose={openAgentCompose}
-          agentInFlight={agentInFlight}
-          onOpenAgentTask={openAgentTask}
-          onOpenPath={openPath}
-          onOpenMedia={openMedia}
-          me={context?.user.nick ?? info.me}
-          members={detailPane.members}
-          membersLoading={detailPane.membersLoading}
-          onRefreshMembers={detailPane.refreshMembers}
-          onClaim={detailPane.claimFromDetail}
-          onAddComment={detailPane.addComment}
-          onChangeField={detailPane.changeField}
-          onTransition={detailPane.transition}
-        />
+        </div>
       </div>
 
       <AgentComposeSheet
-        key={composeAgent ? `${composeAgent.workspaceId}:${composeAgent.id}` : "agent-compose"}
+        key={
+          composeAgent
+            ? composeAgent.kind === "local"
+              ? `local:${composeAgent.projectId}:${composeAgent.itemId}`
+              : `${composeAgent.workspaceId}:${composeAgent.id}`
+            : "agent-compose"
+        }
         open={composeAgent !== null}
         title={composeAgent?.title ?? ""}
+        plainTitle={composeAgent?.kind === "local"}
+        heading={
+          composeAgent?.kind === "local" ? t("local.items.toAgent") : undefined
+        }
         submitting={composeSubmitting}
         onClose={() => setComposeAgent(null)}
         onSubmit={(payload) => void submitAgentCompose(payload)}
@@ -820,11 +1309,11 @@ export default function App() {
       {pendingAgent ? (
         <FolderPicker
           open
-          title="没有配置项目目录"
-          description={`${
-            pendingAgent.target.workspaceName || pendingAgent.target.workspaceId
-          } 还没有设置本地仓库目录。选择后会自动加入 Agent 队列。`}
-          confirmLabel="使用并继续"
+          title={t("app.agent.noFolder")}
+          description={t("app.agent.noFolderHint", {
+            name: pendingAgent.target.workspaceName || pendingAgent.target.workspaceId,
+          })}
+          confirmLabel={t("app.agent.useAndContinue")}
           onCancel={() => setPendingAgent(null)}
           onSelect={(path) => void applyAgentFolder(pendingAgent, path)}
         />
@@ -838,6 +1327,87 @@ export default function App() {
         <CompanionDialog
           onClose={() => setCompanionOpen(false)}
           toast={showToast}
+        />
+      ) : null}
+
+      {unsavedExit ? (
+        <Dialog
+          title={t("layout.unsavedTitle")}
+          icon={<AlertTriangle size={15} className="text-amber-500" />}
+          onClose={() => setUnsavedExit(null)}
+        >
+          <p className="text-ui-caption leading-6 text-slate-600">
+            {unsavedExit === "logout"
+              ? t("layout.unsavedLogout")
+              : t("layout.unsavedQuit")}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setUnsavedExit(null)}
+            >
+              {t("layout.keepEditing")}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                if (unsavedExit === "logout") {
+                  clearDirtyPanels();
+                  performLogout();
+                  return;
+                }
+                clearDirtyPanels();
+                const window = getCurrentWindow();
+                void window.destroy().catch(() => window.close());
+              }}
+            >
+              {unsavedExit === "logout"
+                ? t("layout.logoutAnyway")
+                : t("layout.quitAnyway")}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+
+      {localProjectDialog ? (
+        <LocalProjectDialog
+          key={localProjectDialog.project?.id ?? "new-local-project"}
+          project={localProjectDialog.project}
+          onClose={() => setLocalProjectDialog(null)}
+          onSubmit={async (values) => {
+            const editing = localProjectDialog.project;
+            if (editing) {
+              // An empty name is rejected by the backend; the dialog shows it.
+              await local.update(editing.id, {
+                name: values.name,
+                repoPath: values.repoPath,
+                rule: values.rule,
+              });
+              return;
+            }
+            const project = await local.create({
+              repoPath: values.repoPath,
+              rule: values.rule,
+              ...(values.name ? { name: values.name } : {}),
+            });
+            // The new project is the one the user wants to work in.
+            local.select(project.id);
+            layoutRef.current.openPage("local", project.id, project.name);
+          }}
+        />
+      ) : null}
+
+      {localProjectDelete ? (
+        <ConfirmDialog
+          title={t("local.projects.delete")}
+          message={t("local.projects.deleteConfirm", {
+            name: localProjectDelete.name,
+          })}
+          busy={localProjectDeleting}
+          onCancel={() => setLocalProjectDelete(null)}
+          onConfirm={() => void deleteLocalProject()}
         />
       ) : null}
 

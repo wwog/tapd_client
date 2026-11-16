@@ -122,6 +122,7 @@
 
 - `get_info` 响应里的 `description` 用的是新版编辑器路径，例如 `<img src="/tfl/captures/2026-11/tapd_45336192_base64_1794213543_843.png">`；相对路径按 `https://www.tapd.cn` 补全即可下载（116 KB，带 Cookie）。
 - 这些内嵌图片/视频**不会**出现在 `attachment_list.attachments` 里，所以详情页「资源」为 0 是数据源问题，不是解析问题。`parse_bug_detail` 现在会额外扫描 HTML，写入 `embeddedMedia`。
+- 编辑器里拖进来的文件（`.xlog`、`.ips`、压缩包等）同样只存在于 `description` 里，形态是 `<a data-is-tapd-attachment="true" data-name="…" data-size="…" data-file-type="text" href="/{workspace}/attachments/preview_attachments/{id}/bug_description_attachment">` 卡片，`attachment_list.attachments` 为空。卡片文字（文件名 + 大小）会被 `html_to_text` 丢掉，改为在「资源」里列出；`scan_html_media` 把它改写成 `https://file.tapd.cn/{workspace}/attachments/download/{id}/{data-name}`，因为 `www.tapd.cn` 的附件链接只会 302 到 file 域，跨域跳转会丢 Cookie。
 - 详情页额外调用了 `POST /api/aggregation/workitem_aggregation/get_info`，其 `get_tab_setting_ret.data` 里有 tab 清单和计数（`变更历史` tab 的 `count`），可用于显示数量。
 
 ### 2.4 附件与资源

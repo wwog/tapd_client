@@ -6,6 +6,8 @@
 
 use semver::Version;
 
+use tapd_i18n::tr;
+
 use super::model::AvailableUpdate;
 use super::FORCE_UPDATE_MARKER;
 use crate::state::SharedState;
@@ -23,7 +25,7 @@ pub(super) fn parse_notes(raw: &str) -> (String, bool) {
     }
     let notes = kept.join("\n").trim().to_string();
     let notes = if notes.is_empty() {
-        "该版本没有提供更新说明。".to_string()
+        tr("notify.update.nonotes").to_string()
     } else {
         notes
     };

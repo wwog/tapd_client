@@ -22,6 +22,7 @@ use std::{
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tapd_i18n::{tr, tr_args};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 
 use crate::{agent::AgentCore, state::SharedState};
@@ -76,8 +77,9 @@ impl Registry {
             return String::new();
         }
 
-        let mut out =
-            String::from("协作同事（各司其职；开工前先读取对应技能包的 SKILL.md，并遵照执行）：");
+        let mut out = String::from(
+            "协作同事（各司其职；开工前先读取对应技能包的 SKILL.md，并遵照执行）：", // i18n-exempt: prompt text sent to the agent
+        );
         for coworker in selected {
             out.push_str("\n- ");
             out.push_str(coworker.role.trim());
@@ -91,7 +93,7 @@ impl Registry {
             if coworker.skills.is_empty() {
                 continue;
             }
-            out.push_str("\n  技能包：");
+            out.push_str("\n  技能包："); // i18n-exempt: prompt text for the agent
             for skill in &coworker.skills {
                 out.push_str("\n  - ");
                 out.push_str(&skill.name);
@@ -213,9 +215,9 @@ pub fn load_dir(dir: &Path) -> Registry {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
-            registry
-                .warnings
-                .push(format!("无法读取同事目录 {}：{error}", dir.display()));
+            registry.warnings.push(tr_args("app.coworker.dir.read",
+                &[&dir.display(), &error],
+            ));
             return registry;
         }
     };
@@ -230,8 +232,8 @@ pub fn load_dir(dir: &Path) -> Registry {
         let id = match path.file_name().and_then(|name| name.to_str()) {
             Some(id) if valid_id(id) => id.to_string(),
             Some(id) => {
-                registry.warnings.push(format!(
-                    "忽略非法同事目录名「{id}」：只用小写字母、数字、连字符"
+                registry.warnings.push(tr_args("app.coworker.dir.name",
+                    &[&id],
                 ));
                 continue;
             }
@@ -242,7 +244,7 @@ pub fn load_dir(dir: &Path) -> Registry {
                 registry.coworkers.push(coworker);
                 registry.warnings.extend(warnings);
             }
-            Err(error) => registry.warnings.push(format!("{id}：{error}")),
+            Err(error) => registry.warnings.push(tr_args("app.error.labeled", &[&id, &error])),
         }
     }
     registry
@@ -253,7 +255,7 @@ pub fn load(app: &AppHandle) -> Registry {
         Some(dir) => load_dir(&dir),
         None => {
             let mut registry = Registry::default();
-            registry.warnings.push("未找到内置同事包目录".to_string());
+            registry.warnings.push(tr("app.coworker.missing").to_string());
             registry
         }
     }
@@ -279,14 +281,15 @@ pub fn skill_map(app: &AppHandle, ids: &[String]) -> BTreeMap<String, SkillRef> 
 }
 
 fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String> {
-    let raw = fs::read_to_string(dir.join(MANIFEST_FILE))
-        .map_err(|error| format!("读取 {MANIFEST_FILE} 失败：{error}"))?;
-    let manifest: Manifest =
-        serde_json::from_str(&raw).map_err(|error| format!("{MANIFEST_FILE} 格式错误：{error}"))?;
+    let raw = fs::read_to_string(dir.join(MANIFEST_FILE)).map_err(|error| {
+        tr_args("app.coworker.read", &[&MANIFEST_FILE, &error])
+    })?;
+    let manifest: Manifest = serde_json::from_str(&raw).map_err(|error| {
+        tr_args("app.coworker.format", &[&MANIFEST_FILE, &error])
+    })?;
     if manifest.schema_version != 1 {
-        return Err(format!(
-            "不支持的 schemaVersion：{}（当前为 1）",
-            manifest.schema_version
+        return Err(tr_args("app.coworker.schema",
+            &[&manifest.schema_version],
         ));
     }
 
@@ -299,17 +302,18 @@ fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String>
     ensure_length(&description, 200, "description")?;
 
     let mut warnings = Vec::new();
-    let base = fs::canonicalize(dir).map_err(|error| format!("无法解析同事目录：{error}"))?;
+    let base = fs::canonicalize(dir)
+        .map_err(|error| tr_args("app.coworker.resolve", &[&error]))?;
 
     let avatar = resolve_relative(&base, &manifest.avatar)
         .and_then(|path| {
             if path.is_file() {
                 Ok(path)
             } else {
-                Err(format!("头像不存在：{}", manifest.avatar))
+                Err(tr_args("app.coworker.avatar.missing", &[&manifest.avatar]))
             }
         })
-        .map_err(|error| format!("avatar：{error}"))?;
+        .map_err(|error| tr_args("app.coworker.avatar.label", &[&error]))?;
 
     let mut skills = Vec::new();
     let mut seen = Vec::new();
@@ -322,7 +326,9 @@ fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String>
                 seen.push(skill.path.clone());
                 skills.push(skill);
             }
-            Err(error) => warnings.push(format!("{id}：技能 {} 未加载：{error}", raw_skill.trim())),
+            Err(error) => warnings.push(tr_args("app.coworker.skill.failed",
+                &[&id, &raw_skill.trim(), &error],
+            )),
         }
     }
 
@@ -330,7 +336,7 @@ fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String>
     let accent = if accent.is_empty() || valid_accent(&accent) {
         accent
     } else {
-        warnings.push(format!("{id}：accent 不是 #rrggbb，已忽略"));
+        warnings.push(tr_args("app.coworker.accent", &[&id]));
         String::new()
     };
 
@@ -352,14 +358,14 @@ fn load_package(dir: &Path, id: &str) -> Result<(Coworker, Vec<String>), String>
 fn load_skill(base: &Path, raw: &str) -> Result<Skill, String> {
     let dir = resolve_relative(base, raw)?;
     if !dir.is_dir() {
-        return Err("技能包必须是目录".to_string());
+        return Err(tr("app.coworker.skill.dir").to_string());
     }
     let path = dir.join(SKILL_FILE);
     if !path.is_file() {
-        return Err(format!("缺少 {SKILL_FILE}"));
+        return Err(tr_args("app.coworker.skill.file", &[&SKILL_FILE]));
     }
-    let markdown =
-        fs::read_to_string(&path).map_err(|error| format!("读取 {SKILL_FILE} 失败：{error}"))?;
+    let markdown = fs::read_to_string(&path)
+        .map_err(|error| tr_args("app.coworker.read", &[&SKILL_FILE, &error]))?;
     let (name, description) = frontmatter(&markdown);
     let name = name
         .filter(|value| !value.trim().is_empty())
@@ -414,7 +420,7 @@ fn frontmatter(markdown: &str) -> (Option<String>, Option<String>) {
 fn required(value: &str, field: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        Err(format!("{field} 不能为空"))
+        Err(tr_args("app.coworker.field.empty", &[&field]))
     } else {
         Ok(value.to_string())
     }
@@ -424,7 +430,7 @@ fn required(value: &str, field: &str) -> Result<String, String> {
 /// a hand-edited package must not be able to inflate it.
 fn ensure_length(value: &str, max: usize, field: &str) -> Result<(), String> {
     if value.chars().count() > max {
-        Err(format!("{field} 不能超过 {max} 字"))
+        Err(tr_args("app.coworker.field.long", &[&field, &max]))
     } else {
         Ok(())
     }
@@ -448,7 +454,7 @@ fn valid_accent(value: &str) -> bool {
 fn resolve_relative(base: &Path, raw: &str) -> Result<PathBuf, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Err("路径为空".to_string());
+        return Err(tr("app.coworker.path.empty").to_string());
     }
     let relative = Path::new(raw);
     if relative.is_absolute()
@@ -459,23 +465,26 @@ fn resolve_relative(base: &Path, raw: &str) -> Result<PathBuf, String> {
             )
         })
     {
-        return Err(format!("路径必须是包内相对路径：{raw}"));
+        return Err(tr_args("app.coworker.path.relative", &[&raw]));
     }
     let path = base.join(relative);
-    let resolved =
-        fs::canonicalize(&path).map_err(|error| format!("无法解析路径 {raw}：{error}"))?;
+    let resolved = fs::canonicalize(&path)
+        .map_err(|error| tr_args("app.coworker.path.read", &[&raw, &error]))?;
     if !resolved.starts_with(base) {
-        return Err(format!("路径超出同事目录：{raw}"));
+        return Err(tr_args("app.coworker.path.escape", &[&raw]));
     }
     Ok(resolved)
 }
 
 fn avatar_data_url(path: &Path) -> Result<String, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("读取头像失败：{error}"))?;
+    let metadata = fs::metadata(path)
+        .map_err(|error| tr_args("app.coworker.avatar.read", &[&error]))?;
     if metadata.len() > MAX_AVATAR_BYTES {
-        return Err(format!("头像不能超过 {}KB", MAX_AVATAR_BYTES / 1024));
+        return Err(tr_args("app.coworker.avatar.size",
+            &[&(MAX_AVATAR_BYTES / 1024)],
+        ));
     }
-    let bytes = fs::read(path).map_err(|error| format!("读取头像失败：{error}"))?;
+    let bytes = fs::read(path).map_err(|error| tr_args("app.coworker.avatar.read", &[&error]))?;
     let mime = image_mime(&bytes, path)?;
     Ok(format!(
         "data:{mime};base64,{}",
@@ -515,7 +524,7 @@ fn image_mime(bytes: &[u8], path: &Path) -> Result<&'static str, String> {
         "webp" => Ok("image/webp"),
         "gif" => Ok("image/gif"),
         "svg" => Ok("image/svg+xml"),
-        other => Err(format!("不支持的图片格式：{other}")),
+        other => Err(tr_args("app.coworker.image.format", &[&other])),
     }
 }
 
@@ -545,7 +554,7 @@ impl CoworkerView {
         let avatar = match avatar_data_url(&coworker.avatar) {
             Ok(url) => Some(url),
             Err(error) => {
-                warnings.push(format!("{}：头像未加载：{error}", coworker.id));
+                warnings.push(tr_args("app.coworker.avatar.load", &[&coworker.id, &error]));
                 None
             }
         };
@@ -585,7 +594,7 @@ pub async fn command(
 ) -> Result<Value, String> {
     let core = app
         .try_state::<std::sync::Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+        .ok_or_else(|| tr("app.coworker.agent").to_string())?;
 
     match name {
         "coworker_list" => {
@@ -612,7 +621,7 @@ pub async fn command(
         }
         "coworker_select" => {
             let request: SelectRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的同事选择：{error}"))?;
+                .map_err(|error| tr_args("app.coworker.selection", &[&error]))?;
             let registry = load(app);
             let selected: Vec<String> = request
                 .ids

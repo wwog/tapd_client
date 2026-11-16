@@ -8,13 +8,16 @@ import {
   Plug,
   Settings as SettingsIcon,
   Smartphone,
+  SquareTerminal,
   Users,
 } from "lucide-react";
 
 import { AccountChip } from "./AccountChip";
+import { t, type MessageKey } from "../lib/i18n";
 
 export type View =
   | "bugs"
+  | "local"
   | "projects"
   | "chat"
   | "agent"
@@ -34,14 +37,20 @@ const RAIL_ANIM: Record<string, string> = {
   account: "rail-avatar-pop",
 };
 
-const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
-  { id: "bugs", label: "缺陷", icon: <Bug size={15} /> },
-  { id: "projects", label: "项目", icon: <FolderGit2 size={15} /> },
-  { id: "chat", label: "对话", icon: <MessagesSquare size={15} /> },
-  { id: "agent", label: "Agent", icon: <Bot size={15} /> },
-  { id: "coworker", label: "同事", icon: <Users size={15} /> },
-  { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
-  { id: "settings", label: "设置", icon: <SettingsIcon size={15} /> },
+/**
+ * Activity-bar tabs. Labels are catalogue keys rendered with `t()` at render
+ * time, so a language switch never keeps the startup language.
+ */
+const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
+  { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
+  // 事项 has no rail entry: local projects open their own tab from the project
+  // column (and the projects page), like TAPD projects do.
+  { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
+  { id: "chat", label: "app.nav.chat", icon: <MessagesSquare size={15} /> },
+  { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
+  { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
+  { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
+  { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
 ];
 
 export type RailAnimation = { id: string; token: number } | null;
@@ -57,12 +66,15 @@ type Props = {
   showCompanion: boolean;
   /** A paired phone is heartbeating: paint the entry green. */
   companionOnline: boolean;
+  /** The bottom terminal panels are visible (paints the entry as active). */
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
   onOpenCompanion: () => void;
   onActivate: (view: View) => void;
 };
 
 /** Icon rail: primary views, the account chip and Settings. */
-export function NavRail({
+export function ActivityBar({
   view,
   railAnim,
   sidebarHidden,
@@ -70,10 +82,18 @@ export function NavRail({
   name,
   showCompanion,
   companionOnline,
+  terminalOpen,
+  onToggleTerminal,
   onOpenCompanion,
   onActivate,
 }: Props) {
   const accountAnim = railAnim?.id === "account" ? railAnim : null;
+  /**
+   * Local projects have no rail entry of their own; their items page is the
+   * local counterpart of the bug list, so the 缺陷 entry carries the focus
+   * while one is open.
+   */
+  const railView: View = view === "local" ? "bugs" : view;
 
   return (
     <div className="flex w-[52px] shrink-0 flex-col items-center pb-2">
@@ -82,12 +102,12 @@ export function NavRail({
           <button
             key={item.id}
             type="button"
-            title={item.label}
-            aria-label={item.label}
+            title={t(item.label)}
+            aria-label={t(item.label)}
             onClick={() => onActivate(item.id)}
             className={clsx(
               "grid h-9 w-9 place-items-center rounded-xl transition",
-              view === item.id
+              railView === item.id
                 ? "bg-overlay text-slate-900"
                 : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
             )}
@@ -127,8 +147,8 @@ export function NavRail({
       {showCompanion ? (
         <button
           type="button"
-          title="移动端伴侣"
-          aria-label="移动端伴侣"
+          title={t("app.nav.companion")}
+          aria-label={t("app.nav.companion")}
           onClick={onOpenCompanion}
           className={clsx(
             "mb-1 grid h-9 w-9 place-items-center rounded-xl transition",
@@ -142,8 +162,23 @@ export function NavRail({
       ) : null}
       <button
         type="button"
-        title="设置"
-        aria-label="设置"
+        title={t("terminal.shortcutHint")}
+        aria-label={t(terminalOpen ? "terminal.toggleHide" : "terminal.toggleShow")}
+        aria-pressed={terminalOpen}
+        onClick={onToggleTerminal}
+        className={clsx(
+          "mb-1 grid h-9 w-9 place-items-center rounded-xl transition",
+          terminalOpen
+            ? "bg-overlay text-slate-900"
+            : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
+        )}
+      >
+        <SquareTerminal size={15} />
+      </button>
+      <button
+        type="button"
+        title={t("common.settings")}
+        aria-label={t("common.settings")}
         onClick={() => onActivate("settings")}
         className={clsx(
           "grid h-9 w-9 place-items-center rounded-xl transition",

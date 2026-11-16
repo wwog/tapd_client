@@ -1,6 +1,7 @@
 //! TAPD write-back tools: transitions, comments and status changes.
 
 use serde_json::{json, Value};
+use tapd_i18n::tr_args;
 use tauri::AppHandle;
 
 use crate::{
@@ -70,12 +71,6 @@ pub(super) async fn update_bug_status(
         .cloned()
         .unwrap_or_else(|| json!([]));
 
-    // Comment first so a rejected transition still leaves the reason on record.
-    let comment = string_arg(arguments, "comment");
-    if let Some(comment) = comment.as_deref() {
-        add_comment(app, &workspace_id, &bug_id, comment).await?;
-    }
-
     let info = load_transition_info(app, &workspace_id, &bug_id).await?;
     let target = resolve_status_key(&target_input, &info)?;
     let policy = state.config_snapshot().mcp_policy;
@@ -83,10 +78,17 @@ pub(super) async fn update_bug_status(
         && !policy.allows_status(&target)
         && !policy.allows_status(&target_input)
     {
-        return Err(format!(
-            "状态「{}」不在 MCP 策略的状态白名单中",
-            target_input
+        return Err(tr_args("app.mcp.status.allowed",
+            &[&target_input],
         ));
+    }
+
+    // Comment after the policy gate (a rejected call must have no TAPD side
+    // effect) but before the transition, so a rejected transition still leaves
+    // the reason on record.
+    let comment = string_arg(arguments, "comment");
+    if let Some(comment) = comment.as_deref() {
+        add_comment(app, &workspace_id, &bug_id, comment).await?;
     }
 
     let outcome =

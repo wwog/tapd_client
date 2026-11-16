@@ -156,6 +156,17 @@ run_task
 - 关闭 `shutdown` 应用 `Suspend`：`preparing/running → queued`、`merging → awaiting_merge`，`PersistChanged` / `PersistPaused` 同步写入后才杀 PTY；未进入系统时跳过。迟到的 `RunFinished` 因任务已不是 `preparing/running` 被核心忽略。
 - 队列出队、执行单元、审核阻塞、审核 / 合并决策全部由 crate 的 `schedule()` 与状态机决定；宿主没有第二份实现。Worktree 开关锁、合并提示词与手动步骤也直接复用 crate 的纯函数。
 
+## 5.2 变更记录与实时感知
+
+任务「改了什么」只由 `crates/tapd-workspace` 回答；桌面侧的 `src-tauri/src/task_changes.rs` 是唯一桥（任务 → 工作区、缓存与事件），`agent.rs` 不再手写 git 解析。
+
+- **两种模式一套实现**：`TaskWorkspace { repo, work_dir, branch, baseline, excluded }`。`work_dir` 存在时对目录算 diff（worktree 运行中 / 单任务改主仓库）；worktree 成功后目录被删除，自动退化为 `baseline..branch`。文件列表、增删行数、二进制、diff 文本、HEAD 全部来自 git 子命令（`--numstat`、`--name-status`、`ls-files --others`、`--no-index`、`rev-parse`），应用侧不数行、不扫内容。
+- **四个阶段同源**：运行中、`awaiting_approval`、`awaiting_merge`、历史都走同一套计算。`ChangeSet` 只持久化汇总（文件、`additions` / `deletions`、`commit`），逐文件行数永远现算。
+- **两个命令**：`agent_task_changes` 返回变更摘要（≤200 个文件，`fileCount` 为真实总数），`agent_task_diff` 接受可选 `file`，任何状态可读。两者都在 `spawn_blocking` 中跑 git。
+- **实时刷新不轮询**：hook 入口（`record_session_hook`）在编辑类 tool 事件上只做一次内存置脏；`ChangesTracker` 以 60s 观察窗口 + 800ms 去抖 + 单飞调度后台刷新，成功后 `emit("agent://task_changes")`。只有 UI 打开过变更面板的任务才会刷新；无 hook 的运行时退回「面板打开时按需 + 运行结束兜底」，运行结束的汇总仍写入 tracker 供面板复用。
+- **打开 worktree**：不新增命令，前端复用 `open_directory(worktreePath)`，与「打开项目」共用编辑器目标；成功后 worktree 目录被清理，按钮随任务终态隐藏。
+- **合并 hash**：`BranchMergeVerified` 带回主仓库 HEAD，写入 `TaskMerge.commit`（手动核验同样记录）；单任务模式的产物 commit 记在 `ChangeSet.commit`。历史优先显示前者，没有则显示后者。
+
 ## 6. 权限与交互
 
 - 权限菜单直接显示在右侧 xterm 中，由用户操作；能力声明 `externalDecision=false`，桌面不代为回执。

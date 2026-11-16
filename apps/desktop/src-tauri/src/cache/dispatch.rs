@@ -3,6 +3,7 @@
 
 use serde_json::Value;
 use tapd_core::tapd::BugQuery;
+use tapd_i18n::{tr, tr_args};
 
 use crate::state::SharedState;
 
@@ -53,7 +54,7 @@ pub async fn command(state: &SharedState, name: &str, payload: Value) -> Result<
             let workspace_id = payload_str(&payload, "workspaceId");
             let bug_id = payload_str(&payload, "bugId");
             if workspace_id.is_empty() || bug_id.is_empty() {
-                return Err("缺少 workspaceId 或 bugId".to_string());
+                return Err(tr("app.cache.ids").to_string());
             }
             Ok(cached_value(
                 cache.get_bug_detail::<Value>(&workspace_id, &bug_id),
@@ -62,7 +63,7 @@ pub async fn command(state: &SharedState, name: &str, payload: Value) -> Result<
         "cache_workspace_members" => {
             let workspace_id = payload_str(&payload, "workspaceId");
             if workspace_id.is_empty() {
-                return Err("缺少 workspaceId".to_string());
+                return Err(tr("app.cache.workspace").to_string());
             }
             Ok(cached_value(
                 cache.get_workspace_members::<Value>(&workspace_id),
@@ -85,6 +86,6 @@ fn parse_bug_query(payload: &Value) -> Result<BugQuery, String> {
     let query = payload
         .get("query")
         .cloned()
-        .ok_or_else(|| "缺少 query".to_string())?;
-    serde_json::from_value(query).map_err(|error| format!("无效的查询参数：{error}"))
+        .ok_or_else(|| tr("app.cache.query").to_string())?;
+    serde_json::from_value(query).map_err(|error| tr_args("app.cache.query.invalid", &[&error]))
 }

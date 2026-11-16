@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { BookOpen, Copy } from "lucide-react";
 
 import type { McpToolInfo } from "../lib/api";
+import { t } from "../lib/i18n";
 import { Dialog } from "./Dialog";
 
 const COPY_BUTTON =
@@ -52,7 +53,7 @@ export function McpToolDocs(props: {
 
   return (
     <Dialog
-      title="MCP 接口文档"
+      title={t("mcp.apiDocs")}
       icon={<BookOpen size={16} className="text-slate-400" />}
       size="wide"
       bodyScroll={false}
@@ -61,7 +62,7 @@ export function McpToolDocs(props: {
       <div className="flex h-full gap-4">
         <nav
           className="w-60 shrink-0 overflow-y-auto border-r border-slate-100 pr-2"
-          aria-label="接口列表"
+          aria-label={t("mcp.toolList")}
         >
           <ul className="space-y-0.5">
             {props.tools.map((item) => {
@@ -101,14 +102,14 @@ export function McpToolDocs(props: {
                   className={COPY_BUTTON}
                 >
                   <Copy size={10} />
-                  复制 Schema
+                  {t("mcp.copySchema")}
                 </button>
               </div>
               <p className="mt-1.5 select-text text-ui-caption leading-6 text-slate-500">
                 {tool.description}
               </p>
 
-              <h4 className="mt-4 text-ui-sm text-slate-600">参数</h4>
+              <h4 className="mt-4 text-ui-sm text-slate-600">{t("mcp.parameters")}</h4>
               {schema ? (
                 <ParamTree schema={schema} depth={0} />
               ) : (
@@ -118,7 +119,7 @@ export function McpToolDocs(props: {
               )}
             </>
           ) : (
-            <p className="text-ui-sm text-slate-400">接口列表为空</p>
+            <p className="text-ui-sm text-slate-400">{t("mcp.toolListEmpty")}</p>
           )}
         </div>
       </div>
@@ -129,7 +130,7 @@ export function McpToolDocs(props: {
 function ParamTree(props: { schema: JsonSchema; depth: number }) {
   const entries = Object.entries(props.schema.properties ?? {});
   if (entries.length === 0) {
-    return <p className="mt-2 text-ui-xs text-slate-400">无参数</p>;
+    return <p className="mt-2 text-ui-xs text-slate-400">{t("mcp.noParameters")}</p>;
   }
   const required = new Set(props.schema.required ?? []);
 
@@ -171,7 +172,7 @@ function ParamRow(props: {
         <span className="select-text font-mono text-ui-sm text-slate-700">{props.name}</span>
         <span className="font-mono text-ui-2xs text-slate-400">{typeLabel(schema)}</span>
         {props.required ? (
-          <span className="text-ui-2xs text-rose-500">必填</span>
+          <span className="text-ui-2xs text-rose-500">{t("common.required")}</span>
         ) : null}
         {constraints.map((label) => (
           <span key={label} className="font-mono text-ui-2xs text-slate-400">
@@ -187,7 +188,7 @@ function ParamRow(props: {
       {nested ? (
         <div className="mt-2 ml-1 border-l border-slate-100 pl-3">
           {schema.type === "array" ? (
-            <div className="text-ui-2xs text-slate-400">元素字段</div>
+            <div className="text-ui-2xs text-slate-400">{t("mcp.itemFields")}</div>
           ) : null}
           <ParamTree schema={nested} depth={depth + 1} />
         </div>
@@ -218,10 +219,10 @@ function typeLabel(schema: JsonSchema): string {
 function constraintLabels(schema: JsonSchema): string[] {
   const labels: string[] = [];
   if (schema.enum) labels.push(schema.enum.map(literal).join(" · "));
-  if (schema.default !== undefined) labels.push(`默认 ${literal(schema.default)}`);
+  if (schema.default !== undefined) labels.push(t("mcp.defaultValue", { value: literal(schema.default) }));
   if (schema.minimum !== undefined) labels.push(`≥ ${schema.minimum}`);
   if (schema.maximum !== undefined) labels.push(`≤ ${schema.maximum}`);
-  if (schema.maxItems !== undefined) labels.push(`最多 ${schema.maxItems} 项`);
+  if (schema.maxItems !== undefined) labels.push(t("mcp.maxItems", { n: schema.maxItems }));
   return labels;
 }
 

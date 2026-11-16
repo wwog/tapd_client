@@ -7,16 +7,7 @@ fn awaiting_merge(workflow: &mut Workflow, task_id: &str, bug: &str) {
     running_worktree_task(workflow, task_id, bug);
     finish(workflow, task_id, false, true, &["src/fix.rs"]);
     assert_eq!(status(workflow, task_id), TaskStatus::AwaitingApproval);
-    let effects = workflow.apply(Input::ApproveReview {
-        task_id: id(task_id),
-        now: now(20),
-    });
-    assert!(
-        effects
-            .iter()
-            .all(|effect| !matches!(effect, tapd_workflow::Effect::InspectWorkspace { .. })),
-        "known changes must not trigger an inspection"
-    );
+    approve(workflow, task_id);
     assert_eq!(status(workflow, task_id), TaskStatus::AwaitingMerge);
 }
 
@@ -88,10 +79,7 @@ fn worktree_clean_approval_goes_straight_to_awaiting_merge() {
     let mut workflow = boot(worktree_config(2));
     running_worktree_task(&mut workflow, "a", "bug-a");
     finish(&mut workflow, "a", false, true, &["src/a.rs"]);
-    let effects = workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    let effects = approve(&mut workflow, "a");
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
     let task = workflow.task(&id("a")).unwrap();
     assert!(!task.commit_only);
@@ -104,10 +92,7 @@ fn worktree_dirty_approval_requeues_commit_only_and_reuses_worktree() {
     let mut workflow = boot(worktree_config(2));
     running_worktree_task(&mut workflow, "a", "bug-a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
-    let effects = workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    let effects = approve(&mut workflow, "a");
     assert_eq!(status(&workflow, "a"), TaskStatus::Preparing);
     let task = workflow.task(&id("a")).unwrap();
     assert!(task.commit_only);
@@ -123,10 +108,7 @@ fn commit_only_run_clean_goes_to_awaiting_merge() {
     let mut workflow = boot(worktree_config(2));
     running_worktree_task(&mut workflow, "a", "bug-a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     agent_started(&mut workflow, "a");
     finish(&mut workflow, "a", false, false, &[]);
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
@@ -138,10 +120,7 @@ fn commit_only_run_with_dirty_tree_fails() {
     let mut workflow = boot(worktree_config(2));
     running_worktree_task(&mut workflow, "a", "bug-a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     agent_started(&mut workflow, "a");
     let effects = finish(&mut workflow, "a", true, false, &["src/a.rs"]);
     assert_eq!(status(&workflow, "a"), TaskStatus::Failed);
@@ -157,10 +136,7 @@ fn non_worktree_dirty_success_enters_review_and_commit_only_finishes() {
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingApproval);
 
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     assert_eq!(status(&workflow, "a"), TaskStatus::Preparing);
     assert!(workflow.task(&id("a")).unwrap().commit_only);
 
@@ -184,10 +160,7 @@ fn non_worktree_commit_only_dirty_fails() {
     enqueue(&mut workflow, "a", "bug-a");
     agent_started(&mut workflow, "a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     agent_started(&mut workflow, "a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
     assert_eq!(status(&workflow, "a"), TaskStatus::Failed);
@@ -225,10 +198,7 @@ fn duplicate_approve_is_rejected() {
     enqueue(&mut workflow, "a", "bug-a");
     agent_started(&mut workflow, "a");
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     let effects = workflow.apply(Input::ApproveReview {
         task_id: id("a"),
         now: now(21),
@@ -293,6 +263,7 @@ fn merge_agent_success_retains_branch_and_removes_directory() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
     let task = workflow.task(&id("a")).unwrap();
@@ -337,6 +308,7 @@ fn canceled_merge_agent_still_verifies_the_branch() {
         task_id: id("a"),
         merged: false,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
 }
@@ -355,6 +327,7 @@ fn merge_agent_failure_rolls_back_to_awaiting_merge_with_manual_steps() {
         task_id: id("a"),
         merged: false,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
     let merge = workflow.task(&id("a")).unwrap().merge.as_ref().unwrap();
@@ -382,6 +355,7 @@ fn manual_verify_merge_succeeds_without_a_merge_agent() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
     assert_eq!(history_records(&effects).len(), 1);
@@ -399,6 +373,7 @@ fn manual_verify_merge_failure_stays_awaiting_merge() {
         task_id: id("a"),
         merged: false,
         error: Some("not an ancestor".to_string()),
+        commit: None,
     });
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
     assert_eq!(
@@ -529,6 +504,81 @@ fn cancel_merging_aborts_to_awaiting_merge_and_keeps_branch() {
 }
 
 #[test]
+fn verified_merge_records_the_landed_commit_in_task_persist_and_history() {
+    let mut workflow = boot(worktree_config(2));
+    awaiting_merge(&mut workflow, "a", "bug-a");
+    begin_merge(&mut workflow, "a");
+    workflow.apply(Input::MergeAgentFinished {
+        task_id: id("a"),
+        outcome: RunOutcome::success(None),
+        now: now(40),
+    });
+
+    let effects = workflow.apply(Input::BranchMergeVerified {
+        task_id: id("a"),
+        merged: true,
+        error: None,
+        commit: Some("mergeq1".to_string()),
+    });
+    assert_eq!(status(&workflow, "a"), TaskStatus::Succeeded);
+    assert_eq!(
+        workflow
+            .task(&id("a"))
+            .unwrap()
+            .merge
+            .as_ref()
+            .unwrap()
+            .commit
+            .as_deref(),
+        Some("mergeq1")
+    );
+    assert!(persisted_tasks(&effects).iter().any(|task| task
+        .merge
+        .as_ref()
+        .and_then(|merge| merge.commit.as_deref())
+        == Some("mergeq1")));
+    let record = history_records(&effects)[0];
+    assert_eq!(
+        record
+            .merge
+            .as_ref()
+            .and_then(|merge| merge.commit.as_deref()),
+        Some("mergeq1")
+    );
+}
+
+#[test]
+fn failed_merge_verification_clears_a_stale_landed_commit() {
+    let mut task = worktree_task_with_status("a", "bug-a", TaskStatus::AwaitingMerge);
+    task.merge = Some(tapd_workflow::TaskMerge {
+        commit: Some("oldmerge".to_string()),
+        ..Default::default()
+    });
+    let (mut workflow, _) = boot_with(worktree_config(1), vec![task], false);
+    workflow.apply(Input::VerifyMerge {
+        task_id: id("a"),
+        now: now(30),
+    });
+    workflow.apply(Input::BranchMergeVerified {
+        task_id: id("a"),
+        merged: false,
+        error: None,
+        commit: None,
+    });
+    assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingMerge);
+    assert_eq!(
+        workflow
+            .task(&id("a"))
+            .unwrap()
+            .merge
+            .as_ref()
+            .unwrap()
+            .commit,
+        None
+    );
+}
+
+#[test]
 fn history_is_appended_exactly_once_per_terminal_transition() {
     let mut workflow = boot(worktree_config(2));
     awaiting_merge(&mut workflow, "a", "bug-a");
@@ -542,6 +592,7 @@ fn history_is_appended_exactly_once_per_terminal_transition() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert_eq!(history_records(&effects).len(), 1);
 
@@ -550,6 +601,7 @@ fn history_is_appended_exactly_once_per_terminal_transition() {
         task_id: id("a"),
         merged: true,
         error: None,
+        commit: None,
     });
     assert!(history_records(&duplicate).is_empty());
     let late = finish_outcome(&mut workflow, "a", RunOutcome::failure("late", None));
@@ -560,4 +612,64 @@ fn history_is_appended_exactly_once_per_terminal_transition() {
     });
     assert!(rejected(&cancel).is_some());
     assert!(history_records(&cancel).is_empty());
+}
+
+#[test]
+fn approving_uses_the_fresh_workspace_state_not_the_run_end_snapshot() {
+    let mut workflow = boot(worktree_config(2));
+    running_worktree_task(&mut workflow, "a", "bug-a");
+    // The run ended with a committed, clean worktree.
+    finish(&mut workflow, "a", false, true, &["src/a.rs"]);
+
+    let effects = workflow.apply(Input::ApproveReview {
+        task_id: id("a"),
+        now: now(20),
+    });
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, tapd_workflow::Effect::InspectWorkspace { .. })),
+        "approve always re-inspects"
+    );
+    assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingApproval);
+
+    // The reviewer edited the worktree after the run ended: the stale snapshot
+    // said clean, so approving it would have merged without those edits.
+    workflow.apply(Input::WorkspaceInspected {
+        task_id: id("a"),
+        changes: tapd_workflow::ChangeSet::new(vec!["src/a.rs".to_string()], true, false),
+    });
+
+    assert_eq!(status(&workflow, "a"), TaskStatus::Preparing);
+    assert!(workflow.task(&id("a")).unwrap().commit_only);
+}
+
+#[test]
+fn a_verification_requested_before_the_merge_cannot_roll_it_back() {
+    let mut workflow = boot(worktree_config(2));
+    awaiting_merge(&mut workflow, "a", "bug-a");
+
+    // A verify is requested, then the merge starts before its receipt lands.
+    let effects = workflow.apply(Input::VerifyMerge {
+        task_id: id("a"),
+        now: now(25),
+    });
+    assert!(effects
+        .iter()
+        .any(|effect| matches!(effect, tapd_workflow::Effect::VerifyBranchMerged { .. })));
+    begin_merge(&mut workflow, "a");
+    assert_eq!(status(&workflow, "a"), TaskStatus::Merging);
+
+    workflow.apply(Input::BranchMergeVerified {
+        task_id: id("a"),
+        merged: false,
+        error: None,
+        commit: None,
+    });
+
+    assert_eq!(
+        status(&workflow, "a"),
+        TaskStatus::Merging,
+        "a stale verification receipt must not decide the merge stage"
+    );
 }

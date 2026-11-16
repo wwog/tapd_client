@@ -11,11 +11,13 @@ use tapd_core::{
     export::{collect_media, MediaAsset},
     tapd::BugDetail,
 };
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Manager, State};
 
 use crate::{media, session, state::SharedState};
 
 mod download;
+pub(crate) mod local;
 pub(crate) mod paths;
 pub(crate) mod prompt;
 
@@ -73,7 +75,7 @@ pub(crate) async fn export_detail(
 
     let window = app
         .get_webview_window(session::SESSION_LABEL)
-        .ok_or_else(|| "会话窗口尚未创建".to_string())?;
+        .ok_or_else(|| tr("app.session.window").to_string())?;
     let cookie = session::cookie_header(&window)?;
 
     let assets_dir = bug_dir.join("assets");
@@ -86,6 +88,7 @@ pub(crate) async fn export_detail(
         .map_err(|error| error.to_string())?;
 
     let media = collect_media(detail);
+    let cache_dir = crate::media_cache::dir(paths);
     let mut assets: Vec<MediaAsset> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut used_names: HashSet<String> = HashSet::new();
@@ -94,7 +97,7 @@ pub(crate) async fn export_detail(
 
     for item in media {
         if total_bytes >= MAX_TOTAL_BYTES {
-            warnings.push("已达到导出总大小上限，剩余资源未下载".to_string());
+            warnings.push(tr("app.export.limit").to_string());
             break;
         }
 
@@ -105,6 +108,7 @@ pub(crate) async fn export_detail(
             &item,
             media_index,
             &assets_dir,
+            &cache_dir,
             &mut used_names,
         )
         .await
@@ -113,7 +117,9 @@ pub(crate) async fn export_detail(
                 total_bytes += asset.size;
                 assets.push(asset);
             }
-            Err(error) => warnings.push(format!("{}：{}", item.filename_hint, error)),
+            Err(error) => {
+                warnings.push(tr_args("app.error.labeled", &[&item.filename_hint, &error]))
+            }
         }
     }
 

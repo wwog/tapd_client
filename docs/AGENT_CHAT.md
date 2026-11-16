@@ -582,7 +582,7 @@ AgentTaskHeader
   - 目标（路径 / 命令，mono，两行截断）
   - 状态点 + 耗时
   - 展开：工具参数、输出预览、编辑 diff
-- 文件修改卡片额外显示「查看改动」，调用现有 `agent_review_diff`（按需）。
+- 文件修改卡片额外显示「查看改动」，调用 `agent_task_diff`（按需，可指定文件）。
 
 Markdown：
 

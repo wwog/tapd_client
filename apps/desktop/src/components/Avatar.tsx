@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 
+import { t } from "../lib/i18n";
+
 type Props = {
   src?: string | null;
   name?: string | null;
@@ -24,7 +26,7 @@ export function Avatar({ src, name, className, rounded = "rounded-full" }: Props
     return (
       <img
         src={src}
-        alt={name ? `${name} 的头像` : "用户头像"}
+        alt={name ? t("app.avatar.namedAlt", { name }) : t("app.avatar.alt")}
         draggable={false}
         onError={() => setBroken(true)}
         className={clsx("shrink-0 select-none object-cover", rounded, className)}

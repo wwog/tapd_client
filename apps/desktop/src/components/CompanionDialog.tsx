@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Check,
+  CircleHelp,
   Copy,
   ExternalLink,
   Loader2,
@@ -23,10 +24,11 @@ import {
   setCompanionEnabledLocal,
 } from "../lib/companion";
 import type { SettingsSectionProps } from "../lib/feature";
+import { localeTag, t } from "../lib/i18n";
 import { usePoll } from "../hooks/usePoll";
 import { useTauriEvent } from "../lib/tauriEvent";
 import { Dialog } from "./Dialog";
-import { Button } from "./ui";
+import { Button, Switch } from "./ui";
 
 /** Official download page; the app never installs cloudflared itself. */
 const CLOUDFLARED_DOCS =
@@ -34,7 +36,7 @@ const CLOUDFLARED_DOCS =
 const INSTALL_COMMAND = "brew install cloudflared";
 
 type PairingWithQr = PairingCode & { qr: string };
-type Busy = "tunnel" | "stop" | "unpair" | null;
+type Busy = "tunnel" | "stop" | null;
 type Tone = "emerald" | "amber" | "rose" | "sky" | "muted";
 
 const TONE_DOT: Record<Tone, string> = {
@@ -54,14 +56,14 @@ const addressOf = (url: string): string =>
 
 /** Short relative time for the device's last heartbeat. */
 const lastSeenLabel = (iso: string | null | undefined): string => {
-  if (!iso) return "尚未握手";
+  if (!iso) return t("settings.companion.notPaired");
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
   const secs = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (secs < 15) return "刚刚";
-  if (secs < 60) return `${secs} 秒前`;
-  if (secs < 3600) return `${Math.floor(secs / 60)} 分钟前`;
-  return new Date(timestamp).toLocaleTimeString("zh-CN", {
+  if (secs < 15) return t("common.justNow");
+  if (secs < 60) return t("settings.companion.secondsAgo", { n: secs });
+  if (secs < 3600) return t("settings.companion.minutesAgo", { n: Math.floor(secs / 60) });
+  return new Date(timestamp).toLocaleTimeString(localeTag(), {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -88,15 +90,18 @@ export function CompanionDialog({
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const [fileWriteBusy, setFileWriteBusy] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"link" | "install" | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
 
   const pairingBaseRef = useRef<string | null>(null);
   const requestSeq = useRef(0);
   const copiedTimer = useRef<number | null>(null);
+  const helpRef = useRef<HTMLDivElement | null>(null);
 
   const loadStatus = useCallback(
     async (silent = true): Promise<CompanionStatus | null> => {
@@ -154,6 +159,9 @@ export function CompanionDialog({
   });
   useTauriEvent<unknown>("companion://paired", () => {
     void loadStatus(true);
+    // The one-time code was consumed; rotate immediately so the next device
+    // can scan the refreshed QR without a manual "regenerate" action.
+    void requestPairing();
   });
   useTauriEvent<unknown>("companion://presence", () => {
     void loadStatus(true);
@@ -163,7 +171,6 @@ export function CompanionDialog({
   usePoll(
     () => {
       void loadStatus(true);
-      setNow(Date.now());
     },
     2_000,
     { pauseWhenHidden: true },
@@ -176,6 +183,18 @@ export function CompanionDialog({
     [],
   );
 
+  // Close the multi-device explainer when clicking anywhere outside it.
+  useEffect(() => {
+    if (!helpOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (helpRef.current && !helpRef.current.contains(event.target as Node)) {
+        setHelpOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [helpOpen]);
+
   const tunnelUrl =
     status?.tunnel.state === "running" ? (status.tunnel.url ?? null) : null;
   const lanBase =
@@ -185,9 +204,6 @@ export function CompanionDialog({
   const pairingBase = mode === "tunnel" ? tunnelUrl : lanBase;
   const onlineDevice = status?.devices.find((device) => device.online) ?? null;
   const cloudflaredInstalled = status?.cloudflared.installed ?? false;
-  const pairingExpired = pairing
-    ? Date.parse(pairing.expiresAt) <= now
-    : false;
 
   const requestPairing = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -228,12 +244,6 @@ export function CompanionDialog({
     }
   }, [pairingBase, requestPairing]);
 
-  // Keep a waiting QR usable: refresh an expired code until a device connects.
-  useEffect(() => {
-    if (!pairing || onlineDevice || !pairingExpired) return;
-    void requestPairing();
-  }, [pairing, onlineDevice, pairingExpired, requestPairing]);
-
   const copyText = async (text: string, kind: "link" | "install") => {
     try {
       await navigator.clipboard.writeText(text);
@@ -241,7 +251,7 @@ export function CompanionDialog({
       if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(null), 1500);
     } catch {
-      toast("error", "复制失败");
+      toast("error", t("common.copyFailed"));
     }
   };
 
@@ -295,7 +305,7 @@ export function CompanionDialog({
         await companionApi.tunnelStart();
         await loadStatus(true);
       } else {
-        setActionError("仍未检测到 cloudflared，请确认安装后重试");
+        setActionError(t("settings.companion.noCloudflaredRetry"));
       }
     } catch (error) {
       setActionError(String(error));
@@ -304,15 +314,40 @@ export function CompanionDialog({
     }
   };
 
+  const setDeviceManage = async (deviceId: string, canManage: boolean) => {
+    setDeviceBusy(true);
+    try {
+      await companionApi.setDeviceManage(deviceId, canManage);
+      await loadStatus(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
   const unpair = async (deviceId: string) => {
-    setBusy("unpair");
+    setDeviceBusy(true);
     try {
       await companionApi.unpair(deviceId);
       await loadStatus(true);
     } catch (error) {
       toast("error", String(error));
     } finally {
-      setBusy(null);
+      setDeviceBusy(false);
+    }
+  };
+
+  /** Phone editing is off by default; this is the desktop-side switch. */
+  const setFileWrite = async (allow: boolean) => {
+    setFileWriteBusy(true);
+    try {
+      await companionApi.setFileWrite(allow);
+      await loadStatus(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setFileWriteBusy(false);
     }
   };
 
@@ -329,25 +364,24 @@ export function CompanionDialog({
   };
 
   const statusLine = ((): { tone: Tone; text: string } => {
-    if (!status) return { tone: "muted", text: "读取状态中…" };
+    if (!status) return { tone: "muted", text: t("settings.companion.statusReading") };
     if (mode === "tunnel" && !cloudflaredInstalled) {
-      return { tone: "muted", text: "需要安装 cloudflared" };
+      return { tone: "muted", text: t("settings.companion.needCloudflared") };
     }
     if (mode === "tunnel" && status.tunnel.state === "starting") {
-      return { tone: "amber", text: "正在建立外网隧道…" };
+      return { tone: "amber", text: t("settings.companion.tunnelStarting") };
     }
     if (mode === "tunnel" && status.tunnel.state === "failed") {
-      return { tone: "rose", text: "外网隧道启动失败" };
+      return { tone: "rose", text: t("settings.companion.tunnelFailed") };
     }
     if (mode === "tunnel" && status.tunnel.state === "stopped") {
-      return { tone: "muted", text: "外网隧道未建立" };
+      return { tone: "muted", text: t("settings.companion.tunnelMissing") };
     }
     if (onlineDevice) {
-      return { tone: "emerald", text: `已连接 ${onlineDevice.name}` };
+      return { tone: "emerald", text: t("settings.companion.connected", { name: onlineDevice.name }) };
     }
-    if (pairingExpired) return { tone: "amber", text: "配对码已过期" };
-    if (pairing) return { tone: "sky", text: "等待手机连接" };
-    return { tone: "muted", text: "准备二维码…" };
+    if (pairing) return { tone: "sky", text: t("settings.companion.waitingPhone") };
+    return { tone: "muted", text: t("settings.companion.preparingQr") };
   })();
 
   const renderQr = () => (
@@ -360,15 +394,31 @@ export function CompanionDialog({
       <div className="mt-4 flex justify-center">
         {pairing ? (
           <div className="rounded-xl border border-border bg-white p-3">
-            <img src={pairing.qr} alt="配对二维码" className="h-56 w-56" />
+            <img
+              src={pairing.qr}
+              alt={t("settings.companion.qrAlt")}
+              className="h-[min(224px,34vh)] w-[min(224px,34vh)]"
+            />
           </div>
         ) : (
-          <div className="grid h-[248px] w-[248px] place-items-center rounded-xl border border-dashed border-border px-4 text-center text-ui-xs text-slate-400">
-            {pairingError
-              ? "二维码生成失败，可点下方重新生成"
-              : pairingBusy
-                ? "生成二维码…"
-                : "等待隧道地址"}
+          <div className="grid h-[min(248px,38vh)] w-[min(248px,38vh)] place-items-center rounded-xl border border-dashed border-border px-4 text-center text-ui-xs text-slate-400">
+            {pairingError ? (
+              <div>
+                <p>{t("settings.companion.qrFailed")}</p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mt-1"
+                  onClick={() => void requestPairing()}
+                >
+                  {t("common.retry")}
+                </Button>
+              </div>
+            ) : pairingBusy ? (
+              t("settings.companion.generatingQr")
+            ) : (
+              t("settings.companion.waitingTunnel")
+            )}
           </div>
         )}
       </div>
@@ -383,8 +433,8 @@ export function CompanionDialog({
           </span>
           <button
             type="button"
-            title="复制链接"
-            aria-label="复制链接"
+            title={t("settings.companion.copyLink")}
+            aria-label={t("settings.companion.copyLink")}
             disabled={!pairing}
             onClick={() => {
               if (pairing) void copyText(pairing.url, "link");
@@ -394,20 +444,9 @@ export function CompanionDialog({
             {copied === "link" ? <Check size={13} /> : <Copy size={13} />}
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            loading={pairingBusy}
-            disabled={!pairingBase}
-            onClick={() => void requestPairing()}
-          >
-            重新生成
-          </Button>
-          <span className="text-ui-2xs text-slate-400">
-            配对码 10 分钟内有效，首个扫码设备独占
-          </span>
-        </div>
+        <p className="text-ui-2xs text-slate-400">
+          {t("settings.companion.codeHint")}
+        </p>
       </div>
     </div>
   );
@@ -418,7 +457,7 @@ export function CompanionDialog({
         <div className="grid h-[360px] place-items-center rounded-2xl border border-border bg-surface">
           <div className="text-center">
             <Loader2 size={20} className="mx-auto animate-spin text-slate-400" />
-            <p className="mt-3 text-ui-sm text-slate-500">读取伴侣状态…</p>
+            <p className="mt-3 text-ui-sm text-slate-500">{t("settings.companion.statusLoading")}</p>
           </div>
         </div>
       );
@@ -428,9 +467,9 @@ export function CompanionDialog({
       if (!cloudflaredInstalled) {
         return (
           <div className="rounded-2xl border border-border bg-surface p-5">
-            <h3 className="text-ui-base text-slate-900">需要安装 cloudflared</h3>
+            <h3 className="text-ui-base text-slate-900">{t("settings.companion.needCloudflared")}</h3>
             <p className="mt-1 text-ui-caption text-slate-500">
-              外网隧道依赖本机的 cloudflared，应用不会自动安装。
+              {t("settings.companion.cloudflaredHint")}
             </p>
             <div className="mt-4 flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-slate-100">
               <code className="min-w-0 flex-1 truncate font-mono text-ui-xs">
@@ -438,8 +477,8 @@ export function CompanionDialog({
               </code>
               <button
                 type="button"
-                title="复制安装命令"
-                aria-label="复制安装命令"
+                title={t("settings.companion.copyInstall")}
+                aria-label={t("settings.companion.copyInstall")}
                 onClick={() => void copyText(INSTALL_COMMAND, "install")}
                 className="shrink-0 rounded p-1 text-slate-300 transition hover:text-white"
               >
@@ -447,8 +486,8 @@ export function CompanionDialog({
               </button>
             </div>
             <ol className="mt-3 space-y-1 text-ui-xs text-slate-500">
-              <li>1. 在终端运行上面的命令</li>
-              <li>2. 安装完成后点「我已安装」</li>
+              <li>{t("settings.companion.installStep1")}</li>
+              <li>{t("settings.companion.installStep2")}</li>
             </ol>
             {actionError ? (
               <p className="mt-3 break-all text-ui-xs text-rose-600">{actionError}</p>
@@ -460,7 +499,7 @@ export function CompanionDialog({
                 loading={checking}
                 onClick={() => void recheckCloudflared()}
               >
-                我已安装
+                {t("settings.companion.installed")}
               </Button>
               <Button
                 size="sm"
@@ -470,7 +509,7 @@ export function CompanionDialog({
                   void api.openPath(CLOUDFLARED_DOCS).catch((error) => toast("error", String(error)));
                 }}
               >
-                安装文档
+                {t("settings.companion.installDocs")}
               </Button>
             </div>
           </div>
@@ -482,8 +521,8 @@ export function CompanionDialog({
           <div className="grid h-[360px] place-items-center rounded-2xl border border-border bg-surface">
             <div className="text-center">
               <Loader2 size={20} className="mx-auto animate-spin text-slate-400" />
-              <p className="mt-3 text-ui-sm text-slate-600">正在建立外网隧道…</p>
-              <p className="mt-1 text-ui-xs text-slate-400">首次建立通常需要几秒</p>
+              <p className="mt-3 text-ui-sm text-slate-600">{t("settings.companion.tunnelStarting")}</p>
+              <p className="mt-1 text-ui-xs text-slate-400">{t("settings.companion.firstRunHint")}</p>
             </div>
           </div>
         );
@@ -492,9 +531,9 @@ export function CompanionDialog({
       if (status.tunnel.state === "failed") {
         return (
           <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-5">
-            <p className="text-ui-sm text-rose-700">外网隧道启动失败</p>
+            <p className="text-ui-sm text-rose-700">{t("settings.companion.tunnelFailed")}</p>
             <p className="mt-1 break-all text-ui-xs text-rose-600">
-              {status.tunnel.error ?? actionError ?? "未知错误"}
+              {status.tunnel.error ?? actionError ?? t("settings.companion.unknownError")}
             </p>
             <div className="mt-4 flex items-center gap-2">
               <Button
@@ -502,10 +541,10 @@ export function CompanionDialog({
                 loading={busy === "tunnel"}
                 onClick={() => void startTunnel()}
               >
-                重试
+                {t("common.retry")}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => switchMode("lan")}>
-                改用局域网（测试）
+                {t("settings.companion.useLan")}
               </Button>
             </div>
           </div>
@@ -516,8 +555,10 @@ export function CompanionDialog({
         return (
           <div className="grid h-[360px] place-items-center rounded-2xl border border-border bg-surface">
             <div className="text-center">
-              <p className="text-ui-sm text-slate-600">外网隧道未建立</p>
-              <p className="mt-1 text-ui-xs text-slate-400">建立后扫码即可在外网访问</p>
+              <p className="text-ui-sm text-slate-600">{t("settings.companion.tunnelMissing")}</p>
+              <p className="mt-1 text-ui-xs text-slate-400">
+                {t("settings.companion.scanHint")}
+              </p>
               <Button
                 size="sm"
                 variant="primary"
@@ -525,7 +566,7 @@ export function CompanionDialog({
                 loading={busy === "tunnel"}
                 onClick={() => void startTunnel()}
               >
-                建立隧道
+                {t("settings.companion.startTunnel")}
               </Button>
             </div>
           </div>
@@ -536,7 +577,7 @@ export function CompanionDialog({
     if (mode === "lan" && !lanBase) {
       return (
         <div className="grid h-[360px] place-items-center rounded-2xl border border-border bg-surface">
-          <p className="text-ui-sm text-slate-500">无局域网连接</p>
+          <p className="text-ui-sm text-slate-500">{t("settings.companion.noLan")}</p>
         </div>
       );
     }
@@ -546,27 +587,28 @@ export function CompanionDialog({
 
   const tunnelLabel =
     status?.tunnel.state === "running"
-      ? "运行中"
+      ? t("settings.companion.stateRunning")
       : status?.tunnel.state === "starting"
-        ? "建立中"
+        ? t("settings.companion.stateStarting")
         : status?.tunnel.state === "failed"
-          ? "失败"
-          : "已停止";
+          ? t("common.failed")
+          : t("settings.companion.stateStopped");
 
   return (
     <Dialog
-      title="移动端伴侣"
+      title={t("settings.companion.title")}
       icon={<Smartphone size={15} className="text-slate-400" />}
       size="wide"
+      fit
       onClose={onClose}
     >
       <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_340px]">
         <section className="min-w-0">
           <p
             className="text-ui-caption text-slate-500"
-            title="手机扫码后在浏览器打开当前工作区；数据全部由桌面端转发。"
+            title={t("settings.companion.descTooltip")}
           >
-            扫码在手机上打开当前工作区。
+            {t("settings.companion.desc")}
           </p>
 
           <div className="mt-4">{renderMain()}</div>
@@ -576,13 +618,13 @@ export function CompanionDialog({
           ) : null}
 
           <div className="mt-4 flex items-center justify-between gap-3 text-ui-xs text-slate-400">
-            <span>{mode === "tunnel" ? "外网隧道" : "局域网（测试）"}</span>
+            <span>{mode === "tunnel" ? t("settings.companion.publicTunnel") : t("settings.companion.lan")}</span>
             <button
               type="button"
               onClick={() => switchMode(mode === "tunnel" ? "lan" : "tunnel")}
               className="rounded px-1 py-0.5 transition hover:bg-overlay-soft hover:text-slate-700"
             >
-              {mode === "tunnel" ? "改用局域网（测试）" : "改用外网隧道"}
+              {mode === "tunnel" ? t("settings.companion.useLan") : t("settings.companion.useTunnel")}
             </button>
           </div>
         </section>
@@ -590,7 +632,7 @@ export function CompanionDialog({
         <aside className="min-w-0 space-y-4">
           <div className="rounded-2xl border border-border bg-surface p-4">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-ui-sm text-slate-900">外网隧道</h3>
+              <h3 className="text-ui-sm text-slate-900">{t("settings.companion.publicTunnel")}</h3>
               <span
                 className={clsx(
                   "text-ui-2xs",
@@ -604,7 +646,7 @@ export function CompanionDialog({
               className="mt-2 truncate font-mono text-ui-xs text-slate-500"
               title={tunnelUrl ?? ""}
             >
-              {tunnelUrl ? addressOf(tunnelUrl) : "未建立"}
+              {tunnelUrl ? addressOf(tunnelUrl) : t("settings.companion.notEstablished")}
             </p>
             <div className="mt-3 flex items-center gap-2">
               {status?.tunnel.state === "running" ? (
@@ -614,7 +656,7 @@ export function CompanionDialog({
                   loading={busy === "tunnel"}
                   onClick={() => void stopTunnel()}
                 >
-                  停止隧道
+                  {t("settings.companion.stopTunnel")}
                 </Button>
               ) : (
                 <Button
@@ -624,24 +666,50 @@ export function CompanionDialog({
                   disabled={!cloudflaredInstalled}
                   onClick={() => void startTunnel()}
                 >
-                  建立隧道
+                  {t("settings.companion.startTunnel")}
                 </Button>
               )}
             </div>
             <p className="mt-2 truncate text-ui-2xs text-slate-400">
               {cloudflaredInstalled
                 ? `cloudflared ${status?.cloudflared.version ?? ""}`.trim()
-                : "未检测到 cloudflared"}
+                : t("settings.companion.cloudflaredMissing")}
             </p>
           </div>
 
           <div className="rounded-2xl border border-border bg-surface p-4">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-ui-sm text-slate-900">已配对设备</h3>
+            <div
+              ref={helpRef}
+              className="relative flex items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-1">
+                <h3 className="text-ui-sm text-slate-900">
+                  {t("settings.companion.devices")}
+                </h3>
+                <button
+                  type="button"
+                  aria-label={t("settings.companion.devicesHelpTitle")}
+                  aria-expanded={helpOpen}
+                  title={t("settings.companion.devicesHelpTitle")}
+                  onClick={() => setHelpOpen((open) => !open)}
+                  className="rounded p-0.5 text-slate-400 transition hover:text-slate-700"
+                >
+                  <CircleHelp size={13} />
+                </button>
+              </div>
               <span className="text-ui-2xs text-slate-400">
                 {status?.devices.length ?? 0}
               </span>
+              {helpOpen ? (
+                <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-border bg-surface p-3 text-ui-xs leading-5 text-slate-600">
+                  <p>{t("settings.companion.devicesHelpFirst")}</p>
+                  <p className="mt-2">{t("settings.companion.devicesHelpRotate")}</p>
+                </div>
+              ) : null}
             </div>
+            <p className="mt-1 text-ui-2xs text-slate-400">
+              {t("settings.companion.deviceManageHint")}
+            </p>
             {status && status.devices.length > 0 ? (
               <ul className="mt-1 divide-y divide-slate-100">
                 {status.devices.map((device) => (
@@ -657,32 +725,57 @@ export function CompanionDialog({
                         {device.name}
                       </p>
                       <p className="text-ui-2xs text-slate-400">
-                        {device.online ? "在线" : "离线"} ·{" "}
+                        {device.online ? t("settings.companion.online") : t("settings.companion.offline")} ·{" "}
                         {lastSeenLabel(device.lastSeenAt)}
                       </p>
                     </div>
+                    <Switch
+                      checked={device.canManage}
+                      onChange={(value) => void setDeviceManage(device.id, value)}
+                      disabled={deviceBusy}
+                      label={`${t("settings.companion.deviceManage")} ${device.name}`}
+                    />
                     <button
                       type="button"
-                      disabled={busy === "unpair"}
+                      disabled={deviceBusy}
                       onClick={() => void unpair(device.id)}
                       className="shrink-0 rounded px-1 py-0.5 text-ui-2xs text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
                     >
-                      解除
+                      {t("settings.companion.unpair")}
                     </button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-ui-xs text-slate-400">暂无已配对设备</p>
+              <p className="mt-2 text-ui-xs text-slate-400">{t("settings.companion.noDevices")}</p>
             )}
+          </div>
+
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-ui-sm text-slate-900">
+                  {t("settings.companion.fileWrite")}
+                </h3>
+                <p className="mt-1 text-ui-2xs leading-5 text-slate-400">
+                  {t("settings.companion.fileWriteHint")}
+                </p>
+              </div>
+              <Switch
+                checked={status?.allowFileWrite ?? false}
+                onChange={(value) => void setFileWrite(value)}
+                disabled={fileWriteBusy || !status}
+                label={t("settings.companion.fileWrite")}
+              />
+            </div>
           </div>
 
           <div className="rounded-2xl border border-border bg-slate-50/60 p-4">
             <p
               className="text-ui-xs text-slate-500"
-              title="关闭弹窗不会停止隧道；手机可以继续使用当前地址。"
+              title={t("settings.companion.closeTooltip")}
             >
-              关闭弹窗不会停止隧道。
+              {t("settings.companion.closeHint")}
             </p>
             {confirmStop ? (
               <div className="mt-3 flex items-center gap-2">
@@ -692,14 +785,14 @@ export function CompanionDialog({
                   loading={busy === "stop"}
                   onClick={() => void stopCompanion()}
                 >
-                  确定停止
+                  {t("settings.companion.stopConfirm")}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
                   onClick={() => setConfirmStop(false)}
                 >
-                  取消
+                  {t("common.cancel")}
                 </Button>
               </div>
             ) : (
@@ -709,7 +802,7 @@ export function CompanionDialog({
                 className="mt-2"
                 onClick={() => setConfirmStop(true)}
               >
-                停止移动端伴侣
+                {t("settings.companion.stop")}
               </Button>
             )}
           </div>

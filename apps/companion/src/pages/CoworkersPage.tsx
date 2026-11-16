@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, ChevronLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { api, asApiError, type CoworkerList } from "../lib/api";
+import { t } from "../lib/i18n";
 import { navigate } from "../lib/router";
 
 /** 同事包：多选后保存（coworker_select），对齐桌面 CoworkerPicker。 */
@@ -67,15 +68,18 @@ export function CoworkersPage() {
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
-          aria-label="返回"
+          aria-label={t("mobile.nav.back")}
           onClick={back}
           className="rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">同事包</span>
-        <span className="shrink-0 text-ui-xs text-slate-400" title="勾选的同事会随 Agent 任务一起提示。">
-          已选 {draft.length}
+        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">{t("magent.coworkers")}</span>
+        <span
+          className="shrink-0 text-ui-xs text-slate-400"
+          title={t("magent.coworkersSelectedHint")}
+        >
+          {t("magent.selectedCount", { n: draft.length })}
         </span>
       </header>
 
@@ -90,7 +94,7 @@ export function CoworkersPage() {
             className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
           >
             <RefreshCw size={13} />
-            重新加载
+            {t("magent.reload")}
           </button>
         </div>
       ) : null}
@@ -98,16 +102,16 @@ export function CoworkersPage() {
       {loading ? (
         <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
           <LoaderCircle size={14} className="animate-spin" />
-          正在读取同事包…
+          {t("magent.coworkersLoading")}
         </div>
       ) : null}
 
       {!loading && !loadError && coworkers.length === 0 ? (
         <p
           className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title="把同事包放进桌面端 assets/coworker 后重启。"
+          title={t("magent.coworkersEmptyHint")}
         >
-          还没有同事入职
+          {t("magent.coworkersEmpty")}
         </p>
       ) : null}
 
@@ -191,7 +195,7 @@ export function CoworkersPage() {
                     ) : null}
                   </div>
                 ) : (
-                  <span className="mt-2 block text-ui-2xs text-slate-300">没有技能包</span>
+                  <span className="mt-2 block text-ui-2xs text-slate-300">{t("magent.noSkills")}</span>
                 )}
               </button>
             );
@@ -200,7 +204,10 @@ export function CoworkersPage() {
       ) : null}
 
       {saveError ? (
-        <p className="px-4 pb-3 text-ui-caption text-rose-600" title="保存失败，勾选未丢失，可重试。">
+        <p
+          className="px-4 pb-3 text-ui-caption text-rose-600"
+          title={t("magent.saveFailed")}
+        >
           {saveError}
         </p>
       ) : null}
@@ -210,11 +217,11 @@ export function CoworkersPage() {
           <button
             type="button"
             disabled={saving}
-            title="保存后启用的同事包会附加到之后发起的 Agent 任务提示词里。"
+            title={t("magent.saveHint")}
             onClick={() => void save()}
             className="w-full rounded-lg bg-primary px-3 py-2 text-ui-caption text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
           >
-            {saving ? "保存中…" : "保存"}
+            {saving ? t("magent.saving") : t("common.save")}
           </button>
         </div>
       ) : null}

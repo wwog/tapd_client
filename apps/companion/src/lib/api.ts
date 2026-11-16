@@ -8,8 +8,9 @@
  */
 import { useSyncExternalStore } from "react";
 
+import { t, type MessageKey } from "./i18n";
 import { navigate } from "./router";
-import { clearSession, getSession } from "./session";
+import { clearSession, getMediaToken, getSession } from "./session";
 
 export type UserProfile = {
   nick: string;
@@ -31,6 +32,107 @@ export type Workspace = {
 export type WorkspaceContext = {
   user: UserProfile;
   workspaces: Workspace[];
+};
+
+/* -------------------------------------------------------------------------
+   Project files (read-only). Shapes mirror `apps/desktop/src/lib/fs.ts`;
+   the Rust companion routes serialize the same serde structs.
+   ------------------------------------------------------------------------- */
+
+export type FsEntryKind = "dir" | "file" | "symlink";
+
+export type FsEntry = {
+  name: string;
+  /** Relative to the project root, `/`-separated, no leading slash. */
+  path: string;
+  kind: FsEntryKind;
+  /** Bytes; 0 for directories. */
+  size: number;
+  /** Unix seconds. */
+  mtime: number;
+  /** Dot-prefixed name. */
+  hidden: boolean;
+};
+
+export type FsListing = {
+  /** Absolute project root; display only, never sent back as a path. */
+  root: string;
+  /** Relative directory; "" is the project root. */
+  path: string;
+  entries: FsEntry[];
+  /** The directory exceeded the entry cap and was cut off. */
+  truncated: boolean;
+};
+
+/** What a preview can render. Anything else falls back to metadata only. */
+export type FsContentKind =
+  | "text"
+  | "markdown"
+  | "image"
+  | "audio"
+  | "video"
+  | "binary"
+  | "tooLarge";
+
+export type FsContent = {
+  kind: FsContentKind;
+  path: string;
+  size: number;
+  mtime: number;
+  /** Milliseconds since the epoch; the editor's conflict token. */
+  mtimeMs: number;
+  /** UTF-8 body for text/markdown; null for every other kind. */
+  text: string | null;
+  /** The read stopped at the desktop's text limit. */
+  truncated: boolean;
+};
+
+/** Save acknowledgement: the new mtime feeds the next conflict check. */
+export type FsWriteResult = {
+  path: string;
+  kind: FsEntryKind;
+  size: number;
+  mtime: number;
+  mtimeMs: number;
+};
+
+/* -------------------------------------------------------------------------
+   Local projects and work items. A local project is a folder on the desktop
+   machine; work items belong to it and can be handed to an Agent without ever
+   touching TAPD. Shapes mirror the desktop's local_* feature commands.
+   ------------------------------------------------------------------------- */
+
+export type LocalProject = {
+  id: string;
+  name: string;
+  /** Absolute desktop folder; chosen through the directory picker. */
+  repoPath: string;
+  /** Markdown rules appended to every Agent task of this project. */
+  rule: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkItemStatus = "pending" | "in_progress" | "done";
+
+export type WorkItem = {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: WorkItemStatus;
+  /** Agent task currently (or last) attached to this item; null when never queued. */
+  agentTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One directory level of a browseable folder; `parent` is null at the root. */
+export type DirListing = {
+  path: string;
+  parent: string | null;
+  /** Directories only; files are not browsable here. */
+  entries: Array<{ name: string; path: string }>;
 };
 
 export type BugQuery = {
@@ -113,11 +215,13 @@ export type Attachment = {
 
 export type MediaKind = "image" | "video" | "file";
 
-/** Image/video embedded in the rich-text description or a comment. */
+/** Resource embedded in the rich-text description or a comment. */
 export type MediaRef = {
   url: string;
   kind: MediaKind;
   filenameHint: string;
+  /** Size TAPD reported for an inline attachment card; 0 when unknown. */
+  size: number;
 };
 
 export type ChangeField = {
@@ -201,6 +305,22 @@ export type CompanionState = {
   workspaces: Workspace[];
 };
 
+/** One paired device, from the manager-only devices endpoint. */
+export type CompanionDeviceInfo = {
+  id: string;
+  name: string;
+  pairedAt: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  canManage: boolean;
+  self: boolean;
+};
+
+export type CompanionDevices = {
+  selfId: string;
+  devices: CompanionDeviceInfo[];
+};
+
 /** Mirror of the desktop notification engine's entries (read-only). */
 export type CompanionNotification = {
   id: string;
@@ -239,11 +359,53 @@ export type AgentApproval = {
   stash?: string;
 };
 
+/** Per-file change status reported by `agent_task_changes`. */
+export type AgentChangeKind = "added" | "modified" | "deleted";
+
+/** One file in the change list; paths are repo-relative. */
+export type AgentChangedFile = {
+  path: string;
+  status: AgentChangeKind;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+/** `agent_task_changes` response: capped at 200 files, `fileCount` is the truth. */
+export type AgentChangeSummary = {
+  files: AgentChangedFile[];
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  dirty: boolean;
+  committed: boolean;
+  commit?: string | null;
+};
+
+/** `agent_task_diff` response for one file, or the whole task when omitted. */
+export type AgentDiffView = {
+  text: string;
+  truncated: boolean;
+  empty: boolean;
+};
+
+/** Compact stats stored on the task itself (no per-file detail). */
+export type AgentTaskChanges = {
+  files: string[];
+  dirty: boolean;
+  committed: boolean;
+  additions: number;
+  deletions: number;
+  commit?: string | null;
+};
+
 export type AgentMerge = {
   error?: string | null;
   instructions?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  /** Commit created by the merge, shown in the merge card and history. */
+  commit?: string | null;
 };
 
 export type AgentRuntimePhase =
@@ -287,12 +449,18 @@ export type AgentTask = {
   error?: string;
   prompt?: string;
   source?: string;
+  /** Where the task came from; a local work item has no TAPD bug behind it. */
+  sourceKind?: "tapd_bug" | "local_work_item";
   runtimeId?: string;
   agentSessionId?: string | null;
   approval?: AgentApproval | null;
+  /** Diff stats of this task, refreshed by the desktop as the agent works. */
+  changes?: AgentTaskChanges | null;
   merge?: AgentMerge | null;
   commitOnly?: boolean;
   extraPrompt?: string;
+  /** Project rule copied onto the task when it was queued. */
+  projectRule?: string;
   attachments?: string[];
 };
 
@@ -395,16 +563,17 @@ export type AgentEnqueueRequest = {
   source?: string;
 };
 
-export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
-  queued: "排队中",
-  preparing: "准备中",
-  running: "运行中",
-  awaiting_approval: "待审核",
-  awaiting_merge: "待合并",
-  merging: "合并中",
-  succeeded: "已完成",
-  failed: "失败",
-  canceled: "已取消",
+/** Status keys; callers resolve them with `t()` at render time. */
+export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, MessageKey> = {
+  queued: "mobile.status.queued",
+  preparing: "mobile.status.preparing",
+  running: "mobile.status.running",
+  awaiting_approval: "mobile.status.awaitingApproval",
+  awaiting_merge: "mobile.status.awaitingMerge",
+  merging: "mobile.status.merging",
+  succeeded: "mobile.status.succeeded",
+  failed: "mobile.status.failed",
+  canceled: "mobile.status.canceled",
 };
 
 export const AGENT_STATUS_TONES: Record<AgentTaskStatus, "neutral" | "blue" | "green" | "amber" | "red" | "cyan"> = {
@@ -431,6 +600,10 @@ const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
 
 export const isAgentInFlight = (task: AgentTask): boolean =>
   IN_FLIGHT_STATUSES.includes(task.status);
+
+/** Bug links and bug ids only apply to tasks raised from a TAPD bug. */
+export const isTapdTask = (task: AgentTask): boolean =>
+  (task.sourceKind ?? "tapd_bug") === "tapd_bug";
 
 /* -------------------------------------------------------------------------
    Notification settings, copied from `apps/desktop/src/lib/notification.ts`.
@@ -501,7 +674,7 @@ export class ApiError extends Error {
 }
 
 export function asApiError(err: unknown): ApiError {
-  return err instanceof ApiError ? err : new ApiError("error", "请求失败");
+  return err instanceof ApiError ? err : new ApiError("error", t("mobile.api.requestFailed"));
 }
 
 /** Global desktop-side connection state, shared by every page. */
@@ -526,7 +699,21 @@ const getConnection = (): Connection => connection;
 
 export const retryConnection = (): void => setConnection("ok");
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = {
+  /**
+   * Local-project and filesystem endpoints succeed without a TAPD session.
+   * Promoting those successes to the global connection would drop the
+   * not_logged_in gate while the TAPD list still fails, remounting the page in
+   * a loop. Only TAPD-backed calls (or the heartbeat) recover the connection.
+   */
+  trackConnection?: boolean;
+};
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  options: RequestOptions = {},
+): Promise<T> {
   const token = getSession();
   let response: Response;
   try {
@@ -539,7 +726,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     setConnection("offline");
-    throw new ApiError("offline", "无法连接桌面端");
+    throw new ApiError("offline", t("mobile.desktop.offline"));
   }
 
   let envelope: { ok: true; data: T } | { ok: false; code: string; error: string } | null =
@@ -551,7 +738,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!envelope) {
     setConnection("offline");
-    throw new ApiError("offline", "桌面端响应异常");
+    throw new ApiError("offline", t("mobile.api.badResponse"));
   }
 
   if (!envelope.ok) {
@@ -564,17 +751,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (!(hash.includes("/pair") && hash.includes("t="))) {
         navigate("#/pair");
       }
-      throw new ApiError("unauthorized", "配对已失效，请重新扫码");
+      throw new ApiError("unauthorized", t("mobile.api.pairingExpired"));
     }
     if (envelope.code === "not_logged_in") {
       setConnection("not_logged_in");
-      throw new ApiError("not_logged_in", "桌面端未登录");
+      throw new ApiError("not_logged_in", t("mobile.desktop.notLoggedIn"));
     }
-    throw new ApiError(envelope.code || "error", envelope.error || "请求失败");
+    throw new ApiError(envelope.code || "error", envelope.error || t("mobile.api.requestFailed"));
   }
 
-  // Any success recovers the app automatically (desktop logged back in etc.).
-  setConnection("ok");
+  // TAPD-backed successes recover the app automatically (desktop logged back
+  // in etc.); local-only calls opt out so they cannot fight the login gate.
+  if (options.trackConnection !== false) setConnection("ok");
   return envelope.data;
 }
 
@@ -584,11 +772,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * consumes. The typed helpers on `api` wrap it.
  */
 export const feature = <T>(name: string, payload: Record<string, unknown> = {}): Promise<T> =>
-  request<T>("/companion/api/feature", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, payload }),
-  });
+  request<T>(
+    "/companion/api/feature",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, payload }),
+    },
+    { trackConnection: false },
+  );
 
 export const api = {
   state: () => request<CompanionState>("/companion/api/state"),
@@ -597,19 +789,40 @@ export const api = {
   workspaces: () => request<WorkspaceContext>("/companion/api/workspaces"),
 
   /** One-time pairing code -> long-lived session token. */
-  pair: (token: string, name: string) =>
+  pair: (token: string, name: string, deviceId: string) =>
     request<{ sessionToken: string }>("/companion/api/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, name }),
+      body: JSON.stringify({ token, name, deviceId }),
     }),
 
   /** Presence handshake: tells the desktop this device is still connected. */
   heartbeat: () =>
-    request<{ version: string; deviceName: string; now: string }>(
-      "/companion/api/heartbeat",
-      { method: "POST" },
-    ),
+    request<{
+      version: string;
+      deviceName: string;
+      deviceId: string;
+      canManage: boolean;
+      mediaToken: string;
+      now: string;
+    }>("/companion/api/heartbeat", { method: "POST" }, { trackConnection: false }),
+
+  /** Manager-only: paired devices and their management permissions. */
+  devices: () => request<CompanionDevices>("/companion/api/devices"),
+
+  devicePermission: (deviceId: string, canManage: boolean) =>
+    request<void>("/companion/api/devices/permission", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId, canManage }),
+    }),
+
+  deviceUnpair: (deviceId: string) =>
+    request<void>("/companion/api/devices/unpair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId }),
+    }),
 
   bugs: (query: BugQuery) =>
     request<BugListPage>("/companion/api/bugs", {
@@ -628,6 +841,106 @@ export const api = {
     const params = new URLSearchParams({ workspaceId });
     return request<WorkspaceMember[]>(`/companion/api/members?${params.toString()}`);
   },
+
+  /* -- Project files (read-only) ----------------------------------------- */
+
+  /** One directory level of the project's configured folder, dirs first. */
+  files: (workspaceId: string, path: string) => {
+    const params = new URLSearchParams({ workspaceId, path });
+    return request<FsListing>(
+      `/companion/api/files?${params.toString()}`,
+      undefined,
+      { trackConnection: false },
+    );
+  },
+
+  /** File body for text/markdown, or a kind the viewer picks a renderer for. */
+  file: (workspaceId: string, path: string) => {
+    const params = new URLSearchParams({ workspaceId, path });
+    return request<FsContent>(
+      `/companion/api/file?${params.toString()}`,
+      undefined,
+      { trackConnection: false },
+    );
+  },
+
+  /** Whether the desktop allows phone-side editing (default false). */
+  fileWriteEnabled: () =>
+    request<{ enabled: boolean }>(
+      "/companion/api/file/write",
+      undefined,
+      { trackConnection: false },
+    ),
+
+  /** Manager-only toggle; shared with the desktop companion dialog. */
+  setFileWrite: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/companion/api/file/write-setting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+
+  /** Overwrites one text file; `mtimeMs` enables the conflict check. */
+  writeFile: (
+    workspaceId: string,
+    path: string,
+    text: string,
+    mtimeMs?: number,
+    force?: boolean,
+  ) =>
+    request<FsWriteResult>("/companion/api/file/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, path, text, mtimeMs, force }),
+    }),
+
+  /* -- Local projects & work items --------------------------------------- */
+
+  localProjects: () => feature<{ projects: LocalProject[] }>("local_projects_list", {}),
+
+  /** `name` may be omitted: the desktop then derives it from the folder. */
+  createLocalProject: (req: { name?: string | null; repoPath: string; rule?: string }) =>
+    feature<{ project: LocalProject }>("local_project_create", { ...req }),
+
+  updateLocalProject: (
+    id: string,
+    patch: { name?: string; repoPath?: string; rule?: string },
+  ) => feature<{ project: LocalProject }>("local_project_update", { id, ...patch }),
+
+  deleteLocalProject: (id: string) =>
+    feature<{ deleted: boolean }>("local_project_delete", { id }),
+
+  localItems: (projectId: string) =>
+    feature<{ items: WorkItem[] }>("local_items_list", { projectId }),
+
+  createLocalItem: (req: { projectId: string; title: string; description?: string | null }) =>
+    feature<{ item: WorkItem }>("local_item_create", { ...req }),
+
+  /** An empty `description` clears it; omitting the field leaves it alone. */
+  updateLocalItem: (
+    id: string,
+    patch: { title?: string; description?: string; status?: WorkItemStatus },
+  ) => feature<{ item: WorkItem }>("local_item_update", { id, ...patch }),
+
+  deleteLocalItem: (id: string) =>
+    feature<{ deleted: boolean }>("local_item_delete", { id }),
+
+  /**
+   * Hands an item to the Agent. The desktop also flips the item to
+   * `in_progress`, so the returned item is the fresh state to render.
+   */
+  enqueueLocalItem: (req: {
+    id: string;
+    extraPrompt?: string | null;
+    runtimeId?: string | null;
+    model?: string | null;
+    permissionMode?: string | null;
+    attachments?: string[] | null;
+  }) => feature<{ task: AgentTask; item: WorkItem }>("local_item_enqueue", { ...req }),
+
+  /** One directory level under $HOME (or a configured local project). */
+  browseDirs: (path?: string | null) =>
+    feature<DirListing>("local_browse_dirs", { path: path ?? null }),
 
   /* -- Bug write actions (user-initiated only) ---------------------------- */
 
@@ -683,15 +996,13 @@ export const api = {
   agentStop: (taskId: string) =>
     feature<{ task?: AgentTask }>("agent_review_stop", { taskId }),
 
-  agentDiff: async (taskId: string): Promise<string> => {
-    const data = await feature<unknown>("agent_review_diff", { taskId });
-    if (typeof data === "string") return data;
-    if (data && typeof data === "object" && "diff" in data) {
-      const diff = (data as { diff?: unknown }).diff;
-      if (typeof diff === "string") return diff;
-    }
-    return "";
-  },
+  /** Per-file change stats for the task's worktree / repo. */
+  agentTaskChanges: (taskId: string) =>
+    feature<AgentChangeSummary>("agent_task_changes", { taskId }),
+
+  /** Unified diff for one changed file, or the whole task when omitted. */
+  agentTaskDiff: (taskId: string, file?: string): Promise<AgentDiffView> =>
+    feature<AgentDiffView>("agent_task_diff", { taskId, file: file ?? null }),
 
   agentMergeStart: (taskId: string) =>
     feature<AgentMergeStart>("agent_merge_start", { taskId }),
@@ -741,6 +1052,20 @@ export const api = {
 
   coworkerSelect: (ids: string[]) =>
     feature<{ selectedIds: string[] }>("coworker_select", { ids }),
+};
+
+/**
+ * Same-origin streaming URL for `<img>` / `<audio>` / `<video>` / raw links.
+ * Those elements cannot set headers, so the session token rides in `t`, the
+ * same scheme `mediaUrl` (lib/rich.ts) uses for rich-text media.
+ */
+export const fileRawUrl = (workspaceId: string, path: string): string => {
+  const params = new URLSearchParams({
+    t: getMediaToken() ?? "",
+    workspaceId,
+    path,
+  });
+  return `/companion/api/file/raw?${params.toString()}`;
 };
 
 /** Reactive connection state for full-screen gates. */

@@ -1,15 +1,21 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ChevronLeft, Minus, Plus, Star } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronLeft, Copy, Minus, Plus, Star } from "lucide-react";
 
 import {
   api,
   asApiError,
   type AgentConfig,
   type AgentRuntimeDescriptor,
+  type CompanionDeviceInfo,
+  type CompanionDevices,
   type NotificationSettings,
 } from "../lib/api";
 import { useAgentTasks } from "../lib/agentTasks";
+import { Badge } from "../components/Badge";
+import { copyText } from "../lib/clipboard";
+import { relativeTime } from "../lib/format";
 import { useDesktopPresence } from "../lib/heartbeat";
+import { localeTag, t, type LocaleMode } from "../lib/i18n";
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -65,7 +71,37 @@ function SettingRow(props: { label: string; children: ReactNode }) {
   );
 }
 
-/** 带说明的开关行（title 承载语义说明）。 */
+/** 带说明的开关控件（title/aria-label 承载语义说明）。 */
+function SwitchButton(props: {
+  label: string;
+  title?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked}
+      aria-label={props.label}
+      title={props.title}
+      disabled={props.disabled}
+      onClick={() => props.onChange(!props.checked)}
+      className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
+        props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
+      } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
+    >
+      <span
+        className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
+          props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
+        }`}
+      />
+    </button>
+  );
+}
+
+/** 带说明的开关行。 */
 function SwitchRow(props: {
   label: string;
   title?: string;
@@ -75,24 +111,13 @@ function SwitchRow(props: {
 }) {
   return (
     <SettingRow label={props.label}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={props.checked}
-        aria-label={props.label}
+      <SwitchButton
+        label={props.label}
         title={props.title}
+        checked={props.checked}
         disabled={props.disabled}
-        onClick={() => props.onChange(!props.checked)}
-        className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
-          props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
-        } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
-      >
-        <span
-          className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
-            props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
-          }`}
-        />
-      </button>
+        onChange={props.onChange}
+      />
     </SettingRow>
   );
 }
@@ -113,8 +138,8 @@ function Stepper(props: {
     <div className="flex items-center gap-3">
       <button
         type="button"
-        aria-label={`减小${props.label}`}
-        title={`减小${props.label}`}
+        aria-label={t("mobile.settings.decrease", { label: props.label })}
+        title={t("mobile.settings.decrease", { label: props.label })}
         disabled={props.disabled || props.value - step < props.min}
         onClick={() => props.onChange(Math.max(props.min, props.value - step))}
         className="rounded-md border border-border bg-surface p-1 text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
@@ -127,8 +152,8 @@ function Stepper(props: {
       </span>
       <button
         type="button"
-        aria-label={`增大${props.label}`}
-        title={`增大${props.label}`}
+        aria-label={t("mobile.settings.increase", { label: props.label })}
+        title={t("mobile.settings.increase", { label: props.label })}
         disabled={props.disabled || props.value + step > props.max}
         onClick={() => props.onChange(Math.min(props.max, props.value + step))}
         className="rounded-md border border-border bg-surface p-1 text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
@@ -145,7 +170,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
     return (
       <p
         className="border-b border-border py-2.5 text-ui-sm leading-5 text-rose-600 last:border-b-0"
-        title="读取桌面端配置失败；改动会回滚并在这里保留错误。"
+        title={t("mobile.settings.loadErrorHint")}
       >
         {props.error}
       </p>
@@ -154,7 +179,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   if (props.loading) {
     return (
       <p className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
-        正在读取桌面端配置…
+        {t("mobile.settings.loadingDesktop")}
       </p>
     );
   }
@@ -213,6 +238,30 @@ export function SettingsPage() {
   );
   const [pendingLoads, setPendingLoads] = useState(() => (settingsCache ? 0 : 3));
   const [deskError, setDeskError] = useState<string | null>(null);
+  const [devices, setDevices] = useState<CompanionDevices | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const [fileWrite, setFileWrite] = useState(false);
+  const [fileWriteBusy, setFileWriteBusy] = useState(false);
+  const [fileWriteError, setFileWriteError] = useState<string | null>(null);
+
+  // The desktop owns the switch; managers can toggle it from here.
+  useEffect(() => {
+    if (!presence.canManage) return;
+    let cancelled = false;
+    void api
+      .fileWriteEnabled()
+      .then((data) => {
+        if (!cancelled) setFileWrite(data.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [presence.canManage, presence.lastSync]);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const devicesSeq = useRef(0);
 
   // 桌面端配置：三项依次读取；任一失败都保留错误，成功项照常渲染。
   useEffect(() => {
@@ -255,6 +304,32 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  // 设备管理：只有管理员会请求；每次心跳静默刷新在线状态。
+  const loadDevices = useCallback(async () => {
+    const seq = ++devicesSeq.current;
+    try {
+      const next = await api.devices();
+      if (seq !== devicesSeq.current) return;
+      setDevices(next);
+      setDevicesError(null);
+    } catch (err) {
+      if (seq !== devicesSeq.current) return;
+      setDevicesError(asApiError(err).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!presence.canManage) {
+      setDevices(null);
+      setDevicesError(null);
+      return;
+    }
+    // While a permission/unpair request is in flight, its optimistic state is
+    // authoritative; reload once it settles.
+    if (deviceBusy) return;
+    void loadDevices();
+  }, [presence.canManage, presence.lastSync, deviceBusy, loadDevices]);
 
   // Agent 配置：乐观更新，失败回滚并保留错误（无 toast，错误留在页面）。
   const patchConfig = async (patch: Partial<AgentConfig>) => {
@@ -305,10 +380,103 @@ export function SettingsPage() {
   };
 
   const unpair = () => {
-    if (!window.confirm("解除配对后需要重新扫码，确定解除？")) return;
+    if (!window.confirm(t("mobile.settings.unpairConfirm"))) return;
     settingsCache = null;
     clearSession();
     navigate("#/pair");
+  };
+
+  /** 权限开关：先乐观更新，失败只回滚这一台设备。 */
+  const setDeviceManage = async (
+    device: CompanionDeviceInfo,
+    canManage: boolean,
+  ) => {
+    // Invalidate any in-flight list refresh so it cannot overwrite this edit.
+    devicesSeq.current += 1;
+    setDeviceBusy(true);
+    setDevices((current) =>
+      current
+        ? {
+            ...current,
+            devices: current.devices.map((item) =>
+              item.id === device.id ? { ...item, canManage } : item,
+            ),
+          }
+        : current,
+    );
+    try {
+      await api.devicePermission(device.id, canManage);
+    } catch (err) {
+      setDevices((current) =>
+        current
+          ? {
+              ...current,
+              devices: current.devices.map((item) =>
+                item.id === device.id
+                  ? { ...item, canManage: device.canManage }
+                  : item,
+              ),
+            }
+          : current,
+      );
+      setDevicesError(asApiError(err).message);
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
+  /** Optimistic write; a failure restores the previous value and shows why. */
+  const toggleFileWrite = async (enabled: boolean) => {
+    setFileWriteBusy(true);
+    setFileWriteError(null);
+    const previous = fileWrite;
+    setFileWrite(enabled);
+    try {
+      const next = await api.setFileWrite(enabled);
+      setFileWrite(next.enabled);
+    } catch (error) {
+      setFileWrite(previous);
+      setFileWriteError(asApiError(error).message);
+    } finally {
+      setFileWriteBusy(false);
+    }
+  };
+
+  const removeDevice = async (device: CompanionDeviceInfo) => {
+    if (
+      !window.confirm(
+        t("mobile.settings.removeDeviceConfirm", { name: device.name }),
+      )
+    ) {
+      return;
+    }
+    setDeviceBusy(true);
+    devicesSeq.current += 1;
+    try {
+      await api.deviceUnpair(device.id);
+      setDevices((current) =>
+        current
+          ? {
+              ...current,
+              devices: current.devices.filter((item) => item.id !== device.id),
+            }
+          : current,
+      );
+    } catch (err) {
+      setDevicesError(asApiError(err).message);
+    } finally {
+      setDeviceBusy(false);
+    }
+  };
+
+  const copyCurrentLink = async () => {
+    setLinkError(null);
+    if (!(await copyText(window.location.origin))) {
+      setLinkError(t("common.copyFailed"));
+      return;
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 1500);
   };
 
   // 队列里有未结束任务时，桌面端会拒绝切换 Worktree；开关直接锁住。
@@ -323,64 +491,219 @@ export function SettingsPage() {
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
-          aria-label="返回"
+          aria-label={t("mobile.nav.back")}
           onClick={back}
           className="rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="text-ui-caption text-slate-900">设置</span>
+        <span className="text-ui-caption text-slate-900">{t("common.settings")}</span>
       </header>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        <SettingRow label="桌面端">
+        <SettingRow label={t("mobile.settings.desktop")}>
           <span
             className="flex items-center gap-1.5 text-ui-caption text-slate-700"
-            title="手机每 20 秒向桌面端发送一次心跳；连续两次未送达即显示掉线。"
+            title={t("mobile.settings.heartbeatHint")}
           >
             <span
               className={`h-1.5 w-1.5 rounded-full ${
                 presence.online ? "bg-emerald-500" : "bg-slate-300"
               }`}
             />
-            {presence.online ? "在线" : "掉线"}
+            {presence.online
+              ? t("mobile.settings.presenceOnline")
+              : t("mobile.settings.presenceOffline")}
           </span>
         </SettingRow>
-        <SettingRow label="设备">
+        <SettingRow label={t("mobile.settings.device")}>
           <span className="text-ui-caption text-slate-700">
             {presence.deviceName ?? "—"}
           </span>
         </SettingRow>
-        <SettingRow label="桌面版本">
+        <SettingRow label={t("mobile.settings.desktopVersion")}>
           <span className="text-ui-caption text-slate-700">
             {presence.version ? `v${presence.version}` : "—"}
           </span>
         </SettingRow>
-        <SettingRow label="最近同步">
+        <SettingRow label={t("mobile.settings.lastSync")}>
           <span className="text-ui-caption tabular-nums text-slate-500">
             {presence.lastSync
-              ? new Date(presence.lastSync).toLocaleTimeString("zh-CN")
+              ? new Date(presence.lastSync).toLocaleTimeString(localeTag())
               : "—"}
           </span>
         </SettingRow>
       </section>
 
+      {presence.canManage ? (
+        <>
+          <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
+            {t("mobile.settings.devices")}
+          </h2>
+          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+            <SettingRow label={t("mobile.settings.host")}>
+              <span className="flex items-center gap-1.5 text-ui-caption text-slate-700">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    presence.online ? "bg-emerald-500" : "bg-slate-300"
+                  }`}
+                />
+                {presence.version ? `v${presence.version}` : "—"}
+              </span>
+            </SettingRow>
+            <div className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+              <span className="shrink-0 text-ui-caption text-slate-700">
+                {t("mobile.settings.currentLink")}
+              </span>
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
+                <span
+                  className="min-w-0 truncate font-mono text-ui-xs text-slate-500"
+                  title={window.location.origin}
+                >
+                  {window.location.origin.replace(/^https?:\/\//, "")}
+                </span>
+                <button
+                  type="button"
+                  aria-label={
+                    linkCopied ? t("common.copied") : t("common.copy")
+                  }
+                  title={linkCopied ? t("common.copied") : t("common.copy")}
+                  onClick={() => void copyCurrentLink()}
+                  className="shrink-0 rounded p-1 text-slate-400 transition active:bg-overlay-soft"
+                >
+                  {linkCopied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+            {linkError ? (
+              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+                {linkError}
+              </p>
+            ) : null}
+            {devicesError ? (
+              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+                {devicesError}
+              </p>
+            ) : null}
+            {devices ? (
+              devices.devices.length > 0 ? (
+                devices.devices.map((device) => (
+                  <div
+                    key={device.id}
+                    className="border-b border-border py-2.5 last:border-b-0"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                            device.online ? "bg-emerald-500" : "bg-slate-300"
+                          }`}
+                        />
+                        <span className="truncate text-ui-caption text-slate-700">
+                          {device.name}
+                        </span>
+                        {device.self ? (
+                          <Badge tone="blue">
+                            {t("mobile.settings.thisDevice")}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {device.self ? null : (
+                        <SwitchButton
+                          checked={device.canManage}
+                          disabled={deviceBusy}
+                          label={`${t("mobile.settings.manageDevices")} ${device.name}`}
+                          title={t("mobile.settings.manageDevicesHint")}
+                          onChange={(value) =>
+                            void setDeviceManage(device, value)
+                          }
+                        />
+                      )}
+                    </div>
+                    <div className="mt-0.5 flex items-center justify-between gap-2 pl-3.5">
+                      <span className="min-w-0 truncate text-ui-2xs text-slate-400">
+                        {device.online
+                          ? t("mobile.settings.presenceOnline")
+                          : t("mobile.settings.presenceOffline")}
+                        {device.lastSeenAt
+                          ? ` · ${relativeTime(device.lastSeenAt)}`
+                          : ""}
+                      </span>
+                      {device.self ? null : (
+                        <button
+                          type="button"
+                          disabled={deviceBusy}
+                          onClick={() => void removeDevice(device)}
+                          className="shrink-0 rounded px-1 py-0.5 text-ui-2xs text-rose-600 transition active:bg-rose-50 disabled:opacity-40"
+                        >
+                          {t("mobile.settings.removeDevice")}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="py-2 text-ui-xs text-slate-400">
+                  {t("mobile.settings.noDevices")}
+                </p>
+              )
+            ) : (
+              <p className="py-2 text-ui-caption text-slate-400">
+                {t("mobile.settings.devicesLoading")}
+              </p>
+            )}
+          </section>
+        </>
+      ) : null}
+
+      {presence.canManage ? (
+        <>
+          <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
+            {t("mobile.settings.fileEditing")}
+          </h2>
+          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+            <SwitchRow
+              label={t("mobile.settings.fileWrite")}
+              title={t("mobile.settings.fileWriteHint")}
+              checked={fileWrite}
+              disabled={fileWriteBusy}
+              onChange={(value) => void toggleFileWrite(value)}
+            />
+            {fileWriteError ? (
+              <p className="pb-2 text-ui-xs text-rose-600">{fileWriteError}</p>
+            ) : null}
+          </section>
+        </>
+      ) : null}
+
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        <SettingRow label="主题">
-          <Segmented<ThemeMode>
-            label="主题"
-            value={prefs.theme}
-            onChange={(theme) => setPrefs({ theme })}
+        <SettingRow label={t("common.language")}>
+          <Segmented<LocaleMode>
+            label={t("common.language")}
+            value={prefs.locale}
+            onChange={(locale) => setPrefs({ locale })}
             options={[
-              { value: "system", label: "跟随系统" },
-              { value: "light", label: "浅色" },
-              { value: "dark", label: "深色" },
+              { value: "system", label: t("common.system") },
+              { value: "zh", label: "中文" }, // i18n-exempt: language endonym
+              { value: "en", label: "English" }, // i18n-exempt: language endonym
             ]}
           />
         </SettingRow>
-        <SettingRow label="字号">
+        <SettingRow label={t("common.theme")}>
+          <Segmented<ThemeMode>
+            label={t("common.theme")}
+            value={prefs.theme}
+            onChange={(theme) => setPrefs({ theme })}
+            options={[
+              { value: "system", label: t("common.system") },
+              { value: "light", label: t("common.light") },
+              { value: "dark", label: t("common.dark") },
+            ]}
+          />
+        </SettingRow>
+        <SettingRow label={t("common.fontSize")}>
           <Stepper
-            label="字号"
+            label={t("common.fontSize")}
             value={prefs.fontSize}
             min={FONT_SIZE_MIN}
             max={FONT_SIZE_MAX}
@@ -390,29 +713,29 @@ export function SettingsPage() {
         </SettingRow>
       </section>
 
-      <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">桌面端配置</h2>
+      <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">{t("mobile.settings.desktopSettings")}</h2>
 
       <DeskStatus error={deskError} loading={pendingLoads > 0 && !agentConfig && !notif} />
 
       <section
         className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1"
-        title="改动会立即写回桌面端；失败时恢复原值并显示错误。"
+        title={t("mobile.settings.writeBackHint")}
       >
-        <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">Agent 执行</h3>
+        <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.agentExecution")}</h3>
         <SwitchRow
-          label="Worktree 隔离"
+          label={t("mobile.settings.worktreeIsolation")}
           title={
             queueBusy
-              ? "有活跃任务时切换会被桌面端拒绝，等队列清空后再试。"
-              : "每个任务在独立 git worktree 中运行，完成后保留提交分支。"
+              ? t("mobile.settings.worktreeBusyHint")
+              : t("mobile.settings.worktreeHint")
           }
           checked={worktreeEnabled}
           disabled={!agentConfig || queueBusy}
           onChange={(value) => void patchConfig({ worktreeEnabled: value })}
         />
-        <SettingRow label="执行单元">
+        <SettingRow label={t("mobile.settings.executionUnits")}>
           <Stepper
-            label="执行单元"
+            label={t("mobile.settings.executionUnits")}
             value={worktreeEnabled ? agentConfig?.executionUnits ?? 2 : 1}
             min={UNITS_MIN}
             max={UNITS_MAX}
@@ -421,16 +744,16 @@ export function SettingsPage() {
           />
         </SettingRow>
         <SwitchRow
-          label="启动恢复排队"
-          title="桌面端重启后，之前排队的任务自动继续；关闭则保留队列但暂停，等你在桌面端手动继续。"
+          label={t("mobile.settings.restoreQueued")}
+          title={t("mobile.settings.restoreQueuedHint")}
           checked={agentConfig?.restoreQueuedTasks ?? false}
           disabled={!agentConfig}
           onChange={(value) => void patchConfig({ restoreQueuedTasks: value })}
         />
-        <SettingRow label="默认运行时">
+        <SettingRow label={t("mobile.settings.defaultRuntime")}>
           <select
-            aria-label="默认运行时"
-            title="只列出本机已安装（available）的运行时。"
+            aria-label={t("mobile.settings.defaultRuntime")}
+            title={t("mobile.settings.runtimeListHint")}
             value={agentConfig?.runtimeId ?? ""}
             disabled={!agentConfig}
             onChange={(event) => void patchConfig({ runtimeId: event.target.value })}
@@ -447,75 +770,75 @@ export function SettingsPage() {
           </select>
         </SettingRow>
         {queueBusy ? (
-          <p className="py-2 text-ui-xs leading-4 text-slate-500" title="与桌面端一致的锁：等队列清空后再切换。">
-            队列中有任务，完成后才能切换 Worktree。
+          <p className="py-2 text-ui-xs leading-4 text-slate-500" title={t("mobile.settings.worktreeLockHint")}>
+            {t("mobile.settings.worktreeQueueBusy")}
           </p>
         ) : null}
       </section>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">新缺陷通知</h3>
+        <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.newBugNotifications")}</h3>
         <SwitchRow
-          label="启用通知"
-          title="关闭后桌面端停止轮询与弹窗，已有待处理通知仍保留。"
+          label={t("mobile.settings.enableNotifications")}
+          title={t("mobile.settings.notificationsOffHint")}
           checked={notif?.enabled ?? false}
           disabled={!notif}
           onChange={(value) => void patchNotif({ enabled: value })}
         />
-        <SettingRow label="轮询间隔">
+        <SettingRow label={t("mobile.settings.pollInterval")}>
           <Stepper
-            label="轮询间隔"
+            label={t("mobile.settings.pollInterval")}
             value={notif?.pollIntervalSecs ?? 30}
             min={POLL_MIN}
             max={POLL_MAX}
             step={10}
-            suffix=" 秒"
+            suffix={` ${t("common.seconds")}`}
             disabled={!notif}
             onChange={(value) => void patchNotif({ pollIntervalSecs: value })}
           />
         </SettingRow>
         <SwitchRow
-          label="新分配"
-          title="纯新建且分配给我的缺陷。"
+          label={t("mobile.settings.newlyAssigned")}
+          title={t("mobile.settings.newlyAssignedHint")}
           checked={notif?.includeNew ?? false}
           disabled={!notif}
           onChange={(value) => void patchNotif({ includeNew: value })}
         />
         <SwitchRow
-          label="转派"
-          title="非新建，但处理人刚刚变成我。"
+          label={t("mobile.settings.reassigned")}
+          title={t("mobile.settings.reassignedHint")}
           checked={notif?.includeTransferred ?? false}
           disabled={!notif}
           onChange={(value) => void patchNotif({ includeTransferred: value })}
         />
         <SwitchRow
-          label="重新打开"
-          title="状态从其它值变为重新打开。"
+          label={t("mobile.settings.reopened")}
+          title={t("mobile.settings.reopenedHint")}
           checked={notif?.includeReopened ?? false}
           disabled={!notif}
           onChange={(value) => void patchNotif({ includeReopened: value })}
         />
         <SwitchRow
-          label="免打扰"
-          title="时段内只累计待处理通知，不弹窗；时段结束后自动显示。"
+          label={t("mobile.settings.quietHours")}
+          title={t("mobile.settings.quietHoursHint")}
           checked={notif?.quietHours.enabled ?? false}
           disabled={!notif}
           onChange={(value) => void patchQuietHours({ enabled: value })}
         />
-        <SettingRow label="时段">
+        <SettingRow label={t("mobile.settings.hours")}>
           <span className="flex items-center gap-2">
             <input
               type="time"
-              aria-label="免打扰开始"
+              aria-label={t("mobile.settings.quietStart")}
               value={notif?.quietHours.start ?? "22:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ start: event.target.value })}
               className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
             />
-            <span className="text-ui-sm text-slate-400">至</span>
+            <span className="text-ui-sm text-slate-400">{t("mobile.settings.to")}</span>
             <input
               type="time"
-              aria-label="免打扰结束"
+              aria-label={t("mobile.settings.quietEnd")}
               value={notif?.quietHours.end ?? "09:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ end: event.target.value })}
@@ -523,9 +846,9 @@ export function SettingsPage() {
             />
           </span>
         </SettingRow>
-        <SettingRow label="胶囊最多显示">
+        <SettingRow label={t("mobile.settings.maxVisible")}>
           <Stepper
-            label="胶囊最多显示"
+            label={t("mobile.settings.maxVisible")}
             value={notif?.maxVisible ?? 3}
             min={1}
             max={5}
@@ -539,10 +862,10 @@ export function SettingsPage() {
         <button
           type="button"
           onClick={unpair}
-          title="清除本机的配对会话，桌面端设备列表仍保留记录。"
+          title={t("mobile.settings.unpairHint")}
           className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-ui-caption text-rose-600 transition active:bg-overlay-soft"
         >
-          解除配对
+          {t("mobile.settings.unpair")}
         </button>
       </div>
 
@@ -554,7 +877,7 @@ export function SettingsPage() {
           className="inline-flex items-center gap-1 text-ui-xs text-sky-600 underline decoration-sky-200 underline-offset-2 transition active:text-sky-700"
         >
           <Star size={11} />
-          喜欢的话，去 GitHub star 一下
+          {t("mobile.settings.starOnGithub")}
         </a>
       </div>
     </div>

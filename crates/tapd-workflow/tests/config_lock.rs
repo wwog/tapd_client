@@ -81,12 +81,16 @@ fn toggle_lock_is_pure_and_only_applies_to_real_switches() {
 
 #[test]
 fn manual_merge_and_merge_prompts_name_repo_and_branch() {
-    let manual = tapd_workflow::manual_merge_instructions("/repo", "tapd/a");
+    let manual = tapd_workflow::manual_merge_instructions(
+        "/repo",
+        "tapd/a",
+        tapd_workflow::TaskSource::TapdBug,
+    );
     assert!(manual.contains("/repo"));
     assert!(manual.contains("tapd/a"));
     assert!(manual.contains("我已手动合并"));
 
-    let prompt = tapd_workflow::merge_prompt("/repo", "tapd/a");
+    let prompt = tapd_workflow::merge_prompt("/repo", "tapd/a", tapd_workflow::TaskSource::TapdBug);
     assert!(prompt.contains("/repo"));
     assert!(prompt.contains("tapd/a"));
     assert!(prompt.contains("git merge"));

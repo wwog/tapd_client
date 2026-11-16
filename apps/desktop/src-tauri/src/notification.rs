@@ -37,6 +37,7 @@ use std::{
 use chrono::Local;
 use serde_json::{json, Value};
 use tapd_core::tapd::api::{bug_detail_body, bug_detail_url, parse_bug_detail};
+use tapd_i18n::tr;
 use tauri::{AppHandle, Emitter};
 
 use crate::{commands::auth::session_request_json, notification_db, state::SharedState};
@@ -86,7 +87,7 @@ const MIN_POLL_INTERVAL_SECS: u64 = 20;
 const MAX_POLL_INTERVAL_SECS: u64 = 600;
 
 /// Error text for a card id that is no longer in either store.
-const NOT_FOUND: &str = "通知不存在或已被清理";
+const NOT_FOUND: &str = "notify.notfound";
 
 static SERVICE: OnceLock<Arc<NotificationService>> = OnceLock::new();
 /// Bumped whenever a notification session starts (app launch is implicit, login
@@ -193,7 +194,7 @@ impl NotificationService {
             .rev()
             .find(|item| item.id == id)
             .cloned()
-            .ok_or_else(|| NOT_FOUND.to_string())
+            .ok_or_else(|| tr(NOT_FOUND).to_string())
     }
 
     fn set_state(&self, id: &str, state: NotificationState) -> Result<NotificationItem, String> {
@@ -204,7 +205,7 @@ impl NotificationService {
                 .iter_mut()
                 .rev()
                 .find(|item| item.id == id)
-                .ok_or_else(|| NOT_FOUND.to_string())?;
+                .ok_or_else(|| tr(NOT_FOUND).to_string())?;
             item.state = state;
             item.clone()
         };
@@ -320,7 +321,7 @@ fn service() -> Result<Arc<NotificationService>, String> {
     SERVICE
         .get()
         .cloned()
-        .ok_or_else(|| "通知服务尚未初始化".to_string())
+        .ok_or_else(|| tr("notify.service.notready").to_string())
 }
 
 /// Records a bug-list page as already seen.

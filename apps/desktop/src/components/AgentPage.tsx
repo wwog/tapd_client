@@ -15,7 +15,8 @@ import {
   useAgentTasksStore,
 } from "../lib/agentStore";
 import { useAgentChat } from "../hooks/useAgentChat";
-import { openTaskExportDir } from "../lib/desktop";
+import { openTaskExportDir, openTaskWorktree } from "../lib/desktop";
+import { t } from "../lib/i18n";
 import { AgentApproval, type ManualMerge } from "./AgentApproval";
 import { AgentChatPane } from "./AgentChatPane";
 import { AgentConfigPane } from "./AgentConfigPane";
@@ -25,6 +26,7 @@ import { AgentQueuedDetail } from "./AgentQueuedDetail";
 import { AgentRunToolbar, type AgentTab } from "./AgentRunToolbar";
 import { AgentTaskHeader, type AgentChatView } from "./AgentTaskHeader";
 import { AgentTerminal } from "./AgentTerminal";
+import { TaskChangesPanel } from "./TaskChangesPanel";
 import { Button } from "./ui";
 
 const ACTIVE_STATUSES: AgentTaskStatus[] = ["queued", "preparing", "running", "merging"];
@@ -88,6 +90,8 @@ export function AgentPage({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   /** Manual steps returned by 用原 Agent 合并 when the agent cannot merge. */
   const [manualMerge, setManualMerge] = useState<ManualMerge | null>(null);
+  /** Change panel in the run tab; the header's `+A −D` badge toggles it. */
+  const [changesOpen, setChangesOpen] = useState(false);
   /** One-shot selection for the 待处理 tab (e.g. just entered AwaitingMerge). */
   const [approvalFocusId, setApprovalFocusId] = useState<string | null>(null);
   /** Worktree task approved with a pending commit; prompt merge when it lands. */
@@ -135,7 +139,7 @@ export function AgentPage({
       setTab("approval");
     } else if (watched.status === "failed") {
       setMergeWatchId(null);
-      toast("error", watched.error ?? "提交轮失败，请查看执行记录");
+      toast("error", watched.error ?? t("agent.merge.commitFailed"));
     } else if (
       watched.status === "succeeded" ||
       watched.status === "canceled"
@@ -269,6 +273,11 @@ export function AgentPage({
       : null) ?? fallbackId;
   const selectedTask = runTasks.find((task) => task.id === selectedId) ?? null;
   const selectedQueuePosition = selectedTask ? queuePosition(selectedTask) : null;
+
+  // Switching tasks closes the change panel: it belongs to the previous task.
+  useEffect(() => {
+    setChangesOpen(false);
+  }, [selectedTask?.id]);
   /** Human-readable runtime name for a task; falls back to the stored id. */
   const runtimeName = (id?: string) =>
     runtimes.find((runtime) => runtime.id === id)?.name ?? id ?? "Agent";
@@ -370,7 +379,7 @@ export function AgentPage({
     try {
       const { task: stopped } = await agentApi.stopReview(task.id);
       // The stash ref is only visible in history otherwise; keep it in reach.
-      toast("ok", stopped.error ?? "已停止并储藏改动");
+      toast("ok", stopped.error ?? t("agent.review.stoppedStashed"));
       await refresh();
     } catch (error) {
       toast("error", String(error));
@@ -459,7 +468,7 @@ export function AgentPage({
       {tasksState?.storageError ? (
         <div
           role="alert"
-          title="任务变更会保留在内存中并在下次写入时重试，但重启前可能丢失。"
+          title={t("agent.storage.warning")}
           className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-ui-sm text-rose-700"
         >
           {tasksState.storageError}
@@ -495,6 +504,7 @@ export function AgentPage({
           onResumeQueue={handleResumeQueue}
           onOpenBug={onOpenBug}
           onOpenExportDir={(task) => openTaskExportDir(task, toast)}
+          onOpenWorktree={(task) => openTaskWorktree(task, toast)}
           focusTaskId={approvalFocusId}
           onFocusConsumed={() => setApprovalFocusId(null)}
           areaRef={listAreaRef}
@@ -528,9 +538,9 @@ export function AgentPage({
                   </div>
                   <h3
                     className="mt-3 text-ui-base text-slate-800"
-                    title="在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」里可以打开系统终端继续处理。"
+                    title={t("agent.page.emptyHint")}
                   >
-                    当前没有运行中的任务
+                    {t("agent.page.noRunning")}
                   </h3>
                   {counts.awaiting > 0 ? (
                     <Button
@@ -539,7 +549,7 @@ export function AgentPage({
                       className="mt-3"
                       onClick={() => setTab("approval")}
                     >
-                      有 {counts.awaiting} 个任务待处理
+                      {t("agent.page.pendingCount", { count: counts.awaiting })}
                     </Button>
                   ) : null}
                 </div>
@@ -572,6 +582,9 @@ export function AgentPage({
                   model={currentModel}
                   permissionLabel={selectedPermission?.label}
                   permissionId={selectedTask.permissionMode || "default"}
+                  changesOpen={changesOpen}
+                  onToggleChanges={() => setChangesOpen((current) => !current)}
+                  onOpenWorktree={() => openTaskWorktree(selectedTask, toast)}
                   onViewChange={(next) =>
                     setViewChoice((current) => ({
                       ...current,
@@ -587,6 +600,13 @@ export function AgentPage({
                   onOpenBug={() =>
                     onOpenBug(selectedTask.workspaceId, selectedTask.bugId)
                   }
+                />
+
+                <TaskChangesPanel
+                  taskId={selectedTask.id}
+                  open={changesOpen}
+                  onToggle={() => setChangesOpen((current) => !current)}
+                  className="mx-1.5 mt-1.5 shrink-0"
                 />
 
                 {selectedTask.error ? (
@@ -632,9 +652,9 @@ export function AgentPage({
                     <div>
                       <p
                         className="text-ui-base text-slate-700"
-                        title="任务开始后，opencode TUI 会直接显示在这里，可以像命令行一样操作。"
+                        title={t("agent.page.stdinHint")}
                       >
-                        任务尚未开始
+                        {t("agent.page.notStarted")}
                       </p>
                     </div>
                   </div>

@@ -12,24 +12,25 @@ import {
   type IslandThemeMode,
   type ThemeMode,
 } from "../lib/appearance";
+import { t, type LocaleMode, type MessageKey } from "../lib/i18n";
 import { Segmented } from "./Segmented";
 import { cardClass, inputClass } from "./ui";
 
-const THEMES: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
-  { value: "light", label: "浅色", icon: Sun },
-  { value: "dark", label: "深色", icon: Moon },
-  { value: "system", label: "跟随系统", icon: Monitor },
+const THEMES: Array<{ value: ThemeMode; label: MessageKey; icon: typeof Sun }> = [
+  { value: "light", label: "common.light", icon: Sun },
+  { value: "dark", label: "common.dark", icon: Moon },
+  { value: "system", label: "common.system", icon: Monitor },
 ];
 
-const ISLAND_THEMES: Array<{ value: IslandThemeMode; label: string }> = [
-  { value: "follow", label: "跟随主题" },
-  { value: "light", label: "浅色" },
-  { value: "dark", label: "深色" },
+const ISLAND_THEMES: Array<{ value: IslandThemeMode; label: MessageKey }> = [
+  { value: "follow", label: "common.followTheme" },
+  { value: "light", label: "common.light" },
+  { value: "dark", label: "common.dark" },
 ];
 
-const ISLAND_DISPLAYS: Array<{ value: IslandDisplayMode; label: string }> = [
-  { value: "always", label: "常驻" },
-  { value: "activity", label: "仅通知" },
+const ISLAND_DISPLAYS: Array<{ value: IslandDisplayMode; label: MessageKey }> = [
+  { value: "always", label: "settings.capsule.always" },
+  { value: "activity", label: "settings.capsule.activity" },
 ];
 
 /** Three theme tiles; shared by the settings card and first-run onboarding. */
@@ -55,7 +56,7 @@ export function ThemePicker({ className }: { className?: string }) {
             <ThemeThumb mode={item.value} />
             <span className="mt-1.5 flex items-center gap-1 px-0.5 pb-0.5 text-ui-xs text-slate-600">
               <Icon size={11} className="text-slate-400" />
-              {item.label}
+              {t(item.label)}
               {selected ? <Check size={11} className="ml-auto text-sky-500" /> : null}
             </span>
           </button>
@@ -68,7 +69,14 @@ export function ThemePicker({ className }: { className?: string }) {
 /** Appearance card: theme mode, UI font and the shared base font size. */
 export function AppearanceCard() {
   const appearance = useAppearance();
-  const { island, islandDisplay, font, customFont, fontSize } = appearance;
+  const { island, islandDisplay, font, customFont, fontSize, locale } = appearance;
+
+  // Language names stay in their own script, the way OS pickers show them.
+  const languages: Array<{ value: LocaleMode; label: string }> = [
+    { value: "system", label: t("common.system") },
+    { value: "zh", label: "中文" }, // i18n-exempt: language endonym
+    { value: "en", label: "English" }, // i18n-exempt: language endonym
+  ];
 
   return (
     <section className={cardClass}>
@@ -76,10 +84,10 @@ export function AppearanceCard() {
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
             <Palette size={15} className="text-slate-400" />
-            外观
+            {t("settings.appearance.title")}
           </h2>
           <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-            系统字体与统一字号层级，设置立即生效。
+            {t("settings.appearance.description")}
           </p>
         </div>
         <button
@@ -87,19 +95,19 @@ export function AppearanceCard() {
           onClick={() => setAppearance(DEFAULT_APPEARANCE)}
           className="shrink-0 rounded-md px-2 py-1 text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
         >
-          恢复默认
+          {t("common.restoreDefaults")}
         </button>
       </header>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[1.15fr_1fr]">
         <div>
-          <div className="text-ui-xs font-normal text-slate-500">主题</div>
+          <div className="text-ui-xs font-normal text-slate-500">{t("common.theme")}</div>
           <ThemePicker className="mt-2" />
         </div>
 
         <div className="space-y-3">
           <label className="block">
-            <span className="text-ui-xs font-normal text-slate-500">字体</span>
+            <span className="text-ui-xs font-normal text-slate-500">{t("common.font")}</span>
             <select
               value={font}
               onChange={(event) =>
@@ -111,7 +119,7 @@ export function AppearanceCard() {
             >
               {FONT_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.label)}
                 </option>
               ))}
             </select>
@@ -119,11 +127,11 @@ export function AppearanceCard() {
 
           {font === "custom" ? (
             <label className="block">
-              <span className="text-ui-xs font-normal text-slate-500">字体名称</span>
+              <span className="text-ui-xs font-normal text-slate-500">{t("settings.font.name")}</span>
               <input
                 value={customFont}
                 onChange={(event) => setAppearance({ customFont: event.target.value })}
-                placeholder="如 Inter, PingFang SC"
+                placeholder={t("settings.font.placeholder")}
                 className={clsx(inputClass, "mt-1.5")}
                 spellCheck={false}
               />
@@ -132,7 +140,7 @@ export function AppearanceCard() {
 
           <label className="block">
             <span className="flex items-center justify-between text-ui-xs font-normal text-slate-500">
-              字号
+              {t("common.fontSize")}
               <span className="tabular-nums text-slate-400">{fontSize}px</span>
             </span>
             <input
@@ -147,9 +155,9 @@ export function AppearanceCard() {
               className="mt-2 h-1.5 w-full cursor-pointer accent-sky-500"
             />
             <span className="mt-1 flex justify-between text-ui-2xs text-slate-400">
-              <span>紧凑</span>
-              <span>标准</span>
-              <span>宽松</span>
+              <span>{t("settings.fontSize.compact")}</span>
+              <span>{t("settings.fontSize.standard")}</span>
+              <span>{t("settings.fontSize.relaxed")}</span>
             </span>
           </label>
         </div>
@@ -159,26 +167,45 @@ export function AppearanceCard() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span
             className="text-ui-xs font-normal text-slate-500"
-            title="顶部通知胶囊的外观。跟随主题时与应用一起切换，也可固定为浅色或深色。"
+            title={t("settings.language.tooltip")}
           >
-            胶囊外观
+            {t("common.language")}
+          </span>
+          <Segmented
+            value={locale}
+            options={languages}
+            onChange={(value) => setAppearance({ locale: value })}
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span
+            className="text-ui-xs font-normal text-slate-500"
+            title={t("settings.capsule.themeTooltip")}
+          >
+            {t("settings.capsule.theme")}
           </span>
           <Segmented
             value={island}
-            options={ISLAND_THEMES}
+            options={ISLAND_THEMES.map((option) => ({
+              value: option.value,
+              label: t(option.label),
+            }))}
             onChange={(value) => setAppearance({ island: value })}
           />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span
             className="text-ui-xs font-normal text-slate-500"
-            title="常驻：始终显示胶囊；仅通知：有通知、Agent 运行/待审核/待合并、更新或异常时才出现。"
+            title={t("settings.capsule.displayTooltip")}
           >
-            胶囊显示
+            {t("settings.capsule.display")}
           </span>
           <Segmented
             value={islandDisplay}
-            options={ISLAND_DISPLAYS}
+            options={ISLAND_DISPLAYS.map((option) => ({
+              value: option.value,
+              label: t(option.label),
+            }))}
             onChange={(value) => setAppearance({ islandDisplay: value })}
           />
         </div>

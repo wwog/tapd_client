@@ -11,6 +11,8 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 - **后端**：Rust，负责窗口、命令、会话桥、缓存、轮询、Agent 与本地 HTTP。
 - **`tapd-core`**：与 Tauri 无关的模型、过滤器、响应解析、媒体收集与配置存储。
 - **`tapd-workflow`**：sans-IO 的任务状态机、执行单元调度、审核 / 合并策略、恢复与历史；正常依赖只有 `serde`，宿主通过 `Input` / `Effect` 驱动。
+- **`tapd-workspace`**：任务工作区的 git 事实（变更文件、增删行数、diff、HEAD）。单任务的主仓库与 Worktree 任务共用同一实现；worktree 目录被清理后按分支重算。
+- **`tapd-local`**：纯领域类型，本地项目与事项（`WorkItem`）的校验和状态迁移；不做文件、时钟或数据库 IO。
 - **`tapd-mcp`**：stdio MCP sidecar，随 App 打包，供 MCP 客户端调用。
 
 ```
@@ -120,6 +122,33 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - `tapd_notify_user` 默认等待 30 秒（上限 120）后回传 `acted` / `dismissed` / `timeout` 等结果；`waitSeconds=0` 可先返回，再用 `tapd_wait_notification` 继续等待。相同 `tag` 替换旧卡片。
 - 设置页可关闭「允许 AI / MCP 唤起通知」，并提供调试面板验证配色、内容块与动作回执。
 
+### 3.7 工作区布局与文件浏览
+
+```
+LayoutState（fraction 分割树）→ SplitView（实测像素）→ GroupView（标签组）
+                                                        └─ PanelHost（单一稳定层 + portal）
+```
+
+- 主内容、右侧详情、底部终端是同一种「组」：分割树只描述空间，组只持有标签，面板内容由注册表按 kind 渲染。完整命名、不变量与拖拽协议见 [WORKBENCH.md](WORKBENCH.md)。
+- 每个面板只挂载一次：`PanelHost` 为每个面板建一个独立容器并 `createPortal`，标签在组间移动时只把该容器 `appendChild` 到新的组 body，React 不重挂载，终端回放、滚动与详情状态都保留。非激活标签 `invisible + inert`，xterm 仍保有真实尺寸。
+- 尺寸以 fraction 持久化到 `uiPrefs["workbench.layout.v1"]`；空的标准停靠组保留自己的比例，重新打开时恢复原大小，非 role 空组由 `normalize` 回收。分割条统一 1.5px 视觉 / 8px 命中区，交叉点由实测矩形求交后同时调整两个 split。
+- 文件能力：`../WORKBENCH.md` §8 的 `fs_list` / `fs_read` / `fs_stat` / `fs_write` 以项目 `repoPath` 为根，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；写入只覆盖已存在的文本文件（2 MiB、临时文件 + rename、mtime 冲突），桌面用 Monaco 编辑，手机编辑由 `companion.allowFileWrite` 控制（默认关）。二进制预览走本机 `/file` 与伴侣 `/companion/api/file/raw` 流式路由。
+
+### 3.8 本地项目与事项
+
+```
+React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
+                                      → tapd-local（领域类型 / 状态迁移）
+                                      → Agent 队列（sourceKind = local_work_item）
+```
+
+- 本地项目只是一个本机目录，没有 TAPD workspace；事项（`WorkItem`）有 `pending` / `in_progress` / `done` 三个状态。关联 Agent 任务成功时由宿主自动置为 `done`，也可手动标记完成 / 重新打开。
+- 每个本地项目有独立的 `rule`（项目规则），创建 / 编辑时写入；交给 Agent 时随 `quest.json` 导出并追加到本地修复、提交与合并提示词，TAPD 任务不受影响。
+- 数据写 `<数据目录>/local.sqlite3`（`local_projects` / `local_work_items`，schema v2 增加 `rule`），与 `cache.sqlite3` 分开：TAPD 退出登录、清缓存和 `Cache::clear()` 都不会删除自己的项目；「清理缓存」显式保留该文件及 WAL 旁文件。
+- 桌面在项目侧栏右键 / 项目页创建，移动端可浏览桌面目录后创建；文件浏览与终端共用同一目录解析：TAPD 项目配置优先，其次本地项目仓库。移动端文件 / 终端只列出有文件夹的 TAPD 项目，并加入本地项目。
+- 事项交给 Agent 时使用合成 ID（`lp_…` / `lw_…`）与 `sourceKind = local_work_item`，复用队列 / 审核 / 合并状态机；准备阶段导出 `quest.json` 而不是 `bug.json`，不注入 TAPD MCP，也不回写 TAPD。
+- 移动端文件页额外提供 `__root__` 源，从 `/` 只读浏览；写接口对根目录直接 403。项目目录选择仍限制 `$HOME` 或已配置的本地仓库；伴侣目录浏览在列目录前先校验允许根。
+
 ## 4. 已实现能力
 
 ### 窗口与交互
@@ -129,11 +158,13 @@ MCP tapd_notify_user → notification::raise_ai → 内存 ai_items → 胶囊�
 - 项目 tab：独立管理项目显示、本地文件夹与 Agent 规则；文件夹支持拖入，改动自动保存。
 - 缺陷表格：各列有最小宽度，窗口变窄时横向滚动；「操作」列固定在右侧（查看详情 / 在 TAPD 打开 / 复制链接 / Agent 修复）；处理人不是自己的缺陷只显示「认领」。顶部范围切换为「我负责的 / 全部」，本项目存在内部 Agent 任务时追加「处理中」：只列出这些缺陷（详情缓存优先 + 实时详情补齐），关键词、筛选与排序在本地应用。
 - 主窗口外壳：无系统标题栏（macOS Overlay），左侧图标栏 + 可拖拽项目栏 + 浮起的白色内容面板；项目栏拖到最小宽度以下或窗口过窄时自动收起；右键可本地隐藏项目，只剩一个项目时自动隐藏整个项目栏。
-- 缺陷详情右侧面板：Codex 风格的第三列，从右侧滑入并与内容区并排，左缘可拖动调宽；窗口过窄时先收起项目列表，仍不够再向左扩张。打开详情只刷新这一条缺陷，不触发列表刷新；面板打开期间列表中对应的行保持高亮（面板与列表不同项目或该缺陷不在当前页时不显示）。内容含基本信息、描述、资源、变更记录、评论、自定义字段。顶部的缺陷 ID 可点击复制（就地显示对勾）。处理人 / 开发人员用项目成员下拉直接修改，底部可发表纯文本评论并按工作流流转状态；评论不受认领限制，处理人不是自己时列表操作列与面板底部只显示「认领」，认领后才开放改人与状态流转。成员目录缓存两小时。
+- 工作区：主内容 / 右侧 / 底部统一为可拖动标签组；标签可跨组移动或在组边缘四向分裂，分割条与交叉点统一，布局持久化。入口见 [WORKBENCH.md](WORKBENCH.md)。
+- 缺陷详情右侧面板：打开后落在右侧副组的标签中，与内容区并排，左缘可拖动调宽（也可把标签拖到其他组或分屏）；窗口过窄时先收起项目列表，仍不够再向左扩张。打开详情只刷新这一条缺陷，不触发列表刷新；面板打开期间列表中对应的行保持高亮（面板与列表不同项目或该缺陷不在当前页时不显示）。内容含基本信息、描述、资源、变更记录、评论、自定义字段。顶部的缺陷 ID 可点击复制（就地显示对勾）。处理人 / 开发人员用项目成员下拉直接修改，底部可发表纯文本评论并按工作流流转状态；评论不受认领限制，处理人不是自己时列表操作列与面板底部只显示「认领」，认领后才开放改人与状态流转。成员目录缓存两小时。
 - 资源查看：资源行有独立「预览」按钮（缩放 / 左右切换 / 缩略图条 / Esc 关闭，支持图片与视频），「打开」按默认应用打开，下拉只负责切换默认应用。
 - 顶部状态胶囊：常驻展示通知状态；内部 Agent 运行修复时显示具体运行时（如「Claude Code 修复中」），等待改动审核时变为「Agent 待审核」，等待合并时变为「Agent 待合并」，合并中显示「Agent 合并中」。可拖动并记住位置，单击展开通知 / 打开 Agent 任务，双击打开主窗口。悬停胶囊时向下展开摘要卡（项目、缺陷 ID、标题、严重程度/优先级与状态），并带「打开详情」直接打开缺陷详情；窗口尺寸由 Rust 侧 `set_peek` 调整，展开的通知卡片优先。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达），悬停也由那里的 `NSTrackingArea` 原生监听后推 `island://hover`，因为 WebKit 与 tao 默认的 tracking rect 都只给 key window 报悬停。
 - 请求历史：设置底部「接口历史」自动记录网页内部接口，支持查看与导出 JSON。
 - 缺陷导出：`bug.json` + `assets/`；`bug.json` 是 `BugDetail` 的 camelCase JSON，顶层 `assets` 只列成功下载的资源，视频 / 图片 / 日志按需下载。
+- 媒体缓存：缺陷导出、界面 / 手机端媒体代理、打开原图共用 `<数据目录>/media-cache/` 里按 URL 哈希寻址的缓存，同一 URL 只下载一次；代理请求的 `Range` 直接由缓存文件本地切片，重复导出与重复渲染不再回源。缓存超过 2GB 时按最久未修改淘汰到 1.5GB。
 - 账户与会话：从设置中拆成独立视图，入口是项目栏底部的用户按钮；项目栏收起时头像缓动到左侧图标栏。
 
 ### 数据与通知
@@ -181,28 +212,35 @@ apps/desktop/
     session.rs               隐藏 WebView、同步 / 异步桥、Cookie
     inject.js                抓包与 __TAPDCB__ 请求助手
     commands.rs              Tauri 命令（会话、缺陷、MCP 配置、媒体打开方式）
-    feature_router.rs        通知 / Agent / 同事 / 缓存 / MCP 的统一命令路由
+    feature_router.rs        通知 / Agent / 同事 / 终端 / 缓存 / MCP 的统一命令路由
+    terminal.rs              用户终端会话（PTY、回放环、输出事件与命令面）
     cache.rs                 SQLite 离线快照缓存
+    local.rs                 local_* 命令：本地项目 / 事项 SQLite、目录浏览边界
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
     agent.rs                 Agent 宿主：运行时目录、PTY、导出 / git / SQLite 适配器，持有 `workflow: Mutex<Workflow>`
     agent/workflow_bridge.rs `AgentTask` 与 `tapd-workflow` `Task` 的 JSON 往返与宿主配置映射
     agent/persist.rs         Effect 驱动的增量持久化（`agent_tasks` / `agent_queue_state`）
-    agent/git.rs             git 辅助（未提交文件、分支差异、分支是否已并入 HEAD）
+    task_changes.rs          `tapd-workspace` 的唯一桥：任务 → 工作区、变更缓存与 hook 置脏
+    agent/git.rs             git 辅助（未提交文件、分支是否已并入 HEAD、审核储藏）
     agent/pty.rs             PTY 运行与收尾
     agent/worktree.rs        每任务 git worktree 的创建与清理
     coworker.rs              同事包注册表、技能 frontmatter、提示词注入与 skill map
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入
-    export.rs                bug.json 导出、资源下载与提示词渲染
+    export.rs                bug.json / quest.json 导出、资源下载与提示词渲染
+    media_cache.rs           URL 寻址的媒体缓存（导出 / 代理 / 打开原图共用）
     diagnostics.rs           脱敏诊断包
+    companion/terminal.rs    远程终端 WebSocket（回放 + 实时输出 + 输入 / 尺寸）
     server.rs                本地 HTTP（/healthz、/mcp/call、调试端点）
     update.rs                GitHub Releases 检查与更新状态
     reset.rs / open_with.rs  本地数据清理 / 按默认应用打开资源
 crates/tapd-core/            模型、过滤器、响应解析、媒体收集、配置与存储
 crates/tapd-workflow/        sans-IO 工作流核心（状态机 / 调度 / 审核合并 / 恢复 / 历史，仅依赖 serde）
+crates/tapd-workspace/       任务工作区的 git 事实（变更 / 行数 / diff / HEAD），单任务与 worktree 共用
+crates/tapd-local/           本地项目 / 事项领域类型、校验与状态迁移（无 IO）
 crates/tapd-mcp/             MCP stdio sidecar
 docs/                        架构、开发、计划、接口、通知、Agent、MCP、发版
 fixtures/                    假 agent 等测试辅助
@@ -215,10 +253,14 @@ scripts/                     图标、sidecar、发版等构建工具
 - **缓存是快照**：优先保证打开即见，不做全量后台同步与离线搜索。
 - **Agent 默认串行，Worktree 开启后并行**：默认关闭 Worktree，同一时间只有一个任务使用主仓库；开启后每个任务在独立 worktree 中运行，执行单元可调到 1–8，避免互相踩踏。改动先审核、合并回主仓后才算完成，TAPD 回写集中在合并阶段，避免分支旁的中间状态污染缺陷。
 - **通知自绘**：不使用系统通知，才能承载处理 / 查看 / 忽略三个动作与更新进度。
+- **终端会话归后端，视图可丢弃**：PTY、输出环形缓冲和订阅广播都在 `terminal.rs`，关面板 / 切页面只销毁 xterm 视图，shell 继续运行；重开时回放尾部 256 KiB 并按累计字节数去重，手机与桌面可以同时挂同一会话。
+- **右 / 下容器先开者优先**：主视图区是一个 Grid（`main` / `term` / `detail` 三个稳定节点），先打开的容器保持整幅跨度，后打开者让出空间；只切 `grid-template-areas`，不重建 React 树，所以切换时缺陷列表、详情与终端都不丢状态。
 - **工作流核心 sans-IO**：状态机、调度、审核 / 合并策略与恢复集中在 `tapd-workflow`，平台副作用由宿主执行；桌面 `AgentCore` 只持有 `Mutex<Workflow>`，任务 / 队列 / 审核 / 合并 / 恢复没有第二份实现，便于穷举并发、审核、合并与恢复场景。
+- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此运行中、审核、待合并与历史使用同一套计算。实时刷新由会话 hook 的编辑类 tool 事件置脏，去抖 800ms、单飞、在阻塞线程跑 git，命令优先返回缓存。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
+- **本地项目与 TAPD 分开存储**：本地项目是用户数据而不是 TAPD 缓存，单独用 `local.sqlite3` 并跳过清缓存；本地事项不伪装成缺陷，用 `WorkItem` 与 `sourceKind` 复用 Agent 队列。
 
 ## 7. 当前限制
 
@@ -226,7 +268,10 @@ scripts/                     图标、sidecar、发版等构建工具
 - 通知的「项目」范围仍只轮询当前项目；「我的」范围已跨项目轮询。
 - `assigned_time` 缺失时“转移”判定偏保守。
 - Agent 就绪检测与完成判定是启发式的；取消按进程组回收，仍可能有极端情况下的孙进程残留。
+- 终端回放是原始输出尾部（不做终端状态序列化），全屏 TUI 中途重挂只能近似重建；手机断线期间超出 256 KiB 的输出会丢。
+- 远程终端与伴侣共用配对 token，没有独立的二次确认；隧道开启时等价于把桌面用户的 shell 暴露到公网，只在可信设备上配对。
 - 发布包默认未签名、未公证；首次打开需在「系统设置 → 隐私与安全性」中允许。
+- 本地事项的「已完成」既可由 Agent 任务成功自动写入，也可手动标记 / 重新打开；交给 Agent 前目录必须是带 `HEAD` 的 git 仓库。移动端文件页的根目录只读，不能编辑系统文件。
 - TAPD 网页内部接口未公开，改版时需要更新适配层。
 
 ## 8. 下一步

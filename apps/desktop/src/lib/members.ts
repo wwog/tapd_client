@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { api, type WorkspaceMember } from "./api";
 import { cacheApi } from "./cache";
+import { t } from "./i18n";
 import { createExternalStore } from "./store";
 import { showToast } from "./toast";
 
@@ -98,7 +99,7 @@ export async function ensureMembers(
     return await request;
   } catch (error) {
     if (!membersStore.get().byWorkspace[workspaceId]?.length) {
-      showToast("error", `处理人列表加载失败：${String(error)}`);
+      showToast("error", t("bugs.membersFailed", { error: String(error) }));
     }
     return membersStore.get().byWorkspace[workspaceId] ?? [];
   }

@@ -33,11 +33,15 @@ impl MediaKind {
     }
 }
 
-/// An image/video embedded in the rich-text description or a comment.
+/// A resource embedded in the rich-text description or a comment: an
+/// image/video, or a file card TAPD's editor keeps inline.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaRef {
     pub url: String,
     pub kind: MediaKind,
     pub filename_hint: String,
+    /// Size TAPD reported for the card; `0` when unknown (embedded media).
+    #[serde(default)]
+    pub size: u64,
 }

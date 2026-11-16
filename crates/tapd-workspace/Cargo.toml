@@ -1,0 +1,10 @@
+[package]
+name = "tapd-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git-backed change summary and diff for one task workspace"
+
+[dependencies]
+serde.workspace = true
+tapd-i18n.workspace = true

@@ -3,6 +3,8 @@ import { ArrowUp, Check, Folder, FolderOpen, Loader2, X } from "lucide-react";
 import clsx from "clsx";
 
 import { api, type DirListing } from "../lib/api";
+import { t } from "../lib/i18n";
+import { useLayerClose } from "../hooks/useLayerClose";
 import { Button, ModalDragStrip } from "./ui";
 
 /**
@@ -16,15 +18,18 @@ export function FolderPicker(props: {
   title?: string;
   description?: string;
   confirmLabel?: string;
+  /** Opened from inside a dialog, so it must paint above the dialog layer. */
+  elevated?: boolean;
   onCancel: () => void;
   onSelect: (path: string) => void;
 }) {
   const {
     open,
     initialPath,
-    title = "选择项目文件夹",
+    title = t("folder.pickTitle"),
     description,
-    confirmLabel = "使用此文件夹",
+    confirmLabel = t("folder.useThis"),
+    elevated = false,
     onCancel,
     onSelect,
   } = props;
@@ -32,6 +37,7 @@ export function FolderPicker(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pathInput, setPathInput] = useState("");
+  const { closing, requestClose, reset } = useLayerClose(onCancel);
 
   const load = async (path?: string) => {
     setLoading(true);
@@ -49,6 +55,7 @@ export function FolderPicker(props: {
 
   useEffect(() => {
     if (!open) return;
+    reset();
     setListing(null);
     void load(initialPath || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -59,19 +66,30 @@ export function FolderPicker(props: {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onCancel();
+        requestClose();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, onCancel]);
+  }, [open, requestClose]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]">
+    <div
+      className={clsx(
+        "modal-overlay fixed inset-0 flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
+        elevated ? "z-[85]" : "z-[70]",
+        closing && "modal-overlay-out",
+      )}
+    >
       <ModalDragStrip />
-      <div className="relative z-10 flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10">
+      <div
+        className={clsx(
+          "modal-panel relative z-10 flex h-[520px] w-[560px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface  border border-black/10",
+          closing && "modal-panel-out",
+        )}
+      >
         <div
           data-tauri-drag-region
           className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3"
@@ -86,8 +104,8 @@ export function FolderPicker(props: {
           </div>
           <button
             type="button"
-            aria-label="关闭"
-            onClick={onCancel}
+            aria-label={t("common.close")}
+            onClick={() => requestClose()}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
           >
             <X size={14} />
@@ -97,8 +115,8 @@ export function FolderPicker(props: {
         <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
           <button
             type="button"
-            aria-label="上一级"
-            title="上一级"
+            aria-label={t("folder.parent")}
+            title={t("folder.parent")}
             disabled={!listing?.parent || loading}
             onClick={() => void load(listing?.parent ?? undefined)}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 disabled:opacity-40"
@@ -115,7 +133,7 @@ export function FolderPicker(props: {
             className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
           />
           <Button size="sm" variant="secondary" onClick={() => void load(pathInput)}>
-            前往
+            {t("folder.go")}
           </Button>
         </div>
 
@@ -123,7 +141,7 @@ export function FolderPicker(props: {
           {loading ? (
             <div className="flex h-24 items-center justify-center gap-2 text-ui-caption text-slate-400">
               <Loader2 size={14} className="animate-spin" />
-              读取目录…
+              {t("folder.reading")}
             </div>
           ) : error ? (
             <div className="m-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-ui-sm leading-5 text-rose-700">
@@ -145,7 +163,7 @@ export function FolderPicker(props: {
               ))}
               {listing && listing.entries.length === 0 ? (
                 <li className="px-3 py-6 text-center text-ui-sm text-slate-400">
-                  这里没有子文件夹
+                  {t("folder.empty")}
                 </li>
               ) : null}
             </ul>
@@ -159,14 +177,14 @@ export function FolderPicker(props: {
               {listing?.path ?? "—"}
             </span>
           </div>
-          <Button size="sm" variant="ghost" onClick={onCancel}>
-            取消
+          <Button size="sm" variant="ghost" onClick={() => requestClose()}>
+            {t("common.cancel")}
           </Button>
           <Button
             size="sm"
             variant="primary"
             disabled={!listing || loading}
-            onClick={() => listing && onSelect(listing.path)}
+            onClick={() => listing && requestClose(() => onSelect(listing.path))}
             icon={<Check size={13} />}
             className={clsx(!listing && "opacity-50")}
           >

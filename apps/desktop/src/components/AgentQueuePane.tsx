@@ -4,13 +4,16 @@ import clsx from "clsx";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
+  agentTaskTitle,
+  isBugAgentTask,
   type AgentChat,
   type AgentRuntimeStatus,
   type AgentTask,
 } from "../lib/agent";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
+import { t } from "../lib/i18n";
 import { AgentTimeline } from "./AgentTimeline";
+import { ScrollingName } from "./ScrollingName";
 import { Badge } from "./ui";
 
 type Props = {
@@ -55,26 +58,26 @@ export function AgentQueuePane(props: Props) {
     >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
         <ListOrdered size={13} className="text-slate-400" />
-        <span className="text-ui-sm text-slate-500">执行队列</span>
+        <span className="text-ui-sm text-slate-500">{t("agent.queue.title")}</span>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {!loaded ? (
           <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
             <Loader2 size={14} className="animate-spin" />
-            正在读取…
+            {t("common.reading")}
           </div>
         ) : runTasks.length === 0 ? (
           <div
             className="flex h-full items-center justify-center px-3 text-center text-ui-caption text-slate-400"
-            title="在缺陷详情点击「用 Agent 修复」后会排在这里"
+            title={t("agent.queue.emptyHint")}
           >
-            队列为空
+            {t("agent.queue.empty")}
           </div>
         ) : (
           <div className="space-y-1">
             {activeRunTasks.length > 0 ? (
-              <QueueGroup label="正在运行" />
+              <QueueGroup label={t("agent.queue.running")} />
             ) : null}
             {activeRunTasks.map((task) => (
               <RunQueueRow
@@ -87,7 +90,9 @@ export function AgentQueuePane(props: Props) {
             ))}
 
             {queuedTasks.length > 0 ? (
-              <QueueGroup label={`排队中 ${queuedTasks.length}`} />
+              <QueueGroup
+                label={t("agent.queue.queuedCount", { count: queuedTasks.length })}
+              />
             ) : null}
             {queuedTasks.map((task) => (
               <RunQueueRow
@@ -146,7 +151,7 @@ function RunQueueRow(props: {
         {position ? (
           <span
             className="grid h-4 min-w-4 place-items-center rounded bg-slate-100 px-1 font-mono text-ui-2xs text-slate-500"
-            title={`排队第 ${position} 位`}
+            title={t("agent.queue.position", { position })}
           >
             {position}
           </span>
@@ -156,7 +161,7 @@ function RunQueueRow(props: {
           <ShieldAlert size={11} className="shrink-0 text-rose-500" />
         )}
         <Badge tone={AGENT_STATUS_TONES[task.status]} dot={task.status === "queued"}>
-          {AGENT_STATUS_LABELS[task.status]}
+          {t(AGENT_STATUS_LABELS[task.status])}
         </Badge>
         <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
           {task.status === "queued"
@@ -166,14 +171,13 @@ function RunQueueRow(props: {
               : ""}
         </span>
       </div>
-      <div
-        className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700"
-        title={bugTitle(task.title)}
-      >
-        {bugTitle(task.title) || "（无标题）"}
-      </div>
+      <ScrollingName
+        text={agentTaskTitle(task) || t("agent.untitled")}
+        className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
+      />
       <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-        {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+        {task.workspaceName || task.workspaceId}
+        {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
       </div>
       {status ? (
         <div className="mt-0.5 truncate text-ui-xs text-sky-600" title={status.label}>

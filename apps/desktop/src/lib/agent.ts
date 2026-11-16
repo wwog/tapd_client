@@ -1,4 +1,6 @@
+import { bugTitle } from "./bug";
 import { featureCommand } from "./feature";
+import { t, type MessageKey } from "./i18n";
 
 export type AgentTaskStatus =
   | "queued"
@@ -158,12 +160,57 @@ export type AgentApproval = {
   stash?: string;
 };
 
+/** Per-file change status reported by `agent_task_changes`. */
+export type AgentChangeKind = "added" | "modified" | "deleted";
+
+/** One file in the change panel; paths are repo-relative. */
+export type AgentChangedFile = {
+  path: string;
+  status: AgentChangeKind;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+/** `agent_task_changes` response: at most 200 files, `fileCount` is the truth. */
+export type AgentChangeSummary = {
+  files: AgentChangedFile[];
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  dirty: boolean;
+  committed: boolean;
+  commit?: string | null;
+};
+
+/** `agent_task_diff` response for one file or the whole task. */
+export type AgentDiffView = {
+  text: string;
+  truncated: boolean;
+  empty: boolean;
+};
+
+/** Compact change stats stored on the task itself (no per-file detail). */
+export type AgentTaskChanges = {
+  files: string[];
+  dirty: boolean;
+  committed: boolean;
+  additions: number;
+  deletions: number;
+  commit?: string | null;
+};
+
+/** Where a task came from. Local work items never link back to TAPD bugs. */
+export type AgentTaskSourceKind = "tapd_bug" | "local_work_item";
+
 export type AgentTask = {
   id: string;
   workspaceId: string;
   workspaceName: string;
   bugId: string;
   title: string;
+  /** What the task was launched from; absent on records written before it existed. */
+  sourceKind?: AgentTaskSourceKind;
   severity: string;
   priority: string;
   jsonPath: string;
@@ -190,6 +237,8 @@ export type AgentTask = {
   agentSessionId?: string | null;
   /** Present while the task waits for the commit decision. */
   approval?: AgentApproval | null;
+  /** Diff stats of this task, refreshed by the backend as it works. */
+  changes?: AgentTaskChanges | null;
   /** Merge phase state: agent failure text, manual steps and timing. */
   merge?: AgentMerge | null;
   /** The next run is the post-approval commit phase. */
@@ -198,6 +247,8 @@ export type AgentTask = {
   extraPrompt?: string;
   /** Local resource paths supplied with the task. */
   attachments?: string[];
+  /** Project rule snapshotted when a local item was handed over. */
+  projectRule?: string;
 };
 
 /**
@@ -209,6 +260,8 @@ export type AgentMerge = {
   instructions?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  /** Commit created by the merge, shown in the merge card and history. */
+  commit?: string | null;
 };
 
 /** 运行中 Agent 的状态，只存在于内存；任务结束后清空。 */
@@ -385,6 +438,8 @@ export type AgentSummary = {
   bugId: string | null;
   severity: string | null;
   priority: string | null;
+  /** Defaults to `tapd_bug` on the caller side for older backends. */
+  sourceKind?: AgentTaskSourceKind;
   /** 当前运行时的展示信息与动作；有 prompt 时胶囊可直接审批。 */
   runtimeId?: string | null;
   /** Runtime working the active task ("Claude Code", "OpenCode", …). */
@@ -396,6 +451,8 @@ export type AgentSummary = {
   startedAt?: string | null;
   lastMessage?: string | null;
   prompt?: AgentPendingPrompt | null;
+  /** Project rule of the active local task; not shown on the capsule. */
+  projectRule?: string;
 };
 
 /** Statuses that still own the bug inside the agent pipeline. */
@@ -415,6 +472,28 @@ export const isAgentApprovalStatus = (status: AgentTaskStatus): boolean =>
 export const isAgentInFlight = (task: AgentTask): boolean =>
   IN_FLIGHT_STATUSES.includes(task.status);
 
+/** Task reached a terminal state; worktree files may already be cleaned. */
+export const isAgentTerminalStatus = (status: AgentTaskStatus): boolean =>
+  status === "succeeded" || status === "failed" || status === "canceled";
+
+/**
+ * True for tasks launched from a TAPD bug. Records written before `sourceKind`
+ * existed are bugs, so the absent value means the same thing.
+ */
+export const isBugAgentTask = (record: {
+  sourceKind?: AgentTaskSourceKind;
+}): boolean => (record.sourceKind ?? "tapd_bug") === "tapd_bug";
+
+/** Tab/card title: bug titles get punctuation cleanup, local titles stay as typed. */
+export const agentTaskTitle = (task: {
+  title: string;
+  sourceKind?: AgentTaskSourceKind;
+}): string => (isBugAgentTask(task) ? bugTitle(task.title) : task.title);
+
+/** A worktree folder still exists and is worth opening in an editor. */
+export const canOpenAgentWorktree = (task: AgentTask): boolean =>
+  Boolean(task.worktreePath) && !isAgentTerminalStatus(task.status);
+
 /** Stable key for "this bug already has an agent task". */
 export const agentBugKey = (workspaceId: string, bugId: string): string =>
   `${workspaceId}::${bugId}`;
@@ -433,7 +512,9 @@ export function inFlightAgentTasks(tasks: AgentTask[]): Map<string, AgentInFligh
   const queued = tasks.filter((task) => task.status === "queued");
   const map = new Map<string, AgentInFlight>();
   for (const task of tasks) {
-    if (!isAgentInFlight(task)) continue;
+    // The map answers "does this bug already own a task"; local work items
+    // share the queue but never block a bug row.
+    if (!isAgentInFlight(task) || !isBugAgentTask(task)) continue;
     const key = agentBugKey(task.workspaceId, task.bugId);
     const current = map.get(key);
     // Legacy snapshots can contain duplicates; the most advanced state wins.
@@ -492,19 +573,21 @@ export function agentActiveBugIds(
 export function agentInFlightLabel(info: AgentInFlight): string {
   switch (info.task.status) {
     case "queued":
-      return info.position ? `排队中 #${info.position}` : "排队中";
+      return info.position
+        ? t("agent.status.queuedPosition", { position: info.position })
+        : t("agent.status.queued");
     case "preparing":
-      return "准备中";
+      return t("agent.status.preparing");
     case "running":
-      return "修复中";
+      return t("agent.status.fixing");
     case "awaiting_approval":
-      return "待审核";
+      return t("agent.status.awaitingApproval");
     case "awaiting_merge":
-      return "待合并";
+      return t("agent.status.awaitingMerge");
     case "merging":
-      return "合并中";
+      return t("agent.status.merging");
     default:
-      return AGENT_STATUS_LABELS[info.task.status];
+      return t(AGENT_STATUS_LABELS[info.task.status]);
   }
 }
 
@@ -532,16 +615,16 @@ export type AgentOutputPayload = {
   data: string;
 };
 
-export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, string> = {
-  queued: "排队中",
-  preparing: "准备中",
-  running: "运行中",
-  awaiting_approval: "待审核",
-  awaiting_merge: "待合并",
-  merging: "合并中",
-  succeeded: "已完成",
-  failed: "失败",
-  canceled: "已取消",
+export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, MessageKey> = {
+  queued: "agent.status.queued",
+  preparing: "agent.status.preparing",
+  running: "agent.status.running",
+  awaiting_approval: "agent.status.awaitingApproval",
+  awaiting_merge: "agent.status.awaitingMerge",
+  merging: "agent.status.merging",
+  succeeded: "agent.status.succeeded",
+  failed: "common.failed",
+  canceled: "agent.status.canceled",
 };
 
 export const AGENT_STATUS_TONES: Record<
@@ -612,9 +695,15 @@ export const agentApi = {
   /** Confirm the branch is already merged (manual merge fallback). */
   mergeVerify: (taskId: string) =>
     featureCommand<{ task?: AgentTask }>("agent_merge_verify", { taskId }),
-  /** Unified diff of the paused change, for the review card. */
-  reviewDiff: (taskId: string) =>
-    featureCommand<{ diff: string }>("agent_review_diff", { taskId }),
+  /** Per-file change stats for the task's worktree / repo. */
+  taskChanges: (taskId: string) =>
+    featureCommand<AgentChangeSummary>("agent_task_changes", { taskId }),
+  /** Unified diff for one changed file, or the whole task when omitted. */
+  taskDiff: (taskId: string, file?: string) =>
+    featureCommand<AgentDiffView>("agent_task_diff", {
+      taskId,
+      file: file ?? null,
+    }),
   /** 在系统终端里续接该任务结束后的 Agent 会话。 */
   openTerminal: (taskId: string) =>
     featureCommand<{ ok: boolean }>("agent_open_terminal", { taskId }),

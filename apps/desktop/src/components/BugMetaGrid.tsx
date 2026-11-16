@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import type { BugDetail, WorkspaceMember } from "../lib/api";
 import { ownerNames } from "../lib/bug";
+import { t } from "../lib/i18n";
 import { BugSectionTitle } from "./BugSectionTitle";
 
 /** Read-only bug metadata plus the owner/developer pickers. */
@@ -26,19 +27,19 @@ export function BugMetaGrid(props: {
   } = props;
 
   const items: Array<[string, string]> = [
-    ["创建人", detail.creator || "—"],
-    ["创建时间", detail.created || "—"],
-    ["最后修改", detail.modified || "—"],
-    ["发现版本", detail.versionReport || "—"],
-    ["迭代", detail.iterationName || "—"],
-    ["模块", detail.module || "—"],
-    ["修复人", detail.fixer || "—"],
+    [t("common.creator"), detail.creator || "—"],
+    [t("common.created"), detail.created || "—"],
+    [t("bugs.lastModified"), detail.modified || "—"],
+    [t("bugs.foundVersionLabel"), detail.versionReport || "—"],
+    [t("bugs.iteration"), detail.iterationName || "—"],
+    [t("bugs.module"), detail.module || "—"],
+    [t("bugs.fixer"), detail.fixer || "—"],
   ];
 
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-3">
       <UserField
-        label="处理人"
+        label={t("common.owner")}
         field="current_owner"
         value={detail.owner}
         mine={mine}
@@ -49,7 +50,7 @@ export function BugMetaGrid(props: {
         onRefreshMembers={onRefreshMembers}
       />
       <UserField
-        label="开发人员"
+        label={t("common.developer")}
         field="de"
         value={detail.de}
         mine={mine}
@@ -98,7 +99,7 @@ export function BugCustomFields(props: { detail: BugDetail; open: boolean }) {
           icon={
             expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
           }
-          title={`自定义字段（${customFields.length}）`}
+          title={t("bugs.customFields", { count: customFields.length })}
         />
       </button>
       {expanded ? (
@@ -173,12 +174,12 @@ function UserField(props: {
           onFocus={() => {
             if (members.length === 0 && !membersLoading) onRefreshMembers();
           }}
-          title="从项目成员中选择"
+          title={t("bugs.chooseFromMembers")}
           className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
         >
           {!current ? (
             <option value="">
-              {membersLoading ? "加载中…" : "未指定"}
+              {membersLoading ? t("common.loadingEllipsis") : t("bugs.unspecified")}
             </option>
           ) : null}
           {optionNicks.map((nick) => (

@@ -1,5 +1,7 @@
 import clsx from "clsx";
 
+import { t } from "../lib/i18n";
+
 /**
  * Loading placeholders shared by the bug list and detail drawer.
  *
@@ -40,7 +42,7 @@ export function SkeletonRows(props: SkeletonRowsProps) {
     columns = DEFAULT_COLUMNS,
     className,
     rowClassName,
-    label = "正在加载…",
+    label = t("common.loadingDots"),
   } = props;
 
   return (

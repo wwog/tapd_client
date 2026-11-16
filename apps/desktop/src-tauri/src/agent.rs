@@ -52,19 +52,23 @@ use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, Master
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tapd_core::store::{read_json, write_json_atomic};
+use tapd_i18n::{tr, tr_args};
 use tapd_workflow::{
-    Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSpec,
+    Effect, HistoryRecord, Input, Snapshot, Task as WorkflowTask, TaskId, TaskSource, TaskSpec,
     TaskStatus as WorkflowStatus, Workflow,
 };
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
-use crate::{shell_path, state::SharedState};
-use git::{
-    branch_merged, changed_files_since, committed_since_baseline, git_head, stash_changes,
-    uncommitted_files,
-};
+use crate::{shell_path, state::SharedState, task_changes};
+use git::{branch_merged, git_head, stash_changes, uncommitted_files};
 use hooks::SessionHookKind;
 use pty::{AgentRuntime, PromptGuard, PtyOutcome};
+// Shared with the interactive terminals: both PTY readers must not split a
+// multi-byte character across two frames.
+pub(crate) use pty::take_utf8_prefix;
+// Same signal path for both PTY families: a shell tree is killed exactly like
+// an agent TUI tree.
+pub(crate) use pty::kill_process_group;
 
 // 供 SQLite 持久化层（`cache::chat`）复用的会话 / 消息类型。
 pub(crate) use chat::ChatSession;
@@ -199,7 +203,7 @@ export default function tapdSessionMonitor(pi) {
       if (message.errorMessage) return clip(message.errorMessage, 400);
       const reason = message.stopReason;
       if (reason && !["stop", "toolUse", "length", "aborted", "end_turn"].includes(reason)) {
-        return clip(`Agent 结束：${reason}`, 200);
+        return clip(`Agent 结束：${reason}`, 200); // i18n-exempt: hook script body
       }
       return "";
     }
@@ -214,11 +218,11 @@ export default function tapdSessionMonitor(pi) {
   const settle = (ctx, error) => {
     clearSettle();
     if (error) post(ctx, "StopFailure", { error });
-    else post(ctx, "agent_end", { message: "回合结束" });
+    else post(ctx, "agent_end", { message: "回合结束" }); // i18n-exempt: hook script body
   };
 
   pi.on("session_start", (event, ctx) =>
-    post(ctx, "SessionStart", { message: "会话已启动", reason: event?.reason }),
+    post(ctx, "SessionStart", { message: "会话已启动", reason: event?.reason }), // i18n-exempt: hook script body
   );
   pi.on("before_agent_start", (event, ctx) => {
     clearSettle();
@@ -276,22 +280,34 @@ const DEFAULT_RUNTIME_ID: &str = "opencode";
 /// TUI 运行时在提示词注入后，输出静默多久视为本轮结束。
 /// 进程退出与会话 hook 是主信号，这里只是防止 Agent 长时间无输出时任务永远卡住。
 const DEFAULT_IDLE_COMPLETE_MS: u64 = 180_000;
-/// Cap the diff preview so a huge refactor cannot freeze the review panel.
-const MAX_REVIEW_DIFF_CHARS: usize = 120_000;
+/// Debounce before a hook-driven change refresh runs; a turn that edits ten
+/// files in a row costs one git summary.
+const CHANGES_DEBOUNCE: Duration = Duration::from_millis(800);
+/// A cached change summary this young is served without touching git.
+const CHANGES_CACHE_FRESH: Duration = Duration::from_secs(2);
 
-pub const DEFAULT_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.json 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_PROMPT_KEY: &str = "agent.prompt.default";
 
 /// Follow-up prompt injected after the user approves a paused review. The
 /// working tree still holds the reviewed changes, so the agent only commits
 /// and writes back to TAPD instead of redoing the fix.
-pub const DEFAULT_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请继续完成 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与缺陷相关。\n3. 提交代码（git commit，不要 push）。\n4. 提交成功后，用 tapd_add_bug_comment 追加评论并说明原因、方案与影响范围，再用 tapd_update_bug_status 更新缺陷状态。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接更新 TAPD，不要重复提交。\n6. 绝对不要在提交成功前评论或更新 TAPD 状态。";
+pub const DEFAULT_COMMIT_PROMPT_KEY: &str = "agent.prompt.commit";
 
 /// Worktree 任务审核通过后的提交阶段。TAPD 回写统一留到合并阶段，避免任务
 /// 还没并入主仓库就把缺陷标记为已解决。
-pub const DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE: &str = "审核已通过，请在当前 worktree 提交上一轮审核过的修改。\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建。\n3. 提交代码（git commit，不要 push）。\n4. 不要评论或更新 TAPD；合并阶段会统一回写。\n5. 如果工作区已经没有未提交改动，说明已提交，直接结束。";
+pub const DEFAULT_WORKTREE_COMMIT_PROMPT_KEY: &str = "agent.prompt.worktree.commit";
 
 /// 追加到 Worktree 修复阶段的交付说明：修复轮不写 TAPD。
-const WORKTREE_FIX_NOTE: &str = "本轮在独立 worktree 中运行：不要评论或更新 TAPD。简单任务只提交；复杂任务保留未提交改动。审核与合并完成后，由合并阶段统一写回 TAPD。";
+const WORKTREE_FIX_NOTE_KEY: &str = "agent.prompt.worktree.note";
+
+/// Local work items have no TAPD counterpart, so their prompts are built-in and
+/// never use the user's TAPD template (which may reference write-back tools).
+pub const LOCAL_PROMPT_KEY: &str = "agent.prompt.local";
+pub const LOCAL_COMMIT_PROMPT_KEY: &str = "agent.prompt.local.commit";
+pub const LOCAL_WORKTREE_COMMIT_PROMPT_KEY: &str = "agent.prompt.local.worktree.commit";
+const LOCAL_WORKTREE_FIX_NOTE_KEY: &str = "agent.prompt.local.worktree.note";
+/// Header for the project rules appended to every local prompt.
+const LOCAL_RULE_KEY: &str = "agent.prompt.local.rule";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -373,7 +389,7 @@ impl Default for AgentConfig {
             binary_path: DEFAULT_BINARY.to_string(),
             repo_mappings: BTreeMap::new(),
             projects: BTreeMap::new(),
-            prompt_template: DEFAULT_PROMPT_TEMPLATE.to_string(),
+            prompt_template: tr(DEFAULT_PROMPT_KEY).to_string(),
             coworker_ids: Vec::new(),
             ready_quiet_ms: 900,
             ready_timeout_ms: 15_000,
@@ -406,7 +422,7 @@ impl AgentConfig {
         if self.prompt_template.trim().is_empty()
             || template_uses_removed_contract(&self.prompt_template)
         {
-            self.prompt_template = DEFAULT_PROMPT_TEMPLATE.to_string();
+            self.prompt_template = tr(DEFAULT_PROMPT_KEY).to_string();
         }
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
@@ -539,8 +555,8 @@ pub struct AgentPermissionOption {
 fn default_permissions() -> Vec<AgentPermissionOption> {
     vec![AgentPermissionOption {
         id: "default",
-        label: "默认权限",
-        description: "沿用 CLI 自己的权限与沙箱配置。",
+        label: tr("agent.permission.default"),
+        description: tr("agent.permission.default.cli.desc"),
     }]
 }
 
@@ -588,64 +604,64 @@ fn runtime_lifecycle() -> Vec<AgentLifecycleStage> {
     vec![
         AgentLifecycleStage {
             key: "queued",
-            label: "入队",
-            description: "按 FIFO 排队，等待串行 worker 取出。",
+            label: tr("agent.lifecycle.queued"),
+            description: tr("agent.lifecycle.queued.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "preparing",
-            label: "启动",
-            description: "导出缺陷包并在项目仓库中启动运行时。",
+            label: tr("agent.lifecycle.starting"),
+            description: tr("agent.lifecycle.starting.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "running",
-            label: "执行中",
-            description: "Agent 修改代码；终端可随时接管操作。",
+            label: tr("agent.lifecycle.running"),
+            description: tr("agent.lifecycle.running.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "awaiting_approval",
-            label: "改动待审核",
-            description: "Worktree 任务改动或非 Worktree 复杂改动暂停，等待通过或停止。",
+            label: tr("agent.lifecycle.awaitingReview"),
+            description: tr("agent.lifecycle.awaitingReview.desc"),
             needs_human: true,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "awaiting_merge",
-            label: "待合并",
-            description: "审核已通过，等待确认用原 Agent 或手动把任务分支合并到主仓库。",
+            label: tr("agent.lifecycle.awaitingMerge"),
+            description: tr("agent.lifecycle.awaitingMerge.desc"),
             needs_human: true,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "merging",
-            label: "合并中",
-            description: "原 Agent 正在主仓库合并任务分支，并校验分支是否已并入 HEAD。",
+            label: tr("agent.lifecycle.merging"),
+            description: tr("agent.lifecycle.merging.desc"),
             needs_human: false,
             terminal: false,
         },
         AgentLifecycleStage {
             key: "succeeded",
-            label: "任务完成",
-            description: "合并校验通过（或非 Worktree 提交）并完成 TAPD 回写。",
+            label: tr("agent.lifecycle.succeeded"),
+            description: tr("agent.lifecycle.succeeded.desc"),
             needs_human: false,
             terminal: true,
         },
         AgentLifecycleStage {
             key: "failed",
-            label: "任务失败",
-            description: "启动、执行或回写失败，错误保留在历史记录中。",
+            label: tr("agent.lifecycle.failed"),
+            description: tr("agent.lifecycle.failed.desc"),
             needs_human: false,
             terminal: true,
         },
         AgentLifecycleStage {
             key: "canceled",
-            label: "已取消",
-            description: "用户中断任务或取消排队。",
+            label: tr("agent.lifecycle.canceled"),
+            description: tr("agent.lifecycle.canceled.desc"),
             needs_human: false,
             terminal: true,
         },
@@ -665,15 +681,11 @@ fn tui_capabilities() -> AgentRuntimeCapabilities {
 /// 通用 TUI 的互通限制；`mcp_auto` 表示该客户端是否已有自动注入支持。
 fn tui_limitations(mcp_auto: bool) -> Vec<&'static str> {
     let mcp = if mcp_auto {
-        "启动前会尝试把 tapd MCP 写入该客户端的用户级配置。"
+        tr("agent.limits.mcp.auto")
     } else {
-        "尚未自动注入 tapd MCP，需要手动配置后才能回写 TAPD。"
+        tr("agent.limits.mcp.manual")
     };
-    vec![
-        "权限确认在右侧嵌入式终端内完成，桌面不会代为回执。",
-        "本轮结束以进程退出为准；未退出时按会话 hook 或输出静默兜底。",
-        mcp,
-    ]
+    vec![tr("agent.limits.permission"), tr("agent.limits.turn"), mcp]
 }
 
 /// 目录里只有少数运行时需要别名、子命令或参数终止符，其余用空扩展。
@@ -691,6 +703,34 @@ struct TuiRuntimeExtra {
     argv_separator: Option<&'static str>,
     /// 启动时挂会话监控 hook（见 `agent/hooks.rs`）。
     session_hook: SessionHookKind,
+}
+
+/// 一条通用 TUI 运行时描述。参数与注入方式参考 orca 的 TUI agent 适配表。
+fn tui_runtime(
+    id: &'static str,
+    name: &'static str,
+    vendor: &'static str,
+    description: &'static str,
+    binary: &'static str,
+    args: Vec<&'static str>,
+    prompt_injection: PromptInjection,
+    prompt_flag: Option<&'static str>,
+    mcp_auto: bool,
+) -> AgentRuntimeDescriptor {
+    tui_runtime_with(
+        id,
+        name,
+        vendor,
+        description,
+        binary,
+        TuiRuntimeExtra {
+            args,
+            ..TuiRuntimeExtra::default()
+        },
+        prompt_injection,
+        prompt_flag,
+        mcp_auto,
+    )
 }
 
 /// 需要别名或参数终止符的运行时用这个入口。
@@ -728,7 +768,7 @@ fn tui_runtime_with(
         capabilities: tui_capabilities(),
         lifecycle: runtime_lifecycle(),
         limitations: tui_limitations(mcp_auto),
-        fallback: "权限确认和交互操作都在嵌入式终端内完成；桌面只在任务结束后收集状态。",
+        fallback: tr("agent.limits.fallback"),
     }
 }
 
@@ -740,20 +780,20 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "opencode",
             "OpenCode",
             "SST",
-            "OpenCode 交互式终端，启动后写入提示词。",
+            tr("agent.runtime.opencode.desc"),
             DEFAULT_BINARY,
             TuiRuntimeExtra {
                 session_hook: SessionHookKind::OpenCode,
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 OpenCode 自己的权限配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.opencode.desc"),
                     },
                     AgentPermissionOption {
                         id: "auto",
-                        label: "自动批准",
-                        description: "自动批准未被显式拒绝的权限请求。",
+                        label: tr("agent.permission.auto"),
+                        description: tr("agent.permission.auto.desc"),
                     },
                 ],
                 ..TuiRuntimeExtra::default()
@@ -766,30 +806,30 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "claude",
             "Claude Code",
             "Anthropic",
-            "Claude Code 交互式终端，提示词作为启动参数传入。",
+            tr("agent.runtime.claude.desc"),
             "claude",
             TuiRuntimeExtra {
                 models: vec!["sonnet", "opus", "haiku", "fable"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "按 Claude 自己的设置询问。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.claude.desc"),
                     },
                     AgentPermissionOption {
                         id: "accept_edits",
-                        label: "自动接受编辑",
-                        description: "文件编辑不再逐次确认，命令仍按默认策略询问。",
+                        label: tr("agent.permission.acceptEdits"),
+                        description: tr("agent.permission.acceptEdits.claude.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过所有权限检查，仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.desc"),
                     },
                     AgentPermissionOption {
                         id: "plan",
-                        label: "只读计划",
-                        description: "只读分析并给出计划，不修改文件。",
+                        label: tr("agent.permission.plan"),
+                        description: tr("agent.permission.plan.desc"),
                     },
                 ],
                 session_hook: SessionHookKind::ClaudeSettings {
@@ -807,25 +847,25 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             "codex",
             "Codex",
             "OpenAI",
-            "Codex CLI 交互式终端，提示词作为启动参数传入。",
+            tr("agent.runtime.codex.desc"),
             "codex",
             TuiRuntimeExtra {
                 models: vec!["gpt-5-codex", "gpt-5", "o3", "o4-mini"],
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 Codex 自己的审批与沙箱配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.codex.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_auto",
-                        label: "自动执行",
-                        description: "在工作区内自动执行，不逐条确认。",
+                        label: tr("agent.permission.fullAuto"),
+                        description: tr("agent.permission.fullAuto.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过审批与沙箱，仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.codex.desc"),
                     },
                 ],
                 session_hook: SessionHookKind::Codex,
@@ -836,10 +876,378 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             true,
         ),
         tui_runtime_with(
+            "cursor",
+            "Cursor Agent",
+            "Anysphere",
+            tr("agent.runtime.cursor.desc"),
+            "cursor-agent",
+            TuiRuntimeExtra {
+                session_hook: SessionHookKind::Cursor,
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            true,
+        ),
+        tui_runtime_with(
+            "zcode",
+            "ZCode",
+            "ZCode",
+            tr("agent.runtime.zcode.desc"),
+            "zcode",
+            TuiRuntimeExtra {
+                session_hook: SessionHookKind::Zcode,
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            true,
+        ),
+        tui_runtime_with(
+            "gemini",
+            "Gemini CLI",
+            "Google",
+            tr("agent.runtime.gemini.desc"),
+            "gemini",
+            TuiRuntimeExtra {
+                session_hook: SessionHookKind::Gemini,
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Flag,
+            Some("-i"),
+            true,
+        ),
+        tui_runtime_with(
+            "qwen",
+            "Qwen Code",
+            "Alibaba",
+            tr("agent.runtime.qwen.desc"),
+            "qwen",
+            TuiRuntimeExtra {
+                session_hook: SessionHookKind::ClaudeSettings {
+                    dir: ".qwen",
+                    env: None,
+                    events: hooks::QWEN_EVENTS,
+                },
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            true,
+        ),
+        tui_runtime(
+            "copilot",
+            "GitHub Copilot",
+            "GitHub",
+            tr("agent.runtime.copilot.desc"),
+            "copilot",
+            Vec::new(),
+            PromptInjection::Flag,
+            Some("-i"),
+            false,
+        ),
+        tui_runtime(
+            "cline",
+            "Cline",
+            "Cline",
+            tr("agent.runtime.cline.desc"),
+            "cline",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "aider",
+            "Aider",
+            "Aider",
+            tr("agent.runtime.aider.desc"),
+            "aider",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "goose",
+            "Goose",
+            "Block",
+            tr("agent.runtime.goose.desc"),
+            "goose",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "amp",
+            "Amp",
+            "Sourcegraph",
+            tr("agent.runtime.amp.desc"),
+            "amp",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "antigravity",
+            "Antigravity",
+            "Google",
+            tr("agent.runtime.antigravity.desc"),
+            "agy",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "aug",
+            "Auggie",
+            "Augment Code",
+            tr("agent.runtime.aug.desc"),
+            "auggie",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "autohand",
+            "Autohand Code",
+            "Autohand",
+            tr("agent.runtime.autohand.desc"),
+            "autohand",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "codebuddy",
+            "CodeBuddy",
+            "Tencent",
+            tr("agent.runtime.codebuddy.desc"),
+            "codebuddy",
+            TuiRuntimeExtra {
+                aliases: vec!["cbc"],
+                session_hook: SessionHookKind::ClaudeSettings {
+                    dir: ".codebuddy",
+                    env: None,
+                    events: hooks::QWEN_EVENTS,
+                },
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "codebuff",
+            "Codebuff",
+            "Codebuff",
+            tr("agent.runtime.codebuff.desc"),
+            "codebuff",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "command-code",
+            "Command Code",
+            "Command Code",
+            tr("agent.runtime.commandCode.desc"),
+            "command-code",
+            TuiRuntimeExtra {
+                args: vec!["--trust"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "continue",
+            "Continue",
+            "Continue",
+            tr("agent.runtime.continue.desc"),
+            "cn",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "crush",
+            "Charm",
+            "Charm",
+            tr("agent.runtime.crush.desc"),
+            "crush",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "devin",
+            "Devin",
+            "Cognition",
+            tr("agent.runtime.devin.desc"),
+            "devin",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "droid",
+            "Droid",
+            "Factory",
+            tr("agent.runtime.droid.desc"),
+            "droid",
+            Vec::new(),
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "freebuff",
+            "Freebuff",
+            "Freebuff",
+            tr("agent.runtime.freebuff.desc"),
+            "freebuff",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "grok",
+            "Grok",
+            "xAI",
+            tr("agent.runtime.grok.desc"),
+            "grok",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "hermes",
+            "Hermes",
+            "Nous Research",
+            tr("agent.runtime.hermes.desc"),
+            "hermes",
+            TuiRuntimeExtra {
+                args: vec!["--tui"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "jcode",
+            "Jcode",
+            "Jcode",
+            tr("agent.runtime.jcode.desc"),
+            "jcode",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "kilo",
+            "Kilocode",
+            "Kilocode",
+            tr("agent.runtime.kilo.desc"),
+            "kilo",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "kimi",
+            "Kimi",
+            "Moonshot",
+            tr("agent.runtime.kimi.desc"),
+            "kimi",
+            TuiRuntimeExtra {
+                aliases: vec!["kimi-code"],
+                session_hook: SessionHookKind::Kimi,
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            true,
+        ),
+        tui_runtime_with(
+            "kiro",
+            "Kiro",
+            "AWS",
+            tr("agent.runtime.kiro.desc"),
+            "kiro-cli",
+            TuiRuntimeExtra {
+                args: vec!["chat", "--tui"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "mimo-code",
+            "MiMo Code",
+            "Xiaomi",
+            tr("agent.runtime.mimoCode.desc"),
+            "mimo",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "mistral-vibe",
+            "Mistral Vibe",
+            "Mistral",
+            tr("agent.runtime.mistralVibe.desc"),
+            "vibe",
+            TuiRuntimeExtra {
+                aliases: vec!["mistral-vibe"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "muse",
+            "Muse",
+            "Meta",
+            tr("agent.runtime.muse.desc"),
+            "muse",
+            TuiRuntimeExtra {
+                args: vec!["--trust-workspace"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
             "omp",
             "OMP",
             "OMP",
-            "OMP 终端 Agent，提示词作为启动参数传入。",
+            tr("agent.runtime.omp.desc"),
             "omp",
             TuiRuntimeExtra {
                 // TUI 会持续重绘，静默兜底无法触发；用会话 hook 收尾并记录 session id。
@@ -847,18 +1255,18 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
                 permissions: vec![
                     AgentPermissionOption {
                         id: "default",
-                        label: "默认权限",
-                        description: "沿用 OMP 自己的审批配置。",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.omp.desc"),
                     },
                     AgentPermissionOption {
                         id: "write",
-                        label: "自动执行写操作",
-                        description: "自动批准写文件等操作，危险命令仍会询问。",
+                        label: tr("agent.permission.writeAuto"),
+                        description: tr("agent.permission.writeAuto.desc"),
                     },
                     AgentPermissionOption {
                         id: "full_access",
-                        label: "完全访问",
-                        description: "跳过所有工具批准（yolo），仅建议在可信仓库使用。",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.omp.desc"),
                     },
                 ],
                 ..TuiRuntimeExtra::default()
@@ -866,6 +1274,196 @@ pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
             PromptInjection::Argv,
             None,
             true,
+        ),
+        tui_runtime_with(
+            "openclaude",
+            "OpenClaude",
+            "OpenClaude",
+            tr("agent.runtime.openclaude.desc"),
+            "openclaude",
+            TuiRuntimeExtra {
+                models: vec!["sonnet", "opus", "haiku", "fable"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.openclaude.desc"),
+                    },
+                    AgentPermissionOption {
+                        id: "accept_edits",
+                        label: tr("agent.permission.acceptEdits"),
+                        description: tr("agent.permission.acceptEdits.openclaude.desc"),
+                    },
+                    AgentPermissionOption {
+                        id: "full_access",
+                        label: tr("agent.permission.fullAccess"),
+                        description: tr("agent.permission.fullAccess.desc"),
+                    },
+                ],
+                session_hook: SessionHookKind::ClaudeSettings {
+                    dir: ".openclaude",
+                    env: None,
+                    events: hooks::CLAUDE_EVENTS,
+                },
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "openclaw",
+            "OpenClaw",
+            "OpenClaw",
+            tr("agent.runtime.openclaw.desc"),
+            "openclaw",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "opencode2",
+            "OpenCode 2",
+            "SST",
+            tr("agent.runtime.opencode2.desc"),
+            "opencode2",
+            TuiRuntimeExtra {
+                args: vec!["--standalone"],
+                permissions: vec![
+                    AgentPermissionOption {
+                        id: "default",
+                        label: tr("agent.permission.default"),
+                        description: tr("agent.permission.default.opencode2.desc"),
+                    },
+                    AgentPermissionOption {
+                        id: "auto",
+                        label: tr("agent.permission.auto"),
+                        description: tr("agent.permission.auto.desc"),
+                    },
+                ],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "pi",
+            "Pi",
+            "Pi",
+            tr("agent.runtime.pi.desc"),
+            "pi",
+            Vec::new(),
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "prime-agent",
+            "Prime Agent",
+            "Prime Intellect",
+            tr("agent.runtime.primeAgent.desc"),
+            "prime-agent",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "qoder",
+            "Qoder CLI",
+            "Alibaba",
+            tr("agent.runtime.qoder.desc"),
+            "qodercli",
+            TuiRuntimeExtra {
+                aliases: vec!["qoder"],
+                session_hook: SessionHookKind::ClaudeSettings {
+                    dir: ".qoder",
+                    env: None,
+                    events: hooks::QWEN_EVENTS,
+                },
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "qoder-cn",
+            "Qoder CLI China",
+            "Alibaba",
+            tr("agent.runtime.qoderCn.desc"),
+            "qoderclicn",
+            TuiRuntimeExtra {
+                aliases: vec!["qodercn"],
+                session_hook: SessionHookKind::ClaudeSettings {
+                    dir: ".qoder-cn",
+                    env: None,
+                    events: hooks::QWEN_EVENTS,
+                },
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "rovo",
+            "Rovo Dev",
+            "Atlassian",
+            tr("agent.runtime.rovo.desc"),
+            "acli",
+            TuiRuntimeExtra {
+                args: vec!["rovodev", "run"],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "trae",
+            "Trae",
+            "ByteDance",
+            tr("agent.runtime.trae.desc"),
+            "traecli",
+            TuiRuntimeExtra {
+                argv_separator: Some("--"),
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Argv,
+            None,
+            false,
+        ),
+        tui_runtime_with(
+            "dsh",
+            "DeepSeek Harness",
+            "DeepSeek",
+            tr("agent.runtime.dsh.desc"),
+            "dsh-tui",
+            TuiRuntimeExtra {
+                aliases: vec!["dst"],
+                args: vec!["."],
+                ..TuiRuntimeExtra::default()
+            },
+            PromptInjection::Stdin,
+            None,
+            false,
+        ),
+        tui_runtime(
+            "custom",
+            tr("agent.runtime.custom.label"),
+            tr("agent.runtime.custom.vendor"),
+            tr("agent.runtime.custom.desc"),
+            "my-agent",
+            Vec::new(),
+            PromptInjection::Stdin,
+            None,
+            false,
         ),
     ]
 }
@@ -1127,6 +1725,10 @@ pub struct AgentTask {
     pub error: Option<String>,
     pub prompt: String,
     pub source: String,
+    /// TAPD bug vs. local work item. Missing in old records, which are TAPD
+    /// bugs. `source` stays the enqueue origin (`manual` / `notification`).
+    #[serde(default)]
+    pub source_kind: TaskSource,
     /// Runtime selected when the task was enqueued, so switching settings later
     /// cannot change how an existing/queued task runs.
     #[serde(default = "default_task_runtime")]
@@ -1137,6 +1739,10 @@ pub struct AgentTask {
     /// 本次运行的访问权限选项 id；空字符串表示运行时默认。
     #[serde(default)]
     pub permission_mode: String,
+    /// Local project rules, copied from the project at enqueue time and
+    /// appended to local prompts. Empty for TAPD bugs and old records.
+    #[serde(default)]
+    pub project_rule: String,
     /// 会话 hook 捕获的运行时 session id，用于「打开系统终端」精确续接对应
     /// 会话；缺失时退回各 CLI 的「继续最近会话」参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1222,6 +1828,11 @@ pub struct TaskMerge {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Main-repository HEAD after the branch was merged. The core records it
+    /// once the merge is verified; dropping it here would lose the hash from
+    /// every view, persisted record and history entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// Result of `agent_merge_start`: either the merge runner was started
@@ -1264,6 +1875,29 @@ struct EnqueueRequest {
     /// 本次任务指定访问权限；为空时使用该运行时的默认权限。
     #[serde(default)]
     pub permission_mode: Option<String>,
+}
+
+/// A local work item submitted to the same queue as TAPD bugs. Local ids,
+/// paths and text come straight from the client; no TAPD lookup happens.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LocalEnqueueRequest {
+    pub project_id: String,
+    pub project_name: String,
+    pub work_item_id: String,
+    pub title: String,
+    pub description: String,
+    pub repo_path: String,
+    pub created_at: String,
+    /// Rules of the local project, appended to this task's prompts.
+    #[serde(default)]
+    pub project_rule: String,
+    pub extra_prompt: Option<String>,
+    pub attachments: Option<Vec<String>>,
+    pub runtime_id: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1332,6 +1966,8 @@ pub struct AgentSummary {
     bug_id: Option<String>,
     severity: Option<String>,
     priority: Option<String>,
+    /// 当前任务来自 TAPD 缺陷还是本地事项；胶囊据此决定文案。
+    pub source_kind: TaskSource,
     /// 当前运行时的品牌信息，胶囊折叠态与 peek 使用。
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
@@ -1358,6 +1994,16 @@ pub struct AgentSummary {
 #[serde(rename_all = "camelCase", default)]
 struct TaskIdRequest {
     task_id: String,
+}
+
+/// `agent_task_diff`: the task plus an optional repo-relative file. `file`
+/// absent (or `null`, which the UI sends for the whole task) means the full
+/// change diff.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct TaskDiffRequest {
+    task_id: String,
+    file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1584,11 +2230,11 @@ pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     // no explicit slot, append its sections instead of dropping the user input.
     let user_prompt = vars.user_prompt.trim();
     if !has_prompt_slot && !user_prompt.is_empty() {
-        rendered.push_str("\n\n用户补充说明：\n");
+        rendered.push_str(tr("agent.prompt.user.notes"));
         rendered.push_str(user_prompt);
     }
     if !has_attachments_slot && !attachments.is_empty() {
-        rendered.push_str("\n\n用户附加资源（本地路径，请直接读取）：\n");
+        rendered.push_str(tr("agent.prompt.attachments.header"));
         rendered.push_str(&attachments);
     }
     rendered
@@ -1599,7 +2245,12 @@ fn render_attachments(paths: &[String]) -> String {
     paths
         .iter()
         .filter(|path| !path.trim().is_empty())
-        .map(|path| format!("- {}：{}", attachment_kind(path), path.trim()))
+        .map(|path| {
+            tr_args(
+                "agent.prompt.attachment.line",
+                &[&attachment_kind(path), &path.trim()],
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1611,9 +2262,11 @@ fn attachment_kind(path: &str) -> &'static str {
         .unwrap_or("")
         .to_ascii_lowercase();
     match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "svg" => "图片",
-        "mp4" | "mov" | "webm" | "m4v" | "avi" | "mkv" => "视频",
-        _ => "文件",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "svg" => {
+            tr("agent.attachment.image")
+        }
+        "mp4" | "mov" | "webm" | "m4v" | "avi" | "mkv" => tr("agent.attachment.video"),
+        _ => tr("agent.attachment.file"),
     }
 }
 
@@ -1644,37 +2297,15 @@ fn task_spec_from_request(
     let workspace_id = request.workspace_id.trim();
     let bug_id = request.bug_id.trim();
     if workspace_id.is_empty() || bug_id.is_empty() {
-        return Err("缺少 workspaceId 或 bugId".to_string());
+        return Err(tr("agent.enqueue.missing.ids").to_string());
     }
 
-    let runtime_id = request
-        .runtime_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .filter(|id| runtime_descriptor(id).is_some())
-        .map(str::to_string)
-        .unwrap_or_else(|| config.runtime_id.clone());
-    // 任务级选择优先；未指定时沿用该运行时的默认模型 / 权限。
-    let runtime_options = config
-        .runtime_options
-        .get(&runtime_id)
-        .cloned()
-        .unwrap_or_default();
-    let model = request
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&runtime_options.model)
-        .to_string();
-    let permission_mode = request
-        .permission_mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| runtime_options.permission_mode.clone());
+    let choice = runtime_choice(
+        request.runtime_id.as_deref(),
+        request.model.as_deref(),
+        request.permission_mode.as_deref(),
+        config,
+    );
     let workspace_name = request
         .workspace_name
         .as_deref()
@@ -1688,24 +2319,16 @@ fn task_spec_from_request(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("缺陷 {bug_id}"));
+        .unwrap_or_else(|| tr_args("agent.task.title.fallback", &[&bug_id]));
     let extra_prompt = request
         .extra_prompt
         .as_deref()
         .unwrap_or("")
         .trim()
         .to_string();
-    let mut seen = HashSet::new();
-    let attachments: Vec<String> = request
-        .attachments
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
-        .collect();
 
     Ok(TaskSpec {
+        source_kind: TaskSource::TapdBug,
         workspace_id: workspace_id.to_string(),
         workspace_name,
         bug_id: bug_id.to_string(),
@@ -1723,39 +2346,130 @@ fn task_spec_from_request(
             .trim()
             .to_string(),
         repo_path: config.repo_path_for(workspace_id),
+        runtime_id: choice.runtime_id,
+        model: choice.model,
+        permission_mode: choice.permission_mode,
+        source: source.trim().to_string(),
+        project_rule: String::new(),
+        extra_prompt,
+        attachments: clean_attachments(request.attachments.clone()),
+    })
+}
+
+/// Runtime/model/permission choice shared by TAPD and local enqueues. An
+/// unknown runtime falls back to the configured default, so a stale UI value
+/// cannot stall the queue.
+struct RuntimeChoice {
+    runtime_id: String,
+    model: String,
+    permission_mode: String,
+}
+
+fn runtime_choice(
+    runtime_id: Option<&str>,
+    model: Option<&str>,
+    permission_mode: Option<&str>,
+    config: &AgentConfig,
+) -> RuntimeChoice {
+    let runtime_id = runtime_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| runtime_descriptor(id).is_some())
+        .map(str::to_string)
+        .unwrap_or_else(|| config.runtime_id.clone());
+    // 任务级选择优先；未指定时沿用该运行时的默认模型 / 权限。
+    let runtime_options = config
+        .runtime_options
+        .get(&runtime_id)
+        .cloned()
+        .unwrap_or_default();
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&runtime_options.model)
+        .to_string();
+    let permission_mode = permission_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| runtime_options.permission_mode.clone());
+    RuntimeChoice {
         runtime_id,
         model,
         permission_mode,
-        source: source.trim().to_string(),
-        extra_prompt,
-        attachments,
-    })
+    }
+}
+
+/// Trims, drops blanks and de-duplicates attachment paths while keeping order.
+fn clean_attachments(paths: Option<Vec<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    paths
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
+        .collect()
 }
 
 /// Host-side repository facts for the workflow: files changed by this run,
 /// whether uncommitted work remains, and whether a commit was produced.
-/// `baseline_dirty` files belong to the user and are excluded.
+/// `tapd_workspace` owns the git work and already excludes `baseline_dirty`;
+/// `work_dir` is the path the run reported (a worktree override).
 fn inspect_changes(task: &AgentTask, work_dir: &str) -> Result<tapd_workflow::ChangeSet, String> {
-    let dirty: Vec<String> = uncommitted_files(work_dir)?
-        .into_iter()
-        .filter(|file| !task.baseline_dirty.contains(file))
-        .collect();
-    let committed = committed_since_baseline(task)?;
-    let mut files = if committed {
-        changed_files_since(work_dir, task.baseline_head.as_deref())?
-    } else {
-        dirty.clone()
-    };
-    for file in &dirty {
-        if !files.contains(file) {
-            files.push(file.clone());
-        }
-    }
-    Ok(tapd_workflow::ChangeSet {
-        files,
-        dirty: !dirty.is_empty(),
-        committed,
+    task_changes::summary_blocking(task, Some(work_dir))
+        .map(|summary| task_changes::change_set_from(&summary))
+}
+
+/// What the main repository says about a merge attempt: whether the branch is
+/// now an ancestor of HEAD, and which commit HEAD is when it landed.
+struct MergeVerification {
+    merged: bool,
+    commit: Option<String>,
+    error: Option<String>,
+}
+
+/// Runs the verdict and the HEAD lookup in one blocking hop. It never decides
+/// anything: the workflow core receives the facts.
+async fn verify_branch_landed(
+    repo_path: String,
+    branch: String,
+    baseline: Option<String>,
+) -> MergeVerification {
+    let checked = tokio::task::spawn_blocking(move || {
+        // A branch that never advanced past the baseline is trivially an
+        // ancestor of HEAD, so `merge-base --is-ancestor` alone would report
+        // "merged" for a run that produced no commit. Require a product commit.
+        let merged = if branch_merged(&repo_path, &branch)? {
+            match (baseline.as_deref(), git::git_rev(&repo_path, &branch)?) {
+                (Some(baseline), Some(tip)) => tip != baseline,
+                _ => true,
+            }
+        } else {
+            false
+        };
+        let commit = if merged {
+            task_changes::head_commit(&repo_path)?
+        } else {
+            None
+        };
+        Ok::<_, String>((merged, commit))
     })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|checked| checked);
+
+    match checked {
+        Ok((merged, commit)) => MergeVerification {
+            merged,
+            commit,
+            error: None,
+        },
+        Err(error) => MergeVerification {
+            merged: false,
+            commit: None,
+            error: Some(tr_args("agent.merge.verify.failed", &[&error])),
+        },
+    }
 }
 
 fn default_task_runtime() -> String {
@@ -1779,16 +2493,65 @@ fn normalize_coworker_ids(values: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Built-in template for a run. `None` means the user's configurable TAPD
+/// template applies; local items never use it because it may reference TAPD
+/// write-back tools.
+fn builtin_fix_prompt(task: &AgentTask) -> Option<&'static str> {
+    let worktree = task.worktree_branch.is_some();
+    match task.source_kind {
+        TaskSource::LocalWorkItem => Some(if task.commit_only {
+            if worktree {
+                LOCAL_WORKTREE_COMMIT_PROMPT_KEY
+            } else {
+                LOCAL_COMMIT_PROMPT_KEY
+            }
+        } else {
+            LOCAL_PROMPT_KEY
+        }),
+        TaskSource::TapdBug if task.commit_only => Some(if worktree {
+            DEFAULT_WORKTREE_COMMIT_PROMPT_KEY
+        } else {
+            DEFAULT_COMMIT_PROMPT_KEY
+        }),
+        TaskSource::TapdBug => None,
+    }
+}
+
+/// Extra delivery note appended to worktree fix rounds (not commit rounds).
+fn worktree_fix_note(task: &AgentTask) -> Option<&'static str> {
+    if task.worktree_branch.is_none() || task.commit_only {
+        return None;
+    }
+    Some(match task.source_kind {
+        TaskSource::LocalWorkItem => LOCAL_WORKTREE_FIX_NOTE_KEY,
+        TaskSource::TapdBug => WORKTREE_FIX_NOTE_KEY,
+    })
+}
+
 /// Prompt for the merge runner: merge the reviewed branch and then (and only
 /// then) write back to TAPD.
-fn merge_prompt(repo: &str, branch: &str) -> String {
-    tapd_workflow::merge_prompt(repo, branch)
+fn merge_prompt(repo: &str, branch: &str, source: TaskSource) -> String {
+    tapd_workflow::merge_prompt(repo, branch, source)
+}
+
+/// Appends the project rules as the prompt's final section. Only local work
+/// items have rules; TAPD prompts must stay exactly as configured.
+fn append_project_rule(prompt: &mut String, source: TaskSource, rule: &str) {
+    if source != TaskSource::LocalWorkItem {
+        return;
+    }
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return;
+    }
+    prompt.push_str(tr(LOCAL_RULE_KEY));
+    prompt.push_str(rule);
 }
 
 /// Manual fallback shown in the merge card when the agent cannot merge (or the
 /// user prefers to do it themselves).
-fn manual_merge_instructions(repo: &str, branch: &str) -> String {
-    tapd_workflow::manual_merge_instructions(repo, branch)
+fn manual_merge_instructions(repo: &str, branch: &str, source: TaskSource) -> String {
+    tapd_workflow::manual_merge_instructions(repo, branch, source)
 }
 
 // ---------------------------------------------------------------------------
@@ -1822,12 +2585,13 @@ fn launch_system_terminal(cwd: &Path, binary: &str, args: &[&str]) -> Result<(),
         "tapd-agent-{}.command",
         uuid::Uuid::new_v4().simple()
     ));
-    std::fs::write(&path, script).map_err(|error| format!("写入终端启动脚本失败：{error}"))?;
+    std::fs::write(&path, script)
+        .map_err(|error| tr_args("agent.terminal.script.write.failed", &[&error]))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("设置终端启动脚本权限失败：{error}"))?;
+            .map_err(|error| tr_args("agent.terminal.script.chmod.failed", &[&error]))?;
     }
 
     let status = std::process::Command::new("open")
@@ -1835,9 +2599,9 @@ fn launch_system_terminal(cwd: &Path, binary: &str, args: &[&str]) -> Result<(),
         .arg("Terminal")
         .arg(&path)
         .status()
-        .map_err(|error| format!("打开系统终端失败：{error}"))?;
+        .map_err(|error| tr_args("agent.terminal.open.failed", &[&error]))?;
     if !status.success() {
-        return Err("打开系统终端失败".to_string());
+        return Err(tr("agent.terminal.open.denied").to_string());
     }
     Ok(())
 }
@@ -1877,12 +2641,17 @@ pub struct AgentCore {
     /// Terminal size the UI asked for. The console can be opened before the
     /// PTY exists, so the size is remembered and applied when it starts.
     sizes: Mutex<HashMap<String, (u16, u16)>>,
-    /// Serializes persistence writers so an older batch can never overwrite a
-    /// newer one.
+    /// Serializes "read the current views + enqueue the write" so the queue
+    /// order matches the order the states were observed in.
     persist_lock: Mutex<()>,
+    /// All SQLite writes run on one dedicated thread. Fsyncs must not block a
+    /// tokio worker, and one thread keeps the write order identical to the
+    /// enqueue order.
+    persist_tx: std::sync::mpsc::SyncSender<PersistJob>,
     /// Last SQLite failure. Surfaced in the Agent header so a broken store is
-    /// visible instead of looking like a queue that simply lost history.
-    storage_error: Mutex<Option<String>>,
+    /// visible instead of looking like a queue that simply lost history. Shared
+    /// with the writer thread.
+    storage_error: Arc<Mutex<Option<String>>>,
     /// 本机安装检测结果（`agent-scan.json`）；每日自动检测一次。
     scan: Mutex<Option<crate::agent_scan::AgentScanSnapshot>>,
     /// Serializes scans so the startup scan and an opening settings card cannot
@@ -1900,10 +2669,93 @@ pub struct AgentCore {
     chats: Mutex<chat::ChatStore>,
     /// 运行时模型列表缓存。
     models_cache: Mutex<HashMap<String, CachedModels>>,
+    /// Live change summary per task: refreshed from hook events, served to the
+    /// change panel. See `crate::task_changes`.
+    changes: crate::task_changes::ChangesTracker,
+    /// Set once shutdown starts. A PTY spawn that is already in flight must not
+    /// leave an orphaned agent editing code after the app quits, and its late
+    /// outcome must not turn the parked queue into canceled tasks.
+    shutting_down: AtomicBool,
+    /// Tasks whose approve/stop decision is in flight. The desktop and the
+    /// phone can both call these; the decision plus the git work it triggers
+    /// must not interleave.
+    review_ops: Mutex<HashSet<String>>,
+}
+
+/// One queued SQLite write. The writer thread owns the connection order.
+enum PersistJob {
+    Upsert {
+        views: Vec<AgentTask>,
+        paused: bool,
+    },
+    Delete {
+        paused: bool,
+        task_id: String,
+    },
+    Paused {
+        paused: bool,
+    },
+    /// Shutdown barrier: the writer answers once every earlier job is written.
+    Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+/// Drains persistence jobs in order. This is the only place agent tasks touch
+/// SQLite, so no async caller ever waits on a disk fsync.
+fn persist_writer(
+    state: SharedState,
+    storage_error: Arc<Mutex<Option<String>>>,
+    jobs: std::sync::mpsc::Receiver<PersistJob>,
+) {
+    for job in jobs {
+        let persisted = match job {
+            PersistJob::Upsert { views, paused } => state.cache.save_agent_tasks(&views, paused, &[]),
+            PersistJob::Delete { paused, task_id } => {
+                state.cache.save_agent_tasks(&[], paused, &[task_id])
+            }
+            PersistJob::Paused { paused } => state.cache.save_agent_tasks(&[], paused, &[]),
+            PersistJob::Flush(done) => {
+                let _ = done.send(());
+                continue;
+            }
+        };
+        if let Ok(mut slot) = storage_error.lock() {
+            *slot = if persisted {
+                None
+            } else {
+                tracing::error!("failed to persist agent tasks; the store is unavailable");
+                Some(tr("agent.persist.failed").to_string())
+            };
+        }
+    }
+}
+
+/// Releases a task's approve/stop claim when the operation ends, including on
+/// every early-return path.
+struct ReviewClaim<'a> {
+    inflight: &'a Mutex<HashSet<String>>,
+    task_id: String,
+}
+
+impl Drop for ReviewClaim<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self.inflight.lock() {
+            inflight.remove(&self.task_id);
+        }
+    }
 }
 
 impl AgentCore {
     fn new(app: AppHandle, state: SharedState) -> Self {
+        let storage_error = Arc::new(Mutex::new(None));
+        let (persist_tx, persist_rx) = std::sync::mpsc::sync_channel::<PersistJob>(1024);
+        let writer_state = state.clone();
+        let writer_error = storage_error.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("agent-persist".to_string())
+            .spawn(move || persist_writer(writer_state, writer_error, persist_rx))
+        {
+            tracing::error!(%error, "failed to start the agent persistence thread");
+        }
         Self {
             app,
             state,
@@ -1915,7 +2767,8 @@ impl AgentCore {
             worktree_lock: tokio::sync::Mutex::new(()),
             sizes: Mutex::new(HashMap::new()),
             persist_lock: Mutex::new(()),
-            storage_error: Mutex::new(None),
+            persist_tx,
+            storage_error,
             scan: Mutex::new(None),
             scan_lock: Mutex::new(()),
             hook_tokens: Mutex::new(HashMap::new()),
@@ -1924,7 +2777,28 @@ impl AgentCore {
             transcript_cache: Mutex::new(HashMap::new()),
             chats: Mutex::new(chat::ChatStore::default()),
             models_cache: Mutex::new(HashMap::new()),
+            changes: crate::task_changes::ChangesTracker::default(),
+            shutting_down: AtomicBool::new(false),
+            review_ops: Mutex::new(HashSet::new()),
         }
+    }
+
+    fn shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    /// Claims the task's review decision. The returned guard releases the claim
+    /// on every exit path; a second caller (desktop + phone) is rejected instead
+    /// of stashing changes out from under a re-queued task.
+    fn claim_review_op(&self, task_id: &str) -> Result<ReviewClaim<'_>, String> {
+        let mut inflight = self.review_ops.lock().expect("agent review ops lock");
+        if !inflight.insert(task_id.to_string()) {
+            return Err(tr("agent.review.busy").to_string());
+        }
+        Ok(ReviewClaim {
+            inflight: &self.review_ops,
+            task_id: task_id.to_string(),
+        })
     }
 
     fn config_path(&self) -> PathBuf {
@@ -1987,11 +2861,9 @@ impl AgentCore {
                 tracing::error!(
                     "failed to load agent tasks from SQLite; refusing to fake an empty queue"
                 );
-                self.set_storage_error(Some(
-                    "本地任务存储不可用，队列未恢复；请检查本地数据后重试".to_string(),
-                ));
+                self.set_storage_error(Some(tr("agent.queue.storage.unavailable").to_string()));
                 let _ = self.apply_input(Input::Suspend { now: now() });
-                return Err("无法读取本地任务存储，队列未恢复".to_string());
+                return Err(tr("agent.queue.storage.unreadable").to_string());
             }
         };
         let mut tasks = Vec::with_capacity(views.len());
@@ -2000,9 +2872,12 @@ impl AgentCore {
                 Ok(task) => tasks.push(task),
                 Err(error) => {
                     tracing::error!(%error, task_id = %view.id, "failed to load a persisted agent task");
-                    self.set_storage_error(Some(format!("任务记录无法解析：{error}")));
+                    self.set_storage_error(Some(tr_args(
+                        "agent.queue.record.parse.failed",
+                        &[&error],
+                    )));
                     let _ = self.apply_input(Input::Suspend { now: now() });
-                    return Err(format!("恢复任务失败：{error}"));
+                    return Err(tr_args("agent.queue.restore.failed", &[&error]));
                 }
             }
         }
@@ -2021,7 +2896,7 @@ impl AgentCore {
                 // login can retry the recovery instead of waiting forever.
                 let _ = self.apply_input(Input::Suspend { now: now() });
                 tracing::error!(%error, "failed to recover agent tasks on system entry");
-                return Err(format!("恢复任务失败：{error}"));
+                return Err(tr_args("agent.queue.restore.failed", &[&error]));
             }
         };
 
@@ -2179,7 +3054,7 @@ impl AgentCore {
             .find(|effect| matches!(effect, Effect::Rejected { .. }))
         {
             let message = if message == "system not entered" {
-                workflow_bridge::NOT_ENTERED.to_string()
+                workflow_bridge::not_entered().to_string()
             } else {
                 message.clone()
             };
@@ -2219,9 +3094,14 @@ impl AgentCore {
             }
             Effect::StateChanged => self.emit_state(),
             Effect::PersistChanged { tasks } => {
-                let views = self.views_for(&tasks);
+                // Dispatch can be spawned, so this effect may run after a newer
+                // input already applied. Persist the workflow's current view
+                // for these ids instead of the snapshot captured with the
+                // effect, otherwise an older `running` row can overwrite a
+                // finished one and the task re-runs after a restart.
+                let ids: Vec<String> = tasks.iter().map(|task| task.id.0.clone()).collect();
                 let paused = self.workflow_paused();
-                self.persist_views(&views, paused, &[]);
+                self.persist_task_views(&ids, paused);
                 self.emit_state();
             }
             Effect::PersistDeleted { task_id } => {
@@ -2400,6 +3280,16 @@ impl AgentCore {
             .collect()
     }
 
+    /// Views of the given tasks as they are *now*, read under the workflow
+    /// lock at persist time. Used by effects that may be dispatched out of
+    /// order with the input that produced them.
+    fn current_views(&self, task_ids: &[String]) -> Vec<AgentTask> {
+        task_ids
+            .iter()
+            .filter_map(|task_id| self.workflow_view(task_id))
+            .collect()
+    }
+
     fn append_history(&self, record: HistoryRecord) {
         let Some(task) = self.workflow_task(&record.task_id) else {
             tracing::warn!(
@@ -2412,8 +3302,27 @@ impl AgentCore {
             tracing::warn!(task_id = %record.task_id, "failed to map the history task");
             return;
         };
+        let succeeded = view.status == TaskStatus::Succeeded;
         let paused = self.workflow_paused();
         self.persist_views(&[view], paused, &[]);
+        // A successful local run completes the item it ran for. Matching by
+        // (project, item) survives retry, which creates a new task id; the
+        // update also repoints the item at the task that actually succeeded.
+        // TAPD records are skipped entirely.
+        if succeeded && record.source_kind == TaskSource::LocalWorkItem {
+            if let Err(error) = self.state.local.complete_work_item(
+                &record.workspace_id,
+                &record.bug_id,
+                &record.task_id,
+                &now(),
+            ) {
+                tracing::warn!(
+                    task_id = %record.task_id,
+                    %error,
+                    "failed to complete the linked local work item"
+                );
+            }
+        }
         tracing::info!(
             task_id = %record.task_id,
             status = ?record.status,
@@ -2588,6 +3497,13 @@ impl AgentCore {
             }
             self.set_runtime_status(task_id, next);
         }
+        // A tool call that wrote files invalidates the change cache. This is
+        // the only hook-side work: one lock, no IO, no git. The actual refresh
+        // is de-bounced and single-flighted in `schedule_changes_refresh`.
+        if task_changes::edits_files(event, payload.as_ref()) {
+            self.changes.mark_stale(task_id);
+            self.schedule_changes_refresh(task_id);
+        }
         if !activity.complete && activity.error.is_none() {
             return Ok(());
         }
@@ -2610,6 +3526,47 @@ impl AgentCore {
             },
         );
         Ok(())
+    }
+
+    /// Schedules one background change-summary refresh for a task whose cache
+    /// was just marked stale. De-bounced (a burst of edits costs one run) and
+    /// single-flighted (`begin_refresh` claims the slot). The hook handler
+    /// returns immediately: nothing here blocks it.
+    fn schedule_changes_refresh(self: &Arc<Self>, task_id: &str) {
+        if !self.changes.begin_refresh(task_id) {
+            return;
+        }
+        let core = Arc::clone(self);
+        let task_id = task_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(CHANGES_DEBOUNCE).await;
+            let Some(task) = core.workflow_view(&task_id) else {
+                core.changes.abort_refresh(&task_id);
+                return;
+            };
+            match task_changes::summary(&task, None).await {
+                Ok(summary) => {
+                    core.changes.store(&task_id, summary.clone());
+                    // Keep following a live task after the panel's first open,
+                    // and re-run once for edits that landed while this refresh
+                    // was computing (`store` leaves `stale` set in that case).
+                    if task.status.is_active() {
+                        core.changes.touch(&task_id);
+                    }
+                    core.schedule_changes_refresh(&task_id);
+                    let _ = core.app.emit(
+                        "agent://task_changes",
+                        json!({ "taskId": task_id, "changes": summary }),
+                    );
+                }
+                Err(error) => {
+                    // The panel keeps its last good summary; a failed refresh
+                    // is not worth a user-facing error.
+                    tracing::debug!(task_id = %task_id, %error, "agent change refresh failed");
+                    core.changes.abort_refresh(&task_id);
+                }
+            }
+        });
     }
 
     /// 更新内存里的运行时状态并广播；状态没变化时不推送。
@@ -2703,7 +3660,7 @@ impl AgentCore {
         // prompts must keep the old config instead of diverging from disk.
         write_json_atomic(&self.config_path(), &next).map_err(|error| {
             tracing::warn!(%error, "failed to persist agent config");
-            format!("保存 Agent 配置失败：{error}")
+            tr_args("agent.config.save.failed", &[&error])
         })?;
         *self.config.lock().expect("agent config lock") = next.clone();
         Ok(next)
@@ -2777,6 +3734,7 @@ impl AgentCore {
             bug_id: active.map(|task| task.spec.bug_id.clone()),
             severity: active.map(|task| task.spec.severity.clone()),
             priority: active.map(|task| task.spec.priority.clone()),
+            source_kind: active.map(|task| task.spec.source_kind).unwrap_or_default(),
             runtime_id: active.map(|task| task.spec.runtime_id.clone()),
             runtime_name: active.map(|task| runtime_display_name(&task.spec.runtime_id)),
             phase: runtime_status.as_ref().map(|status| status.phase),
@@ -2856,10 +3814,18 @@ impl AgentCore {
     ) -> Result<AgentTask, String> {
         let config = self.config_snapshot();
         let spec = task_spec_from_request(request, &config, source)?;
+        self.enqueue_spec(spec, source).await
+    }
 
-        // One bug owns at most one live task. A double click, the notification
-        // flow and a manual enqueue can race; returning the existing record
-        // keeps the operation idempotent. The workflow enforces the same rule.
+    /// Admission shared by every source: one work item owns at most one live
+    /// task. A double click, the notification flow, a local submission and a
+    /// manual enqueue can race; returning the existing record keeps the
+    /// operation idempotent. The workflow enforces the same rule.
+    async fn enqueue_spec(
+        self: &Arc<Self>,
+        spec: TaskSpec,
+        source: &str,
+    ) -> Result<AgentTask, String> {
         if let Some(existing) = self.live_task_for_bug(&spec.workspace_id, &spec.bug_id) {
             return workflow_bridge::from_workflow_task(&existing);
         }
@@ -2874,7 +3840,7 @@ impl AgentCore {
 
         tracing::info!(task_id = %task_id, source, "agent task queued");
         self.workflow_view(task_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// The live workflow task that already owns a bug, if any.
@@ -2907,7 +3873,7 @@ impl AgentCore {
         })?;
         self.dispatch_effects(effects).await;
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Kills the TUI process group and closes its PTY handles. Idempotent.
@@ -2945,6 +3911,10 @@ impl AgentCore {
     /// running: the turn keeps going after the window is gone and keeps
     /// writing back to TAPD while the task already looks abandoned.
     fn shutdown(self: &Arc<Self>) {
+        // Set first: a PTY spawn already in flight checks this before creating
+        // the process and again after publishing it, so nothing outlives the
+        // app or edits code after the user quit.
+        self.shutting_down.store(true, Ordering::SeqCst);
         // 对话会话不依赖登录态；先停掉，避免客户端退出后 TUI 继续占用仓库。
         self.stop_chats_for_shutdown();
 
@@ -2971,16 +3941,16 @@ impl AgentCore {
             }
         };
         // Shutdown is the last chance to persist the parked queue, so the
-        // suspend effects run inline instead of through the async dispatcher.
+        // suspend effects are written before the process exits.
         for effect in effects {
             match effect {
                 Effect::PersistChanged { tasks } => {
-                    let views = self.views_for(&tasks);
+                    let ids: Vec<String> = tasks.iter().map(|task| task.id.0.clone()).collect();
                     let paused = self.workflow_paused();
-                    if !views.is_empty() {
-                        tracing::info!(tasks = views.len(), "agent tasks suspended for shutdown");
+                    if !ids.is_empty() {
+                        tracing::info!(tasks = ids.len(), "agent tasks suspended for shutdown");
                     }
-                    self.persist_views(&views, paused, &[]);
+                    self.persist_task_views(&ids, paused);
                 }
                 Effect::PersistPaused { paused } => {
                     self.persist_views(&[], paused, &[]);
@@ -2988,6 +3958,9 @@ impl AgentCore {
                 other => tracing::debug!(effect = ?other, "agent effect skipped during shutdown"),
             }
         }
+        // The writer thread owns the SQLite connection: wait for it to finish
+        // the parked queue instead of exiting with writes still queued.
+        self.flush_persist();
 
         let task_ids: Vec<String> = {
             let workflow = self.workflow.lock().expect("agent workflow lock");
@@ -3010,14 +3983,15 @@ impl AgentCore {
     /// has uncommitted files; a missing inspection runs inline so the command
     /// returns the final view.
     async fn approve_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let _claim = self.claim_review_op(task_id)?;
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
+            return Err(tr("agent.review.notAwaiting").to_string());
         }
         if !Path::new(task.work_dir().trim()).is_dir() {
-            return Err(format!("工作目录不存在：{}", task.work_dir()));
+            return Err(tr_args("agent.workdir.missing", &[&task.work_dir()]));
         }
 
         let mut effects = self.apply_input(Input::ApproveReview {
@@ -3039,7 +4013,7 @@ impl AgentCore {
                 let changes = self
                     .inspect_workspace(&inspect_id, &path)
                     .await
-                    .map_err(|error| format!("检查工作区失败：{error}"))?;
+                    .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?;
                 let receipts = self.apply_input(Input::WorkspaceInspected {
                     task_id: inspect_id,
                     changes,
@@ -3051,18 +4025,19 @@ impl AgentCore {
 
         tracing::info!(task_id, "agent review approved");
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Stops a paused review: the uncommitted diff is stashed (including
     /// untracked files) so nothing is lost, the task is canceled and the queue
     /// stays paused until the user resumes it.
     async fn stop_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let _claim = self.claim_review_op(task_id)?;
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
+            return Err(tr("agent.review.notAwaiting").to_string());
         }
         let repo = task.work_dir().trim().to_string();
         let dir_exists = !repo.is_empty() && Path::new(&repo).is_dir();
@@ -3089,8 +4064,8 @@ impl AgentCore {
                 })
             })
             .await
-            .map_err(|error| format!("检查工作区失败：{error}"))?
-            .map_err(|error| format!("检查工作区失败：{error}"))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
         } else {
             reviewed
         };
@@ -3100,17 +4075,17 @@ impl AgentCore {
             let files = files.clone();
             tokio::task::spawn_blocking(move || stash_changes(&repo, &label, &files))
                 .await
-                .map_err(|error| format!("储藏改动失败：{error}"))?
-                .map_err(|error| format!("储藏改动失败：{error}"))?
+                .map_err(|error| tr_args("agent.workspace.stash.failed", &[&error]))?
+                .map_err(|error| tr_args("agent.workspace.stash.failed", &[&error]))?
         } else {
-            "工作目录不存在，未储藏改动".to_string()
+            tr("agent.workspace.unstashed").to_string()
         };
 
         self.teardown_task(task_id);
-        let mut message = if !dir_exists || stash.contains("无未提交改动") {
-            format!("已停止：{stash}")
+        let mut message = if !dir_exists || stash.contains(tr("agent.git.clean")) {
+            tr_args("agent.review.stopped", &[&stash])
         } else {
-            format!("已停止，改动已储藏：{stash}")
+            tr_args("agent.review.stopped.stashed", &[&stash])
         };
         // Files the model did not list stay in the worktree; say so instead of
         // claiming the whole change was stashed.
@@ -3126,16 +4101,16 @@ impl AgentCore {
                 })
             })
             .await
-            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
+            .unwrap_or_else(|error| Err(tr_args("agent.workspace.check.failed", &[&error])))
         } else {
             Ok(0)
         };
         match remaining {
-            Ok(count) if count > 0 => message.push_str(&format!(
-                "；另有 {count} 个文件未列入本次审核，仍保留在工作区"
-            )),
+            Ok(count) if count > 0 => {
+                message.push_str(&tr_args("agent.review.remaining", &[&count]))
+            }
             Ok(_) => {}
-            Err(error) => message.push_str(&format!("；无法检查剩余文件：{error}")),
+            Err(error) => message.push_str(&tr_args("agent.review.remaining.failed", &[&error])),
         }
         let effects = self.apply_input(Input::StopReview {
             task_id: TaskId::new(task_id),
@@ -3147,54 +4122,7 @@ impl AgentCore {
 
         tracing::info!(task_id, stash = %stash, "agent review stopped and changes stashed");
         self.workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())
-    }
-
-    /// Unified diff of the reviewed change. Uses the run's `baseline_head` when
-    /// present so committed changes remain visible; otherwise falls back to
-    /// `git diff HEAD`. Read-only; the review card uses it so the user can
-    /// inspect the diff before approving.
-    fn review_diff(&self, task_id: &str) -> Result<String, String> {
-        let task = self
-            .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
-        if task.status != TaskStatus::AwaitingApproval {
-            return Err("任务不在待审核状态".to_string());
-        }
-        if !Path::new(task.work_dir().trim()).is_dir() {
-            return Err(format!("工作目录不存在：{}", task.work_dir()));
-        }
-        let baseline = task
-            .baseline_head
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(git::EMPTY_TREE);
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(task.work_dir().trim())
-            .args(["diff", "--no-color", baseline])
-            .output()
-            .map_err(|error| format!("无法执行 git：{error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "git diff 失败".to_string()
-            } else {
-                stderr
-            });
-        }
-
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.trim().is_empty() {
-            return Ok("没有未提交的差异（可能已提交，或只有未跟踪文件）。".to_string());
-        }
-        let count = text.chars().count();
-        if count > MAX_REVIEW_DIFF_CHARS {
-            let prefix: String = text.chars().take(MAX_REVIEW_DIFF_CHARS).collect();
-            return Ok(format!("{prefix}\n\n… diff 共 {count} 字符，已截断"));
-        }
-        Ok(text.into_owned())
+            .ok_or_else(|| tr("agent.task.missing").to_string())
     }
 
     /// Clears the queue pause. Tasks still awaiting review keep blocking the
@@ -3213,6 +4141,10 @@ impl AgentCore {
             task_id: TaskId::new(task_id),
         })?;
         self.dispatch_effects(effects).await;
+        // A deleted task must not leave a local item pointing at a ghost id.
+        if let Err(error) = self.state.local.forget_task(task_id, &now()) {
+            tracing::warn!(%error, task_id, "failed to unlink a deleted local task");
+        }
         Ok(())
     }
 
@@ -3224,8 +4156,17 @@ impl AgentCore {
             now: now(),
         })?;
         self.dispatch_effects(effects).await;
-        self.workflow_view(new_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())
+        let view = self
+            .workflow_view(new_id.as_str())
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
+        if let Err(error) = self
+            .state
+            .local
+            .relink_task(task_id, new_id.as_str(), &now())
+        {
+            tracing::warn!(%error, task_id, "failed to relink a retried local task");
+        }
+        Ok(view)
     }
 
     fn write_input(&self, task_id: &str, data: &str) -> Result<(), String> {
@@ -3235,13 +4176,11 @@ impl AgentCore {
             .expect("agent runtimes lock")
             .get(task_id)
             .cloned()
-            .ok_or_else(|| "任务未在运行".to_string())?;
-        let mut runtime = runtime.lock().expect("agent runtime lock");
-        runtime
-            .writer
-            .write_all(data.as_bytes())
-            .and_then(|_| runtime.writer.flush())
-            .map_err(|error| error.to_string())
+            .ok_or_else(|| tr("agent.task.not.running").to_string())?;
+        let runtime = runtime.lock().expect("agent runtime lock");
+        // Never write on the async caller's thread: a TUI that stops reading
+        // its input would block a tokio worker.
+        runtime.try_write(data.as_bytes())
     }
 
     /// 读取 transcript 中 provider 记录的错误。任务启动时克隆的 view 可能还没有
@@ -3270,7 +4209,14 @@ impl AgentCore {
             ),
             None => match self.chat_transcript_context(task_id) {
                 Some(context) => (context.runtime_id, context.session_id, context.work_dir, true),
-                None => return chat_empty(task_id, "", "", Some("任务不存在".to_string())),
+                None => {
+                    return chat_empty(
+                        task_id,
+                        "",
+                        "",
+                        Some(tr("agent.task.missing").to_string()),
+                    )
+                }
             },
         };
         let Some(agent) = transcript::TranscriptAgent::from_runtime_id(&runtime_id) else {
@@ -3278,7 +4224,7 @@ impl AgentCore {
                 task_id,
                 &runtime_id,
                 &session_id,
-                Some("该运行时暂不支持对话视图，请使用终端".to_string()),
+                Some(tr("agent.chat.unsupported").to_string()),
             );
         };
         if session_id.trim().is_empty() {
@@ -3292,7 +4238,7 @@ impl AgentCore {
                 if is_chat {
                     None
                 } else {
-                    Some("等待会话 id".to_string())
+                    Some(tr("agent.chat.awaiting.session").to_string())
                 },
             );
         }
@@ -3480,7 +4426,16 @@ impl AgentCore {
     /// 从 Chat 发送一条消息：写入当前 PTY，由各 CLI 自己排队/打断。
     fn send_message(&self, task_id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() {
-            return Err("消息为空".to_string());
+            return Err(tr("agent.chat.message.empty").to_string());
+        }
+        // 缺陷任务必须先确认仍在运行；自由对话没有 workflow 记录，按会话状态校验。
+        if self.chat_session(task_id).is_none() {
+            let task = self
+                .workflow_view(task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
+                return Err(tr("agent.task.not.running").to_string());
+            }
         }
         let waiting = self
             .runtime_status
@@ -3515,7 +4470,7 @@ impl AgentCore {
             return Err("任务未在运行".to_string());
         }
         if waiting {
-            return Err("请先处理当前的权限确认或提问".to_string());
+            return Err(tr("agent.chat.prompt.pending").to_string());
         }
         // bracketed paste 保证多行文本不会在第一个换行处提交。
         let payload = format!("\x1b[200~{text}\x1b[201~\r");
@@ -3535,18 +4490,18 @@ impl AgentCore {
             .ok()
             .and_then(|status| status.get(task_id).cloned())
             .and_then(|status| status.prompt)
-            .ok_or_else(|| "当前没有待处理的请求".to_string())?;
+            .ok_or_else(|| tr("agent.chat.prompt.none").to_string())?;
         if current.prompt_id != prompt_id {
-            return Err("该请求已处理，请刷新后重试".to_string());
+            return Err(tr("agent.chat.prompt.stale").to_string());
         }
         if !current.can_answer {
-            return Err("请在 Agent 终端中回答".to_string());
+            return Err(tr("agent.chat.prompt.terminal").to_string());
         }
         let runtime_id = self
             .stored_runtime_id(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let keys = prompt::answer_keys(&runtime_id, &current.kind, option_id)
-            .ok_or_else(|| "该选项无法自动回答，请在终端中操作".to_string())?;
+            .ok_or_else(|| tr("agent.chat.prompt.unsupported").to_string())?;
         for (index, key) in keys.iter().enumerate() {
             if index > 0 {
                 // 连续按键之间留出间隔，避免被 TUI 识别成组合键。
@@ -3554,7 +4509,7 @@ impl AgentCore {
             }
             self.write_input(task_id, key)?;
         }
-        Ok(format!("已发送 {}", keys.join(" ")))
+        Ok(tr_args("agent.chat.keys.sent", &[&keys.join(" ")]))
     }
 
     /// 在系统终端里接着跑这个任务的 Agent（尽量续接上次会话），用来在任务
@@ -3563,16 +4518,16 @@ impl AgentCore {
     fn open_system_terminal(&self, task_id: &str) -> Result<(), String> {
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status.is_active() {
-            return Err("任务仍在运行，请先在嵌入式终端里操作".to_string());
+            return Err(tr("agent.terminal.task.running").to_string());
         }
         if task.work_dir().trim().is_empty() {
-            return Err("该任务没有本地仓库".to_string());
+            return Err(tr("agent.task.no.repo").to_string());
         }
         let repo = Path::new(task.work_dir());
         if !repo.is_dir() {
-            return Err(format!("本地仓库不存在：{}", task.work_dir()));
+            return Err(tr_args("agent.repo.missing", &[&task.work_dir()]));
         }
 
         let config = self.config_snapshot();
@@ -3689,10 +4644,18 @@ impl AgentCore {
             bug_id
         };
         let task_text = task_id.0.clone();
+        let source_kind = task.spec.source_kind;
 
         let _guard = self.worktree_lock.lock().await;
         let created = tokio::task::spawn_blocking(move || {
-            worktree::create(&worktrees_dir, &repo, &workspace_id, &bug_id, &task_text)
+            worktree::create(
+                &worktrees_dir,
+                &repo,
+                &workspace_id,
+                &bug_id,
+                &task_text,
+                source_kind,
+            )
         })
         .await;
         match created {
@@ -3724,14 +4687,14 @@ impl AgentCore {
                 tracing::warn!(task_id = %task_id, %error, "failed to create agent worktree");
                 self.feed(Input::WorktreeCreateFailed {
                     task_id,
-                    error: format!("创建任务 worktree 失败：{error}"),
+                    error: tr_args("agent.worktree.create.failed", &[&error]),
                 });
             }
             Err(error) => {
                 tracing::warn!(task_id = %task_id, %error, "worktree create task failed");
                 self.feed(Input::WorktreeCreateFailed {
                     task_id,
-                    error: format!("创建任务 worktree 失败：{error}"),
+                    error: tr_args("agent.worktree.create.failed", &[&error]),
                 });
             }
         }
@@ -3763,7 +4726,7 @@ impl AgentCore {
                     );
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some("worktree 仍有未提交改动，已保留".to_string()),
+                        error: Some(tr("agent.worktree.dirty.kept").to_string()),
                     });
                     return;
                 }
@@ -3772,7 +4735,7 @@ impl AgentCore {
                     tracing::warn!(task_id = %task_id, %error, "worktree status check failed; keeping it");
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                        error: Some(tr_args("agent.worktree.status.failed", &[&error])),
                     });
                     return;
                 }
@@ -3780,7 +4743,7 @@ impl AgentCore {
                     tracing::warn!(task_id = %task_id, %error, "worktree status task failed; keeping it");
                     self.feed(Input::WorktreeRemoved {
                         task_id,
-                        error: Some(format!("无法检查 worktree 状态：{error}")),
+                        error: Some(tr_args("agent.worktree.status.failed", &[&error])),
                     });
                     return;
                 }
@@ -3810,7 +4773,7 @@ impl AgentCore {
     ) -> Result<tapd_workflow::ChangeSet, String> {
         let task = self
             .workflow_view(task_id.as_str())
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let work_dir = if path.trim().is_empty() {
             task.work_dir().to_string()
         } else {
@@ -3818,7 +4781,7 @@ impl AgentCore {
         };
         tokio::task::spawn_blocking(move || inspect_changes(&task, &work_dir))
             .await
-            .map_err(|error| format!("检查工作区失败：{error}"))?
+            .map_err(|error| tr_args("agent.workspace.check.failed", &[&error]))?
     }
 
     /// Refuses a merge when the repository is busy, dirty or the runtime is
@@ -3862,12 +4825,12 @@ impl AgentCore {
             }
             Ok(Err(error)) => {
                 return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
-                    error: format!("无法检查主仓库状态：{error}"),
+                    error: tr_args("agent.repo.status.failed", &[&error]),
                 })
             }
             Err(error) => {
                 return Err(tapd_workflow::MergeBlock::RuntimeUnavailable {
-                    error: format!("无法检查主仓库状态：{error}"),
+                    error: tr_args("agent.repo.status.failed", &[&error]),
                 })
             }
         }
@@ -3900,28 +4863,59 @@ impl AgentCore {
             runtime_id
         };
 
-        // 1. Export the bug package (bug.json + assets).
-        let export = crate::export::run_export(
-            &self.app,
-            &self.state.paths,
-            &task.workspace_id,
-            &task.bug_id,
-            Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
-        )
-        .await;
-        let export = match export {
-            Ok(export) => export,
-            Err(error) => {
-                self.feed(Input::AgentStartFailed {
-                    task_id,
-                    error: format!("导出缺陷失败：{error}"),
-                });
-                return;
+        let is_local = task.source_kind == TaskSource::LocalWorkItem;
+
+        // 1. Write the package the agent reads: a local `quest.json`, or the
+        //    TAPD bug export (`bug.json` + assets). Local items never touch
+        //    TAPD, so they skip the fetch entirely.
+        let json_path = if is_local {
+            let paths = self.state.paths.clone();
+            let doc = local_export_document(&task);
+            let written = tokio::task::spawn_blocking(move || {
+                crate::export::local::run_local_export(&paths, &doc)
+            })
+            .await;
+            match written {
+                Ok(Ok(path)) => path.to_string_lossy().to_string(),
+                Ok(Err(error)) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.local.export.failed", &[&error]),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.local.export.failed", &[&error]),
+                    });
+                    return;
+                }
             }
+        } else {
+            let export = crate::export::run_export(
+                &self.app,
+                &self.state.paths,
+                &task.workspace_id,
+                &task.bug_id,
+                Some(task.workspace_name.clone()).filter(|name| !name.trim().is_empty()),
+            )
+            .await;
+            let export = match export {
+                Ok(export) => export,
+                Err(error) => {
+                    self.feed(Input::AgentStartFailed {
+                        task_id,
+                        error: tr_args("agent.bug.export.failed", &[&error]),
+                    });
+                    return;
+                }
+            };
+            for warning in &export.warnings {
+                tracing::warn!(task_id = %task_id, %warning, "bug export warning");
+            }
+            export.bug_json
         };
-        for warning in &export.warnings {
-            tracing::warn!(task_id = %task_id, %warning, "bug export warning");
-        }
         if self.workflow_status(task_id.as_str()) != Some(WorkflowStatus::Preparing) {
             // Cancelled while exporting.
             return;
@@ -3936,14 +4930,14 @@ impl AgentCore {
         if work_dir.trim().is_empty() {
             self.feed(Input::AgentStartFailed {
                 task_id,
-                error: "未配置项目仓库路径，请在 设置 → Agent 修复 中配置".to_string(),
+                error: tr("agent.repo.unconfigured").to_string(),
             });
             return;
         }
         if !Path::new(work_dir.trim()).is_dir() {
             self.feed(Input::AgentStartFailed {
                 task_id,
-                error: format!("工作目录不存在或不是目录：{work_dir}"),
+                error: tr_args("agent.workdir.invalid", &[&work_dir]),
             });
             return;
         }
@@ -3959,33 +4953,37 @@ impl AgentCore {
         }
 
         // 4. Make sure the runtime's user-level config exposes the tapd MCP.
-        self.ensure_runtime_mcp(&runtime_id, task_id.as_str()).await;
+        //    Local work items deliberately do not get TAPD tools injected.
+        if !is_local {
+            self.ensure_runtime_mcp(&runtime_id, task_id.as_str()).await;
+        }
 
         // 5. Render the prompt.
         let mut view = task.clone();
         view.runtime_id = runtime_id;
-        view.json_path = export.bug_json.clone();
+        view.json_path = json_path.clone();
         let mut vars = PromptVars::from_task(&view);
         vars.coworker = crate::coworker::prompt_section(&self.app, &config.coworker_ids);
-        let is_worktree = view.worktree_branch.is_some();
-        let template = if view.commit_only {
+        let template = match builtin_fix_prompt(&view) {
+            Some(key) => tr(key).to_string(),
+            None => config.prompt_template.clone(),
+        };
+        if view.commit_only {
             // The commit phase only finishes the reviewed change; the original
             // compose instructions must not run a second time.
             vars.user_prompt.clear();
             vars.attachments.clear();
-            if is_worktree {
-                DEFAULT_WORKTREE_COMMIT_PROMPT_TEMPLATE
-            } else {
-                DEFAULT_COMMIT_PROMPT_TEMPLATE
-            }
-        } else {
-            config.prompt_template.as_str()
-        };
-        let mut prompt = render_prompt(template, &vars);
-        if is_worktree && !view.commit_only {
-            prompt.push_str("\n\n");
-            prompt.push_str(WORKTREE_FIX_NOTE);
+        } else if is_local {
+            // The composed description (item text + notes) already lives in
+            // quest.json; appending it again duplicates the work item.
+            vars.user_prompt.clear();
         }
+        let mut prompt = render_prompt(&template, &vars);
+        if let Some(key) = worktree_fix_note(&view) {
+            prompt.push_str("\n\n");
+            prompt.push_str(tr(key));
+        }
+        append_project_rule(&mut prompt, view.source_kind, &view.project_rule);
         view.prompt = prompt.clone();
 
         // 6. Capture the baseline so the change safety net only reacts to files
@@ -3998,14 +4996,14 @@ impl AgentCore {
                 Ok::<_, String>((uncommitted_files(&dir)?, git_head(&dir)?))
             })
             .await
-            .unwrap_or_else(|error| Err(format!("检查工作区失败：{error}")))
+            .unwrap_or_else(|error| Err(tr_args("agent.workspace.check.failed", &[&error])))
         };
         let (baseline_dirty, baseline_head) = match baseline {
             Ok(values) => values,
             Err(error) => {
                 self.feed(Input::AgentStartFailed {
                     task_id,
-                    error: format!("无法读取工作区状态：{error}"),
+                    error: tr_args("agent.workspace.read.failed", &[&error]),
                 });
                 return;
             }
@@ -4015,7 +5013,7 @@ impl AgentCore {
         match self.apply_input(Input::TaskPrepared {
             task_id: task_id.clone(),
             prompt,
-            json_path: export.bug_json,
+            json_path,
             baseline_dirty,
             baseline_head,
         }) {
@@ -4051,6 +5049,13 @@ impl AgentCore {
         let descriptor = runtime_descriptor(&running.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
         let outcome = self.run_tui_task(&running, &config, &descriptor).await;
+        if self.shutting_down() {
+            // Shutdown already parked the queue (Suspend). Feeding RunFinished
+            // now would turn a queued-for-restart task into Canceled.
+            tracing::info!(task_id = %task_id, "agent run abandoned during shutdown");
+            self.teardown_task(task_id.as_str());
+            return;
+        }
         if let Some(warning) = outcome.warning.as_deref() {
             tracing::warn!(task_id = %task_id, warning, "agent finished with a warning");
         }
@@ -4075,13 +5080,22 @@ impl AgentCore {
             match self.workflow_view(task_id) {
                 Some(view) => {
                     let dir = view.work_dir().to_string();
-                    match tokio::task::spawn_blocking(move || inspect_changes(&view, &dir)).await {
-                        Ok(Ok(changes)) => Some(changes),
+                    match tokio::task::spawn_blocking(move || {
+                        task_changes::summary_blocking(&view, Some(&dir))
+                    })
+                    .await
+                    {
+                        // Keep the summary for the change panel: the review
+                        // card would otherwise re-run git right after the run.
+                        Ok(Ok(summary)) => {
+                            self.changes.store(task_id, summary.clone());
+                            Some(task_changes::change_set_from(&summary))
+                        }
                         Ok(Err(error)) => {
                             return tapd_workflow::RunOutcome {
                                 canceled,
                                 success: false,
-                                error: Some(format!("无法检查工作区状态：{error}")),
+                                error: Some(tr_args("agent.workspace.status.failed", &[&error])),
                                 changes: None,
                                 exit_code: outcome.exit_code,
                             }
@@ -4090,7 +5104,7 @@ impl AgentCore {
                             return tapd_workflow::RunOutcome {
                                 canceled,
                                 success: false,
-                                error: Some(format!("无法检查工作区状态：{error}")),
+                                error: Some(tr_args("agent.workspace.status.failed", &[&error])),
                                 changes: None,
                                 exit_code: outcome.exit_code,
                             }
@@ -4140,7 +5154,7 @@ impl AgentCore {
             self.feed(Input::MergeAgentFinished {
                 task_id,
                 outcome: tapd_workflow::RunOutcome::failure(
-                    format!("主仓库路径不存在或不是目录：{repo}"),
+                    tr_args("agent.repo.invalid", &[&repo]),
                     None,
                 ),
                 now: now(),
@@ -4161,8 +5175,10 @@ impl AgentCore {
                 return;
             }
         }
-        self.ensure_runtime_mcp(&task.runtime_id, task_id.as_str())
-            .await;
+        if task.source_kind == TaskSource::TapdBug {
+            self.ensure_runtime_mcp(&task.runtime_id, task_id.as_str())
+                .await;
+        }
 
         // A cancel may have rolled the task back while MCP was being prepared;
         // never start a merge agent the workflow no longer waits for.
@@ -4175,7 +5191,13 @@ impl AgentCore {
         let mut merge_view = task.clone();
         merge_view.worktree_path = None;
         merge_view.commit_only = false;
-        merge_view.prompt = merge_prompt(&repo, &branch);
+        let mut prompt = merge_prompt(&repo, &branch, merge_view.source_kind);
+        append_project_rule(
+            &mut prompt,
+            merge_view.source_kind,
+            &merge_view.project_rule,
+        );
+        merge_view.prompt = prompt;
         let descriptor = runtime_descriptor(&merge_view.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
         let outcome = self.run_tui_task(&merge_view, &config, &descriptor).await;
@@ -4204,16 +5226,15 @@ impl AgentCore {
         repo_path: String,
         branch: String,
     ) {
-        let checked = tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
-        let (merged, error) = match checked {
-            Ok(Ok(merged)) => (merged, None),
-            Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
-            Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
-        };
+        let baseline = self
+            .workflow_view(&task_id.0)
+            .and_then(|task| task.baseline_head);
+        let check = verify_branch_landed(repo_path, branch, baseline).await;
         self.feed(Input::BranchMergeVerified {
             task_id,
-            merged,
-            error,
+            merged: check.merged,
+            commit: check.commit,
+            error: check.error,
         });
     }
 
@@ -4341,7 +5362,7 @@ impl AgentCore {
         match receiver.await {
             Ok(outcome) => outcome,
             Err(_) => PtyOutcome {
-                error: Some("Agent 终端线程意外结束".to_string()),
+                error: Some(tr("agent.terminal.thread.ended").to_string()),
                 ..PtyOutcome::default()
             },
         }
@@ -4386,7 +5407,7 @@ impl AgentCore {
 
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         let mode = if task.status == TaskStatus::Merging {
             "agent"
         } else {
@@ -4400,6 +5421,7 @@ impl AgentCore {
                     manual_merge_instructions(
                         &task.repo_path,
                         task.worktree_branch.as_deref().unwrap_or(""),
+                        task.source_kind,
                     )
                 })
         } else {
@@ -4438,29 +5460,27 @@ impl AgentCore {
             .collect();
         effects.retain(|effect| !matches!(effect, Effect::VerifyBranchMerged { .. }));
         for (verify_id, repo_path, branch) in verifications {
-            let checked =
-                tokio::task::spawn_blocking(move || branch_merged(&repo_path, &branch)).await;
-            let (merged, error) = match checked {
-                Ok(Ok(merged)) => (merged, None),
-                Ok(Err(error)) => (false, Some(format!("校验合并结果失败：{error}"))),
-                Err(error) => (false, Some(format!("校验合并结果失败：{error}"))),
-            };
+            let baseline = self
+                .workflow_view(&verify_id.0)
+                .and_then(|task| task.baseline_head);
+            let check = verify_branch_landed(repo_path, branch, baseline).await;
             let receipts = self.apply_input(Input::BranchMergeVerified {
                 task_id: verify_id,
-                merged,
-                error,
+                merged: check.merged,
+                commit: check.commit,
+                error: check.error,
             })?;
             effects.extend(receipts);
         }
         self.dispatch_effects(effects).await;
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if task.status != TaskStatus::Succeeded {
             if let Some(error) = task.merge.as_ref().and_then(|merge| merge.error.clone()) {
                 return Err(error);
             }
-            return Err("分支尚未合并到主仓库当前 HEAD".to_string());
+            return Err(tr("agent.merge.not.landed").to_string());
         }
         Ok(task)
     }
@@ -4618,17 +5638,17 @@ fn truncate_text(text: &str, max: usize) -> String {
 fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     let binary = binary.trim();
     if binary.is_empty() {
-        return Err("未配置 Agent 可执行文件路径".to_string());
+        return Err(tr("agent.binary.unconfigured").to_string());
     }
 
     let path = Path::new(binary);
     let looks_like_path = path.is_absolute() || binary.contains('/') || binary.contains('\\');
     if looks_like_path {
         if !path.is_file() {
-            return Err(format!("Agent 可执行文件不存在：{binary}"));
+            return Err(tr_args("agent.binary.missing", &[&binary]));
         }
         if !shell_path::is_executable(path) {
-            return Err(format!("Agent 可执行文件没有执行权限：{binary}"));
+            return Err(tr_args("agent.binary.notExec", &[&binary]));
         }
         return Ok(path.to_path_buf());
     }
@@ -4636,9 +5656,7 @@ fn validate_binary(binary: &str) -> Result<PathBuf, String> {
     // Not the inherited `PATH`: a bundled macOS app started from Finder only
     // sees `/usr/bin:/bin:/usr/sbin:/sbin`, so `opencode` installed by Homebrew
     // or npm would never be found there.
-    resolve_on_user_path(binary).ok_or_else(|| {
-        format!("在 PATH 中找不到 Agent 可执行文件：{binary}（可在 Agent 设置里填写绝对路径）")
-    })
+    resolve_on_user_path(binary).ok_or_else(|| tr_args("agent.binary.notFound", &[&binary]))
 }
 
 /// 在用户 shell 的 `PATH` 中查找裸命令名。
@@ -4856,17 +5874,18 @@ fn save_resource(data_dir: &Path, name: &str, data: &str) -> Result<String, Stri
         .unwrap_or(data)
         .trim();
     if encoded.is_empty() {
-        return Err("资源内容为空".to_string());
+        return Err(tr("agent.resource.empty").to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|error| format!("资源解码失败：{error}"))?;
+        .map_err(|error| tr_args("agent.resource.decode.failed", &[&error]))?;
     if bytes.is_empty() {
-        return Err("资源内容为空".to_string());
+        return Err(tr("agent.resource.empty").to_string());
     }
 
     let dir = data_dir.join(RESOURCE_DIR);
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建资源目录失败：{error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| tr_args("agent.resource.dir.failed", &[&error]))?;
 
     let stem: String = Path::new(name)
         .file_stem()
@@ -4898,7 +5917,8 @@ fn save_resource(data_dir: &Path, name: &str, data: &str) -> Result<String, Stri
         format!("{id}-{stem}.{extension}")
     };
     let path = dir.join(file_name);
-    std::fs::write(&path, bytes).map_err(|error| format!("写入资源失败：{error}"))?;
+    std::fs::write(&path, bytes)
+        .map_err(|error| tr_args("agent.resource.write.failed", &[&error]))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -4981,6 +6001,170 @@ pub fn mcp_agent_config(app: &AppHandle) -> AgentConfig {
         .unwrap_or_default()
 }
 
+/// Enqueues a local work item through the same admission path as a TAPD bug.
+/// The repository is validated here (the client never guesses paths); task
+/// state, scheduling, review and merge stay the workflow's job.
+pub async fn enqueue_local(
+    app: &AppHandle,
+    _state: &SharedState,
+    request: LocalEnqueueRequest,
+) -> Result<AgentTask, String> {
+    let core = app
+        .try_state::<Arc<AgentCore>>()
+        .ok_or_else(|| tr("agent.module.uninitialized").to_string())?
+        .inner()
+        .clone();
+
+    let config = core.config_snapshot();
+    let spec = local_task_spec(&request, &config)?;
+    let repo_check = spec.repo_path.clone();
+    tokio::task::spawn_blocking(move || validate_local_repo(&repo_check))
+        .await
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))??;
+
+    let source = spec.source.clone();
+    core.enqueue_spec(spec, &source).await
+}
+
+/// Maps a local submission onto the workflow's spec. Only ids, title and path
+/// are required; runtime/model/permission fall back to the same defaults TAPD
+/// tasks use.
+fn local_task_spec(
+    request: &LocalEnqueueRequest,
+    config: &AgentConfig,
+) -> Result<TaskSpec, String> {
+    let project_id = request.project_id.trim().to_string();
+    let work_item_id = request.work_item_id.trim().to_string();
+    if project_id.is_empty() || work_item_id.is_empty() {
+        return Err(tr("agent.local.missing.ids").to_string());
+    }
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return Err(tr("agent.local.title.missing").to_string());
+    }
+    let repo_path = tapd_core::paths::expand_home(request.repo_path.trim())
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    if repo_path.is_empty() {
+        return Err(tr("agent.worktree.repo.unconfigured").to_string());
+    }
+    let choice = runtime_choice(
+        request.runtime_id.as_deref(),
+        request.model.as_deref(),
+        request.permission_mode.as_deref(),
+        config,
+    );
+    let project_name = request.project_name.trim();
+    Ok(TaskSpec {
+        source_kind: TaskSource::LocalWorkItem,
+        workspace_name: if project_name.is_empty() {
+            project_id.clone()
+        } else {
+            project_name.to_string()
+        },
+        workspace_id: project_id,
+        bug_id: work_item_id,
+        title,
+        // Local items have no severity/priority scale.
+        severity: String::new(),
+        priority: String::new(),
+        repo_path,
+        runtime_id: choice.runtime_id,
+        model: choice.model,
+        permission_mode: choice.permission_mode,
+        // `source` keeps the enqueue origin; `source_kind` is the discriminator.
+        source: request
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("local")
+            .to_string(),
+        project_rule: request.project_rule.trim().to_string(),
+        extra_prompt: compose_local_description(
+            &request.description,
+            request.extra_prompt.as_deref(),
+        ),
+        attachments: clean_attachments(request.attachments.clone()),
+    })
+}
+
+/// A local project must already be a git work tree with a commit: a worktree
+/// task and the change safety net both need `HEAD`.
+fn validate_local_repo(repo: &str) -> Result<(), String> {
+    if !Path::new(repo).is_dir() {
+        return Err(tr_args("agent.worktree.repo.invalid", &[&repo]));
+    }
+    git_check(repo, &["rev-parse", "--is-inside-work-tree"])
+        .map_err(|error| tr_args("agent.local.repo.notgit", &[&error]))?;
+    git_check(repo, &["rev-parse", "--verify", "HEAD"])
+        .map_err(|error| tr_args("agent.worktree.head.missing", &[&error]))?;
+    Ok(())
+}
+
+/// Runs a git probe with the user-shell `PATH` (a Finder-launched app has a
+/// minimal one), returning git's stderr as the readable failure.
+fn git_check(repo: &str, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .env("PATH", shell_path::user_path())
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(|error| tr_args("agent.git.exec.failed", &[&error]))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        tr_args(
+            "agent.git.command.failed",
+            &[&args.first().copied().unwrap_or("")],
+        )
+    } else {
+        stderr
+    })
+}
+
+/// Work item description plus the compose-sheet note, separated by a blank
+/// line. `quest.json` carries the result as its single description field.
+fn compose_local_description(description: &str, extra: Option<&str>) -> String {
+    let description = description.trim();
+    let extra = extra.map(str::trim).unwrap_or("");
+    match (description.is_empty(), extra.is_empty()) {
+        (true, _) => extra.to_string(),
+        (false, true) => description.to_string(),
+        (false, false) => format!("{description}\n\n{extra}"),
+    }
+}
+
+fn local_export_document(task: &AgentTask) -> crate::export::local::LocalExportDocument {
+    crate::export::local::LocalExportDocument {
+        id: task.bug_id.clone(),
+        title: task.title.clone(),
+        description: task.extra_prompt.clone(),
+        project_id: task.workspace_id.clone(),
+        project_name: task.workspace_name.clone(),
+        repo_path: task.repo_path.clone(),
+        project_rule: task.project_rule.clone(),
+        created_at: task.created_at.clone(),
+    }
+}
+
+/// Whether a live task owns the (workspace, bug) pair a TAPD write targets.
+/// Only TAPD bugs qualify: local work items never take part in write-back,
+/// even if their ids happened to look alike.
+fn tapd_write_block_applies(task: &WorkflowTask, bug_id: &str, workspace_id: Option<&str>) -> bool {
+    task.spec.source_kind == TaskSource::TapdBug
+        && task.spec.bug_id == bug_id
+        && workspace_id.map_or(true, |workspace| task.spec.workspace_id == workspace)
+        && matches!(
+            task.status,
+            WorkflowStatus::Running | WorkflowStatus::Merging
+        )
+}
+
 /// Blocks TAPD comment/status writes from the local agent while its worktree
 /// still has files changed by this run. This enforces "commit first, then write
 /// back" even if the model ignores the prompt. Unrelated dirty files recorded
@@ -5005,14 +6189,7 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
         .tasks()
         .iter()
         .rev()
-        .find(|task| {
-            task.spec.bug_id == bug_id
-                && workspace_id.map_or(true, |workspace| task.spec.workspace_id == workspace)
-                && matches!(
-                    task.status,
-                    WorkflowStatus::Running | WorkflowStatus::Merging
-                )
-        })
+        .find(|task| tapd_write_block_applies(task, bug_id, workspace_id))
         .cloned()
         .and_then(|task| workflow_bridge::from_workflow_task(&task).ok())?;
 
@@ -5030,7 +6207,7 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
         let merged = tokio::task::spawn_blocking(move || branch_merged(&repo, &branch)).await;
         return match merged {
             Ok(Ok(true)) => None,
-            _ => Some("合并尚未完成，请先完成合并再更新 TAPD".to_string()),
+            _ => Some(tr("agent.merge.pending.writeback").to_string()),
         };
     }
 
@@ -5051,16 +6228,13 @@ pub async fn tapd_write_block_reason(app: &AppHandle, arguments: &Value) -> Opti
     .await;
     let pending = match pending {
         Ok(Ok(pending)) => pending,
-        Ok(Err(error)) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
-        Err(error) => return Some(format!("无法检查未提交改动，已阻止写回：{error}")),
+        Ok(Err(error)) => return Some(tr_args("agent.writeback.uncommitted.failed", &[&error])),
+        Err(error) => return Some(tr_args("agent.writeback.uncommitted.failed", &[&error])),
     };
     if pending.is_empty() {
         return None;
     }
-    Some(format!(
-        "Agent 任务尚未提交（{} 个文件有未提交改动），请先 git commit，再评论或更新 TAPD 状态",
-        pending.len()
-    ))
+    Some(tr_args("agent.writeback.uncommitted", &[&pending.len()]))
 }
 
 pub async fn command(
@@ -5071,7 +6245,7 @@ pub async fn command(
 ) -> Result<Value, String> {
     let registered = app
         .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 模块尚未初始化".to_string())?;
+        .ok_or_else(|| tr("agent.module.uninitialized").to_string())?;
     let core = registered.inner().clone();
 
     match name {
@@ -5092,13 +6266,13 @@ pub async fn command(
         }
         "agent_config_set" => {
             let patch: AgentConfigPatch = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的 Agent 配置：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.config", &[&error]))?;
             let config = core.update_config(patch).await?;
             Ok(json!({ "config": config }))
         }
         "agent_enqueue_bug" => {
             let request: EnqueueRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的入队参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.enqueue", &[&error]))?;
             let task = core
                 .enqueue(&request, request.source.as_deref().unwrap_or("manual"))
                 .await?;
@@ -5109,7 +6283,7 @@ pub async fn command(
         "agent_enter_system" => Ok(json!({ "report": core.enter_system().await? })),
         "agent_save_resource" => {
             let request: SaveResourceRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的资源参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.resource", &[&error]))?;
             let path = save_resource(&state.paths.data_dir, &request.name, &request.data)?;
             Ok(json!({ "path": path }))
         }
@@ -5121,13 +6295,13 @@ pub async fn command(
         "agent_summary" => Ok(json!(core.summary())),
         "agent_open_task" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的任务参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.task", &[&error]))?;
             let task_id = request.task_id.trim();
             if task_id.is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             if core.workflow_view(task_id).is_none() {
-                return Err("任务不存在".to_string());
+                return Err(tr("agent.task.missing").to_string());
             }
             focus_main_window(app);
             let _ = app.emit("agent://focus", json!({ "taskId": task_id }));
@@ -5135,45 +6309,45 @@ pub async fn command(
         }
         "agent_task_cancel" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的取消参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.cancel", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.cancel(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_task_retry" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的重试参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.retry", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.retry(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_task_delete" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的删除参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.delete", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             core.delete_task(request.task_id.trim()).await?;
             Ok(json!({ "deleted": true }))
         }
         "agent_review_approve" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的审核参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.approve", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.approve_review(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_merge_start" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的合并参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.merge", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let core = core.clone();
             let result = core.start_merge(request.task_id.trim()).await?;
@@ -5185,58 +6359,80 @@ pub async fn command(
         }
         "agent_merge_verify" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的合并参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.merge", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.verify_merge(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_review_stop" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的停止参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.stop", &[&error]))?;
             if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let task = core.stop_review(request.task_id.trim()).await?;
             Ok(json!({ "task": task }))
         }
         "agent_queue_resume" => Ok(json!(core.resume_queue().await)),
-        "agent_review_diff" => {
+        // Live change summary for the task's worktree / repository. Switching
+        // the panel on marks the task watched, which is what allows hook-driven
+        // refreshes to run. A very recent cache is served as-is.
+        "agent_task_changes" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的差异参数：{error}"))?;
-            if request.task_id.trim().is_empty() {
-                return Err("缺少 taskId".to_string());
-            }
+                .map_err(|error| tr_args("agent.request.invalid.task", &[&error]))?;
             let task_id = request.task_id.trim().to_string();
-            let core = core.clone();
-            let diff = tokio::task::spawn_blocking(move || core.review_diff(&task_id))
-                .await
-                .map_err(|error| format!("读取差异失败：{error}"))??;
-            Ok(json!({ "diff": diff }))
+            if task_id.is_empty() {
+                return Err(tr("agent.request.missing.taskId").to_string());
+            }
+            let task = core
+                .workflow_view(&task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            core.changes.watch(&task_id);
+            if let Some(summary) = core.changes.fresh(&task_id, CHANGES_CACHE_FRESH) {
+                return Ok(json!(summary));
+            }
+            let summary = task_changes::summary(&task, None).await?;
+            core.changes.store(&task_id, summary.clone());
+            Ok(json!(summary))
+        }
+        // Unified diff for the whole task or one file. Any task state is
+        // allowed: the panel also inspects finished and failed runs.
+        "agent_task_diff" => {
+            let request: TaskDiffRequest = serde_json::from_value(payload)
+                .map_err(|error| tr_args("agent.request.invalid.diff", &[&error]))?;
+            let task_id = request.task_id.trim().to_string();
+            if task_id.is_empty() {
+                return Err(tr("agent.request.missing.taskId").to_string());
+            }
+            let task = core
+                .workflow_view(&task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            Ok(json!(task_changes::diff(&task, request.file).await?))
         }
         "agent_open_terminal" => {
             let request: TaskIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的终端参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.terminal", &[&error]))?;
             let core = core.clone();
             let task_id = request.task_id.trim().to_string();
             tokio::task::spawn_blocking(move || core.open_system_terminal(&task_id))
                 .await
-                .map_err(|error| format!("打开终端失败：{error}"))??;
+                .map_err(|error| tr_args("agent.request.terminal.open.failed", &[&error]))??;
             Ok(json!({ "ok": true }))
         }
         "agent_input" => {
             let request: TaskInputRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的输入参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.input", &[&error]))?;
             core.write_input(request.task_id.trim(), &request.data)?;
             Ok(json!({ "ok": true }))
         }
         "agent_chat" => {
             let request: ChatRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的对话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.chat", &[&error]))?;
             let task_id = request.task_id.trim().to_string();
             if task_id.is_empty() {
-                return Err("缺少 taskId".to_string());
+                return Err(tr("agent.request.missing.taskId").to_string());
             }
             let known = request
                 .fingerprint
@@ -5246,18 +6442,18 @@ pub async fn command(
             let payload =
                 tokio::task::spawn_blocking(move || core.chat_payload(&task_id, known.as_deref()))
                     .await
-                    .map_err(|error| format!("读取对话失败：{error}"))?;
+                    .map_err(|error| tr_args("agent.request.chat.read.failed", &[&error]))?;
             Ok(json!(payload))
         }
         "agent_send_message" => {
             let request: SendMessageRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的消息参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.message", &[&error]))?;
             core.send_message(request.task_id.trim(), &request.text)?;
             Ok(json!({ "sent": true }))
         }
         "agent_prompt_answer" => {
             let request: PromptAnswerRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的回答参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.answer", &[&error]))?;
             let message = core
                 .prompt_answer(
                     request.task_id.trim(),
@@ -5269,7 +6465,7 @@ pub async fn command(
         }
         "agent_resize" => {
             let request: TaskResizeRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的尺寸参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.size", &[&error]))?;
             core.resize(request.task_id.trim(), request.cols, request.rows)?;
             Ok(json!({ "ok": true }))
         }
@@ -5288,7 +6484,7 @@ pub async fn command(
             let core = core.clone();
             let snapshot = tokio::task::spawn_blocking(move || core.ensure_scan(request.force))
                 .await
-                .map_err(|error| format!("Agent 检测失败：{error}"))?;
+                .map_err(|error| tr_args("agent.scan.failed", &[&error]))?;
             Ok(json!(snapshot))
         }
         other => Err(format!("unknown agent command: {other}")),
@@ -5326,9 +6522,11 @@ mod tests {
             error: None,
             prompt: "prompt".to_string(),
             source: "manual".to_string(),
+            source_kind: TaskSource::TapdBug,
             runtime_id: DEFAULT_RUNTIME_ID.to_string(),
             model: String::new(),
             permission_mode: String::new(),
+            project_rule: String::new(),
             agent_session_id: None,
             approval: None,
             merge: None,
@@ -5378,7 +6576,7 @@ mod tests {
                 ..AgentConfig::default()
             }
             .sanitized();
-            assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE, "{marker}");
+            assert_eq!(config.prompt_template, tr(DEFAULT_PROMPT_KEY), "{marker}");
         }
 
         let custom = AgentConfig {
@@ -5485,7 +6683,7 @@ mod tests {
                 .map(|project| project.repo_path.as_str()),
             Some("/repo")
         );
-        assert_eq!(config.prompt_template, DEFAULT_PROMPT_TEMPLATE);
+        assert_eq!(config.prompt_template, tr(DEFAULT_PROMPT_KEY));
     }
 
     #[test]
@@ -5744,7 +6942,21 @@ mod tests {
     #[test]
     fn session_hook_runtimes_match_the_installed_hooks() {
         // 这些运行时都有可写的原生 hook/插件；新增 hook 时同步更新断言。
-        let expected = ["opencode", "claude", "codex", "omp"];
+        let expected = [
+            "opencode",
+            "claude",
+            "codex",
+            "cursor",
+            "zcode",
+            "gemini",
+            "qwen",
+            "kimi",
+            "omp",
+            "openclaude",
+            "qoder",
+            "qoder-cn",
+            "codebuddy",
+        ];
         for runtime in runtime_catalog() {
             assert_eq!(
                 runtime.session_hook,
@@ -5968,6 +7180,7 @@ mod tests {
             "baselineHead",
             "worktreePath",
             "worktreeBranch",
+            "sourceKind",
             "attempt",
             "interrupted",
             "changes",
@@ -5975,6 +7188,11 @@ mod tests {
             object.remove(key);
         }
         let parsed: AgentTask = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            parsed.source_kind,
+            TaskSource::TapdBug,
+            "old records are TAPD bugs"
+        );
         assert_eq!(parsed.approval, None);
         assert_eq!(parsed.merge, None);
         assert!(!parsed.commit_only);
@@ -6094,10 +7312,12 @@ mod tests {
             instructions: Some("手动合并步骤".to_string()),
             started_at: Some("2026-11-10T01:00:00Z".to_string()),
             finished_at: None,
+            commit: Some("9fce2b1".to_string()),
         });
         let value = serde_json::to_value(&task).unwrap();
         assert_eq!(value["merge"]["error"], "主仓库有未提交改动");
         assert_eq!(value["merge"]["instructions"], "手动合并步骤");
+        assert_eq!(value["merge"]["commit"], "9fce2b1");
         assert_eq!(value["merge"]["startedAt"], "2026-11-10T01:00:00Z");
         assert!(value["merge"].get("finishedAt").is_none());
 
@@ -6114,7 +7334,8 @@ mod tests {
 
     #[test]
     fn manual_merge_steps_include_repo_and_branch() {
-        let steps = manual_merge_instructions("/repo", "tapd/01234567-abcdef01");
+        let steps =
+            manual_merge_instructions("/repo", "tapd/01234567-abcdef01", TaskSource::TapdBug);
         assert!(steps.contains("cd \"/repo\""), "{steps}");
         assert!(
             steps.contains("git merge \"tapd/01234567-abcdef01\""),
@@ -6123,7 +7344,7 @@ mod tests {
         assert!(steps.contains("TAPD"), "{steps}");
         assert!(steps.contains("我已手动合并"), "{steps}");
 
-        let prompt = merge_prompt("/repo", "tapd/01234567-abcdef01");
+        let prompt = merge_prompt("/repo", "tapd/01234567-abcdef01", TaskSource::TapdBug);
         assert!(prompt.contains("仓库：/repo"));
         assert!(prompt.contains("分支：tapd/01234567-abcdef01"));
         assert!(prompt.contains("tapd_update_bug_status"));
@@ -6135,11 +7356,11 @@ mod tests {
         let mut task = sample_task("task-1", TaskStatus::Running);
         task.attempt = 2;
         task.interrupted = true;
-        task.changes = Some(tapd_workflow::ChangeSet {
-            files: vec!["src/a.rs".to_string()],
-            dirty: true,
-            committed: false,
-        });
+        task.changes = Some(tapd_workflow::ChangeSet::new(
+            vec!["src/a.rs".to_string()],
+            true,
+            false,
+        ));
 
         let workflow = workflow_bridge::to_workflow_task(&task).expect("to core");
         assert_eq!(workflow.id.as_str(), "task-1");
@@ -6149,6 +7370,299 @@ mod tests {
 
         let back = workflow_bridge::from_workflow_task(&workflow).expect("from core");
         assert_eq!(back, task);
+    }
+
+    #[test]
+    fn bridge_keeps_the_local_source_kind() {
+        let mut task = sample_task("task-local", TaskStatus::Queued);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.workspace_id = "local-project".to_string();
+        task.bug_id = "wi-1".to_string();
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let workflow = workflow_bridge::to_workflow_task(&task).expect("to core");
+        assert_eq!(workflow.spec.source_kind, TaskSource::LocalWorkItem);
+        assert_eq!(workflow.spec.project_rule, "先跑 cargo test");
+        let back = workflow_bridge::from_workflow_task(&workflow).expect("from core");
+        assert_eq!(back, task);
+        assert_eq!(back.source_kind, TaskSource::LocalWorkItem);
+    }
+
+    #[test]
+    fn local_prompts_never_use_the_tapd_template() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        assert_eq!(builtin_fix_prompt(&task), Some(LOCAL_PROMPT_KEY));
+        assert_eq!(worktree_fix_note(&task), None);
+
+        task.worktree_path = Some("/wt/task-local".to_string());
+        task.worktree_branch = Some("local/wi1-taskloca".to_string());
+        assert_eq!(worktree_fix_note(&task), Some(LOCAL_WORKTREE_FIX_NOTE_KEY));
+
+        task.commit_only = true;
+        assert_eq!(
+            builtin_fix_prompt(&task),
+            Some(LOCAL_WORKTREE_COMMIT_PROMPT_KEY)
+        );
+        assert_eq!(worktree_fix_note(&task), None);
+
+        task.worktree_path = None;
+        task.worktree_branch = None;
+        assert_eq!(builtin_fix_prompt(&task), Some(LOCAL_COMMIT_PROMPT_KEY));
+
+        // TAPD fix rounds keep the user's configurable template.
+        let mut tapd = sample_task("task-tapd", TaskStatus::Running);
+        assert_eq!(builtin_fix_prompt(&tapd), None);
+        assert_eq!(worktree_fix_note(&tapd), None);
+        tapd.worktree_branch = Some("tapd/bug-task".to_string());
+        assert_eq!(worktree_fix_note(&tapd), Some(WORKTREE_FIX_NOTE_KEY));
+        tapd.commit_only = true;
+        assert_eq!(
+            builtin_fix_prompt(&tapd),
+            Some(DEFAULT_WORKTREE_COMMIT_PROMPT_KEY)
+        );
+    }
+
+    #[test]
+    fn local_prompt_text_carries_no_tracker_tools() {
+        for key in [
+            LOCAL_PROMPT_KEY,
+            LOCAL_COMMIT_PROMPT_KEY,
+            LOCAL_WORKTREE_COMMIT_PROMPT_KEY,
+            LOCAL_WORKTREE_FIX_NOTE_KEY,
+        ] {
+            let text = tr(key);
+            assert_ne!(text, key, "key {key} is in the catalog");
+            assert!(!text.contains("tapd_"), "{key}: {text}");
+            assert!(!text.contains("TAPD"), "{key}: {text}");
+        }
+
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        let prompt = render_prompt(tr(LOCAL_PROMPT_KEY), &PromptVars::from_task(&task));
+        assert!(prompt.contains("quest.json"), "{prompt}");
+        assert!(
+            !prompt.contains("{{"),
+            "placeholders are replaced: {prompt}"
+        );
+        assert!(!prompt.contains("tapd_"), "{prompt}");
+    }
+
+    #[test]
+    fn tapd_write_block_only_applies_to_tapd_bugs() {
+        let mut local_task = sample_task("local-1", TaskStatus::Running);
+        local_task.source_kind = TaskSource::LocalWorkItem;
+        let local = workflow_bridge::to_workflow_task(&local_task).expect("core task");
+
+        let tapd_task = sample_task("tapd-1", TaskStatus::Running);
+        let tapd = workflow_bridge::to_workflow_task(&tapd_task).expect("core task");
+
+        let pair = ("1145336192001234567", Some("45336192"));
+        assert!(
+            !tapd_write_block_applies(&local, pair.0, pair.1),
+            "a local task never holds a TAPD write"
+        );
+        assert!(tapd_write_block_applies(&tapd, pair.0, pair.1));
+
+        let mut queued = tapd.clone();
+        queued.status = WorkflowStatus::Queued;
+        assert!(!tapd_write_block_applies(&queued, pair.0, None));
+        assert!(!tapd_write_block_applies(&tapd, pair.0, Some("another")));
+        assert!(!tapd_write_block_applies(&tapd, "other-bug", None));
+    }
+
+    #[test]
+    fn local_export_document_is_camel_case_with_an_ascii_path() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.workspace_id = "local-project".to_string();
+        task.workspace_name = "本地项目".to_string();
+        task.bug_id = "wi-7f3a91".to_string();
+        task.title = "修复登录页".to_string();
+        task.extra_prompt = "登录按钮溢出".to_string();
+        task.repo_path = "/repo".to_string();
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let doc = local_export_document(&task);
+        let value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(value["id"], "wi-7f3a91");
+        assert_eq!(value["projectId"], "local-project");
+        assert_eq!(value["description"], "登录按钮溢出");
+        assert_eq!(value["repoPath"], "/repo");
+        assert_eq!(value["projectRule"], "先跑 cargo test");
+        assert!(value.get("project_id").is_none(), "keys are camelCase");
+
+        let paths = tapd_core::paths::AppPaths {
+            data_dir: PathBuf::from("/tmp/tapd"),
+            logs_dir: PathBuf::from("/tmp/tapd/logs"),
+            captures_dir: PathBuf::from("/tmp/tapd/captures"),
+            exports_dir: PathBuf::from("/exports"),
+            worktrees_dir: PathBuf::from("/tmp/tapd/worktrees"),
+            runtime_file: PathBuf::from("/tmp/tapd/runtime.json"),
+            config_file: PathBuf::from("/tmp/tapd/config.json"),
+        };
+        let dir = crate::export::local::local_export_dir(&paths, &doc);
+        assert_eq!(dir.to_string_lossy(), "/exports/local-project/wi-7f3a91");
+        assert!(dir.to_string_lossy().is_ascii());
+    }
+
+    #[test]
+    fn local_description_and_attachments_are_normalized() {
+        assert_eq!(compose_local_description(" 描述 ", None), "描述");
+        assert_eq!(
+            compose_local_description("描述", Some(" 补充 ")),
+            "描述\n\n补充"
+        );
+        assert_eq!(compose_local_description("", Some(" 补充 ")), "补充");
+
+        assert_eq!(
+            clean_attachments(Some(vec![
+                " /tmp/a.png ".to_string(),
+                "/tmp/a.png".to_string(),
+                "  ".to_string(),
+            ])),
+            vec!["/tmp/a.png".to_string()]
+        );
+
+        let request: LocalEnqueueRequest = serde_json::from_value(json!({
+            "projectId": "p",
+            "workItemId": "w",
+            "title": "t"
+        }))
+        .expect("camelCase request");
+        assert_eq!(request.project_id, "p");
+        assert_eq!(request.work_item_id, "w");
+        assert!(request.attachments.is_none());
+        assert_eq!(request.source, None);
+        assert_eq!(request.project_rule, "", "old callers default to no rule");
+
+        let with_rule: LocalEnqueueRequest = serde_json::from_value(json!({
+            "projectId": "p",
+            "workItemId": "w",
+            "title": "t",
+            "projectRule": "跑测试"
+        }))
+        .expect("projectRule is camelCase");
+        assert_eq!(with_rule.project_rule, "跑测试");
+    }
+
+    #[test]
+    fn project_rule_is_appended_to_local_prompts_only() {
+        let mut task = sample_task("task-local", TaskStatus::Running);
+        task.source_kind = TaskSource::LocalWorkItem;
+        task.project_rule = "先跑 cargo test".to_string();
+
+        let mut prompt = render_prompt(tr(LOCAL_PROMPT_KEY), &PromptVars::from_task(&task));
+        let plain = prompt.clone();
+        append_project_rule(&mut prompt, task.source_kind, &task.project_rule);
+        assert!(prompt.starts_with(&plain));
+        assert!(prompt.contains(tr(LOCAL_RULE_KEY)));
+        assert!(prompt.ends_with("先跑 cargo test"), "{prompt}");
+
+        // An empty rule changes nothing.
+        let mut blank = plain.clone();
+        append_project_rule(&mut blank, task.source_kind, "   ");
+        assert_eq!(blank, plain);
+
+        // TAPD prompts never take a project rule.
+        let mut tapd = plain.clone();
+        append_project_rule(&mut tapd, TaskSource::TapdBug, &task.project_rule);
+        assert_eq!(tapd, plain);
+        assert!(!tapd.contains(tr(LOCAL_RULE_KEY)));
+
+        // The merge prompt follows the same rule.
+        let mut merge = merge_prompt("/repo", "local/wi1", TaskSource::LocalWorkItem);
+        append_project_rule(&mut merge, TaskSource::LocalWorkItem, &task.project_rule);
+        assert!(merge.ends_with("先跑 cargo test"), "{merge}");
+    }
+
+    #[test]
+    fn local_task_spec_maps_the_item_onto_a_local_spec() {
+        let config = AgentConfig {
+            runtime_id: "claude".to_string(),
+            ..AgentConfig::default()
+        };
+        let request = LocalEnqueueRequest {
+            project_id: " local-project ".to_string(),
+            project_name: " ".to_string(),
+            work_item_id: " wi-1 ".to_string(),
+            title: " 修复登录页 ".to_string(),
+            description: " 描述 ".to_string(),
+            repo_path: " /repo ".to_string(),
+            project_rule: " 先跑 cargo test ".to_string(),
+            created_at: "2026-11-16T00:00:00Z".to_string(),
+            extra_prompt: Some(" 补充 ".to_string()),
+            attachments: Some(vec!["/tmp/a.png".to_string(), " /tmp/a.png ".to_string()]),
+            runtime_id: Some("not-a-runtime".to_string()),
+            model: None,
+            permission_mode: None,
+            source: None,
+        };
+        let spec = local_task_spec(&request, &config).expect("local spec");
+        assert_eq!(spec.source_kind, TaskSource::LocalWorkItem);
+        assert_eq!(spec.workspace_id, "local-project");
+        assert_eq!(
+            spec.workspace_name, "local-project",
+            "blank name falls back to the id"
+        );
+        assert_eq!(spec.bug_id, "wi-1");
+        assert_eq!(spec.title, "修复登录页");
+        assert!(spec.severity.is_empty());
+        assert!(spec.priority.is_empty());
+        assert_eq!(spec.repo_path, "/repo");
+        assert_eq!(spec.source, "local", "origin label, not the source kind");
+        assert_eq!(spec.project_rule, "先跑 cargo test", "rule is trimmed");
+        assert_eq!(spec.extra_prompt, "描述\n\n补充");
+        assert_eq!(spec.attachments, vec!["/tmp/a.png".to_string()]);
+        assert_eq!(spec.runtime_id, "claude", "unknown runtime falls back");
+
+        let no_title = LocalEnqueueRequest {
+            title: "  ".to_string(),
+            ..request.clone()
+        };
+        assert!(local_task_spec(&no_title, &config).is_err());
+        let no_ids = LocalEnqueueRequest {
+            project_id: "  ".to_string(),
+            ..request.clone()
+        };
+        assert!(local_task_spec(&no_ids, &config).is_err());
+        let no_repo = LocalEnqueueRequest {
+            repo_path: "  ".to_string(),
+            ..request
+        };
+        assert!(local_task_spec(&no_repo, &config).is_err());
+    }
+
+    #[test]
+    fn local_repo_must_be_a_git_work_tree_with_head() {
+        let root = std::env::temp_dir().join(format!(
+            "tapd-agent-local-repo-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.to_string_lossy().to_string();
+
+        assert!(validate_local_repo(&repo).is_err(), "plain dir is rejected");
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["-c", "user.email=test@example.com", "-c", "user.name=Test"])
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        assert!(validate_local_repo(&repo).is_err(), "no HEAD yet");
+
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        validate_local_repo(&repo).expect("git work tree with HEAD is accepted");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -6592,16 +8106,22 @@ mod tests {
         let mut review = sample_task("review", TaskStatus::AwaitingApproval);
         review.worktree_path = Some("/tmp/wt".to_string());
         review.worktree_branch = Some("tapd/01234567-task0001".to_string());
-        review.changes = Some(tapd_workflow::ChangeSet {
-            files: Vec::new(),
-            dirty: false,
-            committed: true,
-        });
+        review.changes = Some(tapd_workflow::ChangeSet::new(Vec::new(), false, true));
         let (mut workflow, _) = boot(vec![review], &config);
 
         let effects = workflow.apply(Input::ApproveReview {
             task_id: TaskId::new("review"),
             now: NOW.to_string(),
+        });
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::InspectWorkspace { .. })),
+            "approving always re-inspects the workspace"
+        );
+        let effects = workflow.apply(Input::WorkspaceInspected {
+            task_id: TaskId::new("review"),
+            changes: tapd_workflow::ChangeSet::new(Vec::new(), false, true),
         });
         assert_eq!(
             status_of(&workflow, "review"),
@@ -6646,6 +8166,7 @@ mod tests {
         let effects = workflow.apply(Input::BranchMergeVerified {
             task_id: TaskId::new("review"),
             merged: true,
+            commit: Some("0123456789abcdef".to_string()),
             error: None,
         });
         assert_eq!(
@@ -6836,11 +8357,11 @@ mod tests {
                 canceled: false,
                 success: true,
                 error: None,
-                changes: Some(tapd_workflow::ChangeSet {
-                    files: vec!["src/a.rs".to_string()],
-                    dirty: false,
-                    committed: true,
-                }),
+                changes: Some(tapd_workflow::ChangeSet::new(
+                    vec!["src/a.rs".to_string()],
+                    false,
+                    true,
+                )),
                 exit_code: Some(0),
             },
             now: NOW.to_string(),

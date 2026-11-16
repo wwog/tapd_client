@@ -19,6 +19,7 @@ import {
   type Workspace,
 } from "../lib/api";
 import { formatAuditTime } from "../lib/format";
+import { t } from "../lib/i18n";
 import { Badge, Button, Spinner, Switch, cardClass, inputClass } from "./ui";
 import { McpClientImport } from "./McpClientImport";
 import { McpToolDocs } from "./McpToolDocs";
@@ -123,7 +124,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
     setAuditBusy(true);
     try {
       const path = await api.mcpAuditExport();
-      toast("ok", `已导出审计日志：${path}`);
+      toast("ok", t("mcp.auditExported", { path }));
     } catch (error) {
       toast("error", String(error));
     } finally {
@@ -151,7 +152,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
           {configError ? (
             <>
               <Plug size={22} className="mx-auto mb-2 text-slate-300" />
-              <p className="max-w-md break-all">读取 MCP 配置失败：{configError}</p>
+              <p className="max-w-md break-all">{t("mcp.configReadFailed", { error: configError })}</p>
               <Button
                 size="sm"
                 className="mt-3"
@@ -159,13 +160,13 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 loading={refreshing}
                 icon={<RefreshCw size={13} />}
               >
-                重试
+                {t("common.retry")}
               </Button>
             </>
           ) : (
             <>
               <Spinner className="mx-auto mb-2" />
-              MCP 设置加载中…
+              {t("mcp.settingsLoading")}
             </>
           )}
         </div>
@@ -193,18 +194,18 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
           <div>
             <h2
               className="flex items-center gap-2 text-ui-base text-slate-900"
-              title="把 TAPD 缺陷接入 AI 客户端，支持查询、导出与修复后回写。"
+              title={t("mcp.serviceIntro")}
             >
               <Plug size={15} className="text-slate-400" />
-              MCP 服务
+              {t("mcp.service")}
             </h2>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Badge tone="green" dot>
-              已启用
+              {t("mcp.enabled")}
             </Badge>
             <Badge tone={writable ? "blue" : "neutral"}>
-              {writable ? "读写" : "只读"}
+              {writable ? t("mcp.readWrite") : t("mcp.readOnly")}
             </Badge>
             <Button
               size="sm"
@@ -216,16 +217,16 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               loading={refreshing}
               icon={<RefreshCw size={13} />}
             >
-              刷新
+              {t("common.refresh")}
             </Button>
           </div>
         </div>
 
         <div className="mt-4 grid gap-2 text-ui-sm text-slate-500 sm:grid-cols-4">
-          <StatusTile label="传输" value={mcp.transport} mono />
-          <StatusTile label="本地端口" value={port} mono />
-          <StatusTile label="工具" value={`${mcp.tools.length} 个`} />
-          <StatusTile label="权限" value={writable ? "读写" : "只读"} />
+          <StatusTile label={t("mcp.transport")} value={mcp.transport} mono />
+          <StatusTile label={t("mcp.localPort")} value={port} mono />
+          <StatusTile label={t("mcp.tools")} value={t("mcp.toolCount", { n: mcp.tools.length })} />
+          <StatusTile label={t("mcp.access")} value={writable ? t("mcp.readWrite") : t("mcp.readOnly")} />
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -234,7 +235,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               key={tool.name}
               type="button"
               onClick={() => setDocsTool(tool.name)}
-              title="查看接口文档"
+              title={t("mcp.viewDocs")}
               className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-ui-xs text-slate-600 transition hover:bg-sky-50 hover:text-sky-700"
             >
               {tool.name}
@@ -243,7 +244,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         </div>
 
         <div className="mt-4 space-y-2">
-          <PathRow label="MCP 程序路径" value={mcp.commandPath} onCopy={onCopy} />
+          <PathRow label={t("mcp.binaryPath")} value={mcp.commandPath} onCopy={onCopy} />
         </div>
       </section>
 
@@ -252,10 +253,10 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
           <div>
             <h2
               className="flex items-center gap-2 text-ui-base text-slate-900"
-              title="策略只会在 TAPD 权限之上进一步收窄范围，不会扩大 AI 的访问能力。"
+              title={t("mcp.policyIntro")}
             >
               <ShieldCheck size={15} className="text-slate-400" />
-              MCP 策略
+              {t("mcp.policy")}
             </h2>
           </div>
         </div>
@@ -263,14 +264,14 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         {!policy ? (
           <div className="mt-4 flex items-center gap-2 text-ui-caption text-slate-400">
             <Spinner />
-            读取 MCP 策略…
+            {t("mcp.policyReading")}
           </div>
         ) : (
           <div className="mt-4 space-y-4">
             <div className="space-y-3">
               <PolicyRow
-                title="允许写操作"
-                hint="评论与状态回写。关闭后仅保留查询、详情与导出工具。"
+                title={t("mcp.allowWrites")}
+                hint={t("mcp.allowWritesHint")}
               >
                 <Switch
                   checked={policy.writesEnabled}
@@ -280,8 +281,8 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 />
               </PolicyRow>
               <PolicyRow
-                title="记录调用审计"
-                hint="记录工具、客户端、决策、耗时与项目/缺陷；不保存评论正文和 Cookie。"
+                title={t("mcp.auditLog")}
+                hint={t("mcp.auditLogHint")}
               >
                 <Switch
                   checked={policy.auditEnabled}
@@ -295,7 +296,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
             <div>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-ui-sm font-normal text-slate-600">
-                  允许访问的项目
+                  {t("mcp.allowedProjects")}
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -304,7 +305,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                   onClick={() => void savePolicy({ allowedWorkspaceIds: [] })}
                   className={chipClass(policy.allowedWorkspaceIds.length === 0)}
                 >
-                  全部项目
+                  {t("mcp.allProjects")}
                 </button>
                 {workspaces.map((workspace) => {
                   const active = policy.allowedWorkspaceIds.includes(workspace.id);
@@ -322,7 +323,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 })}
                 {workspaces.length === 0 ? (
                   <span className="text-ui-xs text-slate-400">
-                    项目列表尚未加载，稍后再试。
+                    {t("mcp.projectsLoading")}
                   </span>
                 ) : null}
               </div>
@@ -330,7 +331,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
 
             <div>
               <label className="text-ui-sm font-normal text-slate-600">
-                允许的目标状态
+                {t("mcp.allowedStatuses")}
               </label>
               <input
                 value={statusInput}
@@ -339,8 +340,8 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") event.currentTarget.blur();
                 }}
-                title="可填状态 key（resolved）或中文名（已解决），多个用逗号分隔。"
-                placeholder="例如 resolved, closed；留空 = 遵循 TAPD 工作流"
+                title={t("mcp.statusesHint")}
+                placeholder={t("mcp.statusesPlaceholder")}
                 className={`${inputClass} mt-1.5 font-mono`}
               />
             </div>
@@ -353,10 +354,12 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
           <div>
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
               <ClipboardList size={15} className="text-slate-400" />
-              调用审计
+              {t("mcp.audit")}
             </h2>
             <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-              最近 {audit.length || 120} 次 MCP 调用；拒绝与失败也会记录。
+              {t("mcp.auditHint", {
+                n: audit.length || 120,
+              })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -367,16 +370,16 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               }
               className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-600 focus:border-sky-300"
             >
-              <option value="all">全部</option>
-              <option value="denied">被拒绝</option>
-              <option value="error">失败</option>
+              <option value="all">{t("common.all")}</option>
+              <option value="denied">{t("mcp.filterDenied")}</option>
+              <option value="error">{t("common.failed")}</option>
             </select>
             <Button
               size="sm"
               onClick={() => void loadAudit()}
               icon={<RefreshCw size={12} />}
             >
-              刷新
+              {t("common.refresh")}
             </Button>
             <Button
               size="sm"
@@ -384,7 +387,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               loading={auditBusy}
               icon={<Download size={12} />}
             >
-              导出
+              {t("mcp.export")}
             </Button>
             <Button
               size="sm"
@@ -393,7 +396,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               loading={auditBusy}
               icon={<Trash2 size={12} />}
             >
-              清空
+              {t("common.clear")}
             </Button>
           </div>
         </div>
@@ -401,18 +404,18 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
         <div className="mt-3 max-h-[360px] overflow-auto rounded-xl border border-slate-100">
           {filteredAudit.length === 0 ? (
             <div className="p-6 text-center text-ui-sm text-slate-400">
-              {audit.length ? "没有匹配的记录" : "暂无调用记录"}
+              {audit.length ? t("mcp.noMatch") : t("mcp.noCalls")}
             </div>
           ) : (
             <table className="w-full text-left text-ui-sm">
               <thead className="sticky top-0 bg-slate-50 text-ui-xs text-slate-400">
                 <tr>
-                  <th className="px-3 py-2 font-normal">时间</th>
-                  <th className="px-2 py-2 font-normal">工具</th>
-                  <th className="px-2 py-2 font-normal">客户端</th>
-                  <th className="px-2 py-2 font-normal">结果</th>
-                  <th className="px-2 py-2 font-normal">耗时</th>
-                  <th className="px-2 py-2 font-normal">项目 / 缺陷</th>
+                  <th className="px-3 py-2 font-normal">{t("mcp.time")}</th>
+                  <th className="px-2 py-2 font-normal">{t("mcp.tools")}</th>
+                  <th className="px-2 py-2 font-normal">{t("mcp.client")}</th>
+                  <th className="px-2 py-2 font-normal">{t("mcp.result")}</th>
+                  <th className="px-2 py-2 font-normal">{t("mcp.duration")}</th>
+                  <th className="px-2 py-2 font-normal">{t("mcp.projectBug")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -440,10 +443,10 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
                         }
                       >
                         {entry.decision === "allowed"
-                          ? "允许"
+                          ? t("mcp.resultAllowed")
                           : entry.decision === "denied"
-                            ? "拒绝"
-                            : "失败"}
+                            ? t("mcp.resultDenied")
+                            : t("common.failed")}
                       </Badge>
                     </td>
                     <td className="px-2 py-2 tabular-nums text-slate-500">
@@ -541,7 +544,7 @@ function PathRow(props: {
         className={COPY_BUTTON}
       >
         <Copy size={10} />
-        复制
+        {t("common.copy")}
       </button>
     </div>
   );

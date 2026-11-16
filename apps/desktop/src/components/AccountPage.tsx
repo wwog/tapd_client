@@ -1,6 +1,7 @@
 import { ExternalLink, LogOut, RefreshCw } from "lucide-react";
 
 import { avatarSrc, api, type AppInfo, type WorkspaceContext } from "../lib/api";
+import { t } from "../lib/i18n";
 import { PROJECT_LABEL, PROJECT_URL } from "../lib/links";
 import { Avatar } from "./Avatar";
 import { UpdatePanel } from "./UpdatePanel";
@@ -24,7 +25,7 @@ export function AccountPage({
   onRefresh,
   toast,
 }: Props) {
-  const nick = context?.user.nick || info?.me || "已登录";
+  const nick = context?.user.nick || info?.me || t("settings.account.signedIn");
   const company = context?.user.company || "—";
   const userId = context?.user.userId || "—";
 
@@ -48,7 +49,7 @@ export function AccountPage({
                 {nick}
               </h2>
               <Badge tone={info?.loggedIn ? "green" : "amber"} dot>
-                {info?.loggedIn ? "已登录" : "未登录"}
+                {info?.loggedIn ? t("settings.account.signedIn") : t("settings.account.signedOut")}
               </Badge>
             </div>
             <p className="mt-0.5 truncate text-ui-caption text-slate-500">{company}</p>
@@ -62,9 +63,9 @@ export function AccountPage({
               size="sm"
               onClick={onRefresh}
               icon={<RefreshCw size={13} />}
-              title="重新读取当前用户与会话状态"
+              title={t("settings.account.refreshTooltip")}
             >
-              刷新
+              {t("common.refresh")}
             </Button>
             <Button
               size="sm"
@@ -72,26 +73,26 @@ export function AccountPage({
               onClick={onShowLogin}
               icon={<ExternalLink size={13} />}
             >
-              打开 TAPD
+              {t("settings.account.openTapd")}
             </Button>
             <Button
               size="sm"
               variant="danger"
               onClick={onLogout}
               icon={<LogOut size={13} />}
-              title="清除 TAPD Cookie、页面缓存与本地离线数据"
+              title={t("settings.account.logoutTooltip")}
             >
-              退出登录
+              {t("common.signOut")}
             </Button>
           </div>
         </div>
       </section>
 
       <section className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border bg-surface px-4 py-3">
-        <span className="text-ui-sm text-slate-600">项目地址</span>
+        <span className="text-ui-sm text-slate-600">{t("settings.account.projectUrl")}</span>
         <button
           type="button"
-          title="在浏览器中打开 GitHub 仓库：问题反馈、同事技能投稿"
+          title={t("settings.account.repoTooltip")}
           onClick={() =>
             void api
               .openPath(PROJECT_URL)
@@ -103,7 +104,7 @@ export function AccountPage({
           <ExternalLink size={10} className="shrink-0" />
         </button>
         <span className="ml-auto text-ui-xs text-slate-400">
-          问题反馈 · 同事技能投稿
+          {t("settings.account.feedback")}
         </span>
       </section>
 

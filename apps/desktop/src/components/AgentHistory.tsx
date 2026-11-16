@@ -15,6 +15,8 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_TONES,
   agentApi,
+  agentTaskTitle,
+  isBugAgentTask,
   supportsAgentChat,
   type AgentRuntimeDescriptor,
   type AgentTask,
@@ -24,10 +26,13 @@ import {
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
+import { t, useLocale } from "../lib/i18n";
 import { useAgentChat } from "../hooks/useAgentChat";
-import { useDismiss } from "../hooks/useDismiss";
 import { AgentChatPane } from "./AgentChatPane";
 import { AgentIcon } from "./AgentIcon";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
+import { ScrollingName } from "./ScrollingName";
+import { CommitHash, TaskChangesPanel } from "./TaskChangesPanel";
 import { Badge, Button, selectClass } from "./ui";
 import { Dialog } from "./Dialog";
 
@@ -35,9 +40,6 @@ import { Dialog } from "./Dialog";
 const STATUS_OPTIONS: AgentTaskStatus[] = ["succeeded", "failed", "canceled"];
 const PAGE_SIZE = 50;
 /** Approximate row menu box, used to keep it inside the window. */
-const MENU_WIDTH = 152;
-const MENU_HEIGHT = 44;
-
 /** Anchor + target for a history row's right-click menu. */
 type HistoryRowMenu = { x: number; y: number; task: AgentTask };
 
@@ -163,6 +165,11 @@ export function AgentHistory({
     [tasks, selectedId],
   );
 
+  // Two distinct commits: the task's own product and, for worktree tasks, the
+  // main-repository HEAD the merge landed on.
+  const changesCommit = selected?.changes?.commit || null;
+  const mergeCommit = selected?.merge?.commit || null;
+
   // A focus request from the island/enqueue flow wins over the current page.
   useEffect(() => {
     if (!focusTaskId || appliedFocusRef.current === focusTaskId) return;
@@ -248,9 +255,9 @@ export function AgentHistory({
           value={workspaceFilter}
           onChange={(event) => setWorkspaceFilter(event.target.value)}
           className={selectClass}
-          aria-label="按工作区筛选"
+          aria-label={t("agent.history.filterWorkspace")}
         >
-          <option value="all">全部工作区</option>
+          <option value="all">{t("agent.history.allWorkspaces")}</option>
           {workspaces.map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
               {workspace.name}
@@ -264,12 +271,12 @@ export function AgentHistory({
             setStatusFilter(event.target.value as "all" | AgentTaskStatus)
           }
           className={selectClass}
-          aria-label="按状态筛选"
+          aria-label={t("agent.history.filterStatus")}
         >
-          <option value="all">全部状态</option>
+          <option value="all">{t("agent.history.allStatuses")}</option>
           {STATUS_OPTIONS.map((status) => (
             <option key={status} value={status}>
-              {AGENT_STATUS_LABELS[status]}
+              {t(AGENT_STATUS_LABELS[status])}
             </option>
           ))}
         </select>
@@ -282,12 +289,14 @@ export function AgentHistory({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索标题或缺陷 ID"
+            placeholder={t("agent.history.search")}
             className="w-full rounded-lg border border-border bg-surface py-1.5 pl-8 pr-2.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
           />
         </label>
 
-        <span className="shrink-0 text-ui-sm text-slate-400">{total} 条记录</span>
+        <span className="shrink-0 text-ui-sm text-slate-400">
+          {t("agent.history.recordCount", { count: total })}
+        </span>
       </div>
 
       <div ref={areaRef} className="flex min-h-0 flex-1 gap-3">
@@ -298,10 +307,10 @@ export function AgentHistory({
                 {loading ? (
                   <span className="inline-flex items-center gap-1.5">
                     <Loader2 size={13} className="animate-spin" />
-                    加载中…
+                    {t("common.loadingEllipsis")}
                   </span>
                 ) : (
-                  "没有匹配的执行记录"
+                  t("agent.history.empty")
                 )}
               </div>
             ) : (
@@ -323,7 +332,10 @@ export function AgentHistory({
                     className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
                   >
                     {loadingMore ? <Loader2 size={12} className="animate-spin" /> : null}
-                    加载更多（已显示 {tasks.length} / {total}）
+                    {t("agent.history.loadMore", {
+                      shown: tasks.length,
+                      total,
+                    })}
                   </button>
                 ) : null}
               </div>
@@ -334,28 +346,30 @@ export function AgentHistory({
         <div className="min-w-0 flex-1 overflow-y-auto rounded-xl border border-border bg-surface ">
           {!selected ? (
             <div className="grid h-full place-items-center px-6 py-10 text-center text-ui-caption text-slate-400">
-              选择左侧记录查看详情
+              {t("agent.history.selectHint")}
             </div>
           ) : (
             <div className="p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="min-w-0 flex-1 truncate text-ui-base font-normal text-slate-900">
-                  {bugTitle(selected.title) || "（无标题）"}
+                <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+                  <ScrollingName text={agentTaskTitle(selected) || t("agent.untitled")} />
                 </h2>
                 <Badge tone={AGENT_STATUS_TONES[selected.status]}>
-                  {AGENT_STATUS_LABELS[selected.status]}
+                  {t(AGENT_STATUS_LABELS[selected.status])}
                 </Badge>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={<Bug size={12} />}
-                  onClick={() => onOpenBug(selected.workspaceId, selected.bugId)}
-                >
-                  打开缺陷
-                </Button>
+                {isBugAgentTask(selected) ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<Bug size={12} />}
+                    onClick={() => onOpenBug(selected.workspaceId, selected.bugId)}
+                  >
+                    {t("agent.openBug")}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   variant="secondary"
@@ -363,7 +377,7 @@ export function AgentHistory({
                   disabled={!selected.jsonPath}
                   onClick={() => openTaskExportDir(selected, toast)}
                 >
-                  打开导出目录
+                  {t("agent.header.openExport")}
                 </Button>
                 <Button
                   size="sm"
@@ -375,7 +389,7 @@ export function AgentHistory({
                   }
                   onClick={() => void openTerminal(selected)}
                 >
-                  打开系统终端
+                  {t("agent.history.openTerminal")}
                 </Button>
                 <Button
                   size="sm"
@@ -386,7 +400,7 @@ export function AgentHistory({
                   }
                   onClick={() => setChatTask(selected)}
                 >
-                  查看对话
+                  {t("agent.history.viewChat")}
                 </Button>
                 <Button
                   size="sm"
@@ -401,56 +415,116 @@ export function AgentHistory({
                   disabled={retryBusy !== null}
                   onClick={() => void retry(selected)}
                 >
-                  重试
+                  {t("common.retry")}
                 </Button>
               </div>
 
               <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-ui-sm sm:grid-cols-3">
-                <Meta label="工作区" value={selected.workspaceName || selected.workspaceId} />
-                <Meta label="缺陷 ID" value={selected.bugId} mono />
-                <Meta label="来源" value={selected.source || "—"} />
-                <Meta label="Agent" value={runtimeName(selected.runtimeId)} />
-                <Meta label="创建时间" value={relativeTime(selected.createdAt)} title={selected.createdAt} />
                 <Meta
-                  label="开始时间"
+                  label={t("agent.history.workspace")}
+                  value={selected.workspaceName || selected.workspaceId}
+                />
+                {isBugAgentTask(selected) ? (
+                  <Meta label={t("agent.history.bugId")} value={selected.bugId} mono />
+                ) : null}
+                <Meta label={t("agent.history.source")} value={selected.source || "—"} />
+                <Meta label="Agent" value={runtimeName(selected.runtimeId)} />
+                <Meta
+                  label={t("common.created")}
+                  value={relativeTime(selected.createdAt)}
+                  title={selected.createdAt}
+                />
+                <Meta
+                  label={t("agent.history.startedAt")}
                   value={selected.startedAt ? relativeTime(selected.startedAt) : "—"}
                   title={selected.startedAt}
                 />
                 <Meta
-                  label="结束时间"
+                  label={t("agent.history.finishedAt")}
                   value={selected.finishedAt ? relativeTime(selected.finishedAt) : "—"}
                   title={selected.finishedAt}
                 />
                 <Meta
-                  label="退出码"
+                  label={t("agent.history.exitCode")}
                   value={selected.exitCode !== undefined ? String(selected.exitCode) : "—"}
                   mono
                 />
                 <Meta
-                  label={selected.worktreePath ? "工作目录" : "仓库"}
-                  value={selected.worktreePath || selected.repoPath || "未配置仓库"}
+                  label={
+                    selected.worktreePath
+                      ? t("agent.history.workdir")
+                      : t("agent.history.repo")
+                  }
+                  value={selected.worktreePath || selected.repoPath || t("agent.noRepo")}
                   title={selected.worktreePath || selected.repoPath}
                   mono
                   wide
                 />
                 {selected.worktreeBranch ? (
-                  <Meta label="分支" value={selected.worktreeBranch} mono />
+                  <Meta label={t("agent.history.branch")} value={selected.worktreeBranch} mono />
+                ) : null}
+                {changesCommit ? (
+                  <div className="min-w-0">
+                    <dt className="text-ui-xs text-slate-400">
+                      {t("agent.changes.commit")}
+                    </dt>
+                    <dd className="truncate">
+                      <CommitHash hash={changesCommit} className="-ml-1" />
+                    </dd>
+                  </div>
+                ) : null}
+                {mergeCommit ? (
+                  <div className="min-w-0">
+                    <dt className="text-ui-xs text-slate-400">
+                      {t("agent.changes.mergedCommit")}
+                    </dt>
+                    <dd className="truncate">
+                      <CommitHash hash={mergeCommit} className="-ml-1" />
+                    </dd>
+                  </div>
                 ) : null}
               </dl>
 
+              {selected.changes ? (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 text-ui-xs">
+                  {selected.changes.additions > 0 ? (
+                    <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 tabular-nums text-emerald-700">
+                      +{selected.changes.additions}
+                    </span>
+                  ) : null}
+                  {selected.changes.deletions > 0 ? (
+                    <span className="inline-flex items-center rounded-md bg-rose-50 px-1.5 py-0.5 tabular-nums text-rose-700">
+                      −{selected.changes.deletions}
+                    </span>
+                  ) : null}
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-400">
+                    {t("agent.changes.files", {
+                      count: selected.changes.files.length,
+                    })}
+                  </span>
+                </div>
+              ) : null}
+
+              <TaskChangesPanel
+                taskId={selected.id}
+                open={false}
+                className="mt-3"
+              />
+
               {selected.error ? (
                 <div className="select-text mt-3 break-all rounded-lg bg-rose-50 px-2.5 py-2 text-ui-sm leading-5 text-rose-700 border border-rose-100">
-                  <div className="mb-0.5 font-normal">错误</div>
+                  <div className="mb-0.5 font-normal">{t("agent.history.error")}</div>
                   {selected.error}
                 </div>
               ) : null}
 
               <details className="mt-3 rounded-lg border border-slate-100 bg-slate-50/60">
                 <summary className="cursor-pointer select-none px-2.5 py-1.5 text-ui-sm font-normal text-slate-600">
-                  提示词
+                  {t("agent.history.prompt")}
                 </summary>
                 <pre className="select-text max-h-64 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-ui-sm leading-5 text-slate-600">
-                  {selected.prompt || "（空）"}
+                  {selected.prompt || t("agent.history.emptyValue")}
                 </pre>
               </details>
             </div>
@@ -472,7 +546,9 @@ export function AgentHistory({
 
       {chatTask ? (
         <Dialog
-          title={`对话 · ${bugTitle(chatTask.title) || "（无标题）"}`}
+          title={t("agent.history.chatTitle", {
+            title: bugTitle(chatTask.title) || t("agent.untitled"),
+          })}
           icon={
             <AgentIcon
               runtimeId={chatTask.runtimeId}
@@ -504,18 +580,19 @@ export function AgentHistory({
 
       {deleteTarget ? (
         <Dialog
-          title="删除执行记录"
+          title={t("agent.history.deleteTitle")}
           icon={<Trash2 size={15} className="text-rose-500" />}
           onClose={() => {
             if (!deleting) setDeleteTarget(null);
           }}
         >
           <p className="text-ui-caption leading-5 text-slate-600">
-            将删除「{bugTitle(deleteTarget.title) || "（无标题）"}」的本地执行记录，
-            删除后无法恢复。
+            {t("agent.history.deleteConfirm", {
+              title: bugTitle(deleteTarget.title) || t("agent.untitled"),
+            })}
           </p>
           <p className="mt-2 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-600">
-            只删除本地记录，不影响导出目录、缺陷内容和已提交的代码。
+            {t("agent.history.deleteHint")}
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <Button
@@ -524,7 +601,7 @@ export function AgentHistory({
               disabled={deleting}
               onClick={() => setDeleteTarget(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
@@ -532,7 +609,7 @@ export function AgentHistory({
               loading={deleting}
               onClick={() => void confirmDelete()}
             >
-              删除
+              {t("common.delete")}
             </Button>
           </div>
         </Dialog>
@@ -549,6 +626,8 @@ const HistoryRow = memo(function HistoryRow(props: {
   onSelect: (id: string) => void;
   onMenu: (event: ReactMouseEvent<HTMLButtonElement>, task: AgentTask) => void;
 }) {
+  // Row props are stable, so `memo` needs its own locale subscription.
+  useLocale();
   const { task, selected, onSelect, onMenu } = props;
   return (
     <button
@@ -562,17 +641,31 @@ const HistoryRow = memo(function HistoryRow(props: {
     >
       <div className="flex items-center gap-1.5">
         <Badge tone={AGENT_STATUS_TONES[task.status]} dot>
-          {AGENT_STATUS_LABELS[task.status]}
+          {t(AGENT_STATUS_LABELS[task.status])}
         </Badge>
         <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
           {relativeTime(task.createdAt)}
         </span>
       </div>
-      <div className="mt-1 line-clamp-2 text-ui-caption font-normal leading-4 text-slate-700">
-        {bugTitle(task.title) || "（无标题）"}
-      </div>
-      <div className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-        {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+      <ScrollingName
+        text={agentTaskTitle(task) || t("agent.untitled")}
+        className="mt-1 text-ui-caption font-normal leading-4 text-slate-700"
+      />
+      <div className="mt-0.5 flex items-center gap-1.5 text-ui-xs">
+        <span className="min-w-0 truncate font-mono text-slate-400">
+          {task.workspaceName || task.workspaceId}
+          {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
+        </span>
+        {task.changes ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1 tabular-nums">
+            {task.changes.additions > 0 ? (
+              <span className="text-emerald-600">+{task.changes.additions}</span>
+            ) : null}
+            {task.changes.deletions > 0 ? (
+              <span className="text-rose-600">−{task.changes.deletions}</span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
     </button>
   );
@@ -585,31 +678,26 @@ function HistoryRowContextMenu(props: {
   onDelete: (task: AgentTask) => void;
 }) {
   const { menu, onClose, onDelete } = props;
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useDismiss(true, menuRef, onClose, { scroll: true, resize: true, blur: true });
 
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label="执行记录快捷操作"
-      style={{
-        left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
-        top: Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8)),
-      }}
-      className="fixed z-50 w-[152px] overflow-hidden rounded-lg border border-border bg-surface py-1"
-      onContextMenu={(event) => event.preventDefault()}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      label={t("agent.history.actions")}
+      onClose={onClose}
     >
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => onDelete(menu.task)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui-sm text-rose-600 transition hover:bg-rose-50"
-      >
-        <Trash2 size={12} className="text-rose-500" />
-        删除记录
-      </button>
-    </div>
+      {(requestClose) => (
+        <ContextMenuItem
+          tone="danger"
+          icon={<Trash2 size={13} />}
+          label={t("agent.history.deleteRecord")}
+          onClick={() => {
+            onDelete(menu.task);
+            requestClose();
+          }}
+        />
+      )}
+    </ContextMenu>
   );
 }
 

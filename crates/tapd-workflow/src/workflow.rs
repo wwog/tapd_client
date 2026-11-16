@@ -4,6 +4,8 @@
 //! owns task state, scheduling, review/merge policy and recovery; it never
 //! touches the clock, ids, the filesystem or the environment.
 
+use tapd_i18n::{tr, tr_args};
+
 use crate::config::WorkflowConfig;
 use crate::effect::{Effect, EffectId, NoticeLevel, RecoveryReport};
 use crate::history::HistoryRecord;
@@ -16,12 +18,12 @@ use crate::task::{
     WorktreeRef,
 };
 
-const STOPPED_REVIEW_ERROR: &str = "已停止审核，改动保留在工作区";
-const CANCELED_ERROR: &str = "已取消";
-const CANCELED_MERGE_ERROR: &str = "已取消合并";
-const MERGE_ABORTED_ERROR: &str = "合并已中止";
-const COMMIT_DIRTY_ERROR: &str = "提交阶段仍有未提交改动";
-const BRANCH_NOT_MERGED_ERROR: &str = "分支尚未并入主仓库";
+const STOPPED_REVIEW_ERROR: &str = "flow.review.stopped";
+const CANCELED_ERROR: &str = "flow.task.canceled";
+const CANCELED_MERGE_ERROR: &str = "flow.merge.canceled";
+const MERGE_ABORTED_ERROR: &str = "flow.merge.aborted";
+const COMMIT_DIRTY_ERROR: &str = "flow.task.commitdirty";
+const BRANCH_NOT_MERGED_ERROR: &str = "flow.merge.branchunmerged";
 
 #[derive(Clone, Debug)]
 pub struct Workflow {
@@ -44,8 +46,10 @@ pub struct Workflow {
     pending_merges: Vec<(TaskId, Timestamp)>,
     /// Agent merge error kept until `BranchMergeVerified` reports.
     pending_merge_errors: Vec<(TaskId, Option<String>)>,
-    /// Verification requests waiting for `BranchMergeVerified`.
-    pending_verifications: Vec<(TaskId, Timestamp)>,
+    /// Verification requests waiting for `BranchMergeVerified`. The status at
+    /// request time is part of the key: a receipt may only decide while the
+    /// task is still in that stage.
+    pending_verifications: Vec<(TaskId, Timestamp, TaskStatus)>,
 }
 
 impl Default for Workflow {
@@ -290,7 +294,8 @@ impl Workflow {
                 task_id,
                 merged,
                 error,
-            } => self.on_branch_merge_verified(task_id, merged, error, effects),
+                commit,
+            } => self.on_branch_merge_verified(task_id, merged, error, commit, effects),
         }
         self.schedule(effects);
     }
@@ -398,7 +403,7 @@ impl Workflow {
             return;
         }
         if self.tasks.iter().any(|task| task.id == task_id) {
-            effects.push(Effect::rejected(format!("任务已存在：{task_id}")));
+            effects.push(Effect::rejected(tr_args("flow.task.exists", &[&task_id])));
             return;
         }
         if let Some(existing) = self.tasks.iter().find(|task| {
@@ -406,9 +411,9 @@ impl Workflow {
                 && task.spec.bug_id == spec.bug_id
                 && !task.status.is_terminal()
         }) {
-            effects.push(Effect::rejected(format!(
-                "该缺陷已有未结束的任务（{}）",
-                status_key(existing.status)
+            effects.push(Effect::rejected(tr_args(
+                "flow.task.bugactive",
+                &[&status_key(existing.status)],
             )));
             return;
         }
@@ -430,15 +435,15 @@ impl Workflow {
             return;
         }
         let Some(mut task) = self.task(&task_id).cloned() else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if !task.status.is_terminal() {
-            effects.push(Effect::rejected("任务仍在队列或运行中，不能重试"));
+            effects.push(Effect::rejected(tr("flow.task.notretryable")));
             return;
         }
         if self.tasks.iter().any(|other| other.id == new_id) {
-            effects.push(Effect::rejected(format!("任务已存在：{new_id}")));
+            effects.push(Effect::rejected(tr_args("flow.task.exists", &[&new_id])));
             return;
         }
         if self.tasks.iter().any(|other| {
@@ -446,9 +451,9 @@ impl Workflow {
                 && other.spec.bug_id == task.spec.bug_id
                 && !other.status.is_terminal()
         }) {
-            effects.push(Effect::rejected(format!(
-                "该缺陷已有未结束的任务（{}）",
-                task.spec.bug_id
+            effects.push(Effect::rejected(tr_args(
+                "flow.task.bugactive",
+                &[&task.spec.bug_id],
             )));
             return;
         }
@@ -480,25 +485,25 @@ impl Workflow {
     fn on_approve_review(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id).cloned() else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if task.status != TaskStatus::AwaitingApproval {
-            effects.push(Effect::rejected("任务不在待审核状态"));
+            effects.push(Effect::rejected(tr("flow.task.notawaitingapproval")));
             return;
         }
-        if task.changes.is_none() {
-            self.pending_inspections.retain(|(id, _)| id != &task_id);
-            self.pending_inspections.push((task_id.clone(), now));
-            let effect = self.effect_id();
-            effects.push(Effect::InspectWorkspace {
-                effect,
-                task_id,
-                path: task.work_dir().to_string(),
-            });
-            return;
-        }
-        self.decide_approval(task_id, now, effects);
+        // Always re-inspect before deciding. The review card offers "open
+        // worktree", so edits made after the run ended are not in the run-end
+        // snapshot; approving on that snapshot would merge the branch without
+        // them (or send a cleaned worktree straight to merge).
+        self.pending_inspections.retain(|(id, _)| id != &task_id);
+        self.pending_inspections.push((task_id.clone(), now));
+        let effect = self.effect_id();
+        effects.push(Effect::InspectWorkspace {
+            effect,
+            task_id,
+            path: task.work_dir().to_string(),
+        });
     }
 
     fn on_workspace_inspected(
@@ -535,7 +540,7 @@ impl Workflow {
         // earlier stop resumes unless another review still blocks it.
         self.paused = false;
 
-        let (is_worktree, dirty, repo, branch) = {
+        let (is_worktree, dirty, repo, branch, source_kind) = {
             let task = &self.tasks[index];
             (
                 task.is_worktree(),
@@ -545,6 +550,7 @@ impl Workflow {
                     .unwrap_or(false),
                 task.spec.repo_path.clone(),
                 task.branch().unwrap_or("").to_string(),
+                task.spec.source_kind,
             )
         };
         let task = &mut self.tasks[index];
@@ -560,9 +566,10 @@ impl Workflow {
             task.commit_only = false;
             let merge = task.merge.get_or_insert_with(TaskMerge::default);
             merge.error = None;
-            merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+            merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
             merge.started_at = None;
             merge.finished_at = None;
+            merge.commit = None;
         } else {
             task.status = TaskStatus::Queued;
             task.commit_only = true;
@@ -582,11 +589,11 @@ impl Workflow {
     ) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id) else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if task.status != TaskStatus::AwaitingApproval {
-            effects.push(Effect::rejected("任务不在待审核状态"));
+            effects.push(Effect::rejected(tr("flow.task.notawaitingapproval")));
             return;
         }
         self.stop_review(task_id, now, stash, error, effects);
@@ -613,7 +620,7 @@ impl Workflow {
         task.status = TaskStatus::Canceled;
         task.finished_at = Some(now);
         task.exit_code = None;
-        task.error = Some(error.unwrap_or_else(|| STOPPED_REVIEW_ERROR.to_string()));
+        task.error = Some(error.unwrap_or_else(|| tr(STOPPED_REVIEW_ERROR).to_string()));
         task.commit_only = false;
         task.interrupted = false;
         task.approval
@@ -631,29 +638,32 @@ impl Workflow {
     fn on_start_merge(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id).cloned() else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if task.status != TaskStatus::AwaitingMerge {
-            effects.push(Effect::rejected("任务不在待合并状态"));
+            effects.push(Effect::rejected(tr("flow.task.notawaitingmerge")));
             return;
         }
         let Some(branch) = task.branch().map(str::to_string) else {
-            effects.push(Effect::rejected("任务没有待合并分支"));
+            effects.push(Effect::rejected(tr("flow.task.nobranch")));
             return;
         };
         let repo = task.spec.repo_path.trim().to_string();
         if repo.is_empty() {
-            effects.push(Effect::rejected("主仓库路径为空"));
+            effects.push(Effect::rejected(tr("flow.task.repoempty")));
             return;
         }
         if self.repo_is_merging(&repo, Some(&task_id)) {
-            effects.push(Effect::rejected("该仓库已有任务正在合并，请稍后重试"));
+            effects.push(Effect::rejected(tr("flow.merge.repobusy")));
             return;
         }
 
         self.pending_merges.retain(|(id, _)| id != &task_id);
         self.pending_merges.push((task_id.clone(), now));
+        // A verification requested from AwaitingMerge cannot decide anything
+        // once the merge starts; drop it so its late receipt is ignored.
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
         let effect = self.effect_id();
         effects.push(Effect::CheckMergePreconditions {
             effect,
@@ -710,6 +720,7 @@ impl Workflow {
                 merge.instructions = None;
                 merge.started_at = Some(requested_at);
                 merge.finished_at = None;
+                merge.commit = None;
                 let changed = task.clone();
                 self.push_persist(effects, &changed);
                 let effect = self.effect_id();
@@ -766,8 +777,9 @@ impl Workflow {
         self.pending_merge_errors.retain(|(id, _)| id != &task_id);
         self.pending_merge_errors
             .push((task_id.clone(), outcome.error.clone()));
-        self.pending_verifications.retain(|(id, _)| id != &task_id);
-        self.pending_verifications.push((task_id.clone(), now));
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
+        self.pending_verifications
+            .push((task_id.clone(), now, TaskStatus::Merging));
 
         let changed = self.tasks[index].clone();
         self.push_persist(effects, &changed);
@@ -783,20 +795,21 @@ impl Workflow {
     fn on_verify_merge(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id).cloned() else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if task.status != TaskStatus::AwaitingMerge {
-            effects.push(Effect::rejected("任务不在待合并状态"));
+            effects.push(Effect::rejected(tr("flow.task.notawaitingmerge")));
             return;
         }
         let Some(branch) = task.branch().map(str::to_string) else {
-            effects.push(Effect::rejected("任务没有待合并分支"));
+            effects.push(Effect::rejected(tr("flow.task.nobranch")));
             return;
         };
         let repo = task.spec.repo_path.clone();
-        self.pending_verifications.retain(|(id, _)| id != &task_id);
-        self.pending_verifications.push((task_id.clone(), now));
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
+        self.pending_verifications
+            .push((task_id.clone(), now, TaskStatus::AwaitingMerge));
         let effect = self.effect_id();
         effects.push(Effect::VerifyBranchMerged {
             effect,
@@ -811,13 +824,17 @@ impl Workflow {
         task_id: TaskId,
         merged: bool,
         error: Option<String>,
+        commit: Option<String>,
         effects: &mut Vec<Effect>,
     ) {
-        let Some(verified_at) = self
+        let Some((verified_at, requested_status)) = self
             .pending_verifications
             .iter()
-            .position(|(id, _)| id == &task_id)
-            .map(|position| self.pending_verifications.remove(position).1)
+            .position(|(id, _, _)| id == &task_id)
+            .map(|position| {
+                let (_, at, status) = self.pending_verifications.remove(position);
+                (at, status)
+            })
         else {
             // No request is outstanding: a late or duplicate receipt must not
             // decide a merge.
@@ -832,10 +849,11 @@ impl Workflow {
         let Some(index) = self.task_index(&task_id) else {
             return;
         };
-        if !matches!(
-            self.tasks[index].status,
-            TaskStatus::Merging | TaskStatus::AwaitingMerge
-        ) {
+        // The receipt may only decide the stage that requested it. A verify
+        // requested from AwaitingMerge must not answer after StartMerge moved
+        // the task to Merging: that would roll Merging back and allow a second
+        // merge agent in the same repository.
+        if self.tasks[index].status != requested_status {
             return;
         }
 
@@ -854,6 +872,7 @@ impl Workflow {
             merge.error = None;
             merge.instructions = None;
             merge.finished_at = Some(verified_at);
+            merge.commit = commit;
             let changed = task.clone();
             if let Some(path) = worktree_path.filter(|path| !path.trim().is_empty()) {
                 let effect = self.effect_id();
@@ -867,30 +886,33 @@ impl Workflow {
             self.push_persist(effects, &changed);
             self.push_history(effects, &changed);
         } else {
-            let (repo, branch) = {
+            let (repo, branch, source_kind) = {
                 let task = &self.tasks[index];
                 (
                     task.spec.repo_path.clone(),
                     task.branch().unwrap_or("").to_string(),
+                    task.spec.source_kind,
                 )
             };
             let message = error
                 .or(pending_error)
-                .unwrap_or_else(|| BRANCH_NOT_MERGED_ERROR.to_string());
+                .unwrap_or_else(|| tr(BRANCH_NOT_MERGED_ERROR).to_string());
             let task = &mut self.tasks[index];
             task.status = TaskStatus::AwaitingMerge;
             task.finished_at = None;
             task.error = None;
             let merge = task.merge.get_or_insert_with(TaskMerge::default);
             merge.error = Some(message.clone());
-            merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+            merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
             merge.started_at = None;
             merge.finished_at = None;
+            // Not merged, so any earlier hash must not look like it landed.
+            merge.commit = None;
             let changed = task.clone();
             self.push_persist(effects, &changed);
             effects.push(Effect::EmitNotice {
                 level: NoticeLevel::Warning,
-                message: format!("任务 {task_id} 合并失败：{message}"),
+                message: tr_args("flow.task.mergefailed", &[&task_id, &message]),
             });
         }
     }
@@ -909,13 +931,15 @@ impl Workflow {
         if self.tasks[index].status != TaskStatus::AwaitingMerge {
             return;
         }
+        let source_kind = self.tasks[index].spec.source_kind;
         let task = &mut self.tasks[index];
         task.finished_at = None;
         let merge = task.merge.get_or_insert_with(TaskMerge::default);
         merge.error = Some(message);
-        merge.instructions = Some(manual_merge_instructions(repo, branch));
+        merge.instructions = Some(manual_merge_instructions(repo, branch, source_kind));
         merge.started_at = None;
         merge.finished_at = None;
+        merge.commit = None;
         let changed = task.clone();
         self.push_persist(effects, &changed);
     }
@@ -936,11 +960,12 @@ impl Workflow {
         ) {
             return;
         }
-        let (repo, branch) = {
+        let (repo, branch, source_kind) = {
             let task = &self.tasks[index];
             (
                 task.spec.repo_path.clone(),
                 task.branch().unwrap_or("").to_string(),
+                task.spec.source_kind,
             )
         };
         if cancel_agent {
@@ -954,9 +979,10 @@ impl Workflow {
         task.error = None;
         let merge = task.merge.get_or_insert_with(TaskMerge::default);
         merge.error = Some(error);
-        merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+        merge.instructions = Some(manual_merge_instructions(&repo, &branch, source_kind));
         merge.started_at = None;
         merge.finished_at = None;
+        merge.commit = None;
         let changed = task.clone();
         self.push_persist(effects, &changed);
     }
@@ -974,7 +1000,7 @@ impl Workflow {
     fn on_cancel(&mut self, task_id: TaskId, now: Timestamp, effects: &mut Vec<Effect>) {
         self.clock = now.clone();
         let Some(task) = self.task(&task_id).cloned() else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         match task.status {
@@ -987,7 +1013,7 @@ impl Workflow {
                 task.status = TaskStatus::Canceled;
                 task.finished_at = Some(now);
                 task.exit_code = None;
-                task.error = Some(CANCELED_MERGE_ERROR.to_string());
+                task.error = Some(tr(CANCELED_MERGE_ERROR).to_string());
                 task.commit_only = false;
                 task.interrupted = false;
                 let changed = task.clone();
@@ -995,7 +1021,7 @@ impl Workflow {
                 self.push_history(effects, &changed);
             }
             TaskStatus::Merging => {
-                self.rollback_merge(task_id, MERGE_ABORTED_ERROR.to_string(), true, effects);
+                self.rollback_merge(task_id, tr(MERGE_ABORTED_ERROR).to_string(), true, effects);
             }
             TaskStatus::Queued | TaskStatus::Preparing | TaskStatus::Running => {
                 let was_running =
@@ -1012,7 +1038,7 @@ impl Workflow {
                 task.status = TaskStatus::Canceled;
                 task.finished_at = Some(now);
                 task.exit_code = None;
-                task.error = Some(CANCELED_ERROR.to_string());
+                task.error = Some(tr(CANCELED_ERROR).to_string());
                 task.commit_only = false;
                 task.interrupted = false;
                 let changed = task.clone();
@@ -1020,18 +1046,18 @@ impl Workflow {
                 self.push_history(effects, &changed);
             }
             TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Canceled => {
-                effects.push(Effect::rejected("任务已经结束，无需取消"));
+                effects.push(Effect::rejected(tr("flow.task.notcancelable")));
             }
         }
     }
 
     fn on_delete_terminal(&mut self, task_id: TaskId, effects: &mut Vec<Effect>) {
         let Some(index) = self.task_index(&task_id) else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if !self.tasks[index].status.is_terminal() {
-            effects.push(Effect::rejected("只能删除已结束的任务"));
+            effects.push(Effect::rejected(tr("flow.task.deletefinishedonly")));
             return;
         }
         let task = self.tasks.remove(index);
@@ -1060,9 +1086,7 @@ impl Workflow {
             config.worktree_enabled,
             has_live_task(&self.tasks),
         ) {
-            effects.push(Effect::rejected(
-                "队列中还有未结束的任务，无法切换 Worktree",
-            ));
+            effects.push(Effect::rejected(tr("flow.task.worktreebusy")));
             return;
         }
         self.config = config.clone();
@@ -1086,11 +1110,11 @@ impl Workflow {
         effects: &mut Vec<Effect>,
     ) {
         let Some(index) = self.task_index(&task_id) else {
-            effects.push(Effect::rejected("任务不存在"));
+            effects.push(Effect::rejected(tr("flow.task.notfound")));
             return;
         };
         if self.tasks[index].status != TaskStatus::Preparing {
-            effects.push(Effect::rejected("任务不在准备状态"));
+            effects.push(Effect::rejected(tr("flow.task.notpreparing")));
             return;
         }
         let task = &mut self.tasks[index];
@@ -1178,7 +1202,7 @@ impl Workflow {
             task.status = TaskStatus::Canceled;
             task.finished_at = Some(now);
             task.exit_code = None;
-            task.error = Some(CANCELED_ERROR.to_string());
+            task.error = Some(tr(CANCELED_ERROR).to_string());
             task.commit_only = false;
             let changed = task.clone();
             self.push_persist(effects, &changed);
@@ -1196,8 +1220,8 @@ impl Workflow {
                 .error
                 .clone()
                 .unwrap_or_else(|| match outcome.exit_code {
-                    Some(code) => format!("Agent 进程退出码 {code}"),
-                    None => "Agent 进程异常结束".to_string(),
+                    Some(code) => tr_args("flow.task.exitcode", &[&code]),
+                    None => tr("flow.task.processfailed").to_string(),
                 });
             task.status = TaskStatus::Failed;
             task.finished_at = Some(now);
@@ -1224,7 +1248,7 @@ impl Workflow {
                 if dirty {
                     task.status = TaskStatus::Failed;
                     task.finished_at = Some(now);
-                    task.error = Some(COMMIT_DIRTY_ERROR.to_string());
+                    task.error = Some(tr(COMMIT_DIRTY_ERROR).to_string());
                 } else {
                     task.status = TaskStatus::AwaitingMerge;
                     task.finished_at = None;
@@ -1232,11 +1256,14 @@ impl Workflow {
                     task.commit_only = false;
                     let repo = task.spec.repo_path.clone();
                     let branch = task.branch().unwrap_or("").to_string();
+                    let source_kind = task.spec.source_kind;
                     let merge = task.merge.get_or_insert_with(TaskMerge::default);
                     merge.error = None;
-                    merge.instructions = Some(manual_merge_instructions(&repo, &branch));
+                    merge.instructions =
+                        Some(manual_merge_instructions(&repo, &branch, source_kind));
                     merge.started_at = None;
                     merge.finished_at = None;
+                    merge.commit = None;
                 }
             } else if dirty || committed {
                 let files = task
@@ -1268,7 +1295,7 @@ impl Workflow {
             // persisted and TAPD was not written back.
             task.status = TaskStatus::Failed;
             task.finished_at = Some(now);
-            task.error = Some(COMMIT_DIRTY_ERROR.to_string());
+            task.error = Some(tr(COMMIT_DIRTY_ERROR).to_string());
         } else if dirty && !committed {
             let files = task
                 .changes
@@ -1482,9 +1509,9 @@ impl Workflow {
 
 fn approval_summary(files: &[String]) -> String {
     if files.is_empty() {
-        "Agent 完成修改，等待审核".to_string()
+        tr("flow.review.approvalready").to_string()
     } else {
-        format!("Agent 完成修改，涉及 {} 个文件，等待审核", files.len())
+        tr_args("flow.review.approvalreadyfiles", &[&files.len()])
     }
 }
 

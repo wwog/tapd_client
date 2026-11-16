@@ -14,6 +14,7 @@ import {
 import { api, type AppInfo } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { PROJECT_URL } from "../lib/links";
 import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
@@ -66,14 +67,18 @@ export function SettingsPage(props: Props) {
 
   const paths: Array<[string, string]> = info
     ? [
-        ["数据目录", info.paths.dataDir],
-        ["日志目录", info.paths.logsDir],
-        ["抓包目录", info.paths.capturesDir],
-        ["导出目录", info.paths.exportsDir],
-        ["配置文件", info.paths.configFile],
+        [t("settings.paths.data"), info.paths.dataDir],
+        [t("settings.paths.logs"), info.paths.logsDir],
+        [t("settings.paths.captures"), info.paths.capturesDir],
+        [t("settings.paths.exports"), info.paths.exportsDir],
+        [t("settings.paths.config"), info.paths.configFile],
         ["runtime.json", info.paths.runtimeFile],
       ]
     : [];
+
+  const runtimeEndpoint = info?.runtimePort
+    ? `127.0.0.1:${info.runtimePort}`
+    : t("common.notStarted");
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
@@ -88,14 +93,12 @@ export function SettingsPage(props: Props) {
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
               <ShieldCheck size={15} className="text-slate-400" />
-              运行信息
+              {t("settings.runtime.title")}
             </h2>
             <p className="mt-1 truncate text-ui-caption text-slate-500">
               {info
-                ? `v${info.version} · MCP ${
-                    info.runtimePort ? `127.0.0.1:${info.runtimePort}` : "未启动"
-                  }`
-                : "正在读取运行信息…"}
+                ? `v${info.version} · MCP ${runtimeEndpoint}`
+                : t("settings.runtime.reading")}
             </p>
           </div>
           <Button
@@ -104,14 +107,14 @@ export function SettingsPage(props: Props) {
             onClick={() => setDetailsOpen(true)}
             icon={<Info size={13} />}
           >
-            查看详情
+            {t("settings.runtime.viewDetails")}
           </Button>
         </div>
       </section>
 
       {detailsOpen ? (
         <Dialog
-          title="运行信息"
+          title={t("settings.runtime.title")}
           icon={<ShieldCheck size={15} className="text-slate-400" />}
           onClose={() => setDetailsOpen(false)}
           action={
@@ -121,15 +124,15 @@ export function SettingsPage(props: Props) {
               loading={diagnosing}
               icon={<PackageOpen size={13} />}
             >
-              导出诊断包
+              {t("settings.runtime.export")}
             </Button>
           }
         >
           <dl className="mt-3 space-y-1 text-ui-caption">
-            <PlainRow label="版本" value={info?.version ?? "—"} onCopy={onCopy} />
+            <PlainRow label={t("common.version")} value={info?.version ?? "—"} onCopy={onCopy} />
             <PlainRow
-              label="MCP 本地端口"
-              value={info?.runtimePort ? `127.0.0.1:${info.runtimePort}` : "未启动"}
+              label={t("settings.runtime.mcpPort")}
+              value={runtimeEndpoint}
               onCopy={onCopy}
             />
           </dl>
@@ -165,14 +168,52 @@ export function SettingsPage(props: Props) {
       ) : null}
 
       <section className={cardClass}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+              <FileJson size={15} className="text-slate-400" />
+              {t("settings.captures.title")}
+            </h2>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setCapturesOpen(true)}
+            icon={<FileJson size={13} />}
+          >
+            {t("settings.captures.open")}
+          </Button>
+        </div>
+      </section>
+
+      <section className={cardClass}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+              <Sparkles size={15} className="text-slate-400" />
+              {t("settings.onboarding.title")}
+            </h2>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={onShowOnboarding}
+            icon={<Sparkles size={13} />}
+          >
+            {t("settings.onboarding.view")}
+          </Button>
+        </div>
+      </section>
+
+            <section className={cardClass}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2
               className="flex items-center gap-2 text-ui-base text-slate-900"
-              title="删除应用数据目录下的全部配置、离线缓存、日志、抓包与 Agent 任务记录，然后自动重启应用。导出目录不受影响。"
+              title={t("settings.localData.tooltip")}
             >
               <Trash2 size={15} className="text-slate-400" />
-              本地数据
+              {t("settings.localData.title")}
             </h2>
             {info ? (
               <p
@@ -191,7 +232,7 @@ export function SettingsPage(props: Props) {
                 disabled={clearing}
                 onClick={() => setConfirmClear(false)}
               >
-                取消
+                {t("common.cancel")}
               </Button>
               <Button
                 size="sm"
@@ -199,7 +240,7 @@ export function SettingsPage(props: Props) {
                 loading={clearing}
                 onClick={() => void clearLocalData()}
               >
-                确认清理
+                {t("settings.clear.confirm")}
               </Button>
             </div>
           ) : (
@@ -209,71 +250,32 @@ export function SettingsPage(props: Props) {
               icon={<Trash2 size={13} />}
               onClick={() => setConfirmClear(true)}
             >
-              清理缓存
+              {t("settings.clear.action")}
             </Button>
           )}
         </div>
         {confirmClear ? (
           <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-600">
-            操作不可撤销：引导进度、MCP 策略、Agent 任务与离线缓存都会被清除。TAPD Cookie
-            保存在 WebView 会话中，如需退出登录请使用账户页。
+            {t("settings.clear.warning")}
           </p>
         ) : null}
-      </section>
-
-      <section className={cardClass}>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
-              <FileJson size={15} className="text-slate-400" />
-              接口历史
-            </h2>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => setCapturesOpen(true)}
-            icon={<FileJson size={13} />}
-          >
-            打开历史
-          </Button>
-        </div>
-      </section>
-
-      <section className={cardClass}>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
-              <Sparkles size={15} className="text-slate-400" />
-              新手引导
-            </h2>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={onShowOnboarding}
-            icon={<Sparkles size={13} />}
-          >
-            查看引导
-          </Button>
-        </div>
       </section>
 
       <footer className="pb-2 pt-1 text-center">
         <button
           type="button"
           onClick={() => onOpenPath(PROJECT_URL)}
-          title="在浏览器打开项目仓库"
+          title={t("settings.repo.openTooltip")}
           className="inline-flex items-center gap-1.5 text-ui-xs text-sky-600 transition hover:text-sky-700 hover:underline underline-offset-2"
         >
           <Star size={12} />
-          喜欢的话，去 GitHub star 一下
+          {t("settings.repo.star")}
         </button>
       </footer>
 
       {capturesOpen ? (
         <Dialog
-          title="接口历史"
+          title={t("settings.captures.title")}
           icon={<FileJson size={15} className="text-slate-400" />}
           onClose={() => setCapturesOpen(false)}
           size="wide"

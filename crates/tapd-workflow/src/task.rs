@@ -71,11 +71,35 @@ impl TaskStatus {
     }
 }
 
+/// Where a task's work item comes from. Local work items live only in this
+/// client: they never call TAPD tools, export a bug package or write back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSource {
+    #[default]
+    TapdBug,
+    LocalWorkItem,
+}
+
+impl TaskSource {
+    /// Branch namespace for worktree tasks; also keeps local branches visibly
+    /// separate from TAPD ones.
+    pub fn branch_prefix(self) -> &'static str {
+        match self {
+            Self::TapdBug => "tapd/",
+            Self::LocalWorkItem => "local/",
+        }
+    }
+}
+
 /// Everything a host needs to start a fix run. Flattened into [`Task`] so the
 /// JSON stays compatible with the existing `AgentTask` record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TaskSpec {
+    /// Bug (TAPD) vs. local work item. Old JSON without it is a TAPD bug.
+    #[serde(default)]
+    pub source_kind: TaskSource,
     pub workspace_id: String,
     pub workspace_name: String,
     pub bug_id: String,
@@ -91,6 +115,10 @@ pub struct TaskSpec {
     /// Origin of the task (`manual` / `notification`), host-owned metadata.
     #[serde(default)]
     pub source: String,
+    /// Rules of the local project, appended to local prompts. Empty for TAPD
+    /// bugs and for old JSON without the field.
+    #[serde(default)]
+    pub project_rule: String,
     pub extra_prompt: String,
     pub attachments: Vec<String>,
 }
@@ -103,15 +131,42 @@ pub struct ChangeSet {
     pub dirty: bool,
     /// At least one commit was produced after the run baseline.
     pub committed: bool,
+    /// Lines added by this task's change. The host computes it with git on
+    /// demand; only the totals are a fact, per-file counts are never stored.
+    #[serde(default)]
+    pub additions: usize,
+    /// Lines deleted by this task's change, from the same git summary.
+    #[serde(default)]
+    pub deletions: usize,
+    /// The commit holding this task's product: the worktree branch tip, or the
+    /// main repository HEAD when the change was committed there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl ChangeSet {
+    /// Builds the change facts; [`Self::with_totals`] and
+    /// [`Self::with_commit`] fill in the git summary the host observed.
     pub fn new(files: Vec<String>, dirty: bool, committed: bool) -> Self {
         Self {
             files,
             dirty,
             committed,
+            additions: 0,
+            deletions: 0,
+            commit: None,
         }
+    }
+
+    pub fn with_totals(mut self, additions: usize, deletions: usize) -> Self {
+        self.additions = additions;
+        self.deletions = deletions;
+        self
+    }
+
+    pub fn with_commit(mut self, commit: Option<String>) -> Self {
+        self.commit = commit;
+        self
     }
 
     pub fn has_changes(&self) -> bool {
@@ -159,6 +214,10 @@ pub struct TaskMerge {
     pub started_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<Timestamp>,
+    /// Main-repository HEAD after the branch was merged. Only set once the
+    /// host verified the merge, so history shows the landed commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

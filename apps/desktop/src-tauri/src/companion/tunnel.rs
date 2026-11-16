@@ -18,6 +18,7 @@ use std::{
 };
 
 use serde::Serialize;
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter};
 
 use crate::{shell_path, state::SharedState};
@@ -151,10 +152,25 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
         let runtime = state.companion.lock().expect("companion lock");
         (runtime.port, runtime.cloudflared.clone())
     };
-    let port = port.ok_or_else(|| "伴侣服务未运行".to_string())?;
+    let port = port.ok_or_else(|| tr("companion.notrunning").to_string())?;
     let cloudflared = cached.unwrap_or_else(detect);
 
-    {
+    if !cloudflared.installed {
+        let snapshot = failed(
+            state,
+            app,
+            tr("companion.cloudflared.install"),
+        );
+        return Err(snapshot
+            .error
+            .clone()
+            .unwrap_or_else(|| tr("companion.cloudflared.missing").to_string()));
+    }
+
+    // Reserve the start under the lock: spawning outside it means two callers
+    // (boot effect + recheck) could both spawn, and the second would overwrite
+    // the first child without killing it.
+    let generation = {
         let mut runtime = state.companion.lock().expect("companion lock");
         runtime.cloudflared = Some(cloudflared.clone());
         if matches!(
@@ -163,26 +179,23 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
         ) {
             return Ok(runtime.tunnel.snapshot.clone());
         }
-    }
-
-    if !cloudflared.installed {
-        let snapshot = failed(
-            state,
-            app,
-            "未检测到 cloudflared，请先安装后再建立隧道",
-        );
-        return Err(snapshot
-            .error
-            .clone()
-            .unwrap_or_else(|| "未检测到 cloudflared".to_string()));
-    }
+        let generation = runtime.tunnel.generation.wrapping_add(1);
+        runtime.tunnel.generation = generation;
+        runtime.tunnel.snapshot = TunnelSnapshot {
+            state: TunnelState::Starting,
+            url: None,
+            error: None,
+            started_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+        generation
+    };
 
     let binary = cloudflared
         .path
         .as_deref()
-        .ok_or_else(|| "cloudflared 路径无效".to_string())?;
+        .ok_or_else(|| tr("companion.cloudflared.path").to_string())?;
     let local_url = format!("http://127.0.0.1:{port}");
-    let mut child = Command::new(binary)
+    let spawned = Command::new(binary)
         .arg("tunnel")
         .arg("--url")
         .arg(&local_url)
@@ -193,26 +206,45 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("无法启动 cloudflared：{error}"))?;
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            let message = tr_args("companion.cloudflared.start", &[&error]);
+            let snapshot = failed(state, app, &message);
+            return Err(snapshot.error.unwrap_or(message));
+        }
+    };
 
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法读取 cloudflared 输出".to_string())?;
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let message = tr("companion.cloudflared.output").to_string();
+            let _ = failed(state, app, &message);
+            return Err(message);
+        }
+    };
 
-    let (generation, snapshot) = {
+    let snapshot = {
         let mut runtime = state.companion.lock().expect("companion lock");
-        let generation = runtime.tunnel.generation.wrapping_add(1);
-        runtime.tunnel.generation = generation;
+        if runtime.tunnel.generation != generation {
+            // A stop or a newer start superseded us while the process was
+            // starting: never install (or leak) an untracked tunnel.
+            drop(runtime);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(state
+                .companion
+                .lock()
+                .expect("companion lock")
+                .tunnel
+                .snapshot
+                .clone());
+        }
         runtime.tunnel.child = Some(child);
-        runtime.tunnel.snapshot = TunnelSnapshot {
-            state: TunnelState::Starting,
-            url: None,
-            error: None,
-            started_at: Some(chrono::Utc::now().to_rfc3339()),
-        };
-        (generation, runtime.tunnel.snapshot.clone())
+        runtime.tunnel.snapshot.clone()
     };
     emit(app, &snapshot);
 
@@ -301,7 +333,7 @@ fn spawn_reader(
                 // A quick tunnel that Cloudflare rejects (429, no network)
                 // prints the reason; surfacing it beats a generic message.
                 error: Some(
-                    last_error.unwrap_or_else(|| "隧道进程已退出，请重新建立".to_string()),
+                    last_error.unwrap_or_else(|| tr("companion.tunnel.exited").to_string()),
                 ),
                 started_at: runtime.tunnel.snapshot.started_at.clone(),
             };
@@ -329,7 +361,7 @@ fn spawn_watchdog(app: AppHandle, state: SharedState, generation: u64) {
         runtime.tunnel.snapshot = TunnelSnapshot {
             state: TunnelState::Failed,
             url: None,
-            error: Some("建立外网隧道超时（30 秒）".to_string()),
+            error: Some(tr("companion.tunnel.timeout").to_string()),
             started_at: runtime.tunnel.snapshot.started_at.clone(),
         };
         let snapshot = runtime.tunnel.snapshot.clone();

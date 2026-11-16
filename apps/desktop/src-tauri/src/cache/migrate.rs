@@ -18,45 +18,56 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
         return Ok(());
     }
 
-    if version == 5 {
-        // Only the shipped v5 shape needs the in-place upgrade; v6 is the
-        // current shape, so it only gains the new tables from create_schema.
-        upgrade_v5(conn)?;
-    } else if version < 5 {
-        // Fresh install or a pre-1.0 development database: this data is
-        // disposable (snapshots / task history), so rebuild instead of
-        // carrying five incremental migrations for shapes nobody ships.
-        conn.execute_batch(
-            r#"
-            BEGIN;
-            DROP TABLE IF EXISTS snapshots;
-            DROP TABLE IF EXISTS bugs;
-            DROP TABLE IF EXISTS agent_tasks;
-            DROP TABLE IF EXISTS agent_queue_state;
-            DROP TABLE IF EXISTS mcp_audit;
-            DROP TABLE IF EXISTS notification_settings;
-            DROP TABLE IF EXISTS notification_items;
-            DROP TABLE IF EXISTS notification_seen;
-            DROP TABLE IF EXISTS notification_ignored;
-            DROP TABLE IF EXISTS notification_cursors;
-            DROP TABLE IF EXISTS notification_baseline;
-            DROP TABLE IF EXISTS chat_messages_fts;
-            DROP TABLE IF EXISTS chat_messages;
-            DROP TABLE IF EXISTS chat_sessions;
-            COMMIT;
-            "#,
-        )
+    // The whole upgrade is one transaction: a crash leaves either the old or
+    // the new shape, never a half-dropped database with the old version stamp.
+    conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|error| error.to_string())?;
-    }
+    let migrated = (|| -> Result<(), String> {
+        if version >= 5 {
+            upgrade_v5(conn)?;
+        } else {
+            // Fresh install or a pre-1.0 development database: this data is
+            // disposable (snapshots / task history), so rebuild instead of
+            // carrying five incremental migrations for shapes nobody ships.
+            conn.execute_batch(
+                r#"
+                DROP TABLE IF EXISTS snapshots;
+                DROP TABLE IF EXISTS bugs;
+                DROP TABLE IF EXISTS agent_tasks;
+                DROP TABLE IF EXISTS agent_queue_state;
+                DROP TABLE IF EXISTS mcp_audit;
+                DROP TABLE IF EXISTS notification_settings;
+                DROP TABLE IF EXISTS notification_items;
+                DROP TABLE IF EXISTS notification_seen;
+                DROP TABLE IF EXISTS notification_ignored;
+                DROP TABLE IF EXISTS notification_cursors;
+                DROP TABLE IF EXISTS notification_baseline;
+                DROP TABLE IF EXISTS chat_messages_fts;
+                DROP TABLE IF EXISTS chat_messages;
+                DROP TABLE IF EXISTS chat_sessions;
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        }
 
-    create_schema(conn)?;
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(|error| error.to_string())?;
+        create_schema(conn)?;
+        if version >= 5 {
+            restore_v5_agent_tasks(conn)?;
+        }
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
 
-    if version == 5 {
-        restore_v5_agent_tasks(conn)?;
+    match migrated {
+        Ok(()) => conn
+            .execute_batch("COMMIT")
+            .map_err(|error| error.to_string()),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
     }
-    Ok(())
 }
 
 fn create_schema(conn: &Connection) -> Result<(), String> {
@@ -221,30 +232,140 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
 
 /// v5 (the shipped 1.0 schema) → v6: keep user-visible rows, collapse the
 /// task table to its JSON payload, and drop tables/columns no code reads.
+///
+/// The old table is renamed (not copied into a TEMP table), so the preserved
+/// rows survive a crash and the restore step runs in the same transaction.
 fn upgrade_v5(conn: &Connection) -> Result<(), String> {
+    if table_exists(conn, "agent_tasks")? {
+        conn.execute_batch("DROP TABLE IF EXISTS legacy_agent_tasks")
+            .map_err(|error| error.to_string())?;
+        conn.execute_batch("ALTER TABLE agent_tasks RENAME TO legacy_agent_tasks")
+            .map_err(|error| error.to_string())?;
+    }
     conn.execute_batch(
         r#"
-        BEGIN;
-        CREATE TEMP TABLE legacy_agent_tasks AS
-            SELECT id, payload, updated_at FROM agent_tasks WHERE payload <> '';
-        DROP TABLE IF EXISTS agent_tasks;
         DROP TABLE IF EXISTS agent_queue_state;
         DROP TABLE IF EXISTS mcp_audit;
         DROP TABLE IF EXISTS notification_baseline;
-        ALTER TABLE notification_settings DROP COLUMN settings_version;
-        COMMIT;
+        "#,
+    )
+    .map_err(|error| error.to_string())?;
+    // A partially migrated file may already lack the column.
+    if column_exists(conn, "notification_settings", "settings_version")? {
+        conn.execute_batch("ALTER TABLE notification_settings DROP COLUMN settings_version")
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn restore_v5_agent_tasks(conn: &Connection) -> Result<(), String> {
+    if !table_exists(conn, "legacy_agent_tasks")? {
+        // A previous attempt already consumed the old table.
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        INSERT OR REPLACE INTO agent_tasks (id, payload, updated_at)
+            SELECT id, payload, updated_at FROM legacy_agent_tasks WHERE payload <> '';
+        DROP TABLE legacy_agent_tasks;
         "#,
     )
     .map_err(|error| error.to_string())
 }
 
-fn restore_v5_agent_tasks(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch(
-        r#"
-        INSERT OR REPLACE INTO agent_tasks (id, payload, updated_at)
-            SELECT id, payload, updated_at FROM legacy_agent_tasks;
-        DROP TABLE legacy_agent_tasks;
-        "#,
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |_| Ok(()),
     )
+    .optional()
+    .map(|row| row.is_some())
     .map_err(|error| error.to_string())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| error.to_string())?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?;
+    for name in names {
+        if name.map_err(|error| error.to_string())? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v5_connection() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE agent_tasks (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO agent_tasks VALUES ('t1', '{"id":"t1"}', 1);
+            CREATE TABLE notification_settings (
+                id INTEGER PRIMARY KEY,
+                settings_version INTEGER
+            );
+            CREATE TABLE snapshots (
+                kind TEXT NOT NULL,
+                key TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL,
+                PRIMARY KEY (kind, key)
+            );
+            PRAGMA user_version = 5;
+            "#,
+        )
+        .expect("v5 schema");
+        conn
+    }
+
+    #[test]
+    fn v5_upgrade_keeps_task_payloads_and_stamps_the_version() {
+        let conn = v5_connection();
+        run(&conn).expect("migrate");
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let payload: String = conn
+            .query_row("SELECT payload FROM agent_tasks WHERE id = 't1'", [], |row| {
+                row.get(0)
+            })
+            .expect("task payload survives");
+        assert_eq!(payload, r#"{"id":"t1"}"#);
+        assert!(!column_exists(&conn, "notification_settings", "settings_version").expect("columns"));
+    }
+
+    #[test]
+    fn v5_upgrade_survives_a_database_left_without_its_task_table() {
+        // The old TEMP-table migration could drop `agent_tasks` and exit
+        // before stamping the version. The next start must still migrate.
+        let conn = v5_connection();
+        conn.execute_batch("DROP TABLE agent_tasks").expect("simulate partial");
+
+        run(&conn).expect("recoverable migration");
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_tasks", [], |row| row.get(0))
+            .expect("agent_tasks exists");
+        assert_eq!(count, 0);
+    }
 }

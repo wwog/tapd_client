@@ -27,6 +27,15 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
+    /// The local-projects database.
+    ///
+    /// It lives beside `cache.sqlite3` but is deliberately a separate file:
+    /// local projects and their work items belong to this machine, not to a
+    /// TAPD session, so TAPD logout and "清理缓存" must not delete them.
+    pub fn local_db_file(&self) -> PathBuf {
+        self.data_dir.join("local.sqlite3")
+    }
+
     pub fn resolve() -> std::io::Result<Self> {
         let home = home_dir()?;
         #[cfg(debug_assertions)]
@@ -75,6 +84,11 @@ impl AppPaths {
             &self.worktrees_dir,
         ] {
             std::fs::create_dir_all(dir)?;
+        }
+        // The local database lives directly in `data_dir`; ensure its parent
+        // explicitly so a caller that only knows the file path still works.
+        if let Some(parent) = self.local_db_file().parent() {
+            std::fs::create_dir_all(parent)?;
         }
         Ok(())
     }

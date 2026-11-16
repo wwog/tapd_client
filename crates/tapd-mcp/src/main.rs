@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tapd_core::{mcp, paths::AppPaths, runtime::RuntimeInfo};
+use tapd_i18n::tr;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -33,6 +34,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    // The tool manifest is built from the catalog, so the locale must be set
+    // before `tool_definitions()`. Read-only: the sidecar must never rewrite
+    // (or quarantine) the desktop's config file.
+    apply_locale(&paths.config_file);
 
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(240))
@@ -246,7 +252,7 @@ async fn ensure_app(paths: &AppPaths, client: &reqwest::Client) -> Result<Runtim
         }
     }
 
-    Err("TAPD Client 未运行。请先打开桌面客户端，或确认 MCP 配置指向正确的安装位置。".to_string())
+    Err(tr("mcp.cli.appnotrunning").to_string())
 }
 
 fn read_runtime(paths: &AppPaths) -> Option<RuntimeInfo> {
@@ -371,8 +377,32 @@ async fn send(stdout: &mut Stdout, value: Value) {
     let _ = stdout.flush().await;
 }
 
+/// Applies the desktop's language choice so `tools/list` and tool errors match
+/// the UI. An explicit preference wins; `system`/missing follows the
+/// environment. Nothing is written back.
+fn apply_locale(config_file: &std::path::Path) {
+    let prefs = std::fs::read_to_string(config_file)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| value.get("uiPrefs").cloned())
+        .unwrap_or(Value::Null);
+    let explicit = prefs
+        .get("appearance")
+        .and_then(|appearance| appearance.get("locale"))
+        .and_then(|locale| locale.as_str())
+        .and_then(tapd_i18n::parse_locale);
+    let locale = explicit.unwrap_or_else(|| {
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .filter_map(|key| std::env::var(key).ok())
+            .find_map(|tag| tapd_i18n::parse_locale(&tag))
+            .unwrap_or(tapd_i18n::Locale::Zh)
+    });
+    tapd_i18n::set_locale(locale);
+}
+
 fn tool_definitions() -> Result<Value, String> {
-    let tools = mcp::TOOLS
+    let tools = mcp::tools()
         .iter()
         .map(|spec| {
             let schema: Value = serde_json::from_str(spec.schema)
@@ -434,8 +464,8 @@ mod manifest_tests {
         let definitions = tool_definitions().expect("manifest schemas must parse");
         let tools = definitions.as_array().expect("tools/list returns an array");
 
-        assert_eq!(tools.len(), mcp::TOOLS.len());
-        for (definition, spec) in tools.iter().zip(mcp::TOOLS) {
+        assert_eq!(tools.len(), mcp::tools().len());
+        for (definition, spec) in tools.iter().zip(mcp::tools()) {
             assert_eq!(definition["name"], spec.name);
             assert_eq!(definition["description"], spec.description);
             assert_eq!(definition["inputSchema"]["type"], "object");

@@ -22,10 +22,14 @@ pub async fn dispatch(
         crate::agent::chat_command(app, state, name, payload).await
     } else if name.starts_with("coworker_") {
         crate::coworker::command(app, state, name, payload).await
+    } else if name.starts_with("terminal_") {
+        crate::terminal::command(app, name, payload).await
     } else if name.starts_with("cache_") {
         crate::cache::command(state, name, payload).await
     } else if name.starts_with("mcp_") {
         crate::mcp_import::command(state, name, payload).await
+    } else if name.starts_with("local_") {
+        crate::local::command::dispatch(app, state, name, payload).await
     } else {
         Err(format!("unknown feature command: {name}"))
     }

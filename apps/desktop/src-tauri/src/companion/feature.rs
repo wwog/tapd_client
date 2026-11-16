@@ -4,8 +4,12 @@
 //! (`feature_router::dispatch`, names like `agent_*` / `notification_*` /
 //! `coworker_*`). Mobile v2 reuses that surface for its new capabilities —
 //! Agent task view/review/history/enqueue/cancel/retry, Agent config, check-in
-//! notification settings and coworker packages — through the narrow allowlist
-//! below, so the LAN endpoint can never become a generic command relay.
+//! notification settings, coworker packages, the terminal session list
+//! (attach tickets come from `terminal_ticket`; input/resize travel over
+//! `companion::terminal`'s WebSocket instead) and local projects / work items
+//! (directory browsing there is limited to home and existing project folders) —
+//! through the narrow allowlist below, so the LAN endpoint can never become a
+//! generic command relay.
 //!
 //! Deliberately no `require_logged_in` gate: Agent config/history and coworker
 //! packages are meaningful without a TAPD session, and the whitelisted
@@ -28,6 +32,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tapd_i18n::tr;
 use tauri::AppHandle;
 
 use crate::{feature_router, state::SharedState};
@@ -48,7 +53,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     // Agent 审核 / 合并
     "agent_review_approve",
     "agent_review_stop",
-    "agent_review_diff",
+    "agent_task_changes",
+    "agent_task_diff",
     "agent_merge_start",
     "agent_merge_verify",
     // Agent 任务控制
@@ -65,6 +71,23 @@ const ALLOWED_FEATURES: &[&str] = &[
     // 同事包
     "coworker_list",
     "coworker_select",
+    // 终端会话（输入与尺寸只走 WebSocket，见 `companion::terminal`）
+    "terminal_list",
+    "terminal_create",
+    "terminal_close",
+    // WebSocket 接入的一次性票据（60s、单次、绑定会话）
+    "terminal_ticket",
+    // 本地项目与事项（不依赖 TAPD 登录；目录浏览受主目录 / 项目仓库限制）
+    "local_projects_list",
+    "local_project_create",
+    "local_project_update",
+    "local_project_delete",
+    "local_items_list",
+    "local_item_create",
+    "local_item_update",
+    "local_item_delete",
+    "local_item_enqueue",
+    "local_browse_dirs",
 ];
 
 /// Feature-proxy budget: at most 60 requests per IP per minute.
@@ -105,7 +128,7 @@ pub(super) async fn api_feature(
         return err_data(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "请求过于频繁，请稍后再试",
+            tr("companion.rate.limited"),
         );
     }
     feature_response(&ctx.app, &ctx.state, &request.name, request.payload).await
@@ -129,7 +152,11 @@ async fn feature_response(
 /// names pass through (`None`).
 fn whitelist_rejection(name: &str) -> Option<Response> {
     (!ALLOWED_FEATURES.contains(&name)).then(|| {
-        err_data(StatusCode::FORBIDDEN, "forbidden", "该功能未对移动端开放")
+        err_data(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            tr("companion.forbidden"),
+        )
     })
 }
 
@@ -162,7 +189,8 @@ mod tests {
         "agent_enqueue_bug",
         "agent_review_approve",
         "agent_review_stop",
-        "agent_review_diff",
+        "agent_task_changes",
+        "agent_task_diff",
         "agent_merge_start",
         "agent_merge_verify",
         "agent_task_cancel",
@@ -175,6 +203,20 @@ mod tests {
         "notification_settings_set",
         "coworker_list",
         "coworker_select",
+        "terminal_list",
+        "terminal_create",
+        "terminal_close",
+        "terminal_ticket",
+        "local_projects_list",
+        "local_project_create",
+        "local_project_update",
+        "local_project_delete",
+        "local_items_list",
+        "local_item_create",
+        "local_item_update",
+        "local_item_delete",
+        "local_item_enqueue",
+        "local_browse_dirs",
     ];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {

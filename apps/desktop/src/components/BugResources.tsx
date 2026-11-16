@@ -23,6 +23,7 @@ import {
   type OpenTargetSet,
 } from "../lib/api";
 import { formatBytes } from "../lib/format";
+import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 import { MediaPreview, type PreviewItem } from "./MediaPreview";
 import { BugSectionTitle } from "./BugSectionTitle";
@@ -143,12 +144,12 @@ export function BugResources(props: Props) {
       <section>
         <BugSectionTitle
           icon={<Paperclip size={14} />}
-          title={`资源（${resourceCount}）`}
+          title={t("bugs.resourcesCount", { count: resourceCount })}
         />
         <div className="mt-2 space-y-2">
           {resourceCount === 0 ? (
             <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-              没有附件或内嵌图片/视频
+              {t("bugs.noResources")}
             </div>
           ) : (
             <>
@@ -166,7 +167,9 @@ export function BugResources(props: Props) {
               {embeddedMedia.length > 0 ? (
                 <div className="space-y-1.5 rounded-xl border border-slate-100 bg-slate-50/60 p-2">
                   <p className="px-1 text-ui-xs text-slate-400">
-                    描述 / 评论内嵌（{embeddedMedia.length}）
+                    {t("bugs.embeddedCount", {
+                      count: embeddedMedia.length,
+                    })}
                   </p>
                   {embeddedMedia.map((media, index) => (
                     <EmbeddedMediaRow
@@ -211,7 +214,9 @@ function Thumbnail(props: {
 }) {
   const { url, icon: Icon, iconSize = 16, onClick, title } = props;
   const [broken, setBroken] = useState(false);
-  const source = mediaSrc(url);
+  // Files (logs, archives) are not images: fetching them here would pull the
+  // whole attachment through the proxy just to fail as an `<img>`.
+  const source = url ? mediaSrc(url) : undefined;
   const clickable = Boolean(onClick);
 
   return (
@@ -245,8 +250,8 @@ function PreviewButton(props: { onClick: () => void }) {
     <button
       type="button"
       onClick={props.onClick}
-      title="预览"
-      aria-label="预览"
+      title={t("bugs.preview")}
+      aria-label={t("bugs.preview")}
       className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-surface text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
     >
       <Eye size={13} />
@@ -283,15 +288,19 @@ function OpenButton(props: {
         <button
           type="button"
           onClick={onOpen}
-          title={selected ? `用${selected.label}打开` : "打开"}
+          title={
+            selected
+              ? t("bugs.openWith", { target: selected.label })
+              : t("common.open")
+          }
           className="inline-flex items-center gap-1.5 px-2 py-1 transition hover:bg-slate-50"
         >
-          <TargetIcon target={selected} fallback="打开" />
-          打开
+          <TargetIcon target={selected} fallback={t("common.open")} />
+          {t("common.open")}
         </button>
         <button
           type="button"
-          aria-label="选择默认打开方式"
+          aria-label={t("bugs.chooseDefaultApp")}
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((current) => !current)}
           className="border-l border-border px-1 transition hover:bg-slate-50"
@@ -304,7 +313,7 @@ function OpenButton(props: {
         <>
           <button
             type="button"
-            aria-label="关闭菜单"
+            aria-label={t("bugs.closeMenu")}
             onClick={() => setMenuOpen(false)}
             className="fixed inset-0 z-20 cursor-default"
           />
@@ -312,7 +321,9 @@ function OpenButton(props: {
             ref={menuRef}
             className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-lg border border-border bg-surface py-1 "
           >
-            <p className="px-3 py-1 text-ui-xs text-slate-400">默认打开方式</p>
+            <p className="px-3 py-1 text-ui-xs text-slate-400">
+              {t("bugs.defaultApp")}
+            </p>
             {(targets?.targets ?? []).map((target) => {
               const active = target.id === targets?.selected;
               return (
@@ -328,14 +339,16 @@ function OpenButton(props: {
                     active ? "text-slate-800" : "text-slate-600",
                   )}
                 >
-                  <TargetIcon target={target} fallback="应用" />
+                  <TargetIcon target={target} fallback={t("bugs.app")} />
                   <span className="truncate">{target.label}</span>
                   {active ? <Check size={12} className="ml-auto text-sky-500" /> : null}
                 </button>
               );
             })}
             {targets && targets.targets.length === 0 ? (
-              <p className="px-3 py-2 text-ui-sm text-slate-400">没有可用的应用</p>
+              <p className="px-3 py-2 text-ui-sm text-slate-400">
+                {t("bugs.noApps")}
+              </p>
             ) : null}
           </div>
         </>
@@ -388,10 +401,10 @@ function AttachmentRow(props: {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
       <Thumbnail
-        url={attachment.downloadUrl}
+        url={previewable ? attachment.downloadUrl : ""}
         icon={Icon}
         iconSize={17}
-        title={previewable ? "预览" : undefined}
+        title={previewable ? t("bugs.preview") : undefined}
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
@@ -426,9 +439,18 @@ function EmbeddedMediaRow(props: {
   onSelectTarget: (kind: string, id: string) => void;
 }) {
   const { media, previewItems, onPreview, onOpen, targetSets, onSelectTarget } = props;
-  const Icon = media.kind === "image" ? ImageIcon : media.kind === "video" ? Video : Paperclip;
-  const kindLabel = media.kind === "image" ? "图片" : media.kind === "video" ? "视频" : "文件";
   const previewable = media.kind === "image" || media.kind === "video";
+  const Icon = previewable
+    ? media.kind === "image"
+      ? ImageIcon
+      : Video
+    : iconForFilename(media.filenameHint);
+  const kindLabel =
+    media.kind === "image"
+      ? t("bugs.image")
+      : media.kind === "video"
+        ? t("bugs.video")
+        : t("bugs.file");
   const previewIndex = previewable
     ? previewItems.findIndex((item) => item.url === media.url)
     : -1;
@@ -436,17 +458,20 @@ function EmbeddedMediaRow(props: {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
       <Thumbnail
-        url={media.url}
+        url={previewable ? media.url : ""}
         icon={Icon}
         iconSize={15}
-        title={previewable ? "预览" : undefined}
+        title={previewable ? t("bugs.preview") : undefined}
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption text-slate-700" title={media.url}>
-          {media.filenameHint || "内嵌资源"}
+        <div className="truncate text-ui-caption text-slate-700" title={media.filenameHint || media.url}>
+          {media.filenameHint || t("bugs.embeddedResource")}
         </div>
-        <div className="mt-0.5 text-ui-xs text-slate-400">{kindLabel} · 描述/评论内嵌</div>
+        <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
+          {media.size > 0 ? <span>{formatBytes(media.size)}</span> : null}
+          <span className="truncate">{t("bugs.embeddedKind", { kind: kindLabel })}</span>
+        </div>
       </div>
       {previewable && previewIndex >= 0 ? (
         <PreviewButton onClick={() => onPreview(previewIndex)} />
@@ -494,5 +519,13 @@ function iconForAttachment(attachment: Attachment) {
   if (type.includes("compress") || type.includes("zip")) return FileArchive;
   if (type.includes("text") || type.includes("log") || type.includes("ips")) return FileText;
   if (type.includes("user")) return UserRound;
+  return Paperclip;
+}
+
+/** Icon for a resource that only carries its filename (inline file cards). */
+function iconForFilename(filename: string) {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["zip", "gz", "tgz", "tar", "7z", "rar"].includes(extension)) return FileArchive;
+  if (["xlog", "log", "txt", "ips", "json", "crash"].includes(extension)) return FileText;
   return Paperclip;
 }

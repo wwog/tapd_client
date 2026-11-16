@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { createExternalStore } from "./store";
 import { formatDateTime } from "./format";
+import { t, type MessageKey } from "./i18n";
 
 export type UpdatePhase =
   | "idle"
@@ -47,14 +48,14 @@ export const updateOwnsScreen = (phase: UpdatePhase | undefined): boolean =>
   phase === "ready" ||
   phase === "error";
 
-export const UPDATE_PHASE_LABELS: Record<UpdatePhase, string> = {
-  idle: "已是最新版本",
-  checking: "正在检查更新",
-  available: "有可用更新",
-  downloading: "正在下载更新",
-  installing: "正在解包安装",
-  ready: "更新完成，正在重启",
-  error: "更新失败",
+export const UPDATE_PHASE_LABELS: Record<UpdatePhase, MessageKey> = {
+  idle: "settings.update.phaseIdle",
+  checking: "settings.update.phaseChecking",
+  available: "settings.update.phaseAvailable",
+  downloading: "settings.update.phaseDownloading",
+  installing: "settings.update.phaseInstalling",
+  ready: "settings.update.phaseReady",
+  error: "settings.update.phaseError",
 };
 
 const store = createExternalStore<UpdateState | null>(null);
@@ -110,4 +111,4 @@ export const updateApi = {
 
 /** "2026-11-10T16:00:00+08:00" -> "2026-11-10 16:00". */
 export const formatCheckTime = (iso: string | null): string =>
-  iso ? formatDateTime(iso) : "尚未检查";
+  iso ? formatDateTime(iso) : t("settings.update.notChecked");

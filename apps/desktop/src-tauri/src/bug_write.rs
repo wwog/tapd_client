@@ -10,6 +10,7 @@ use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Manager};
 
 use crate::{commands::auth::session_request_json, session};
@@ -112,7 +113,7 @@ pub(crate) async fn add_comment(
 
     let root = session_request_json(app, "POST", COMMENT_URL, Some(body), Duration::from_secs(45))
         .await?;
-    ensure_api_ok(&root, "添加评论")?;
+    ensure_api_ok(&root, tr("bug.comment.add"))?;
 
     tracing::info!(bug_id, workspace_id, "added bug comment");
     Ok(root.get("data").cloned().unwrap_or(Value::Null))
@@ -149,7 +150,7 @@ pub(crate) async fn update_field(
         Duration::from_secs(45),
     )
     .await?;
-    ensure_api_ok(&root, "修改字段")?;
+    ensure_api_ok(&root, tr("bug.field.update"))?;
 
     tracing::info!(bug_id, workspace_id, field, "updated bug field");
     Ok(())
@@ -174,7 +175,7 @@ pub(crate) async fn load_transition_info(
         "{TRANSITION_INFO_URL}?workspace_id={workspace_id}&bug_id={bug_id}&program_id=&has_rule_fields=undefined&check_rule_fields=undefined"
     );
     let root = session_request_json(app, "GET", &url, None, Duration::from_secs(45)).await?;
-    ensure_api_ok(&root, "读取状态流转信息")?;
+    ensure_api_ok(&root, tr("bug.transition.load"))?;
 
     let data = root
         .pointer("/data/get_workflow_by_bug/data")
@@ -270,29 +271,27 @@ pub(crate) fn resolve_status_key(input: &str, info: &TransitionInfo) -> Result<S
         .filter(|character| !character.is_whitespace() && *character != '/' && *character != '\\')
         .collect();
     let key = match normalized.as_str() {
-        "新" | "新建" => "new",
-        "待处理" => "open",
-        "接受" | "接受处理" => "in_progress",
-        "处理中" => "progressing",
-        "已解决" | "已修复" => "resolved",
-        "已验证" => "verified",
-        "已关闭" => "closed",
-        "已拒绝" => "rejected",
-        "重新打开" => "reopened",
+        "新" | "新建" => "new", // i18n-exempt: parse token
+        "待处理" => "open", // i18n-exempt: parse token
+        "接受" | "接受处理" => "in_progress", // i18n-exempt: parse token
+        "处理中" => "progressing", // i18n-exempt: parse token
+        "已解决" | "已修复" => "resolved", // i18n-exempt: parse token
+        "已验证" => "verified", // i18n-exempt: parse token
+        "已关闭" => "closed", // i18n-exempt: parse token
+        "已拒绝" => "rejected", // i18n-exempt: parse token
+        "重新打开" => "reopened", // i18n-exempt: parse token
         _ => {
             let known: Vec<String> = info
                 .status_alias
                 .iter()
                 .map(|(key, label)| format!("{label} ({key})"))
                 .collect();
-            return Err(format!(
-                "未知状态「{input}」；可用状态：{}",
-                if known.is_empty() {
-                    "无".to_string()
-                } else {
-                    known.join("、")
-                }
-            ));
+            let known = if known.is_empty() {
+                tr("bug.none").to_string()
+            } else {
+                known.join(tr("bug.separator"))
+            };
+            return Err(tr_args("bug.status.unknown", &[&input, &known]));
         }
     };
 
@@ -415,21 +414,23 @@ pub(crate) async fn perform_transition(
                     .iter()
                     .map(|(key, label)| format!("{label} ({key})"))
                     .collect();
-                return Err(format!(
-                    "不能从「{}」流转到「{}」；当前允许的下一步：{}",
-                    info.status_alias
-                        .get(&current_status)
-                        .cloned()
-                        .unwrap_or_else(|| current_status.clone()),
-                    info.status_alias
-                        .get(&target)
-                        .cloned()
-                        .unwrap_or_else(|| target.clone()),
-                    if allowed_labels.is_empty() {
-                        "无".to_string()
-                    } else {
-                        allowed_labels.join("、")
-                    }
+                let allowed_labels = if allowed_labels.is_empty() {
+                    tr("bug.none").to_string()
+                } else {
+                    allowed_labels.join(tr("bug.separator"))
+                };
+                let from = info
+                    .status_alias
+                    .get(&current_status)
+                    .cloned()
+                    .unwrap_or_else(|| current_status.clone());
+                let to = info
+                    .status_alias
+                    .get(&target)
+                    .cloned()
+                    .unwrap_or_else(|| target.clone());
+                return Err(tr_args("bug.transition.blocked",
+                    &[&from, &to, &allowed_labels],
                 ));
             }
 
@@ -480,7 +481,7 @@ async fn load_transition_fields(
         encode_query(bug_id),
     );
     let root = session_request_json(app, "GET", &url, None, Duration::from_secs(45)).await?;
-    ensure_api_ok(&root, "读取流转字段")?;
+    ensure_api_ok(&root, tr("bug.transition.fields"))?;
 
     Ok(parse_transition_fields_response(&root))
 }
@@ -505,15 +506,17 @@ pub(crate) async fn load_transition_form(
             .iter()
             .map(|(key, label)| format!("{label} ({key})"))
             .collect();
-        return Err(format!(
-            "不能从「{}」流转到「{}」；当前允许的下一步：{}",
-            info_label(&info.current_status, &info),
-            info_label(&target, &info),
-            if allowed_labels.is_empty() {
-                "无".to_string()
-            } else {
-                allowed_labels.join("、")
-            }
+        let allowed_labels = if allowed_labels.is_empty() {
+            tr("bug.none").to_string()
+        } else {
+            allowed_labels.join(tr("bug.separator"))
+        };
+        return Err(tr_args("bug.transition.blocked",
+            &[
+                &info_label(&info.current_status, &info),
+                &info_label(&target, &info),
+                &allowed_labels,
+            ],
         ));
     };
     let label = label.clone();
@@ -752,7 +755,9 @@ fn transition_field_values(fields: &[TransitionField]) -> Result<Map<String, Val
     if missing.is_empty() {
         Ok(values)
     } else {
-        Err(format!("状态流转需要填写：{}", missing.join("、")))
+        Err(tr_args("bug.transition.required",
+            &[&missing.join(tr("bug.separator"))],
+        ))
     }
 }
 
@@ -821,7 +826,9 @@ async fn transition_once(
     let mut fields =
         load_transition_fields(app, workspace_id, bug_id, current_status, next_status)
             .await
-            .map_err(|error| format!("读取流转表单失败，未修改状态：{error}"))?;
+            .map_err(|error| {
+                tr_args("bug.transition.form", &[&error])
+            })?;
     apply_transition_overrides(&mut fields, overrides);
     let values = transition_field_values(&fields)?;
 
@@ -838,7 +845,7 @@ async fn transition_once(
         Duration::from_secs(45),
     )
     .await?;
-    ensure_api_ok(&root, "状态流转")?;
+    ensure_api_ok(&root, tr("bug.transition.change"))?;
 
     tracing::info!(
         bug_id,
@@ -891,7 +898,7 @@ pub(crate) fn ensure_api_ok(root: &Value, action: &str) -> Result<(), String> {
     if api_ok(root) {
         Ok(())
     } else {
-        Err(format!("{action}失败：{}", api_message(root)))
+        Err(tr_args("bug.action.failed", &[&action, &api_message(root)]))
     }
 }
 

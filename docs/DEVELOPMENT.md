@@ -16,6 +16,7 @@
 pnpm install
 pnpm dev              # 启动 Tauri 开发窗口
 pnpm typecheck        # 前端类型检查
+pnpm i18n:check       # 中英文案覆盖率（未翻译/缺失/重复）
 pnpm check:rust       # Rust 编译检查
 cargo test -p tapd-core
 cargo build -p tapd-mcp
@@ -76,12 +77,14 @@ opencode mcp list     # ✓ tapd connected
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
 - 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
 - Agent 配置 / 任务：`agent.json`、`cache.sqlite3` 的 `agent_tasks` / `agent_queue_state`（终端输出不落盘；旧版本遗留的 `agent-logs/`、`agent-events/` 在启动时删除）
+- 本地项目 / 事项：`<数据目录>/local.sqlite3` 的 `local_projects` / `local_work_items`（纯本机数据，与 TAPD 登录无关；schema v2，项目含 `rule`；本地事项交给 Agent 时导出 `quest.json`）
 - Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<ascii(workspace_id)>/<taskId>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`
 - 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.json` 里）
+- 媒体缓存：`<数据目录>/media-cache/`（`<url 哈希>` 存字节、同名 `.json` 存 URL 与 content type、`open/` 是交给系统的带扩展名硬链接）；导出、媒体代理与打开原图共用，上限 2GB
 - `runtime.json`：本地 API 端口与 token（0600）
 
-清理缓存：设置 → 本地数据 →「清理缓存」，删除上述数据目录下的全部内容并重启应用。`exports/` 与 WebView Cookie 不在数据目录内，会被保留。
+清理缓存：设置 → 本地数据 →「清理缓存」，删除上述数据目录下的全部内容并重启应用。`exports/` 与 WebView Cookie 不在数据目录内，会被保留；`local.sqlite3` 及其 `-wal` / `-shm` 也显式保留，因为本地项目是用户数据而不是 TAPD 缓存。
 
 ## 6. 相关文档
 
@@ -90,6 +93,7 @@ opencode mcp list     # ✓ tapd connected
 - [AGENT.md](AGENT.md)：修复队列与任务状态
 - [MULTI_AGENT.md](MULTI_AGENT.md)：多 Agent TUI 适配与完成判定
 - [MCP.md](MCP.md)：工具、策略、客户端接入
+- [I18N.md](I18N.md)：中英文案目录、翻译约定与覆盖检查
 - [RELEASE.md](RELEASE.md)：打包、签名与发版
 - [PLAN.md](PLAN.md)：阶段计划与验收
 - [spike.md](spike.md)：TAPD 内部接口验证

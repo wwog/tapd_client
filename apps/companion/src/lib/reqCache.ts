@@ -23,6 +23,8 @@
  * GET  /companion/api/bug/transitions  打开「状态流转」sheet                每 bug TTL 60s（SWR）
  * GET  /companion/api/members       筛选面板展开 / 切换项目                 每项目 TTL 30min（lib/members.ts，
  *                                                                          内存 + sessionStorage；服务端另有 2h）
+ * GET  /companion/api/files         进入「文件」页 / 切换目录 / 刷新        仅用户操作，不轮询
+ * GET  /companion/api/file          打开文件预览 / 重试                     仅用户操作，不轮询
  * GET  /companion/api/notifications 30s 轮询（全页面，兼掉线探针）           30s，隐藏暂停
  * POST /companion/api/feature
  *      agent_tasks_list             Agent 页/任务详情 8s；其他页面 30s       隐藏暂停；恢复可见立即补一轮

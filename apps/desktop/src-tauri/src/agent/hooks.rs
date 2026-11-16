@@ -13,6 +13,7 @@ use std::{
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use tapd_i18n::{tr, tr_args};
 use toml_edit::{value, DocumentMut, Item, Table};
 
 use super::{EXTENSION_DIR, OMP_SESSION_HOOK};
@@ -148,7 +149,7 @@ const CODEX_EVENTS: &[&str] = &[
 /// 安装/刷新客户端 hook，返回需要追加到启动命令的参数（目前只有 OMP 需要）。
 pub(crate) fn prepare(data_dir: &Path, kind: SessionHookKind) -> Result<Vec<String>, String> {
     if kind == SessionHookKind::None {
-        return Err("运行时没有声明会话 hook".to_string());
+        return Err(tr("agent.hook.undeclared").to_string());
     }
     if kind == SessionHookKind::Omp {
         return install_omp_extension(data_dir);
@@ -162,11 +163,11 @@ pub(crate) fn prepare(data_dir: &Path, kind: SessionHookKind) -> Result<Vec<Stri
 fn install_omp_extension(data_dir: &Path) -> Result<Vec<String>, String> {
     let extension_dir = data_dir.join(EXTENSION_DIR);
     std::fs::create_dir_all(&extension_dir)
-        .map_err(|error| format!("创建 OMP 扩展目录失败：{error}"))?;
+        .map_err(|error| tr_args("agent.hook.omp.dir.failed", &[&error]))?;
     let script = extension_dir.join("omp-session-monitor.ts");
     if std::fs::read_to_string(&script).ok().as_deref() != Some(OMP_SESSION_HOOK) {
         std::fs::write(&script, OMP_SESSION_HOOK)
-            .map_err(|error| format!("写入 OMP 扩展失败：{error}"))?;
+            .map_err(|error| tr_args("agent.hook.omp.write.failed", &[&error]))?;
     }
     Ok(vec![
         "--extension".to_string(),
@@ -181,12 +182,12 @@ fn write_hook_script(data_dir: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = data_dir.join("agent-hooks");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建 hook 目录失败：{error}"))?;
+    std::fs::create_dir_all(&dir).map_err(|error| tr_args("agent.hook.dir.failed", &[&error]))?;
     let script_path = dir.join(HOOK_SCRIPT_NAME);
     let script = r#"#!/bin/sh
-# tapd agent session hook：把原生 hook 事件转成桌面端的 loopback POST。
-# 先输出空对象，Cursor / Gemini / ZCode 对 hook 输出有严格 JSON 校验；
-# curl 或桌面端不可用时也不会把会话卡住。
+# tapd agent session hook：把原生 hook 事件转成桌面端的 loopback POST。 // i18n-exempt: hook script body
+# 先输出空对象，Cursor / Gemini / ZCode 对 hook 输出有严格 JSON 校验； // i18n-exempt: hook script body
+# curl 或桌面端不可用时也不会把会话卡住。 // i18n-exempt: hook script body
 phase="$1"
 session_id="$2"
 printf '{}\n'
@@ -210,7 +211,7 @@ exit 0
 
     if std::fs::read_to_string(&script_path).ok().as_deref() != Some(script) {
         std::fs::write(&script_path, script)
-            .map_err(|error| format!("写入 hook 脚本失败：{error}"))?;
+            .map_err(|error| tr_args("agent.hook.script.write.failed", &[&error]))?;
     }
     let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
     Ok(script_path)
@@ -218,7 +219,7 @@ exit 0
 
 #[cfg(not(unix))]
 fn write_hook_script(_data_dir: &Path) -> Result<PathBuf, String> {
-    Err("当前平台尚未支持 Agent 会话 hook".to_string())
+    Err(tr("agent.hook.platform.unsupported").to_string())
 }
 
 fn install_client_hook(kind: SessionHookKind, script: &Path) -> Result<(), String> {
@@ -254,7 +255,7 @@ fn install_client_hook(kind: SessionHookKind, script: &Path) -> Result<(), Strin
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> Result<PathBuf, String> {
-    tapd_core::paths::home_dir().map_err(|error| format!("无法定位用户目录：{error}"))
+    tapd_core::paths::home_dir().map_err(|error| tr_args("agent.home.lookup.failed", &[&error]))
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -864,7 +865,7 @@ fn write_opencode_plugin(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     write_atomic(path, OPENCODE_PLUGIN.as_bytes())
-        .map_err(|error| format!("写入 OpenCode 会话插件失败：{error}"))
+        .map_err(|error| tr_args("agent.hook.opencode.write.failed", &[&error]))
 }
 
 // ---------------------------------------------------------------------------
@@ -881,7 +882,7 @@ fn install_claude_like(path: &Path, script: &Path, events: &[&str]) -> Result<()
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是对象，未修改", path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notObject", &[&path.display()]))?;
 
     // 先清掉本应用写入的所有旧项（事件列表可能变化），再按当前列表追加。
     remove_all_managed_entries(hooks);
@@ -900,7 +901,7 @@ fn install_gemini(path: &Path, script: &Path) -> Result<(), String> {
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是对象，未修改", path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notObject", &[&path.display()]))?;
 
     remove_all_managed_entries(hooks);
     for event in GEMINI_EVENTS {
@@ -919,23 +920,20 @@ fn install_zcode(path: &Path, script: &Path) -> Result<(), String> {
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是对象，未修改", path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notObject", &[&path.display()]))?;
     hooks
         .entry("enabled".to_string())
         .or_insert(Value::Bool(true));
     if hooks.get("enabled") != Some(&Value::Bool(true)) {
         // 用户显式关闭 hooks 时不擅自打开，只记录失败让任务退回静默兜底。
-        return Err(format!(
-            "{} 的 hooks.enabled 不是 true，跳过 ZCode 会话 hook",
-            path.display()
-        ));
+        return Err(tr_args("agent.hook.zcode.disabled", &[&path.display()]));
     }
     let events = hooks
         .entry("events".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
     let events = events
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks.events 不是对象，未修改", path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.events.notObject", &[&path.display()]))?;
 
     remove_all_managed_entries(events);
     for event in ZCODE_EVENTS {
@@ -960,7 +958,7 @@ fn install_cursor(path: &Path, script: &Path) -> Result<(), String> {
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是对象，未修改", path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notObject", &[&path.display()]))?;
 
     remove_all_managed_entries(hooks);
     // Cursor 的 beforeSubmitPrompt / preToolUse 需要明确的 allow 响应；
@@ -992,7 +990,7 @@ fn install_codex_at(hooks_path: &Path, config_path: &Path, script: &Path) -> Res
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是对象，未修改", hooks_path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notObject", &[&hooks_path.display()]))?;
 
     let mut trust_entries = Vec::new();
     for event in CODEX_EVENTS {
@@ -1009,7 +1007,7 @@ fn install_codex_at(hooks_path: &Path, config_path: &Path, script: &Path) -> Res
             .entry((*event).to_string())
             .or_insert_with(|| Value::Array(Vec::new()))
             .as_array_mut()
-            .ok_or_else(|| format!("hooks.{event} 不是数组，未修改"))?;
+            .ok_or_else(|| tr_args("agent.hook.notArray", &[&event]))?;
 
         let managed: Vec<usize> = entries
             .iter()
@@ -1056,24 +1054,32 @@ fn write_codex_trust(
     let existing = match std::fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("读取 {} 失败：{error}", config_path.display())),
+        Err(error) => {
+            return Err(tr_args(
+                "agent.config.read.failed",
+                &[&config_path.display(), &error],
+            ))
+        }
     };
-    let mut doc: DocumentMut = existing
-        .parse()
-        .map_err(|error| format!("无法解析 {}：{error}，未修改", config_path.display()))?;
+    let mut doc: DocumentMut = existing.parse().map_err(|error| {
+        tr_args(
+            "agent.config.parse.failed",
+            &[&config_path.display(), &error],
+        )
+    })?;
 
     let hooks = doc.entry("hooks").or_insert(Item::Table(Table::new()));
     let hooks = hooks
         .as_table_mut()
-        .ok_or_else(|| format!("{} 的 hooks 字段不是表，未修改", config_path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.field.notTable", &[&config_path.display()]))?;
     let state = hooks.entry("state").or_insert(Item::Table(Table::new()));
     let state = state
         .as_table_mut()
-        .ok_or_else(|| format!("{} 的 hooks.state 不是表，未修改", config_path.display()))?;
+        .ok_or_else(|| tr_args("agent.hook.state.notTable", &[&config_path.display()]))?;
 
     for (event, group_index, command, timeout) in entries {
         let label = codex_event_label(event)
-            .ok_or_else(|| format!("Codex 事件 {event} 没有对应的信任标签"))?;
+            .ok_or_else(|| tr_args("agent.hook.codex.trust.missing", &[event]))?;
         let key = format!("{source}:{label}:{group_index}:0");
         let mut table = Table::new();
         table["enabled"] = value(true);
@@ -1084,8 +1090,12 @@ fn write_codex_trust(
     let rendered = doc.to_string();
     if rendered != existing {
         backup_existing(config_path)?;
-        write_atomic(config_path, rendered.as_bytes())
-            .map_err(|error| format!("写入 {} 失败：{error}", config_path.display()))?;
+        write_atomic(config_path, rendered.as_bytes()).map_err(|error| {
+            tr_args(
+                "agent.config.write.failed",
+                &[&config_path.display(), &error],
+            )
+        })?;
     }
     Ok(())
 }
@@ -1142,7 +1152,12 @@ fn install_kimi(path: &Path, script: &Path) -> Result<(), String> {
     let existing = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("读取 {} 失败：{error}", path.display())),
+        Err(error) => {
+            return Err(tr_args(
+                "agent.config.read.failed",
+                &[&path.display(), &error],
+            ))
+        }
     };
     let without_block = remove_marked_block(&existing, KIMI_BLOCK_START, KIMI_BLOCK_END);
     let mut entries = Vec::new();
@@ -1169,7 +1184,7 @@ fn install_kimi(path: &Path, script: &Path) -> Result<(), String> {
     };
     if next != existing {
         write_atomic(path, next.as_bytes())
-            .map_err(|error| format!("写入 Kimi hook 配置失败：{error}"))?;
+            .map_err(|error| tr_args("agent.hook.kimi.write.failed", &[&error]))?;
     }
     Ok(())
 }
@@ -1225,28 +1240,32 @@ fn shell_quote(value: &str) -> String {
 fn read_json_object(path: &Path) -> Result<Map<String, Value>, String> {
     match std::fs::read_to_string(path) {
         Ok(raw) => {
-            let value: Value = serde_json::from_str(&raw)
-                .map_err(|error| format!("无法解析 {}：{error}，未修改", path.display()))?;
+            let value: Value = serde_json::from_str(&raw).map_err(|error| {
+                tr_args("agent.config.parse.failed", &[&path.display(), &error])
+            })?;
             value
                 .as_object()
                 .cloned()
-                .ok_or_else(|| format!("{} 的根节点不是对象，未修改", path.display()))
+                .ok_or_else(|| tr_args("agent.config.root.notObject", &[&path.display()]))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-        Err(error) => Err(format!("读取 {} 失败：{error}", path.display())),
+        Err(error) => Err(tr_args(
+            "agent.config.read.failed",
+            &[&path.display(), &error],
+        )),
     }
 }
 
 fn write_json_config_if_changed(path: &Path, value: &Value) -> Result<(), String> {
-    let mut rendered =
-        serde_json::to_string_pretty(value).map_err(|error| format!("序列化配置失败：{error}"))?;
+    let mut rendered = serde_json::to_string_pretty(value)
+        .map_err(|error| tr_args("agent.config.serialize.failed", &[&error]))?;
     rendered.push('\n');
     if std::fs::read_to_string(path).ok().as_deref() == Some(rendered.as_str()) {
         return Ok(());
     }
     backup_existing(path)?;
     write_atomic(path, rendered.as_bytes())
-        .map_err(|error| format!("写入 {} 失败：{error}", path.display()))
+        .map_err(|error| tr_args("agent.config.write.failed", &[&path.display(), &error]))
 }
 
 fn backup_existing(path: &Path) -> Result<(), String> {
@@ -1264,7 +1283,7 @@ fn backup_existing(path: &Path) -> Result<(), String> {
     let backup = path.with_file_name(format!("{name}.bak-tapd-{nanos}"));
     if !backup.exists() {
         std::fs::copy(path, &backup)
-            .map_err(|error| format!("备份 {} 失败：{error}", path.display()))?;
+            .map_err(|error| tr_args("agent.config.backup.failed", &[&path.display(), &error]))?;
     }
     Ok(())
 }
@@ -1344,7 +1363,7 @@ fn append_command_hook(
         .or_insert_with(|| Value::Array(Vec::new()));
     let entries = entries
         .as_array_mut()
-        .ok_or_else(|| format!("hooks.{event} 不是数组，未修改"))?;
+        .ok_or_else(|| tr_args("agent.hook.notArray", &[&event]))?;
     entries.push(json!({
         "hooks": [{
             "type": "command",
@@ -1366,7 +1385,7 @@ fn append_flat_hook(
         .or_insert_with(|| Value::Array(Vec::new()));
     let entries = entries
         .as_array_mut()
-        .ok_or_else(|| format!("hooks.{event} 不是数组，未修改"))?;
+        .ok_or_else(|| tr_args("agent.hook.notArray", &[&event]))?;
     entries.push(json!({ "command": command, "timeout": 10 }));
     Ok(())
 }

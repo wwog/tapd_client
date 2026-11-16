@@ -18,6 +18,7 @@ import {
 
 import { api, type McpClientId, type McpConfigInfo } from "../lib/api";
 import { copyText } from "../lib/desktop";
+import { t, type MessageKey } from "../lib/i18n";
 import { mcpApi, type McpImportResult } from "../lib/mcp";
 import { Badge, Button, Spinner } from "./ui";
 
@@ -66,7 +67,7 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
 
   const copyClientPath = async (id: McpClientId, path: string) => {
     if (!(await copyText(path))) {
-      toast("error", "复制失败");
+      toast("error", t("common.copyFailed"));
       return;
     }
     setCopiedClient(id);
@@ -108,24 +109,24 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
       <section className="rounded-2xl border border-border bg-surface p-4">
         <header className="flex items-center gap-2">
           <Wrench size={15} className="text-slate-400" />
-          <h3 className="text-ui-caption text-slate-900">接入 AI 客户端</h3>
+          <h3 className="text-ui-caption text-slate-900">{t("mcp.connectClients")}</h3>
         </header>
         {configError ? (
           <div className="mt-3 text-ui-caption text-slate-400">
-            <p className="break-all">读取 MCP 配置失败：{configError}</p>
+            <p className="break-all">{t("mcp.configReadFailed", { error: configError })}</p>
             <Button
               size="sm"
               className="mt-2"
               onClick={() => void loadConfig()}
               icon={<RefreshCw size={13} />}
             >
-              重试
+              {t("common.retry")}
             </Button>
           </div>
         ) : (
           <div className="mt-3 flex items-center gap-2 text-ui-caption text-slate-400">
             <Spinner />
-            正在读取 MCP 配置…
+            {t("mcp.configReading")}
           </div>
         )}
       </section>
@@ -137,49 +138,46 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
   const guides: Array<{
     id: McpClientId;
     title: string;
-    hint: string;
+    hint: MessageKey;
     icon: ReactNode;
     code: string;
-    manual: string;
+    manual: MessageKey;
   }> = [
     {
       id: "opencode",
       title: "opencode",
-      hint: "用户级全局配置",
+      hint: "mcp.guideGlobalUser",
       icon: <Sparkles size={15} className="text-slate-400" />,
       code: mcp.snippet,
-      manual: "只想对某个项目生效时，把上面的 JSON 写入项目根目录的 opencode.json。",
+      manual: "mcp.manualOpencode",
     },
     {
       id: "zcode",
       title: "ZCode",
-      hint: "用户级：~/.zcode/cli/config.json",
+      hint: "mcp.guideZcodeHint",
       icon: <Zap size={15} className="text-slate-400" />,
       code: JSON.stringify(
         { mcp: { servers: { tapd: { type: "stdio", command: commandPath } } } },
         null,
         2,
       ),
-      manual:
-        "只想对某个项目生效时，把同样的 mcp.servers.tapd 写入项目的 .zcode/config.json（command 是字符串）。写入后重启 ZCode，在 设置 → MCP 确认状态。",
+      manual: "mcp.manualZcode",
     },
     {
       id: "claude",
       title: "Claude Code",
-      hint: "用户级：claude mcp add --scope user",
+      hint: "mcp.guideClaudeHint",
       icon: <Terminal size={15} className="text-slate-400" />,
       code: `claude mcp add --scope user --transport stdio tapd -- "${commandPath}"`,
-      manual:
-        "只想对某个项目生效时，去掉 --scope user；或改用 --scope project 写入项目的 .mcp.json。",
+      manual: "mcp.manualClaude",
     },
     {
       id: "cursor",
       title: "Cursor",
-      hint: "用户级：~/.cursor/mcp.json",
+      hint: "mcp.guideCursorHint",
       icon: <FileJson size={15} className="text-slate-400" />,
       code: JSON.stringify({ mcpServers: { tapd: { command: commandPath } } }, null, 2),
-      manual:
-        "只想对某个项目生效时，把同样的 mcpServers.tapd 写入项目的 .cursor/mcp.json。",
+      manual: "mcp.manualCursor",
     },
     // Codex 一键导入暂时下线：不展示入口，也不提示；后端 client spec 与
     // Agent 启动时的幂等注入保持原样，恢复时取消注释即可。
@@ -193,10 +191,10 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
       <header className="px-1">
         <h3
           className="flex items-center gap-2 text-ui-base text-slate-900"
-          title="一键写入各客户端的用户级配置，改动前自动备份；只想对某个项目生效时，展开手动配置。"
+          title={t("mcp.importIntro")}
         >
           <Wrench size={15} className="text-slate-400" />
-          接入 AI 客户端
+          {t("mcp.connectClients")}
         </h3>
       </header>
 
@@ -219,22 +217,22 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
                       {guide.title}
                     </h4>
                     <Badge tone={status?.imported ? "green" : "amber"}>
-                      {status?.imported ? "已导入" : "未导入"}
+                      {status?.imported ? t("mcp.imported") : t("mcp.notImported")}
                     </Badge>
                   </div>
                   <div className="mt-0.5 flex items-center gap-1">
                     <p
                       className="select-text min-w-0 flex-1 truncate text-ui-xs text-slate-400"
-                      title={clientPath ?? guide.hint}
+                      title={clientPath ?? t(guide.hint)}
                     >
-                      {clientPath ?? guide.hint}
+                      {clientPath ?? t(guide.hint)}
                     </p>
                     {clientPath ? (
                       <div className="flex shrink-0 items-center">
                         <button
                           type="button"
-                          title="复制路径"
-                          aria-label="复制路径"
+                          title={t("mcp.copyPath")}
+                          aria-label={t("mcp.copyPath")}
                           onClick={() => void copyClientPath(guide.id, clientPath)}
                           className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                         >
@@ -246,8 +244,8 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
                         </button>
                         <button
                           type="button"
-                          title="打开文件夹"
-                          aria-label="打开文件夹"
+                          title={t("mcp.openFolder")}
+                          aria-label={t("mcp.openFolder")}
                           onClick={() => openClientFolder(clientPath)}
                           className="grid h-6 w-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                         >
@@ -266,7 +264,7 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
                   onClick={() => void importClient(guide.id)}
                   icon={<Download size={13} />}
                 >
-                  {status?.imported ? "重新导入" : "一键导入"}
+                  {status?.imported ? t("mcp.reimport") : t("mcp.importNow")}
                 </Button>
                 <Button
                   size="sm"
@@ -279,7 +277,7 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
                     />
                   }
                 >
-                  手动配置
+                  {t("mcp.manualSetup")}
                 </Button>
               </div>
             </div>
@@ -287,11 +285,12 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
             {result ? (
               <div className="mt-2 break-all text-ui-xs leading-5 text-emerald-700">
                 <CheckCircle2 size={11} className="mr-1 inline" />
-                {result.changed ? "已写入" : "已存在，无需重复写入"}：
-                <span className="font-mono">{result.path}</span>
+                {result.changed
+                  ? t("mcp.written", { path: result.path })
+                  : t("mcp.alreadyPresent", { path: result.path })}
                 {result.backupPath ? (
                   <span className="text-emerald-600/80">
-                    （备份：<span className="font-mono">{result.backupPath}</span>）
+                    {t("mcp.backupSuffix", { path: result.backupPath })}
                   </span>
                 ) : null}
               </div>
@@ -300,14 +299,14 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
             {expanded ? (
               <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <p className="text-ui-xs leading-5 text-slate-500">{guide.manual}</p>
+                  <p className="text-ui-xs leading-5 text-slate-500">{t(guide.manual)}</p>
                   <button
                     type="button"
                     onClick={() => onCopy(guide.code)}
                     className={COPY_BUTTON}
                   >
                     <Copy size={10} />
-                    复制
+                    {t("common.copy")}
                   </button>
                 </div>
                 <pre className="select-text theme-static-dark mt-2 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-ui-xs leading-5 text-slate-200">

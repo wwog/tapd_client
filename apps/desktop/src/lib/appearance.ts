@@ -3,6 +3,12 @@ import { emit as emitToAll } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { readPref, writePref } from "./uiPrefs";
+import {
+  applyLocale,
+  resolveLocaleMode,
+  type LocaleMode,
+  type MessageKey,
+} from "./i18n";
 
 export type ThemeMode = "light" | "dark" | "system";
 /** The island capsule can follow the app theme or keep its own fixed theme. */
@@ -22,6 +28,8 @@ export type Appearance = {
   customFont: string;
   /** Base UI font size in px. Every text token is derived from this. */
   fontSize: number;
+  /** UI language; `system` follows the OS language (Chinese systems: zh). */
+  locale: LocaleMode;
 };
 
 /** Preference key inside the `config.json` UI blob. */
@@ -34,6 +42,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   font: "system",
   customFont: "",
   fontSize: 14,
+  locale: "system",
 };
 
 /** System UI stack: no bundled font. */
@@ -49,12 +58,12 @@ export const FONT_STACKS: Record<Exclude<FontChoice, "custom">, string> = {
     '"Microsoft YaHei", "Microsoft YaHei UI", "PingFang SC", ui-sans-serif, system-ui, sans-serif',
 };
 
-export const FONT_OPTIONS: Array<{ value: FontChoice; label: string }> = [
-  { value: "system", label: "系统" },
-  { value: "pingfang", label: "苹方" },
-  { value: "noto", label: "思源黑体" },
-  { value: "yahei", label: "微软雅黑" },
-  { value: "custom", label: "自定义…" },
+export const FONT_OPTIONS: Array<{ value: FontChoice; label: MessageKey }> = [
+  { value: "system", label: "settings.font.system" },
+  { value: "pingfang", label: "settings.font.pingfang" },
+  { value: "noto", label: "settings.font.noto" },
+  { value: "yahei", label: "settings.font.yahei" },
+  { value: "custom", label: "settings.font.custom" },
 ];
 
 export const FONT_SIZE_MIN = 12;
@@ -93,6 +102,8 @@ function normalize(parsed: Partial<Appearance>): Appearance {
     parsed.font === "custom"
       ? parsed.font
       : "system";
+  const locale: LocaleMode =
+    parsed.locale === "zh" || parsed.locale === "en" ? parsed.locale : "system";
   return {
     mode,
     island,
@@ -101,6 +112,7 @@ function normalize(parsed: Partial<Appearance>): Appearance {
     customFont:
       typeof parsed.customFont === "string" ? parsed.customFont.slice(0, 160) : "",
     fontSize: clampSize(parsed.fontSize ?? DEFAULT_APPEARANCE.fontSize),
+    locale,
   };
 }
 
@@ -135,6 +147,9 @@ function fontStack(appearance: Appearance): string {
 function apply() {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  // The locale drives every message and `Intl` tag, so apply it with the theme
+  // (both windows share the appearance blob, so both switch together).
+  applyLocale(resolveLocaleMode(current.locale));
   root.dataset.theme = overlay ? resolvedIslandTheme(current) : resolvedTheme(current);
   root.style.setProperty("--ui-font-size", `${current.fontSize}px`);
   if (current.font === "system") root.style.removeProperty("--font-sans");

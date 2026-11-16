@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import clsx from "clsx";
 
 import type { BugListPage } from "../lib/api";
+import { t } from "../lib/i18n";
 import { Button } from "./ui";
 
 /** Bottom pager; hidden while the list is empty. */
@@ -23,8 +24,8 @@ export function BugListPager(props: {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          title="刷新列表"
-          aria-label="刷新列表"
+          title={t("bugs.refreshList")}
+          aria-label={t("bugs.refreshList")}
           onClick={onRefresh}
           className={clsx(
             "text-slate-400 transition hover:text-slate-700",
@@ -34,7 +35,11 @@ export function BugListPager(props: {
           <RefreshCw size={13} />
         </button>
         <span className="tabular-nums">
-          第 {pageNo} / {totalPages} 页 · 共 {page.total} 条
+          {t("bugs.pager.summary", {
+            page: pageNo,
+            total: totalPages,
+            count: page.total,
+          })}
         </span>
       </div>
       {/* A single page has nothing to page through: the buttons would only
@@ -48,7 +53,7 @@ export function BugListPager(props: {
             onClick={() => onPageChange((current) => Math.max(1, current - 1))}
             icon={<ChevronLeft size={13} />}
           >
-            上一页
+            {t("bugs.pager.previous")}
           </Button>
           <Button
             size="sm"
@@ -56,7 +61,7 @@ export function BugListPager(props: {
             disabled={pageNo >= totalPages || loading}
             onClick={() => onPageChange((current) => Math.min(totalPages, current + 1))}
           >
-            下一页
+            {t("bugs.pager.next")}
             <ChevronRight size={13} />
           </Button>
         </div>

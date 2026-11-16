@@ -7,6 +7,7 @@ use tapd_core::{
 };
 
 use crate::cache::Cache;
+use crate::local::LocalStore;
 use crate::mcp_audit::McpAudit;
 
 /// Shared state for Tauri commands, the local HTTP server and the session watcher.
@@ -19,6 +20,9 @@ pub struct AppState {
     pub companion: Mutex<crate::companion::CompanionRuntime>,
     /// Offline snapshot cache (projects/bugs). Disabled if SQLite failed to open.
     pub cache: Arc<Cache>,
+    /// Local-only projects and work items. A separate database so TAPD logout
+    /// and cache resets leave the user's own data alone.
+    pub local: Arc<LocalStore>,
     /// Bounded MCP call audit log.
     pub mcp_audit: McpAudit,
 }
@@ -26,6 +30,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(paths: AppPaths, config_store: ConfigStore, config: AppConfig) -> Self {
         let cache = Arc::new(Cache::open(paths.data_dir.join("cache.sqlite3")));
+        let local = Arc::new(LocalStore::open(paths.local_db_file()));
         let mcp_audit = McpAudit::load(cache.clone());
         Self {
             paths,
@@ -34,6 +39,7 @@ impl AppState {
             runtime: Mutex::new(None),
             companion: Mutex::new(crate::companion::CompanionRuntime::default()),
             cache,
+            local,
             mcp_audit,
         }
     }

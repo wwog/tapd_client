@@ -12,19 +12,7 @@ use tauri::AppHandle;
 
 use crate::agent::{self, PromptVars};
 
-const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}
-缺陷详情：{{json_path}}
-本地仓库：{{repo_path}}
-项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}
-
-要求：
-1. 先完整阅读缺陷详情（bug.json）和 assets/ 下的截图、视频。
-2. 定位根因，做最小必要修改。
-3. 修复时请遵循团队代码规范，确保代码可读、可维护。
-4. 判断改动复杂度：
-   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。
-   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，交给用户复核和测试。
-5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。";
+const MCP_PROMPT_TEMPLATE: &str = "请修复 TAPD 缺陷：{{title}}\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n要求：\n1. 先完整阅读缺陷详情（bug.json）和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改。\n3. 修复时请遵循团队代码规范，确保代码可读、可维护。\n4. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，交给用户复核和测试。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。"; // i18n-exempt: prompt template sent to the agent
 
 pub struct PromptContext<'a> {
     /// Project the bug belongs to; also how the local folder is found.
@@ -47,7 +35,7 @@ pub fn render(app: &AppHandle, ctx: PromptContext<'_>) -> String {
         .map(|project| project.repo_path.trim().to_string())
         .filter(|path| !path.is_empty())
         .or_else(|| ctx.root_hint.map(str::to_string))
-        .unwrap_or_else(|| "（当前工作目录）".to_string());
+        .unwrap_or_else(|| "（当前工作目录）".to_string()); // i18n-exempt: prompt content
 
     let vars = PromptVars {
         task_id: String::new(),

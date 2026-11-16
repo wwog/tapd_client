@@ -8,6 +8,7 @@ use tapd_core::tapd::{
     api::{bug_list_url, parse_bug_list, BugQuery},
     BugListPage,
 };
+use tapd_i18n::tr;
 use tauri::AppHandle;
 
 use crate::{agent, commands::auth::session_request_json, state::SharedState};
@@ -156,11 +157,11 @@ pub(super) async fn get_bug(
 fn project_rule_text(has_skills: bool, rule: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if has_skills {
-        parts.push("技能规则：按需使用 skills 对象。".to_string());
+        parts.push("技能规则：按需使用 skills 对象。".to_string()); // i18n-exempt: prompt text
     }
     let rule = rule.trim();
     if !rule.is_empty() {
-        parts.push(format!("项目规则：\n{rule}"));
+        parts.push(format!("项目规则：\n{rule}")); // i18n-exempt: prompt text
     }
     parts.join("\n\n")
 }
@@ -181,7 +182,11 @@ async fn query_bugs(
     };
     query.owners = match owner.as_deref() {
         Some("all") | Some("") | None => Vec::new(),
-        Some("me") => resolve_me(app, state).await?.into_iter().collect(),
+        // An unknown nickname must not degrade to "no owner filter": that
+        // would return every owner's bugs to a "my bugs" call.
+        Some("me") => vec![resolve_me(app, state)
+            .await?
+            .ok_or_else(|| tr("app.mcp.owner.unresolved").to_string())?],
         Some(nick) => vec![nick.to_string()],
     };
 

@@ -36,10 +36,16 @@ pub(crate) fn bug_export_dir(
     title: &str,
 ) -> PathBuf {
     let workspace_slug = ascii_slug(workspace_label);
+    // Workspace ids come from TAPD and are numeric; keep only path-safe
+    // characters so a hostile id can never add a directory component.
+    let safe_workspace_id: String = workspace_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
+        .collect();
     let workspace_dir = if workspace_slug.is_empty() {
-        workspace_id.to_string()
+        safe_workspace_id
     } else {
-        format!("{workspace_slug}-{workspace_id}")
+        format!("{workspace_slug}-{safe_workspace_id}")
     };
     let title_slug = ascii_slug(title);
     let bug_dir = if title_slug.is_empty() {

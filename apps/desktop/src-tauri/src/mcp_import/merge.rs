@@ -11,6 +11,8 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use tapd_i18n::tr;
+use tapd_i18n::tr_args;
 
 use super::CONFIG_JSON;
 
@@ -39,15 +41,13 @@ pub(super) fn ensure_json_entry(
     let (mut config, existed) = match existing {
         Some(raw) => {
             let value: Value = serde_json::from_str(&raw).map_err(|error| {
-                format!(
-                    "无法解析 {}（可能是带注释的 JSONC）：{error}。为避免破坏已有内容，未做任何修改。",
-                    path.display()
+                tr_args("app.mcp.import.parse",
+                    &[&path.display(), &error],
                 )
             })?;
             if !value.is_object() {
-                return Err(format!(
-                    "{} 的根节点不是 JSON 对象，未做任何修改",
-                    path.display()
+                return Err(tr_args("app.mcp.import.root",
+                    &[&path.display()],
                 ));
             }
             (value, true)
@@ -76,18 +76,17 @@ pub(super) fn ensure_json_entry(
 
     let mut cursor = config
         .as_object_mut()
-        .ok_or_else(|| format!("{} 的根节点不是 JSON 对象", path.display()))?;
+        .ok_or_else(|| tr_args("app.mcp.import.root.short", &[&path.display()]))?;
     let (last, parents) = segments
         .split_last()
-        .ok_or_else(|| "配置路径为空".to_string())?;
+        .ok_or_else(|| tr("app.mcp.import.path.empty").to_string())?;
     for (index, segment) in parents.iter().enumerate() {
         let next = cursor
             .entry((*segment).to_string())
             .or_insert_with(|| Value::Object(Map::new()));
         cursor = next.as_object_mut().ok_or_else(|| {
-            format!(
-                "{label} 配置中的 {} 字段不是对象，未做任何修改",
-                segments[..=index].join(".")
+            tr_args("app.mcp.import.field",
+                &[&label, &segments[..=index].join(".")],
             )
         })?;
     }
@@ -118,7 +117,7 @@ pub(super) fn read_existing(path: &Path, label: &str) -> Result<Option<String>, 
     match std::fs::read_to_string(path) {
         Ok(raw) => Ok(Some(raw)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("读取 {label} 配置失败：{error}")),
+        Err(error) => Err(tr_args("app.mcp.import.read", &[&label, &error])),
     }
 }
 
@@ -134,7 +133,7 @@ pub(super) fn backup_existing(path: &Path, exists: bool) -> Result<Option<PathBu
         return Ok(None);
     }
     let backup = backup_path_for(path);
-    std::fs::copy(path, &backup).map_err(|error| format!("备份配置失败：{error}"))?;
+    std::fs::copy(path, &backup).map_err(|error| tr_args("app.mcp.import.backup", &[&error]))?;
     Ok(Some(backup))
 }
 
@@ -177,7 +176,8 @@ pub(super) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败：{error}"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| tr_args("app.mcp.import.mkdir", &[&error]))?;
 
     let name = path
         .file_name()
@@ -191,7 +191,7 @@ pub(super) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
 
     if let Err(error) = std::fs::write(&temp, contents) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("写入配置失败：{error}"));
+        return Err(tr_args("app.mcp.import.write", &[&error]));
     }
 
     // Replacing a file through rename would otherwise reset its mode.
@@ -201,7 +201,7 @@ pub(super) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
 
     if let Err(error) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("保存配置失败：{error}"));
+        return Err(tr_args("app.mcp.import.save", &[&error]));
     }
     Ok(())
 }

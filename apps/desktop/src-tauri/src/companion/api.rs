@@ -17,11 +17,14 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tapd_core::tapd::WorkspaceMember;
+use tapd_i18n::tr;
 
 use crate::{commands, notification, server};
 
 use super::{err_data, ok_data, upstream_error, CompanionCtx};
-use super::pairing::{authorize, authorize_token, bearer_token, require_logged_in};
+use super::pairing::{
+    authorize, authorize_media, bearer_token, device_for_token, media_token, require_logged_in,
+};
 
 /// Login state, app version and signed-in user. Read-only config, no network:
 /// this is how the phone renders its "desktop offline" state.
@@ -30,10 +33,25 @@ pub(super) async fn api_state(State(ctx): State<CompanionCtx>, headers: HeaderMa
         return response;
     }
     let config = ctx.state.config_snapshot();
+    // The phone uses this scoped credential in `<img>`/`<video>` URLs so its
+    // long-lived session token never appears in a URL.
+    let media = bearer_token(&headers)
+        .and_then(|token| device_for_token(&ctx.state, &token))
+        .map(|device| {
+            let secret = ctx
+                .state
+                .companion
+                .lock()
+                .expect("companion lock")
+                .media_secret()
+                .to_string();
+            media_token(&secret, &device.token_hash)
+        });
     ok_data(json!({
         "loggedIn": config.logged_in,
         "version": env!("CARGO_PKG_VERSION"),
         "me": config.me,
+        "mediaToken": media,
     }))
 }
 
@@ -326,7 +344,7 @@ fn claim_owner(me: Option<String>) -> Result<String, Response> {
         err_data(
             StatusCode::BAD_REQUEST,
             "no_current_user",
-            "桌面端未获取到当前用户",
+            tr("companion.user.missing"),
         )
     })
 }
@@ -395,7 +413,7 @@ pub(super) async fn api_media(
     headers: HeaderMap,
     Query(query): Query<MediaQuery>,
 ) -> Response {
-    if let Some(response) = authorize_token(&ctx.state, bearer_token(&headers).or(query.t)) {
+    if let Some(response) = authorize_media(&ctx.state, bearer_token(&headers).or(query.t)) {
         return response;
     }
     if let Some(response) = require_logged_in(&ctx.state) {
@@ -405,7 +423,7 @@ pub(super) async fn api_media(
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    match server::fetch_tapd_media(&ctx.app, &query.url, range).await {
+    match server::fetch_tapd_media(&ctx.app, &ctx.state.paths, &query.url, range).await {
         Ok(fetch) => server::media_response(fetch),
         Err((status, message)) => err_data(status, "media", &message),
     }

@@ -11,6 +11,7 @@ import {
   type WorkspaceMember,
 } from "../lib/api";
 import { Dialog } from "./Dialog";
+import { t } from "../lib/i18n";
 import { Button, Spinner, inputClass, selectClass } from "./ui";
 
 type Props = {
@@ -125,9 +126,9 @@ export function BugTransitionDialog(props: Props) {
     );
     if (missing.length > 0) {
       setError(
-        `请填写：${missing
-          .map((field) => field.label || field.name)
-          .join("、")}`,
+        t("bugs.fillRequired", {
+          fields: missing.map((field) => field.label || field.name).join("、"),
+        }),
       );
       return;
     }
@@ -149,7 +150,7 @@ export function BugTransitionDialog(props: Props) {
 
   return (
     <Dialog
-      title={`流转到「${form?.label ?? label}」`}
+      title={t("bugs.transitionTo", { label: form?.label ?? label })}
       icon={<GitBranch size={16} className="text-slate-400" />}
       onClose={close}
       bodyScroll={false}
@@ -160,21 +161,21 @@ export function BugTransitionDialog(props: Props) {
         className="flex h-full min-h-0 flex-col"
       >
         <p className="shrink-0 text-ui-caption leading-5 text-slate-500">
-          按工作流填写本次流转字段。
+          {t("bugs.transitionFormHint")}
         </p>
 
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
               <Spinner />
-              正在读取流转表单…
+              {t("bugs.loadingForm")}
             </div>
           ) : form ? (
             <div className="space-y-3">
               {error ? <TransitionError text={error} /> : null}
               {visibleFields.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-border px-3 py-4 text-ui-caption text-slate-400">
-                  本次流转无需填写字段。
+                  {t("bugs.noFields")}
                 </p>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -208,7 +209,7 @@ export function BugTransitionDialog(props: Props) {
                 variant="secondary"
                 onClick={() => setAttempt((value) => value + 1)}
               >
-                重试
+                {t("common.retry")}
               </Button>
             </div>
           ) : null}
@@ -221,7 +222,7 @@ export function BugTransitionDialog(props: Props) {
             disabled={busy}
             onClick={onClose}
           >
-            取消
+            {t("common.cancel")}
           </Button>
           <Button
             type="submit"
@@ -230,7 +231,7 @@ export function BugTransitionDialog(props: Props) {
             loading={busy}
             disabled={loading || !form}
           >
-            确认流转
+            {t("bugs.confirmTransition")}
           </Button>
         </div>
       </form>
@@ -273,7 +274,7 @@ function TransitionField(props: {
         {field.required ? <span className="text-rose-500">*</span> : null}
         {field.disabled ? (
           <span className="rounded bg-slate-100 px-1 py-0.5 text-ui-2xs text-slate-400">
-            只读
+            {t("bugs.readOnly")}
           </span>
         ) : null}
       </span>
@@ -330,7 +331,9 @@ function TransitionField(props: {
           onChange={(event) => onChange(event.target.value)}
           className={clsx(selectClass, "w-full")}
         >
-          <option value="">{field.required ? "请选择" : "未选择"}</option>
+          <option value="">
+            {field.required ? t("bugs.select") : t("common.nothingSelected")}
+          </option>
           {field.options.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label || option.value}
@@ -388,7 +391,7 @@ function UserChooserField(props: {
         type="text"
         value={value}
         disabled={disabled}
-        placeholder="多个成员用 ; 分隔"
+        placeholder={t("bugs.multiMembers")}
         onChange={(event) => onChange(event.target.value)}
         className={inputClass}
       />
@@ -414,7 +417,9 @@ function UserChooserField(props: {
       }}
       className={clsx(selectClass, "w-full")}
     >
-      <option value="">{field.required ? "请选择" : "未选择"}</option>
+      <option value="">
+        {field.required ? t("bugs.select") : t("common.nothingSelected")}
+      </option>
       {nicks.map((nick) => (
         <option key={nick} value={nick}>
           {nick}

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bot, Bug, RefreshCw, Settings } from "lucide-react";
+import { Bot, Bug, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import {
@@ -8,6 +8,7 @@ import {
   useAgentTasks,
 } from "./lib/agentTasks";
 import { startHeartbeat } from "./lib/heartbeat";
+import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
@@ -19,6 +20,11 @@ import { AgentHistoryPage } from "./pages/AgentHistoryPage";
 import { AgentTaskPage } from "./pages/AgentTaskPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { FilesPage } from "./pages/FilesPage";
+import { FilePage } from "./pages/FilePage";
+import { LocalPage } from "./pages/LocalPage";
+import { TerminalPage } from "./pages/TerminalPage";
+import { TerminalSessionPage } from "./pages/TerminalSessionPage";
 
 /** Full-screen gate: one-line title, explanation folded into `title`. */
 function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
@@ -33,7 +39,7 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
             className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
           >
             <RefreshCw size={14} />
-            重试
+            {t("common.retry")}
           </button>
         ) : null}
       </div>
@@ -41,12 +47,16 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "agent" | "settings";
+type TabKey = "bugs" | "local" | "agent" | "files" | "terminal" | "settings";
 
-const TABS: ReadonlyArray<{ key: TabKey; label: string; hash: string }> = [
-  { key: "bugs", label: "缺陷", hash: "#/bugs" },
-  { key: "agent", label: "Agent", hash: "#/agent" },
-  { key: "settings", label: "设置", hash: "#/settings" },
+/** Tab labels store keys and resolve through `t()` at render time. */
+const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
+  { key: "bugs", label: "common.bugs", hash: "#/bugs" },
+  { key: "local", label: "mobile.local.title", hash: "#/local" },
+  { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
+  { key: "files", label: "mobile.files.title", hash: "#/files" },
+  { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
+  { key: "settings", label: "common.settings", hash: "#/settings" },
 ];
 
 /** Which tab owns the current route (pushed pages keep their parent tab). */
@@ -55,11 +65,19 @@ const tabOf = (route: Route): TabKey => {
     case "bugs":
     case "bug":
       return "bugs";
+    case "local":
+      return "local";
     case "agent":
     case "agent-history":
     case "agent-task":
     case "coworkers":
       return "agent";
+    case "files":
+    case "file":
+      return "files";
+    case "terminal":
+    case "terminal-session":
+      return "terminal";
     case "settings":
       return "settings";
     default:
@@ -70,7 +88,7 @@ const tabOf = (route: Route): TabKey => {
 function TabBar(props: { active: TabKey; badge: number }) {
   return (
     <nav
-      aria-label="主导航"
+      aria-label={t("mobile.nav.main")}
       className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-canvas"
     >
       <div className="flex h-14 items-stretch">
@@ -88,18 +106,21 @@ function TabBar(props: { active: TabKey; badge: number }) {
             >
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
+                {tab.key === "local" ? <ListChecks size={18} /> : null}
                 {tab.key === "agent" ? <Bot size={18} /> : null}
+                {tab.key === "files" ? <Folder size={18} /> : null}
+                {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
                 {tab.key === "agent" && props.badge > 0 ? (
                   <span
-                    aria-label={`${props.badge} 个待处理任务`}
+                    aria-label={t("mobile.nav.pendingTasks", { n: props.badge })}
                     className="absolute -top-1.5 -right-2.5 min-w-4 rounded-full bg-rose-500 px-1 py-px text-center text-ui-2xs leading-3.5 text-white"
                   >
                     {props.badge > 99 ? "99+" : props.badge}
                   </span>
                 ) : null}
               </span>
-              <span className="text-ui-2xs">{tab.label}</span>
+              <span className="text-ui-2xs">{t(tab.label)}</span>
             </button>
           );
         })}
@@ -153,12 +174,25 @@ export default function App() {
   }
 
   if (connection.kind === "offline") {
-    return <GateScreen title="桌面端掉线" hint="无法连接桌面端，恢复网络后重试。" retry />;
+    return (
+      <GateScreen
+        title={t("mobile.gate.offlineTitle")}
+        hint={t("mobile.gate.offlineHint")}
+        retry
+      />
+    );
   }
-  if (connection.kind === "not_logged_in") {
+  if (connection.kind === "not_logged_in" && route.name !== "local") {
+    // Local projects and their items live on the desktop and never call TAPD,
+    // so that tab stays usable before the desktop signs in.
     // The hidden poller keeps running, so this clears itself once the
     // desktop logs back in.
-    return <GateScreen title="桌面端未登录" hint="桌面端登录后本页会自动恢复。" />;
+    return (
+      <GateScreen
+        title={t("mobile.desktop.notLoggedIn")}
+        hint={t("mobile.gate.notLoggedInHint")}
+      />
+    );
   }
 
   // awaiting_approval wins over queued for the Agent tab badge.
@@ -170,15 +204,24 @@ export default function App() {
     ? agentState.queuedCount ?? agentState.tasks.filter((task) => task.status === "queued").length
     : 0;
   const badge = awaiting > 0 ? awaiting : queued;
+  // Terminal sessions take the whole screen: the key bar replaces the tab bar.
+  const fullBleed = route.name === "terminal-session";
 
   return (
     <div className="flex h-full flex-col">
       {/* Mounted behind the gates too: its poll requests are what detect
           recovery (desktop back online / logged back in). */}
       {route.name !== "pair" ? <NotificationBanner /> : null}
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14">
+      <main
+        className={
+          fullBleed
+            ? "min-h-0 flex-1 overflow-hidden"
+            : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
+        }
+      >
         {route.name === "pair" ? <PairPage /> : null}
         {route.name === "bugs" ? <BugsPage /> : null}
+        {route.name === "local" ? <LocalPage projectId={route.projectId} /> : null}
         {route.name === "bug" ? (
           <BugDetailPage id={route.id} workspaceId={route.workspaceId} />
         ) : null}
@@ -186,9 +229,28 @@ export default function App() {
         {route.name === "agent-history" ? <AgentHistoryPage /> : null}
         {route.name === "agent-task" ? <AgentTaskPage id={route.id} /> : null}
         {route.name === "coworkers" ? <CoworkersPage /> : null}
+        {route.name === "files" ? (
+          <FilesPage workspaceId={route.workspaceId} path={route.path} />
+        ) : null}
+        {route.name === "file" ? (
+          // Keyed by target: copied/error state must not leak between files.
+          <FilePage
+            key={`${route.workspaceId ?? ""}:${route.path}`}
+            workspaceId={route.workspaceId}
+            path={route.path}
+          />
+        ) : null}
+        {route.name === "terminal" ? <TerminalPage /> : null}
+        {route.name === "terminal-session" ? (
+          // One instance per session: exit/ended/title/draft state must not
+          // leak from the previous session when the route id changes.
+          <TerminalSessionPage key={route.id} id={route.id} />
+        ) : null}
         {route.name === "settings" ? <SettingsPage /> : null}
       </main>
-      {route.name !== "pair" ? <TabBar active={tabOf(route)} badge={badge} /> : null}
+      {route.name !== "pair" && !fullBleed ? (
+        <TabBar active={tabOf(route)} badge={badge} />
+      ) : null}
     </div>
   );
 }

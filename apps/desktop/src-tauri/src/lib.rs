@@ -8,11 +8,15 @@ mod coworker;
 mod diagnostics;
 mod export;
 mod feature_router;
+mod fs;
 mod island_window;
+mod local;
+mod locale;
 mod mcp;
 mod mcp_audit;
 mod mcp_import;
 mod media;
+mod media_cache;
 mod notification;
 mod notification_db;
 mod open_with;
@@ -21,6 +25,8 @@ mod server;
 mod session;
 mod shell_path;
 mod state;
+mod task_changes;
+mod terminal;
 mod update;
 mod window_state;
 
@@ -58,6 +64,9 @@ pub fn run() {
 
     let config_store = ConfigStore::new(paths.config_file.clone());
     let config = config_store.load();
+    // Backend messages (errors, notifications, agent lifecycle) share the UI
+    // language. An explicit preference wins; `system` follows the OS.
+    tapd_i18n::set_locale(locale::initial_from_prefs(&config.ui_prefs));
     let state = Arc::new(AppState::new(paths, config_store, config));
     let setup_state = state.clone();
 
@@ -99,22 +108,30 @@ pub fn run() {
             commands::set_hidden_workspaces,
             commands::ui_prefs_get,
             commands::ui_prefs_set,
+            locale::set_locale,
             commands::capture_snapshot,
             commands::capture_clear,
             commands::capture_export,
             commands::clear_app_data,
             commands::open_path,
+            commands::open_file,
             commands::open_directory,
             commands::open_media,
             commands::media_endpoint,
             commands::list_dirs,
+            fs::fs_list,
+            fs::fs_read,
+            fs::fs_stat,
+            fs::fs_write,
             commands::open_targets,
             commands::set_open_target,
             companion::companion_status,
             companion::companion_set_enabled,
             companion::companion_set_require_code,
+            companion::companion_set_file_write,
             companion::companion_pairing_code,
             companion::companion_unpair,
+            companion::companion_set_device_manage,
             companion::companion_cloudflared_check,
             companion::companion_tunnel_start,
             companion::companion_tunnel_stop,
@@ -173,6 +190,7 @@ pub fn run() {
 
             notification::init(&handle, state.clone());
             agent::init(&handle, state.clone());
+            terminal::init(&handle);
             // Check GitHub Releases shortly after launch, then every two hours.
             update::init(&handle, state.clone());
             session::spawn_session_watcher(handle, state);
@@ -186,6 +204,8 @@ pub fn run() {
                 // The agent TUI/serve run in their own sessions, so they must be
                 // stopped explicitly or they keep working after the app is gone.
                 agent::shutdown(app);
+                // Terminal shells are in their own sessions too.
+                terminal::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     // Persist the final geometry before the config file goes away.
                     window_state::save_now(app, &state);

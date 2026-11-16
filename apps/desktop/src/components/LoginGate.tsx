@@ -17,6 +17,7 @@ import {
 
 import appIcon from "../assets/app-icon.png";
 import { api, type AppInfo, type LoginQrState } from "../lib/api";
+import { t } from "../lib/i18n";
 import { CodeRain } from "./CodeRain";
 
 type Props = {
@@ -31,7 +32,7 @@ const EMPTY_STATE: LoginQrState = {
   name: null,
   avatarUrl: null,
   corp: null,
-  message: "正在连接隐藏会话窗口",
+  message: null,
 };
 
 /** Soft floating app glyphs on the brand side. */
@@ -92,40 +93,43 @@ const CAPSULE_HOLD_MS = 860;
 
 function phaseCopy(state: LoginQrState, refreshing: boolean): { title: string; hint: string } {
   if (refreshing) {
-    return { title: "正在刷新二维码", hint: "马上就好，请稍候" };
+    return { title: t("settings.login.refreshing"), hint: t("settings.login.almostThere") };
   }
 
   switch (state.phase) {
     case "scanned":
       return {
-        title: "已扫码，正在登录",
-        hint: "正在浏览器中建立 TAPD 会话",
+        title: t("settings.login.scanned"),
+        hint: t("settings.login.establishing"),
       };
     case "expired":
       return {
-        title: "二维码已过期",
-        hint: "正在自动为你刷新二维码",
+        title: t("settings.login.expired"),
+        hint: t("settings.login.autoRefresh"),
       };
     case "error":
       return {
-        title: "登录页暂时不可用",
-        hint: state.message ?? "请重新加载登录页后重试",
+        title: t("settings.login.unavailable"),
+        hint: state.message ?? t("settings.login.reloadHint"),
       };
     case "qr":
       return {
-        title: "请使用企业微信扫码登录",
-        hint: "扫描后在手机上确认即可",
+        title: t("settings.login.scanPrompt"),
+        hint: t("settings.login.scanConfirm"),
       };
     default:
       return {
-        title: "正在接入 TAPD 登录",
-        hint: state.message ?? "正在加载企业微信二维码",
+        title: t("settings.login.connecting"),
+        hint: state.message ?? t("settings.login.loadingQr"),
       };
   }
 }
 
 export function LoginGate({ info, onRefresh, onToast }: Props) {
-  const [state, setState] = useState<LoginQrState>(EMPTY_STATE);
+  const [state, setState] = useState<LoginQrState>(() => ({
+    ...EMPTY_STATE,
+    message: t("settings.login.connectingWindow"),
+  }));
   const [refreshing, setRefreshing] = useState(false);
   const [avatarBroken, setAvatarBroken] = useState(false);
   const [capsuleIndex, setCapsuleIndex] = useState(0);
@@ -211,17 +215,19 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
     {
       icon: <Bot size={15} />,
       tone: "text-emerald-300",
-      text: "TAPD Agent 运行中",
+      text: t("settings.login.capsuleAgent"),
     },
     {
       icon: <ArrowUpCircle size={15} />,
       tone: "text-sky-300",
-      text: info ? `TAPD v${info.version} 升级` : "TAPD 客户端已就绪",
+      text: info
+        ? t("settings.login.capsuleUpgrade", { version: info.version })
+        : t("settings.login.capsuleReady"),
     },
     {
       icon: <RefreshCw size={15} />,
       tone: "text-slate-300",
-      text: "缺陷 · 需求 · 迭代 已同步",
+      text: t("settings.login.capsuleSynced"),
     },
   ];
   const capsule = capsules[capsuleIndex % capsules.length];
@@ -271,7 +277,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
             </div>
             <div className="mt-8 flex items-center justify-center gap-2 text-ui-sm text-slate-400">
               <span className="h-1 w-1 rounded-full bg-slate-300" />
-              让缺陷、需求与研发进度保持同步
+              {t("settings.login.tagline")}
               <span className="h-1 w-1 rounded-full bg-slate-300" />
             </div>
           </div>
@@ -282,17 +288,17 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
             <div className="grid h-11 w-11 place-items-center rounded-2xl bg-white  border border-black/5">
               <img
                 src={appIcon}
-                alt="TAPD 客户端"
+                alt={t("settings.login.appName")}
                 draggable={false}
                 className="h-9 w-9 select-none object-contain"
               />
             </div>
             <div>
               <div className="text-[17px] font-normal tracking-tight text-slate-900">
-                欢迎来到 TAPD 客户端
+                {t("settings.login.welcome")}
               </div>
               <div className="mt-0.5 text-ui-sm text-slate-500">
-                一站式 AI Agent 工作流
+                {t("settings.login.subtitle")}
               </div>
             </div>
           </div>
@@ -304,7 +310,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
         <div className="m-auto w-full max-w-[394px]">
           <header className="text-center">
             <h1 className="text-[26px] font-normal tracking-tight text-slate-900">
-              TAPD 桌面端
+              {t("settings.login.desktopTitle")}
             </h1>
           </header>
 
@@ -318,7 +324,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
                     <img
                       key={state.qrUrl ?? "qr"}
                       src={state.qrUrl ?? ""}
-                      alt="企业微信登录二维码"
+                      alt={t("settings.login.qrAlt")}
                       draggable={false}
                       className="h-full w-full select-none object-contain bg-white p-1.5"
                     />
@@ -329,7 +335,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
                         {avatar && !avatarBroken ? (
                           <img
                             src={avatar}
-                            alt={displayName ?? "扫码用户"}
+                            alt={displayName ?? t("settings.login.scannedUser")}
                             draggable={false}
                             onError={() => setAvatarBroken(true)}
                             className="relative h-[68px] w-[68px] rounded-full object-cover  border-2 border-white"
@@ -342,7 +348,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
                       </div>
                       <div>
                         <div className="truncate text-ui-lg font-normal text-slate-900">
-                          {displayName || "扫码成功"}
+                          {displayName || t("settings.login.scanSuccess")}
                         </div>
                         {state.corp ? (
                           <div className="mt-0.5 truncate text-ui-sm text-slate-400">
@@ -352,7 +358,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
                       </div>
                       <div className="flex items-center gap-1.5 text-ui-sm font-normal text-sky-600">
                         <Loader2 size={13} className="animate-spin" />
-                        正在完成登录…
+                        {t("settings.login.finishing")}
                       </div>
                     </div>
                   ) : (
@@ -378,7 +384,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
 
             <div className="absolute -bottom-3 right-4 flex items-center gap-1 rounded-full border border-border bg-white px-2.5 py-1 text-ui-xs font-normal text-slate-500 ">
               <QrCode size={11} className="text-sky-500" />
-              企业微信
+              {t("settings.login.wecom")}
             </div>
           </div>
 
@@ -400,15 +406,15 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
             <ol className="space-y-1.5 text-[12.5px] leading-6 text-slate-600">
               <li className="flex gap-2">
                 <span className="w-3 shrink-0 text-slate-400">1.</span>
-                打开手机「企业微信」，扫描上方二维码
+                {t("settings.login.stepScan")}
               </li>
               <li className="flex gap-2">
                 <span className="w-3 shrink-0 text-slate-400">2.</span>
-                在手机上确认登录
+                {t("settings.login.stepConfirm")}
               </li>
               <li className="flex gap-2">
                 <span className="w-3 shrink-0 text-slate-400">3.</span>
-                登录完成后自动进入客户端
+                {t("settings.login.stepAuto")}
               </li>
             </ol>
           </div>
@@ -421,7 +427,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
               className="inline-flex items-center gap-1 font-normal text-sky-600 transition hover:text-sky-700 disabled:opacity-50"
             >
               <RefreshCw size={12} className={refreshing ? "animate-spin" : undefined} />
-              刷新二维码
+              {t("settings.login.refreshQr")}
             </button>
             <span className="h-3 w-px bg-slate-200" />
             <button
@@ -429,7 +435,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
               onClick={onRefresh}
               className="text-slate-400 transition hover:text-slate-600"
             >
-              重新检测登录状态
+              {t("settings.login.recheck")}
             </button>
           </div>
 

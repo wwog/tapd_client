@@ -11,6 +11,9 @@ use tapd_core::paths::AppPaths;
 
 /// Marker file kept inside the data directory and consumed on the next launch.
 const MARKER_FILE: &str = ".reset-pending";
+/// Local projects are the user's own data, not TAPD cache: "清理缓存" keeps
+/// the database and SQLite's WAL side files.
+const LOCAL_DB_FILES: &[&str] = &["local.sqlite3", "local.sqlite3-wal", "local.sqlite3-shm"];
 const REMOVE_ATTEMPTS: u32 = 10;
 const RETRY_DELAY: Duration = Duration::from_millis(150);
 
@@ -40,7 +43,7 @@ pub fn apply_pending(paths: &AppPaths) -> io::Result<bool> {
         failures.clear();
         for entry in fs::read_dir(&paths.data_dir)?.flatten() {
             let path = entry.path();
-            if path == marker {
+            if path == marker || is_preserved_local_db(&path) {
                 continue;
             }
             if let Err(error) = remove_entry(&path) {
@@ -66,6 +69,13 @@ pub fn apply_pending(paths: &AppPaths) -> io::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// True for the local-projects database and SQLite's WAL side files.
+fn is_preserved_local_db(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| LOCAL_DB_FILES.contains(&name))
 }
 
 fn remove_entry(path: &Path) -> io::Result<()> {
@@ -146,6 +156,27 @@ mod tests {
         assert!(!paths.logs_dir.join("app.log").exists());
         assert!(!paths.data_dir.join("app-icons").exists());
         assert!(paths.exports_dir.join("bug.json").exists());
+
+        let _ = fs::remove_dir_all(paths.data_dir.parent().expect("root"));
+    }
+
+    #[test]
+    fn wipe_keeps_the_local_database() {
+        let paths = temp_paths();
+        paths.ensure_dirs().expect("dirs");
+        let db = paths.local_db_file();
+        fs::write(&db, "local").expect("local db");
+        fs::write(format!("{}-wal", db.display()), "wal").expect("wal");
+        fs::write(format!("{}-shm", db.display()), "shm").expect("shm");
+        fs::write(paths.data_dir.join("cache.sqlite3"), "cache").expect("cache");
+
+        request(&paths).expect("marker");
+        assert!(apply_pending(&paths).expect("wipe"));
+
+        assert!(db.exists());
+        assert!(paths.data_dir.join("local.sqlite3-wal").exists());
+        assert!(paths.data_dir.join("local.sqlite3-shm").exists());
+        assert!(!paths.data_dir.join("cache.sqlite3").exists());
 
         let _ = fs::remove_dir_all(paths.data_dir.parent().expect("root"));
     }

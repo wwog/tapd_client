@@ -58,6 +58,17 @@ Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 
 每个 TAPD 项目在项目卡片里配置本地仓库路径与项目规则；缺失仓库时任务会失败并提示去配置。项目规则不再注入内置提示词，而是通过 `tapd_get_bug` 的 `projectRule` 返回。
 
+### 本地项目的事项
+
+本地项目是纯本机目录，没有 TAPD workspace。项目页 / 侧栏右键可创建，移动端可从桌面目录选择后创建；事项（`WorkItem`）有待处理 / 处理中 / 已完成三个状态，存在 `local.sqlite3`，不进入 TAPD 缓存。
+
+- 事项页「交给 Agent」走 `local_item_enqueue`，与缺陷共用队列、Worktree、审核与合并；任务身份用合成 ID（项目 `lp_…`、事项 `lw_…`）与 `sourceKind = local_work_item`。
+- 准备阶段导出 `quest.json`（标题 / 描述 / 项目 / 仓库 / 项目规则），不导出 `bug.json`、不下载附件、不注入 TAPD MCP。
+- 项目规则随事项入队复制到任务，追加在本地修复、提交与合并提示词末尾；TAPD 提示词不变。
+- 本地提示词、提交提示词与合并提示词都不允许调用 `tapd_*`；Worktree 分支前缀为 `local/`，缺陷仍为 `tapd/`。
+- 合并成功后只保留分支、清理 worktree，不回写任何外部系统；任务成功时宿主把 `agent_task_id` 匹配的事项自动置为已完成，也可手动标记完成 / 重新打开。
+- 交给 Agent 前目录必须是带 `HEAD` 的 git 仓库；非 git 目录仍可建项目与记事，但入队会返回明确错误。
+
 ### 同事与技能注入
 
 「同事」页勾选的内置同事可叠加，选择顺序会写进 `agent.json` 的 `coworkerIds`。每个任务
@@ -70,11 +81,12 @@ Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 
 - 缺陷详情 →「用 Agent 修复」。
 - 通知窗口 →「处理」（完成改派/接受后触发 `agent://enqueue`）。
+- 本地项目 →「事项」页 →「交给 Agent」。
 
 任务入队后：
 
 1. 状态 `queued`，立即返回前端（提示“已加入队列”）；任务记录写入来源 `source`（缺陷页 / 列表手动发起为 `manual`，通知卡「处理」为 `notification`），历史页展示。
-2. `preparing`：调用导出，生成 `bug.json` + `assets/`。
+2. `preparing`：调用导出。TAPD 缺陷生成 `bug.json` + `assets/`；本地事项生成 `quest.json`，不访问 TAPD。
 3. 解析并校验主仓库；开启 Worktree 时创建或复用独立 worktree，确定 `work_dir()`（worktree 或项目主仓库）。
 4. 校验运行时命令，并尝试把 tapd MCP 写入该客户端的用户级配置（支持 opencode / zcode / claude / cursor / codex / OMP / Kimi Code / Gemini CLI / Qwen Code；失败只记录 warning）。随后为支持会话 hook 的运行时安装/刷新原生 hook（Codex / OpenCode / Claude / Cursor / Gemini / Qwen / OpenClaude / Qoder / Qoder CN / CodeBuddy / Kimi / ZCode / OMP），事件 POST 到桌面端 loopback `/agent/hook`。Codex 会同时写入 `hooks.json` 与 `config.toml` 的信任哈希。最后在 `work_dir()` 用 PTY 启动运行时。
    - `argv` / `flag` 模式：提示词随启动命令传入。
@@ -105,7 +117,7 @@ Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 ## 5. 任务与历史
 
 - SQLite：`cache.sqlite3` 是唯一任务存储。`agent_tasks` 只有 `id / payload / updated_at`，完整任务 JSON 在 `payload` 里；`agent_queue_state` 保存 `queue_paused`。状态变化只 upsert 变化的行。终态历史也 upsert 到同一张 `agent_tasks` 表，不另建历史表。
-- 任务字段：`jsonPath` 指向导出的 `bug.json`；`source` 记录来源（`manual` 手动发起 / `notification` 通知卡处理），历史页据此展示「来源」；开启 Worktree 时另有 `worktreePath` 与 `worktreeBranch`。旧记录的 `mdPath` 不再读取，字段为空即可，不做迁移。
+- 任务字段：`jsonPath` 指向导出的 `bug.json`（本地事项为 `quest.json`）；`source` 记录来源（`manual` 手动发起 / `notification` 通知卡处理 / `local` 本地事项），`sourceKind` 区分 `tapd_bug` 与 `local_work_item`，旧记录缺省按 TAPD 缺陷读取；开启 Worktree 时另有 `worktreePath` 与 `worktreeBranch`。旧记录的 `mdPath` 不再读取，字段为空即可，不做迁移。本地任务在 UI 中不显示「打开缺陷」，只显示项目 / 事项标题。
 - 无日志：旧的 `agent-logs/` 会在启动时清掉。需要回看或继续时，历史里「打开系统终端」优先用 hook 捕获的 `sessionId` 精确恢复（Claude/Cursor/OMP 用 `--resume <id>`，OpenCode/Kimi 用 `--session <id>`，Codex 用 `resume <id>`，Gemini 用 `--resume <id>`）；没有 id 时退回各 CLI 的「继续最近会话」（`--continue`，Gemini 用 `--resume latest`）。
 - 状态：`queued | preparing | running | awaiting_approval | awaiting_merge | merging | succeeded | failed | canceled`
 - `queue_paused` 保存在 `agent_queue_state`：用户停止审核后即使重启客户端，队列也不会自动执行。
@@ -151,7 +163,7 @@ Agent 页 →「配置」里的「Agent 执行」控制并行与隔离：
 4. Worktree 开启·提交轮：审核通过后如有未提交改动，用 worktree 提交模板只核对 diff、跑测试、commit，仍不回写 TAPD。
 5. Worktree 开启·合并轮：合并 Agent 在主仓库合并分支、跑测试，成功后统一调用 `tapd_add_bug_comment` 评论并用 `tapd_update_bug_status` 更新状态。手动合并步骤也包含回写（见卡片上的 `merge.instructions`）。
 
-客户端还会在 MCP 层做硬校验：当前缺陷对应的 Agent 任务仍在 `running` 且存在**本轮新产生**的未提交文件时，`tapd_add_bug_comment` / `tapd_update_bug_status` 会被拒绝，并返回“请先 git commit”；任务处于 `merging` 且分支尚未并入主仓 HEAD 时，写操作会被拒绝并提示先完成合并。任务开始前就存在的本地改动不计入，避免误伤。
+客户端还会在 MCP 层做硬校验：当前缺陷对应的 Agent 任务仍在 `running` 且存在**本轮新产生**的未提交文件时，`tapd_add_bug_comment` / `tapd_update_bug_status` 会被拒绝，并返回“请先 git commit”；任务处于 `merging` 且分支尚未并入主仓 HEAD 时，写操作会被拒绝并提示先完成合并。任务开始前就存在的本地改动不计入，避免误伤。该门禁只匹配 `sourceKind = tapd_bug` 的任务，本地事项既不参与也不阻塞 TAPD 写回。
 
 MCP 提供：
 
@@ -183,5 +195,6 @@ MCP 提供：
 10. 确认任务能在进程退出、会话 hook 结束事件或「静默完成」阈值后自动结束，不依赖任何 MCP 回报工具。
 11. 开启 Worktree 后核对成功任务的分支保留、目录删除；失败 / 取消 / 待审核 / 待合并任务目录保留；删除任务记录会清理目录，重试会新建 worktree。历史子页确认退出码、「打开系统终端」（应打开 Terminal 并续接会话）与「打开缺陷」跳转；测试中断/重试与重启恢复（含待审核/待合并/队列暂停状态）。
 12. 重启恢复：在 `running` 或 `preparing` 时退出客户端，确认再次登录并完成引导后任务回到队列而不是直接失败；主界面 header 下方出现恢复横幅，显示已重新排队 / 待审核 / 待合并 / 失败数量，点「查看任务」进入 Agent 页、点「知道了」关闭。连续中断超过 3 次的任务应显示失败并带「自动重试次数已用尽」。在登录页停留期间确认队列不会自行启动。
+13. 本地事项：项目页 / 侧栏右键新建本地项目（选 `../test` 这类带 `HEAD` 的 git 仓库），填写项目规则；新增事项并在待处理 / 处理中之间切换；「交给 Agent」后确认任务出现在 Agent 页、`jsonPath` 指向 `quest.json`、提示词含项目规则且不含 `tapd_*`，任务成功后事项自动进入已完成（也可手动标记 / 重新打开），分支为 `local/…` 且 TAPD 没有被写回。移动端「事项」页重复一次创建项目（目录选择 + 规则）与发起 Agent；文件 / 终端只显示有文件夹的 TAPD 项目并包含本地项目，文件页可从根目录只读浏览。
 
 如需不依赖真实 CLI 做 PTY 冒烟测试，可将 binaryPath 临时指向 `fixtures/fake-agent.sh`（会打印 READY 并回显输入），测试完恢复。

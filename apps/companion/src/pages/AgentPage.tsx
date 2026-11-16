@@ -10,6 +10,7 @@ import {
   type AgentTasksState,
 } from "../lib/api";
 import { bucketAgentTasks, useAgentTasks } from "../lib/agentTasks";
+import { t } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { bugTitle } from "../lib/format";
 import { Badge } from "../components/Badge";
@@ -34,15 +35,17 @@ function RunningCard(props: {
         <div className="min-w-0 flex-1">
           <h3
             className="min-w-0 text-ui-caption leading-5 text-slate-900"
-            title={bugTitle(task.title) || "（无标题）"}
+            title={bugTitle(task.title) || t("magent.untitled")}
           >
-            {bugTitle(task.title) || "（无标题）"}
+            {bugTitle(task.title) || t("magent.untitled")}
           </h3>
           <p className="mt-0.5 truncate font-mono text-ui-xs text-slate-400" title={task.runtimeId}>
             {task.runtimeId || "—"}
           </p>
         </div>
-        <Badge tone={AGENT_STATUS_TONES[task.status]}>{AGENT_STATUS_LABELS[task.status]}</Badge>
+        <Badge tone={AGENT_STATUS_TONES[task.status]}>
+          {t(AGENT_STATUS_LABELS[task.status])}
+        </Badge>
       </div>
       {phase ? (
         <p
@@ -56,19 +59,19 @@ function RunningCard(props: {
         <button
           type="button"
           disabled={props.busy}
-          title="取消后任务结束，已产生的改动保留在工作区。"
+          title={t("magent.cancelHint")}
           onClick={() => props.onCancel(task)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
         >
           <X size={12} />
-          取消
+          {t("common.cancel")}
         </button>
         <button
           type="button"
           onClick={() => navigate(`#/agent/task/${task.id}`)}
           className="ml-auto rounded-md px-2 py-1.5 text-ui-sm text-slate-400 transition active:bg-overlay-soft"
         >
-          详情
+          {t("common.details")}
         </button>
       </div>
     </article>
@@ -127,10 +130,10 @@ export function AgentPage() {
         type="button"
         onClick={() => navigate("#/coworkers")}
         className="flex w-full items-center gap-2 border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-        title="选择随任务一起提示 Agent 的同事包。"
+        title={t("magent.coworkersHint")}
       >
         <Users size={16} className="shrink-0 text-slate-400" />
-        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">同事包</span>
+        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">{t("magent.coworkers")}</span>
         <ChevronRight size={14} className="shrink-0 text-slate-400" />
       </button>
 
@@ -138,26 +141,26 @@ export function AgentPage() {
         type="button"
         onClick={() => navigate("#/agent/history")}
         className="flex w-full items-center gap-2 border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-        title="已结束任务的执行记录与重试。"
+        title={t("magent.historyHint")}
       >
         <Clock size={16} className="shrink-0 text-slate-400" />
-        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">执行记录</span>
+        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">{t("magent.history")}</span>
         <ChevronRight size={14} className="shrink-0 text-slate-400" />
       </button>
 
       {state?.queuePaused ? (
         <p
           className="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-ui-sm leading-5 text-amber-800"
-          title="搁置审核会暂停队列；在桌面端 Agent 页恢复。"
+          title={t("magent.queuePausedHint")}
         >
-          队列已暂停（在桌面端恢复）
+          {t("magent.queuePaused")}
         </p>
       ) : null}
 
       {state?.storageError ? (
         <p
           className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title="任务状态可能无法在重启后保留。"
+          title={t("magent.storageHint")}
         >
           {state.storageError}
         </p>
@@ -166,7 +169,7 @@ export function AgentPage() {
       {feedError ? (
         <p
           className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title="刷新失败，将在下个轮询周期重试。"
+          title={t("magent.refreshFailedHint")}
         >
           {feedError}
         </p>
@@ -175,7 +178,7 @@ export function AgentPage() {
       {actionError ? (
         <p
           className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title="上一次操作失败的结果，重试成功后消失。"
+          title={t("magent.lastActionFailedHint")}
         >
           {actionError}
         </p>
@@ -184,22 +187,22 @@ export function AgentPage() {
       {!state && !feedError ? (
         <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
           <LoaderCircle size={14} className="animate-spin" />
-          正在读取任务…
+          {t("magent.taskLoading")}
         </div>
       ) : null}
 
       {state && idle ? (
         <p
           className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title="在缺陷列表对单个缺陷使用「用 Agent 修复」发起任务。"
+          title={t("magent.idleHint")}
         >
-          没有进行中的任务
+          {t("magent.noActiveTasks")}
         </p>
       ) : null}
 
       {approvals.length > 0 || merges.length > 0 ? (
         <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">待处理</h2>
+          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.awaitingAction")}</h2>
           <div className="space-y-3">
             {approvals.map((task) => (
               <ReviewCard
@@ -229,7 +232,7 @@ export function AgentPage() {
 
       {running.length > 0 ? (
         <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">运行中</h2>
+          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.running")}</h2>
           <div className="space-y-3">
             {running.map((task) => (
               <RunningCard
@@ -246,7 +249,7 @@ export function AgentPage() {
 
       {queued.length > 0 ? (
         <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">队列</h2>
+          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.queue")}</h2>
           <div className="overflow-hidden rounded-2xl border border-border bg-surface">
             {queued.map((task, index) => (
               <div key={task.id} className="border-b border-border last:border-b-0">
@@ -260,22 +263,24 @@ export function AgentPage() {
                   </span>
                   <span
                     className="min-w-0 flex-1 truncate text-ui-caption text-slate-900"
-                    title={bugTitle(task.title) || "（无标题）"}
+                    title={bugTitle(task.title) || t("magent.untitled")}
                   >
-                    {bugTitle(task.title) || "（无标题）"}
+                    {bugTitle(task.title) || t("magent.untitled")}
                   </span>
-                  <Badge tone={AGENT_STATUS_TONES.queued}>排队中</Badge>
+                  <Badge tone={AGENT_STATUS_TONES.queued}>
+                    {t(AGENT_STATUS_LABELS.queued)}
+                  </Badge>
                 </button>
                 <div className="flex justify-end px-4 pb-2">
                   <button
                     type="button"
                     disabled={busy !== null}
-                    title="取消这个排队中的任务。"
+                    title={t("magent.cancelQueuedHint")}
                     onClick={() => cancel(task)}
                     className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-ui-xs text-slate-500 transition active:bg-overlay-soft disabled:opacity-50"
                   >
                     <X size={12} />
-                    取消
+                    {t("common.cancel")}
                   </button>
                 </div>
               </div>

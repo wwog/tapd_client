@@ -1,0 +1,6 @@
+[package]
+name = "tapd-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Source-keyed message catalogue for the TAPD client"

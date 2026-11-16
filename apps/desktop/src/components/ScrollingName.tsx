@@ -1,14 +1,22 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 
+/** Constant reading pace for the hover slide, in ms per overflow pixel. */
+const MS_PER_PX = 16;
+/** Floor so a tiny overflow still reads as a move, not a jump. */
+const MIN_DURATION = 200;
+/** Snapping back on mouseleave stays quick; only the reveal is paced. */
+const RETURN_DURATION = 160;
+
 type Props = {
   text: string;
   className?: string;
 };
 
 /**
- * One-line project name. If it overflows, hovering scrolls it in place instead
- * of truncating; the speed scales with the overflow distance.
+ * One-line name/title. If it overflows, hovering scrolls it in place instead
+ * of truncating. The duration is proportional to the overflow distance at a
+ * constant speed, so long text never sprints and the tail never crawls.
  */
 export function ScrollingName({ text, className }: Props) {
   const outerRef = useRef<HTMLSpanElement>(null);
@@ -30,7 +38,7 @@ export function ScrollingName({ text, className }: Props) {
     return () => observer.disconnect();
   }, [text]);
 
-  const duration = Math.min(2500, Math.max(400, overflow * 12));
+  const duration = Math.max(MIN_DURATION, overflow * MS_PER_PX);
 
   return (
     <span
@@ -42,11 +50,11 @@ export function ScrollingName({ text, className }: Props) {
     >
       <span
         ref={innerRef}
-        className="inline-block whitespace-nowrap transition-transform ease-out"
+        className="inline-block whitespace-nowrap transition-transform ease-linear"
         style={{
           transform:
             hovered && overflow > 0 ? `translateX(-${overflow}px)` : "translateX(0)",
-          transitionDuration: `${duration}ms`,
+          transitionDuration: `${hovered ? duration : RETURN_DURATION}ms`,
         }}
       >
         {text}

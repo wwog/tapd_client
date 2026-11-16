@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { agentInFlightLabel, type AgentInFlight } from "../lib/agent";
 import { elapsedSince, formatElapsed, formatStartedAt } from "../lib/activity";
+import { t } from "../lib/i18n";
 import { ActivityGlyph } from "./ActivityGlyph";
 
 type Props = {
@@ -22,7 +23,7 @@ export function AgentActivityLine({ task }: Props) {
   // two or three rows that show elapsed time, not all 50.
   const now = useClock();
 
-  const label = `桌面 Agent ${agentInFlightLabel(task)}`;
+  const label = t("agent.status.desktop", { status: agentInFlightLabel(task) });
   const seed = `${task.task.workspaceId}:${task.task.bugId}:agent`;
 
   return (
@@ -33,10 +34,12 @@ export function AgentActivityLine({ task }: Props) {
       <span className="flex min-w-0 items-center gap-1.5 text-ui-xs text-slate-500">
         <ActivityGlyph seed={seed} />
         <span className="truncate">
-          {formatStartedAt(task.task.createdAt)} 创建 · 已用{" "}
-          {formatElapsed(
-            elapsedSince(task.task.startedAt ?? task.task.createdAt, now),
-          )}
+          {t("agent.activity.createdElapsed", {
+            time: formatStartedAt(task.task.createdAt),
+            elapsed: formatElapsed(
+              elapsedSince(task.task.startedAt ?? task.task.createdAt, now),
+            ),
+          })}
         </span>
       </span>
     </div>

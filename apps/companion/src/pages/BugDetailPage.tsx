@@ -17,6 +17,7 @@ import {
 } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { absoluteTime, bugRef, bugTitle, ownerNames, relativeTime } from "../lib/format";
+import { t } from "../lib/i18n";
 import {
   bugDetailKey,
   cached,
@@ -54,7 +55,7 @@ function CommentCard(props: { comment: Comment; depth: number }) {
         </span>
       </div>
       {comment.isDeleted ? (
-        <p className="mt-1 text-ui-caption text-slate-400">已删除</p>
+        <p className="mt-1 text-ui-caption text-slate-400">{t("mobile.bugDetail.deleted")}</p>
       ) : comment.descriptionHtml.trim() ? (
         <div
           className="rich mt-1 text-ui-caption leading-6 text-slate-700"
@@ -132,7 +133,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
   // 详情读取走 reqCache：TTL 60s，过期后台刷新先回旧值；换 bug 时清掉旧数据。
   useEffect(() => {
     if (!workspaceId || !cacheKey) {
-      setError("缺少工作区参数，请从列表进入");
+      setError(t("mobile.bugDetail.missingWorkspace"));
       setLoading(false);
       return;
     }
@@ -218,7 +219,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
     setActionError(null);
     const ok = await copyText(detail.bugUrl);
     if (!ok) {
-      setActionError("复制失败，请手动复制");
+      setActionError(t("mobile.bugDetail.copyFailed"));
       return;
     }
     setCopied(true);
@@ -286,14 +287,14 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
-          aria-label="返回"
+          aria-label={t("mobile.nav.back")}
           onClick={back}
           className="rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
         >
           <ChevronLeft size={18} />
         </button>
         <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-500">
-          {detail ? `#${bugRef(detail)}` : "缺陷详情"}
+          {detail ? `#${bugRef(detail)}` : t("mobile.bugDetail.title")}
         </span>
       </header>
 
@@ -310,42 +311,42 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
           </h1>
 
           <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-            <InfoRow label="状态">
+            <InfoRow label={t("common.status")}>
               <Badge tone={STATUS_TONES[detail.status] ?? "neutral"}>
                 {detail.statusLabel || detail.status}
               </Badge>
             </InfoRow>
-            <InfoRow label="优先级">
+            <InfoRow label={t("common.priority")}>
               <span className="inline-flex items-center gap-1.5">
                 <PriorityDot priority={detail.priority} />
                 {detail.priorityLabel || detail.priority || "—"}
               </span>
             </InfoRow>
-            <InfoRow label="严重程度">{detail.severityLabel || detail.severity || "—"}</InfoRow>
-            <InfoRow label="处理人">{ownerNames(detail.owner)[0] || "未指派"}</InfoRow>
-            <InfoRow label="创建人">{detail.creator || "—"}</InfoRow>
-            <InfoRow label="创建">{absoluteTime(detail.created)}</InfoRow>
-            <InfoRow label="更新">{relativeTime(detail.modified)}</InfoRow>
+            <InfoRow label={t("common.severity")}>{detail.severityLabel || detail.severity || "—"}</InfoRow>
+            <InfoRow label={t("common.owner")}>{ownerNames(detail.owner)[0] || t("mobile.bugs.unassigned")}</InfoRow>
+            <InfoRow label={t("common.creator")}>{detail.creator || "—"}</InfoRow>
+            <InfoRow label={t("mobile.bugDetail.created")}>{absoluteTime(detail.created)}</InfoRow>
+            <InfoRow label={t("mobile.bugDetail.updated")}>{relativeTime(detail.modified)}</InfoRow>
           </section>
 
           <section className="mx-3 mt-3 flex flex-wrap items-center gap-2">
             <ActionButton
               icon={<Link2 size={13} />}
-              label={copied ? "已复制" : "复制链接"}
+              label={copied ? t("common.copied") : t("mobile.bugDetail.copyLink")}
               disabled={!canCopy}
               onClick={() => void copyLink()}
             />
             {showClaim ? (
               <ActionButton
                 icon={<UserPlus size={13} />}
-                label="认领"
+                label={t("mobile.bugDetail.claim")}
                 busy={claimBusy}
                 onClick={() => void claim()}
               />
             ) : null}
             <ActionButton
               icon={<GitBranch size={13} />}
-              label="状态流转"
+              label={t("mobile.bugDetail.changeStatus")}
               onClick={() => {
                 setTransitionError(null);
                 setTransitionsOpen(true);
@@ -353,13 +354,13 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             />
             <ActionButton
               icon={<MessageSquare size={13} />}
-              label="评论"
+              label={t("mobile.bugDetail.comment")}
               onClick={() => setCommentOpen(true)}
             />
             {actionError ? (
               <p
                 className="w-full text-ui-sm text-rose-600"
-                title="上一次操作失败的结果，重试成功后消失。"
+                title={t("mobile.bugDetail.actionErrorHint")}
               >
                 {actionError}
               </p>
@@ -367,21 +368,23 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
           </section>
 
           <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
-            <h2 className="text-ui-sm text-slate-500">描述</h2>
+            <h2 className="text-ui-sm text-slate-500">{t("mobile.bugDetail.description")}</h2>
             {detail.descriptionHtml.trim() ? (
               <div
                 className="rich mt-2 text-ui-caption leading-6 text-slate-700"
                 dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(detail.descriptionHtml) }}
               />
             ) : (
-              <p className="mt-2 text-ui-caption text-slate-400">暂无描述</p>
+              <p className="mt-2 text-ui-caption text-slate-400">{t("mobile.bugDetail.noDescription")}</p>
             )}
           </section>
 
           <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
-            <h2 className="text-ui-sm text-slate-500">评论（{detail.comments.length}）</h2>
+            <h2 className="text-ui-sm text-slate-500">
+              {t("mobile.bugDetail.comments", { n: detail.comments.length })}
+            </h2>
             {detail.comments.length === 0 ? (
-              <p className="mt-2 text-ui-caption text-slate-400">还没有评论</p>
+              <p className="mt-2 text-ui-caption text-slate-400">{t("mobile.bugDetail.noComments")}</p>
             ) : (
               detail.comments.map((comment) => (
                 <CommentCard key={comment.id} comment={comment} depth={0} />
@@ -394,21 +397,21 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       {/* -- 状态流转 sheet：可流转状态列表，点选即流转 ------------------- */}
       <BottomSheet
         open={transitionsOpen}
-        title="状态流转"
+        title={t("mobile.bugDetail.changeStatus")}
         onClose={() => setTransitionsOpen(false)}
       >
         {transitions ? (
           <p
             className="text-ui-sm text-slate-500"
-            title={`当前状态 ${transitions.currentLabel || transitions.currentStatus}`}
+            title={t("mobile.bugDetail.currentStatusHint", { status: transitions.currentLabel || transitions.currentStatus })}
           >
-            当前：{transitions.currentLabel || transitions.currentStatus}
+            {t("mobile.bugDetail.currentStatus", { status: transitions.currentLabel || transitions.currentStatus })}
           </p>
         ) : null}
         {transitionsError ? (
           <p
             className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-            title="刷新失败；关闭后重开会重试。"
+            title={t("mobile.bugDetail.refreshFailedHint")}
           >
             {transitionsError}
           </p>
@@ -416,14 +419,14 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
         {!transitions && !transitionsError ? (
           <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
             <LoaderCircle size={14} className="animate-spin" />
-            正在读取可流转状态…
+            {t("mobile.bugDetail.loadingTransitions")}
           </div>
         ) : null}
         {transitions ? (
           <div className="mt-3 space-y-2">
             {transitions.transitions.length === 0 ? (
-              <p className="py-2 text-ui-caption text-slate-400" title="当前状态下没有可流转的目标。">
-                没有可流转的状态
+              <p className="py-2 text-ui-caption text-slate-400" title={t("mobile.bugDetail.noTransitionsHint")}>
+                {t("mobile.bugDetail.noTransitions")}
               </p>
             ) : null}
             {transitions.transitions.map((choice) => (
@@ -443,7 +446,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             {transitionError ? (
               <p
                 className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-                title="流转失败，表单保留可重试。"
+                title={t("mobile.bugDetail.transitionFailedHint")}
               >
                 {transitionError}
               </p>
@@ -455,7 +458,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       {/* -- 评论 sheet：textarea + 发送 ---------------------------------- */}
       <BottomSheet
         open={commentOpen}
-        title="评论"
+        title={t("mobile.bugDetail.comment")}
         onClose={() => setCommentOpen(false)}
         footer={
           <button
@@ -465,7 +468,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
           >
             {commentBusy ? <LoaderCircle size={13} className="animate-spin" /> : null}
-            {commentBusy ? "正在发送…" : "发送"}
+            {commentBusy ? t("mobile.bugDetail.sending") : t("common.send")}
           </button>
         }
       >
@@ -474,7 +477,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
           onChange={(event) => setCommentDraft(event.target.value)}
           rows={5}
           autoFocus
-          placeholder="写下评论…"
+          placeholder={t("mobile.bugDetail.commentPlaceholder")}
           className="w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
         />
       </BottomSheet>

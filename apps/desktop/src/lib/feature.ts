@@ -23,7 +23,6 @@ export type FeatureCommandName =
   | "agent_queue_resume"
   | "agent_resize"
   | "agent_review_approve"
-  | "agent_review_diff"
   | "agent_review_stop"
   | "agent_runtimes"
   | "agent_scan"
@@ -31,7 +30,9 @@ export type FeatureCommandName =
   | "agent_send_message"
   | "agent_summary"
   | "agent_task_cancel"
+  | "agent_task_changes"
   | "agent_task_delete"
+  | "agent_task_diff"
   | "agent_task_retry"
   | "agent_tasks_history"
   | "agent_tasks_list"
@@ -47,6 +48,15 @@ export type FeatureCommandName =
   | "chat_stop"
   | "coworker_list"
   | "coworker_select"
+  | "local_item_create"
+  | "local_item_delete"
+  | "local_item_enqueue"
+  | "local_item_update"
+  | "local_items_list"
+  | "local_project_create"
+  | "local_project_delete"
+  | "local_project_update"
+  | "local_projects_list"
   | "mcp_import_client"
   | "notification_ai_action"
   | "notification_ai_debug"
@@ -62,7 +72,13 @@ export type FeatureCommandName =
   | "notification_simulate"
   | "notification_start_drag"
   | "notification_state_get"
-  | "notification_view";
+  | "notification_view"
+  | "terminal_close"
+  | "terminal_create"
+  | "terminal_input"
+  | "terminal_list"
+  | "terminal_replay"
+  | "terminal_resize";
 
 /** Calls a feature command routed to the notification / agent / cache modules. */
 export const featureCommand = <T>(

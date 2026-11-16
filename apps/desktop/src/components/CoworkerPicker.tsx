@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Check, Coffee, RefreshCw } from "lucide-react";
 
 import { coworkerApi, type Coworker } from "../lib/coworker";
+import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
 import { Button, EmptyState, Spinner } from "./ui";
 
@@ -117,7 +118,7 @@ export function CoworkerGrid(props: {
           onClick={onRetry}
           icon={<RefreshCw size={13} />}
         >
-          重新加载
+          {t("coworker.reload")}
         </Button>
       </div>
     );
@@ -127,7 +128,7 @@ export function CoworkerGrid(props: {
     return (
       <div className="flex items-center justify-center gap-2 py-16 text-ui-caption text-slate-400">
         <Spinner />
-        正在喊人…
+        {t("coworker.loading")}
       </div>
     );
   }
@@ -136,8 +137,8 @@ export function CoworkerGrid(props: {
     return (
       <EmptyState
         icon={<Coffee size={18} />}
-        title="还没有同事入职"
-        description="把同事包放进 assets/coworker，重启后就能在这里见到。"
+        title={t("coworker.emptyTitle")}
+        description={t("coworker.emptyHint")}
       />
     );
   }
@@ -252,13 +253,13 @@ function CoworkerCard(props: {
           </span>
         ) : null}
         {coworker.skills.length === 0 ? (
-          <span className="text-ui-2xs text-slate-300">没有技能包</span>
+          <span className="text-ui-2xs text-slate-300">{t("coworker.noSkills")}</span>
         ) : null}
         <span
           className="ml-auto text-ui-2xs"
           style={{ color: selected ? accent : undefined }}
         >
-          {selected ? "已入伙" : "点一下入伙"}
+          {selected ? t("coworker.joined") : t("coworker.join")}
         </span>
       </div>
     </button>

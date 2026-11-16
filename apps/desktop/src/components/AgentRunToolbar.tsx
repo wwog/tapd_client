@@ -1,16 +1,20 @@
 import { PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
 import clsx from "clsx";
 
+import { t, type MessageKey } from "../lib/i18n";
 import { Segmented } from "./Segmented";
 import { Button } from "./ui";
 
 export type AgentTab = "run" | "approval" | "history" | "config";
 
 /** Left list column names, used by the collapse toggle. */
-const LIST_LABELS: Record<Exclude<AgentTab, "config">, { list: string; detail: string }> = {
-  run: { list: "执行队列", detail: "终端" },
-  approval: { list: "待处理列表", detail: "处理详情" },
-  history: { list: "执行记录列表", detail: "记录详情" },
+const LIST_LABELS: Record<
+  Exclude<AgentTab, "config">,
+  { list: MessageKey; detail: MessageKey }
+> = {
+  run: { list: "agent.queue.title", detail: "agent.view.terminal" },
+  approval: { list: "agent.approval.list", detail: "agent.approval.detail" },
+  history: { list: "agent.history.list", detail: "agent.history.detail" },
 };
 
 export type AgentCounts = {
@@ -45,17 +49,26 @@ export function AgentRunToolbar(props: Props) {
     onRefresh,
   } = props;
   const listLabels = tab === "config" ? null : LIST_LABELS[tab];
+  const listName = listLabels ? t(listLabels.list) : "";
+  const detailName = listLabels ? t(listLabels.detail) : "";
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       {listLabels ? (
         <button
           type="button"
-          aria-label={`${listCollapsed ? "展开" : "收起"}${listLabels.list}`}
+          aria-label={
+            listCollapsed
+              ? t("agent.toolbar.expand", { name: listName })
+              : t("agent.toolbar.collapse", { name: listName })
+          }
           title={
             listCollapsed
-              ? `展开${listLabels.list}（空间不足时会自动收起）`
-              : `收起${listLabels.list}，把宽度留给${listLabels.detail}`
+              ? t("agent.toolbar.expandAuto", { name: listName })
+              : t("agent.toolbar.collapseDetail", {
+                  name: listName,
+                  detail: detailName,
+                })
           }
           onClick={onToggleList}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
@@ -70,13 +83,13 @@ export function AgentRunToolbar(props: Props) {
         options={[
           {
             value: "run",
-            label: "运行",
+            label: t("agent.tab.run"),
           },
           {
             value: "approval",
             label: (
               <span className="inline-flex items-center gap-1.5">
-                待处理
+                {t("agent.tab.pending")}
                 {counts.awaiting > 0 ? (
                   <span className="inline-flex min-w-[2ch] justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-ui-2xs font-normal leading-none tabular-nums text-white">
                     {counts.awaiting}
@@ -85,14 +98,23 @@ export function AgentRunToolbar(props: Props) {
               </span>
             ),
           },
-          { value: "history", label: "历史" },
-          { value: "config", label: "配置" },
+          { value: "history", label: t("agent.tab.history") },
+          { value: "config", label: t("agent.tab.config") },
         ]}
       />
 
       <span className="text-ui-sm text-slate-400">
-        {counts.active} 运行 · {counts.queued} 排队 · {counts.awaiting} 待处理
-        {counts.paused ? " · 队列已暂停" : ""}
+        {counts.paused
+          ? t("agent.counts.runningPaused", {
+              active: counts.active,
+              queued: counts.queued,
+              awaiting: counts.awaiting,
+            })
+          : t("agent.counts.running", {
+              active: counts.active,
+              queued: counts.queued,
+              awaiting: counts.awaiting,
+            })}
       </span>
 
       {counts.paused ? (
@@ -104,14 +126,14 @@ export function AgentRunToolbar(props: Props) {
           disabled={actionBusy !== null && actionBusy !== "queue:resume"}
           onClick={onResumeQueue}
         >
-          继续队列
+          {t("agent.queue.resume")}
         </Button>
       ) : null}
 
       <button
         type="button"
         onClick={onRefresh}
-        title="刷新任务状态"
+        title={t("agent.queue.refresh")}
         className={clsx(
           "grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700",
           !counts.paused && "ml-auto",

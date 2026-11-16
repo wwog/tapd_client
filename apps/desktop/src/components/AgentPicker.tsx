@@ -6,6 +6,7 @@ import { Bot, Check, ChevronDown, Search } from "lucide-react";
 import type { AgentRuntimeDescriptor, AgentScanResult } from "../lib/agent";
 import { computeMenuPosition, type MenuPosition } from "../lib/menuPosition";
 import { useDismiss } from "../hooks/useDismiss";
+import { t } from "../lib/i18n";
 import { AgentIcon } from "./AgentIcon";
 
 type Props = {
@@ -85,9 +86,9 @@ export function AgentPicker(props: Props) {
       else missing.push(runtime);
     }
     return [
-      { key: "found", label: "已检测到", items: found },
-      { key: "missing", label: "未检测到", items: missing },
-      { key: "custom", label: "自定义", items: custom },
+      { key: "found", label: t("agent.picker.found"), items: found },
+      { key: "missing", label: t("agent.picker.missing"), items: missing },
+      { key: "custom", label: t("agent.picker.custom"), items: custom },
     ];
   }, [byRuntime, hasScan, query, runtimes]);
 
@@ -104,7 +105,7 @@ export function AgentPicker(props: Props) {
         title={
           selected
             ? `${selected.vendor} · ${selected.description}`
-            : "选择 Agent"
+            : t("agent.picker.select")
         }
         onClick={() => (open ? close() : openMenu())}
         className={clsx(
@@ -135,7 +136,7 @@ export function AgentPicker(props: Props) {
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-ui-caption text-slate-800">
-              {selected?.name ?? "选择 Agent"}
+              {selected?.name ?? t("agent.picker.select")}
             </span>
             {selected && selectedScan?.version?.trim() ? (
               <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-ui-2xs leading-none text-emerald-700">
@@ -143,7 +144,7 @@ export function AgentPicker(props: Props) {
               </span>
             ) : selected && hasScan && selected.id !== "custom" && !selectedScan?.found ? (
               <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-ui-2xs leading-none text-amber-700">
-                未检测到
+                {t("agent.picker.missing")}
               </span>
             ) : null}
           </span>
@@ -151,7 +152,7 @@ export function AgentPicker(props: Props) {
             <span className="mt-0.5 block truncate font-mono text-ui-xs text-slate-400">
               {selected
                 ? `${selected.vendor} · ${selectedScan?.resolvedPath || selected.binary}`
-                : emptyHint ?? "运行时决定用哪个 Agent 修复缺陷"}
+                : emptyHint ?? t("agent.picker.hint")}
             </span>
           )}
         </span>
@@ -170,7 +171,7 @@ export function AgentPicker(props: Props) {
             <>
               <button
                 type="button"
-                aria-label="关闭 Agent 选择"
+                aria-label={t("agent.picker.close")}
                 tabIndex={-1}
                 className="fixed inset-0 z-[110] cursor-default"
                 onClick={close}
@@ -178,7 +179,7 @@ export function AgentPicker(props: Props) {
               <div
                 ref={menuRef}
                 role="listbox"
-                aria-label="选择 Agent"
+                aria-label={t("agent.picker.select")}
                 style={{
                   left: position.left,
                   top: position.top,
@@ -199,7 +200,7 @@ export function AgentPicker(props: Props) {
                       autoFocus
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      placeholder="搜索 Agent"
+                      placeholder={t("agent.picker.search")}
                       className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
                     />
                   </div>
@@ -259,7 +260,7 @@ export function AgentPicker(props: Props) {
                   )}
                   {empty ? (
                     <div className="px-2 py-3 text-center text-ui-xs text-slate-400">
-                      没有匹配项
+                      {t("agent.picker.noMatch")}
                     </div>
                   ) : null}
                 </div>

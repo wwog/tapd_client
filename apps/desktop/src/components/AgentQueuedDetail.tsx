@@ -1,8 +1,13 @@
 import { Bug, Hourglass, Loader2, X } from "lucide-react";
 
-import type { AgentTask } from "../lib/agent";
+import {
+  agentTaskTitle,
+  isBugAgentTask,
+  type AgentTask,
+} from "../lib/agent";
 import { relativeTime } from "../lib/api";
-import { bugTitle } from "../lib/bug";
+import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 import { Badge, Button } from "./ui";
 
 type Props = {
@@ -28,19 +33,17 @@ export function AgentQueuedDetail(props: Props) {
             <Hourglass size={14} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <h2
-                className="truncate text-ui-base font-normal text-slate-900"
-                title={bugTitle(task.title)}
-              >
-                {bugTitle(task.title) || "（无标题）"}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 className="min-w-[16ch] flex-1 text-ui-base font-normal text-slate-900">
+                <ScrollingName text={agentTaskTitle(task) || t("agent.untitled")} />
               </h2>
-              <Badge tone="neutral">排队中</Badge>
+              <Badge tone="neutral">{t("agent.status.queued")}</Badge>
               {runtimeName ? <Badge tone="neutral">{runtimeName}</Badge> : null}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ui-xs text-slate-400">
               <span className="shrink-0">
-                {task.workspaceName || task.workspaceId} · #{task.bugId.slice(-7)}
+                {task.workspaceName || task.workspaceId}
+                {isBugAgentTask(task) ? ` · #${task.bugId.slice(-7)}` : null}
               </span>
               {task.worktreeBranch ? (
                 <span
@@ -54,10 +57,12 @@ export function AgentQueuedDetail(props: Props) {
                   className="min-w-0 max-w-full truncate font-mono"
                   title={task.repoPath}
                 >
-                  {task.repoPath || "未配置仓库"}
+                  {task.repoPath || t("agent.noRepo")}
                 </span>
               )}
-              <span className="shrink-0">入队 {relativeTime(task.createdAt)}</span>
+              <span className="shrink-0">
+                {t("agent.queue.enqueuedAt", { time: relativeTime(task.createdAt) })}
+              </span>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -74,16 +79,18 @@ export function AgentQueuedDetail(props: Props) {
               disabled={props.busy !== null}
               onClick={props.onCancel}
             >
-              取消排队
+              {t("agent.queue.cancel")}
             </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={<Bug size={11} />}
-              onClick={props.onOpenBug}
-            >
-              打开缺陷
-            </Button>
+            {isBugAgentTask(task) ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<Bug size={11} />}
+                onClick={props.onOpenBug}
+              >
+                {t("agent.openBug")}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -97,15 +104,17 @@ export function AgentQueuedDetail(props: Props) {
             className="text-ui-base text-slate-700"
             title={
               position > 1
-                ? `前面还有 ${position - 1} 个任务；开始后 opencode 终端会显示在这里。`
-                : "下一个就轮到它；开始后 opencode 终端会显示在这里。"
+                ? t("agent.queue.ahead", {
+                    count: position - 1,
+                  })
+                : t("agent.queue.next")
             }
           >
-            排队第 {position} 位
+            {t("agent.queue.position", { position })}
           </p>
           {props.queuePaused ? (
             <p className="mt-2 text-ui-sm text-amber-600">
-              队列已暂停，点击右上角「继续队列」恢复执行。
+              {t("agent.queue.pausedHint")}
             </p>
           ) : null}
           {task.worktreePath || task.repoPath ? (

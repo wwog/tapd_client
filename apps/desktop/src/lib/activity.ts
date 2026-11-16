@@ -1,3 +1,5 @@
+import { localeTag, t } from "./i18n";
+
 /** Elapsed label with at most two units: `1小时 5分钟`, `10分钟 20秒`, `45秒`. */
 export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -6,10 +8,17 @@ export function formatElapsed(ms: number): string {
   const minutes = Math.floor((total % 3_600) / 60);
   const seconds = total % 60;
 
-  if (days > 0) return hours > 0 ? `${days}天 ${hours}小时` : `${days}天`;
-  if (hours > 0) return minutes > 0 ? `${hours}小时 ${minutes}分钟` : `${hours}小时`;
-  if (minutes > 0) return `${minutes}分钟 ${seconds}秒`;
-  return seconds < 5 ? "刚刚" : `${seconds}秒`;
+  if (days > 0)
+    return hours > 0
+      ? t("agent.elapsed.daysHours", { days, hours })
+      : t("agent.elapsed.days", { days });
+  if (hours > 0)
+    return minutes > 0
+      ? t("agent.elapsed.hoursMinutes", { hours, minutes })
+      : t("agent.elapsed.hours", { hours });
+  if (minutes > 0)
+    return t("agent.elapsed.minutesSeconds", { minutes, seconds });
+  return seconds < 5 ? t("common.justNow") : t("agent.elapsed.seconds", { seconds });
 }
 
 /** Milliseconds since an RFC 3339 timestamp; 0 when it cannot be parsed. */
@@ -21,9 +30,9 @@ export function elapsedSince(iso: string | undefined, now: number): number {
 
 /** `16:39` for today, `11-10 16:39` for older timestamps. */
 export function formatStartedAt(iso: string | undefined): string {
-  if (!iso) return "未知";
+  if (!iso) return t("common.unknown");
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "未知";
+  if (Number.isNaN(date.getTime())) return t("common.unknown");
 
   const now = new Date();
   const sameDay =
@@ -31,7 +40,7 @@ export function formatStartedAt(iso: string | undefined): string {
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate();
 
-  return date.toLocaleString("zh-CN", {
+  return date.toLocaleString(localeTag(), {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",

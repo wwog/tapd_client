@@ -16,6 +16,7 @@ import {
 import appIcon from "../assets/app-icon.png";
 import { api, type AppInfo } from "../lib/api";
 import { copyText } from "../lib/desktop";
+import { t, type MessageKey } from "../lib/i18n";
 import { ThemePicker } from "./AppearanceCard";
 import { CoworkerGrid, useCoworkers } from "./CoworkerPicker";
 import { McpClientImport } from "./McpClientImport";
@@ -36,7 +37,7 @@ function NotificationArt() {
     <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-100 via-sky-50 to-surface p-3">
       <div className="absolute right-3 top-3 flex h-5 items-center gap-1 rounded-full bg-slate-900 px-2 text-[7px] text-slate-200 ">
         <span className="h-1 w-1 rounded-full bg-emerald-400" />
-        TAPD 待命
+        {t("onboard.standby")}
       </div>
       <div className="mt-7 w-[82%] rounded-lg bg-slate-900 p-2  ">
         <div className="flex items-center gap-1">
@@ -101,7 +102,7 @@ function FixArt() {
         <div className="mt-1 h-1 w-16 rounded bg-white/15" />
         <div className="mt-2 inline-flex h-4 items-center gap-1 rounded bg-emerald-400 px-1.5 text-[6px] font-normal text-slate-900">
           <Sparkles size={7} />
-          自动修复
+          {t("onboard.autoFix")}
         </div>
       </div>
     </div>
@@ -110,9 +111,9 @@ function FixArt() {
 
 function AgentArt() {
   const rows: Array<{ title: string; state: string; ink: string; dot: string }> = [
-    { title: "BUG-1024", state: "运行中", ink: "text-sky-600", dot: "bg-sky-500" },
-    { title: "BUG-1019", state: "待审核", ink: "text-amber-600", dot: "bg-amber-500" },
-    { title: "BUG-1012", state: "已回写", ink: "text-emerald-600", dot: "bg-emerald-500" },
+    { title: "BUG-1024", state: t("onboard.agentRunning"), ink: "text-sky-600", dot: "bg-sky-500" },
+    { title: "BUG-1019", state: t("onboard.awaitingReview"), ink: "text-amber-600", dot: "bg-amber-500" },
+    { title: "BUG-1012", state: t("onboard.writtenBack"), ink: "text-emerald-600", dot: "bg-emerald-500" },
   ];
 
   return (
@@ -120,8 +121,10 @@ function AgentArt() {
       <div className="flex h-full flex-col gap-1 rounded-lg border border-border bg-surface p-2">
         <div className="flex items-center gap-1 text-[7px] text-slate-500">
           <Bot size={9} className="text-sky-500" />
-          内部 Agent
-          <span className="ml-auto rounded bg-sky-50 px-1 text-sky-600">本机执行</span>
+          {t("onboard.internalAgent")}
+          <span className="ml-auto rounded bg-sky-50 px-1 text-sky-600">
+            {t("onboard.localRun")}
+          </span>
         </div>
         {rows.map((row) => (
           <div
@@ -135,7 +138,7 @@ function AgentArt() {
         ))}
         <div className="mt-auto flex items-center gap-1 text-[7px] text-slate-400">
           <Check size={8} className="text-emerald-500" />
-          改完自动回写 TAPD
+          {t("onboard.writeBackHint")}
         </div>
       </div>
     </div>
@@ -144,9 +147,9 @@ function AgentArt() {
 
 function CoworkerArt() {
   const people: Array<{ role: string; ink: string; bg: string }> = [
-    { role: "产品", ink: "text-amber-600", bg: "bg-amber-500/15" },
-    { role: "前端", ink: "text-sky-600", bg: "bg-sky-500/15" },
-    { role: "测试", ink: "text-emerald-600", bg: "bg-emerald-500/15" },
+    { role: t("onboard.roleProduct"), ink: "text-amber-600", bg: "bg-amber-500/15" },
+    { role: t("onboard.roleFrontend"), ink: "text-sky-600", bg: "bg-sky-500/15" },
+    { role: t("onboard.roleQa"), ink: "text-emerald-600", bg: "bg-emerald-500/15" },
   ];
 
   return (
@@ -181,7 +184,7 @@ function CoworkerArt() {
         </div>
         <div className="flex items-center justify-center gap-1 rounded-md bg-slate-900 py-1 text-[7px] text-slate-200">
           <Sparkles size={7} className="text-emerald-300" />
-          技能包跟着任务一起进提示词
+          {t("onboard.skillPacks")}
         </div>
       </div>
     </div>
@@ -218,46 +221,46 @@ function McpArt() {
 }
 
 const FEATURES: Array<{
-  title: string;
-  copy: string;
+  title: MessageKey;
+  copy: MessageKey;
   art: ReactNode;
 }> = [
   {
-    title: "新 bug 通知",
-    copy: "新缺陷、转派、重开，胶囊立刻提醒。",
+    title: "onboard.feature.notifications",
+    copy: "onboard.feature.notificationsCopy",
     art: <NotificationArt />,
   },
   {
-    title: "专注工作",
-    copy: "列表、详情、筛选，一个窗口搞定。",
+    title: "onboard.feature.focus",
+    copy: "onboard.feature.focusCopy",
     art: <FocusArt />,
   },
   {
-    title: "一键修复",
-    copy: "详情页交给 Agent，修完自动回写 TAPD。",
+    title: "onboard.feature.fix",
+    copy: "onboard.feature.fixCopy",
     art: <FixArt />,
   },
   {
-    title: "内部 Agent",
-    copy: "任务队列、实时输出、审核提交，全在客户端。",
+    title: "onboard.internalAgent",
+    copy: "onboard.feature.agentCopy",
     art: <AgentArt />,
   },
   {
-    title: "同事搭伙",
-    copy: "挑几位同事，技能包与角色一起进提示词。",
+    title: "onboard.feature.coworkers",
+    copy: "onboard.feature.coworkersCopy",
     art: <CoworkerArt />,
   },
   {
-    title: "MCP 给外部",
-    copy: "opencode / Claude / Cursor 直接接入。",
+    title: "onboard.feature.mcp",
+    copy: "onboard.feature.mcpCopy",
     art: <McpArt />,
   },
 ];
 
-const STEP_HEADINGS = [
-  { title: "你的工作从未如此轻松", copy: "像微信聊天一样处理你的事物" },
-  { title: "先把基础设置好", copy: "主题与 MCP 之后都能在设置里改" },
-  { title: "找同事搭伙", copy: "选中的同事会参与之后的 Agent 任务" },
+const STEP_HEADINGS: Array<{ title: MessageKey; copy: MessageKey }> = [
+  { title: "onboard.step.welcome", copy: "onboard.step.welcomeCopy" },
+  { title: "onboard.step.setup", copy: "onboard.step.setupCopy" },
+  { title: "onboard.step.coworkers", copy: "onboard.step.coworkersCopy" },
 ];
 
 export function Onboarding({ info, onDone }: Props) {
@@ -294,7 +297,7 @@ export function Onboarding({ info, onDone }: Props) {
 
   const handleCopy = async (text: string) => {
     const copied = await copyText(text);
-    showNotice(copied ? "ok" : "error", copied ? "已复制" : "复制失败");
+    showNotice(copied ? "ok" : "error", copied ? t("common.copied") : t("common.copyFailed"));
   };
 
   const heading = STEP_HEADINGS[step];
@@ -309,7 +312,7 @@ export function Onboarding({ info, onDone }: Props) {
         <div className="pointer-events-none grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-border bg-surface">
           <img
             src={appIcon}
-            alt="TAPD 客户端"
+            alt={t("settings.login.appName")}
             draggable={false}
             className="h-8 w-8 select-none object-contain"
           />
@@ -319,9 +322,9 @@ export function Onboarding({ info, onDone }: Props) {
             TAPD Client · V{info.version}
           </div>
           <h1 className="truncate text-[19px] font-normal tracking-tight text-slate-900">
-            {heading.title}
+            {t(heading.title)}
           </h1>
-          <p className="truncate text-ui-sm text-slate-500">{heading.copy}</p>
+          <p className="truncate text-ui-sm text-slate-500">{t(heading.copy)}</p>
         </div>
         <span className="pointer-events-none shrink-0 text-ui-xs tabular-nums text-slate-400">
           {step + 1} / 3
@@ -339,10 +342,10 @@ export function Onboarding({ info, onDone }: Props) {
                 >
                   {feature.art}
                   <div className="mt-3 text-ui-base font-normal text-slate-900">
-                    {feature.title}
+                    {t(feature.title)}
                   </div>
                   <div className="mt-0.5 text-ui-sm leading-5 text-slate-500">
-                    {feature.copy}
+                    {t(feature.copy)}
                   </div>
                 </div>
               ))}
@@ -356,10 +359,10 @@ export function Onboarding({ info, onDone }: Props) {
                   <div className="min-w-0 max-w-[260px]">
                     <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
                       <Palette size={15} className="text-slate-400" />
-                      主题
+                      {t("common.theme")}
                     </h2>
                     <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-                      选一个看着舒服的，立即生效。
+                      {t("onboard.themeHint")}
                     </p>
                   </div>
                   <ThemePicker className="w-[420px] max-w-full" />
@@ -395,7 +398,7 @@ export function Onboarding({ info, onDone }: Props) {
               disabled={busy}
               className="text-ui-sm text-slate-400 transition hover:text-slate-600 disabled:opacity-40"
             >
-              跳过
+              {t("common.skip")}
             </button>
             {notice ? (
               <span
@@ -415,7 +418,7 @@ export function Onboarding({ info, onDone }: Props) {
               <button
                 key={index}
                 type="button"
-                aria-label={`第 ${index + 1} 页`}
+                aria-label={t("onboard.page", { n: index + 1 })}
                 onClick={() => setStep(index)}
                 className={clsx(
                   "h-1.5 rounded-full transition-all",
@@ -436,7 +439,7 @@ export function Onboarding({ info, onDone }: Props) {
                 disabled={busy}
                 onClick={() => setStep(step - 1)}
               >
-                上一步
+                {t("common.back")}
               </Button>
             ) : null}
             {last ? (
@@ -447,7 +450,7 @@ export function Onboarding({ info, onDone }: Props) {
                 onClick={() => void finish()}
                 icon={<Check size={12} />}
               >
-                开始使用
+                {t("onboard.start")}
               </Button>
             ) : (
               <Button
@@ -457,7 +460,7 @@ export function Onboarding({ info, onDone }: Props) {
                 onClick={() => setStep(step + 1)}
                 icon={<ArrowRight size={12} />}
               >
-                下一步
+                {t("common.next")}
               </Button>
             )}
           </div>

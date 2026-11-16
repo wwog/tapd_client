@@ -1,36 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
 
-import { useDragResize } from "./useDragResize";
+import {
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  defaultSidebarWidth,
+} from "../workbench/layout/defaults";
 
-// Project sidebar sizing. Dragging below the minimum collapses it.
-export const MIN_SIDEBAR_WIDTH = 168;
-export const MAX_SIDEBAR_WIDTH = 300;
-/** Content area that must stay usable; the sidebar yields space below this. */
-export const MIN_CONTENT_WIDTH = 460;
-/** Codex-style right detail pane. */
-export const DETAIL_PANEL_WIDTH = 520;
-export const DETAIL_MIN_WIDTH = 360;
-export const DETAIL_MAX_WIDTH = 760;
-/** Minimum width the bug list keeps while the detail pane is open. */
-export const DETAIL_CONTENT_MIN = 340;
-/** Rail + sidebar gap + panel margins (with a small resize buffer). */
-export const LAYOUT_GUTTER = 32;
+// Sizing lives with the layout contract; re-exported for the shell files that
+// already imported these names from the hook.
+export { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, defaultSidebarWidth };
+
 /** Icon rail width. */
 export const RAIL_WIDTH = 52;
-
-/** Default sidebar width for the current window: compact, project names are short. */
-export const defaultSidebarWidth = (viewport: number): number =>
-  Math.round(Math.min(Math.max(viewport * 0.15, 176), 208));
-
-/** Window width needed to keep the list usable beside an open detail pane. */
-export const requiredWidth = (sidebarWidth: number, detailWidth: number): number =>
-  RAIL_WIDTH + sidebarWidth + DETAIL_CONTENT_MIN + detailWidth + LAYOUT_GUTTER;
+/** Rail + panel margins (with a small resize buffer). */
+export const LAYOUT_GUTTER = 32;
 
 export type SidebarLayoutOptions = {
   projectListHidden: boolean;
-  detailRendered: boolean;
-  detailWidth: number;
+  /** Persisted width owned by the workbench layout. */
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
+  /**
+   * Width the layout area needs beside the side bar: primary group minimum
+   * plus the secondary group's minimum when it has panels.
+   */
+  contentMinWidth: number;
+  /**
+   * Width the window is growing to (programmatic resize). Collapse decisions
+   * use it until the real viewport catches up, so filling a dock does not hide
+   * the column for the frame before the resize lands.
+   */
+  pendingViewportWidth?: number | null;
 };
 
 export type SidebarLayout = {
@@ -52,30 +52,35 @@ export type SidebarLayout = {
   setPeek: (peek: boolean) => void;
   /** Current rendered width, readable from stable callbacks. */
   getEffectiveWidth: () => number;
-  startResize: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  /** Drag lifecycle used by the shared `Sash`. */
+  beginResize: () => void;
+  resize: (delta: number) => void;
+  endResize: () => void;
+  resetWidth: () => void;
 };
 
 /**
  * Project-list column: collapse, temporary peek, preferred width and the
- * derived auto-collapse used on narrow windows.
+ * derived auto-collapse used on narrow windows. The width itself is persisted
+ * by the workbench layout; the drag is the shared `Sash` component.
  */
 export function useSidebarLayout({
   projectListHidden,
-  detailRendered,
-  detailWidth,
+  sidebarWidth,
+  setSidebarWidth,
+  contentMinWidth,
+  pendingViewportWidth = null,
 }: SidebarLayoutOptions): SidebarLayout {
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 1280 : window.innerWidth,
   );
-  const [sidebarWidth, setSidebarWidth] = useState(() => defaultSidebarWidth(1280));
-  const [sidebarSized, setSidebarSized] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   /** Temporarily reveals the project list even when the window is too narrow. */
   const [sidebarPeek, setSidebarPeek] = useState(false);
   const [resizingSidebar, setResizingSidebar] = useState(false);
 
-  // The sidebar follows the window until the user drags it once. Coalesce
-  // resize events into one update per frame; window expansion fires many.
+  // The sidebar follows the window for auto-collapse decisions; coalesce
+  // resize events into one update per frame.
   useEffect(() => {
     let frame = 0;
     const onResize = () => {
@@ -89,24 +94,25 @@ export function useSidebarLayout({
     };
   }, []);
 
-  useEffect(() => {
-    if (sidebarSized) return;
-    setSidebarWidth(defaultSidebarWidth(viewportWidth));
-  }, [viewportWidth, sidebarSized]);
-
-  /** Sidebar width the user chose (or the default), before auto-collapse. */
   const expandedSidebarWidth = Math.max(
     MIN_SIDEBAR_WIDTH,
     Math.min(sidebarWidth, MAX_SIDEBAR_WIDTH),
   );
 
-  // On narrow windows the project list yields instead of squeezing the bug
-  // list. This is derived state: the list comes back when there is room again.
+  // On narrow windows the project list yields instead of squeezing the layout.
+  // The comparison uses the secondary group's minimum, so opening a detail
+  // panel collapses the list before the bug list gets unusable. A window that
+  // is being grown for that panel counts at its target width: the column must
+  // not blink out while the resize is in flight.
+  const decisionViewportWidth =
+    pendingViewportWidth !== null && pendingViewportWidth > viewportWidth
+      ? pendingViewportWidth
+      : viewportWidth;
   const autoCollapseSidebar =
-    viewportWidth <
+    decisionViewportWidth <
     RAIL_WIDTH +
       expandedSidebarWidth +
-      (detailRendered ? DETAIL_CONTENT_MIN + detailWidth : MIN_CONTENT_WIDTH) +
+      contentMinWidth +
       LAYOUT_GUTTER;
   const sidebarHidden =
     projectListHidden ||
@@ -117,62 +123,77 @@ export function useSidebarLayout({
     if (!autoCollapseSidebar) setSidebarPeek(false);
   }, [autoCollapseSidebar]);
 
-  // Never let the sidebar eat the content area on a narrow window.
+  // Never let the sidebar eat the layout area on a narrow window.
   const effectiveSidebarWidth = sidebarHidden
     ? 0
     : Math.max(
         MIN_SIDEBAR_WIDTH,
-        Math.min(sidebarWidth, viewportWidth - RAIL_WIDTH - MIN_CONTENT_WIDTH),
+        Math.min(
+          sidebarWidth,
+          decisionViewportWidth - RAIL_WIDTH - contentMinWidth,
+        ),
       );
 
   const autoCollapseRef = useRef(autoCollapseSidebar);
   autoCollapseRef.current = autoCollapseSidebar;
   const effectiveWidthRef = useRef(effectiveSidebarWidth);
   effectiveWidthRef.current = effectiveSidebarWidth;
+  const viewportRef = useRef(viewportWidth);
+  viewportRef.current = viewportWidth;
+  const collapsedRef = useRef(sidebarCollapsed);
+  collapsedRef.current = sidebarCollapsed;
+  const startWidthRef = useRef(MIN_SIDEBAR_WIDTH);
+  const dragWidthRef = useRef(effectiveSidebarWidth);
 
   const toggle = useCallback(() => {
     if (autoCollapseRef.current) setSidebarPeek((current) => !current);
     else setSidebarCollapsed((current) => !current);
   }, []);
 
-  const getEffectiveWidth = useCallback(
-    () => effectiveWidthRef.current,
-    [],
+  const getEffectiveWidth = useCallback(() => effectiveWidthRef.current, []);
+
+  const beginResize = useCallback(() => {
+    setResizingSidebar(true);
+    if (collapsedRef.current) setSidebarCollapsed(false);
+    startWidthRef.current = collapsedRef.current
+      ? MIN_SIDEBAR_WIDTH
+      : effectiveWidthRef.current;
+    dragWidthRef.current = startWidthRef.current;
+  }, []);
+
+  const resize = useCallback(
+    (delta: number) => {
+      const next = Math.max(
+        0,
+        Math.min(MAX_SIDEBAR_WIDTH, startWidthRef.current + delta),
+      );
+      // Below the minimum the sidebar gives up and collapses.
+      if (next < MIN_SIDEBAR_WIDTH) {
+        setSidebarCollapsed(true);
+        setSidebarPeek(false);
+        setSidebarWidth(defaultSidebarWidth(viewportRef.current));
+        return;
+      }
+      dragWidthRef.current = next;
+      setSidebarWidth(next);
+    },
+    [setSidebarWidth],
   );
 
-  const startResize = useDragResize(() => {
-    const startWidth = sidebarCollapsed ? 0 : effectiveSidebarWidth;
-    setSidebarSized(true);
-    if (sidebarCollapsed) {
-      // Dragging out of the collapsed state starts from the minimum width.
-      setSidebarCollapsed(false);
-      setSidebarWidth(MIN_SIDEBAR_WIDTH);
+  const endResize = useCallback(() => {
+    setResizingSidebar(false);
+    if (dragWidthRef.current < MIN_SIDEBAR_WIDTH) {
+      setSidebarCollapsed(true);
+      return;
     }
-    setResizingSidebar(true);
+    setSidebarWidth(dragWidthRef.current);
+  }, [setSidebarWidth]);
 
-    return {
-      onMove: (deltaX, stop) => {
-        const next = Math.max(
-          0,
-          Math.min(MAX_SIDEBAR_WIDTH, startWidth + deltaX),
-        );
-        // Below the minimum the sidebar gives up and collapses with a transition.
-        if (next < MIN_SIDEBAR_WIDTH) {
-          stop();
-          setResizingSidebar(false);
-          setSidebarCollapsed(true);
-          setSidebarSized(false);
-          setSidebarWidth(defaultSidebarWidth(viewportWidth));
-          return;
-        }
-        setSidebarWidth(next);
-      },
-      onEnd: () => {
-        setResizingSidebar(false);
-        setSidebarWidth((width) => Math.max(MIN_SIDEBAR_WIDTH, width));
-      },
-    };
-  });
+  const resetWidth = useCallback(() => {
+    setSidebarCollapsed(false);
+    setSidebarPeek(false);
+    setSidebarWidth(defaultSidebarWidth(viewportRef.current));
+  }, [setSidebarWidth]);
 
   return {
     viewportWidth,
@@ -186,6 +207,9 @@ export function useSidebarLayout({
     setCollapsed: setSidebarCollapsed,
     setPeek: setSidebarPeek,
     getEffectiveWidth,
-    startResize,
+    beginResize,
+    resize,
+    endResize,
+    resetWidth,
   };
 }

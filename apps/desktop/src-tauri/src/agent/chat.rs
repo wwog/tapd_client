@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -621,10 +621,40 @@ impl AgentCore {
             mut child,
         } = handles;
 
+        // One writer thread owns the PTY writer. Callers only enqueue, so a TUI
+        // that stops reading can never block a tokio worker or reorder input.
+        let (input, input_queue) = std::sync::mpsc::sync_channel::<pty::PtyInput>(256);
+        let input = Arc::new(input);
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("chat-input-{}", session.id))
+            .spawn(move || {
+                let mut writer = writer;
+                while let Ok(pty::PtyInput::Data(data, ack)) = input_queue.recv() {
+                    let result = writer
+                        .write_all(&data)
+                        .and_then(|_| writer.flush())
+                        .map_err(|error| error.to_string());
+                    let failed = result.is_err();
+                    if let Some(ack) = ack {
+                        let _ = ack.send(result);
+                    }
+                    if failed {
+                        break;
+                    }
+                }
+            })
+        {
+            let _ = child.clone_killer().kill();
+            return ChatPtyOutcome {
+                error: Some(format!("启动 Agent 终端失败：{error}")),
+                ..ChatPtyOutcome::default()
+            };
+        }
+
         let canceled = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(Mutex::new(pty::AgentRuntime::new(
             master,
-            writer,
+            input,
             child.clone_killer(),
             child.process_id(),
             canceled.clone(),

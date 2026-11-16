@@ -6,27 +6,31 @@
 
 use std::collections::BTreeMap;
 
+use tapd_i18n::tr;
+
 /// TAPD's built-in statuses in default workflow order, paired with the labels
 /// TAPD ships for them. This is the single source of truth for both
 /// [`default_status_map`] and the fallback order used when a response carries
 /// no workspace workflow configuration.
-pub(super) const STATUS_LABELS: &[(&str, &str)] = &[
-    ("new", "新"),
-    ("in_progress", "接受/处理"),
-    ("resolved", "已解决"),
-    ("verified", "已验证"),
-    ("reopened", "重新打开"),
-    ("rejected", "已拒绝"),
-    ("closed", "已关闭"),
-    ("open", "未开始"),
-    ("progressing", "进行中"),
-    ("done", "已完成"),
-];
+pub(super) fn status_labels() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("new", tr("core.status.new")),
+        ("in_progress", tr("core.status.inprogress")),
+        ("resolved", tr("core.status.resolved")),
+        ("verified", tr("core.status.verified")),
+        ("reopened", tr("core.status.reopened")),
+        ("rejected", tr("core.status.rejected")),
+        ("closed", tr("core.status.closed")),
+        ("open", tr("core.status.open")),
+        ("progressing", tr("core.status.progressing")),
+        ("done", tr("core.status.done")),
+    ]
+}
 
 pub(super) fn default_status_map() -> BTreeMap<String, String> {
-    STATUS_LABELS
-        .iter()
-        .map(|(key, label)| ((*key).to_string(), (*label).to_string()))
+    status_labels()
+        .into_iter()
+        .map(|(key, label)| (key.to_string(), label.to_string()))
         .collect()
 }
 
@@ -38,11 +42,11 @@ pub fn status_label(key: &str, map: &BTreeMap<String, String>) -> String {
 
 pub fn priority_label(key: &str) -> String {
     match key {
-        "urgent" => "紧急",
-        "high" => "高",
-        "medium" => "中",
-        "low" => "低",
-        "insignificant" => "无关紧要",
+        "urgent" => tr("core.priority.urgent"),
+        "high" => tr("core.priority.high"),
+        "medium" => tr("core.priority.medium"),
+        "low" => tr("core.priority.low"),
+        "insignificant" => tr("core.priority.insignificant"),
         other => other,
     }
     .to_string()
@@ -50,11 +54,11 @@ pub fn priority_label(key: &str) -> String {
 
 pub fn severity_label(key: &str) -> String {
     match key {
-        "fatal" => "致命",
-        "serious" => "严重",
-        "normal" => "一般",
-        "prompt" => "提示",
-        "advice" => "建议",
+        "fatal" => tr("core.severity.fatal"),
+        "serious" => tr("core.severity.serious"),
+        "normal" => tr("core.severity.normal"),
+        "prompt" => tr("core.severity.prompt"),
+        "advice" => tr("core.severity.advice"),
         other => other,
     }
     .to_string()

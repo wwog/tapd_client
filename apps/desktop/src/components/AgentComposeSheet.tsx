@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MDEditor, { type ICommand } from "@uiw/react-md-editor";
+import { getCommands } from "@uiw/react-md-editor/commands";
 import { getCommands as getChineseCommands } from "@uiw/react-md-editor/commands-cn";
 import {
   Cpu,
@@ -15,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import clsx from "clsx";
+import rehypeSanitize from "rehype-sanitize";
 
 import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
 import {
@@ -27,9 +29,12 @@ import {
 import { useAgentScan } from "../lib/agentScan";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
+import { getLocale, t } from "../lib/i18n";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
+import { useLayerClose } from "../hooks/useLayerClose";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { AgentPicker } from "./AgentPicker";
+import { ScrollingName } from "./ScrollingName";
 import { SelectPicker } from "./SelectPicker";
 import { Button, ModalDragStrip } from "./ui";
 
@@ -46,8 +51,12 @@ export type AgentComposePayload = {
 
 type Props = {
   open: boolean;
-  /** Bug title, used as the sheet subtitle. */
+  /** Bug title or work item title, used as the sheet subtitle. */
   title: string;
+  /** Work item titles are already user text; skip the bug punctuation pass. */
+  plainTitle?: boolean;
+  /** Overrides the "Fix with Agent" heading for local work items. */
+  heading?: string;
   submitting: boolean;
   onClose: () => void;
   onSubmit: (payload: AgentComposePayload) => void;
@@ -60,8 +69,18 @@ type Props = {
  * inline image/video data.
  */
 export function AgentComposeSheet(props: Props) {
-  const { open, title, submitting, onClose, onSubmit, toast } = props;
+  const {
+    open,
+    title,
+    plainTitle = false,
+    heading,
+    submitting,
+    onClose,
+    onSubmit,
+    toast,
+  } = props;
   const theme = useResolvedTheme();
+  const { closing, requestClose, reset } = useLayerClose(onClose);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -79,8 +98,8 @@ export function AgentComposeSheet(props: Props) {
   /** 模型列表与「上次选择」和对话页共用；切换运行时自动重取。 */
   const { models: runtimeModels, loading: modelsLoading } = useRuntimeModels(runtimeId);
 
-  // Every opening starts clean; the bug id is part of the panel key upstream,
-  // so switching targets also remounts this sheet.
+  // Every opening starts clean; the bug / item id is part of the panel key
+  // upstream, so switching targets also remounts this sheet.
   useEffect(() => {
     if (!open) return;
     setPrompt("");
@@ -177,16 +196,16 @@ export function AgentComposeSheet(props: Props) {
       const selected = await openDialog({
         multiple: true,
         directory: false,
-        title: "选择图片、视频或其他资源",
+        title: t("chat.attachTitle"),
         filters: [
-          { name: "图片与视频", extensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "mp4", "mov", "webm", "m4v"] },
-          { name: "所有文件", extensions: ["*"] },
+          { name: t("chat.imagesAndVideos"), extensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "mp4", "mov", "webm", "m4v"] },
+          { name: t("chat.allFiles"), extensions: ["*"] },
         ],
       });
       if (!selected) return;
       addPaths(Array.isArray(selected) ? selected : [selected]);
     } catch (error) {
-      toast?.("error", `打开文件选择器失败：${String(error)}`);
+      toast?.("error", t("chat.pickerFailed", { error: String(error) }));
     }
   }, [addPaths, toast]);
 
@@ -206,7 +225,7 @@ export function AgentComposeSheet(props: Props) {
         }
         addPaths(saved);
       } catch (error) {
-        toast?.("error", `保存粘贴资源失败：${String(error)}`);
+        toast?.("error", t("chat.pasteFailed", { error: String(error) }));
       } finally {
         setSaving(false);
       }
@@ -228,11 +247,13 @@ export function AgentComposeSheet(props: Props) {
   // Escape closes, ⌘/Ctrl + Enter submits from anywhere in the sheet.
   useEffect(() => {
     if (!open) return;
+    // Reopening must not inherit a stale exit animation.
+    reset();
     const onKey = (event: KeyboardEvent) => {
       // Esc 先关掉打开的选择器菜单，再考虑关闭面板。
       if (event.key === "Escape" && !submitting && !hasOpenDismissLayer()) {
         event.preventDefault();
-        onClose();
+        requestClose();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -242,7 +263,7 @@ export function AgentComposeSheet(props: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, open, submit, submitting]);
+  }, [open, requestClose, reset, submit, submitting]);
 
   // Native drag & drop only counts when the pointer is over the sheet, so the
   // rest of the workspace keeps its own drop behaviour.
@@ -269,18 +290,24 @@ export function AgentComposeSheet(props: Props) {
     [addPaths, open],
   );
 
+  const locale = getLocale();
   const commands = useMemo<ICommand[]>(
     () =>
-      getChineseCommands()
+      // The Markdown toolbar ships its own localized command set; pick the one
+      // matching the UI language (there is no runtime language switch inside).
+      (getLocale() === "en" ? getCommands() : getChineseCommands())
         .filter((command) => command.name !== "image")
         .concat({
           name: "attach-resource",
           keyCommand: "attach-resource",
-          buttonProps: { "aria-label": "添加资源", title: "添加资源（传本地路径）" },
+          buttonProps: {
+            "aria-label": t("chat.addResource"),
+            title: t("chat.addResourceHint"),
+          },
           icon: <Paperclip size={12} />,
           execute: () => void pickFiles(),
         }),
-    [pickFiles],
+    [pickFiles, locale],
   );
 
   if (!open) return null;
@@ -288,16 +315,23 @@ export function AgentComposeSheet(props: Props) {
   return (
     <div className="fixed inset-0 z-[65]">
       {/* Backdrop is inert: the sheet has explicit close/cancel buttons. */}
-      <div aria-hidden="true" className="absolute inset-0 bg-slate-900/15" />
+      <div
+        aria-hidden="true"
+        className={clsx(
+          "modal-overlay absolute inset-0 bg-slate-900/15",
+          closing && "modal-overlay-out",
+        )}
+      />
       <ModalDragStrip />
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="用 Agent 修复"
+        aria-label={heading ?? t("chat.fixWithAgent")}
         data-agent-compose
         className={clsx(
           "agent-sheet-up absolute inset-x-0 bottom-0 flex h-[min(64vh,560px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface ",
           dragging && "outline-2 -outline-offset-2 outline-sky-300",
+          closing && "modal-sheet-out",
         )}
         onDragOver={(event) => event.preventDefault()}
       >
@@ -308,18 +342,19 @@ export function AgentComposeSheet(props: Props) {
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-50 text-sky-600">
             <Sparkles size={15} />
           </span>
-          <div className="min-w-0" data-tauri-drag-region>
+          <div className="min-w-0 flex-1" data-tauri-drag-region>
             <h2 data-tauri-drag-region className="text-ui-base font-normal text-slate-900">
-              用 Agent 修复
+              {heading ?? t("chat.fixWithAgent")}
             </h2>
-            <p className="truncate text-ui-sm text-slate-500" title={bugTitle(title)}>
-              {bugTitle(title)}
-            </p>
+            <ScrollingName
+              text={plainTitle ? title : bugTitle(title)}
+              className="text-ui-sm text-slate-500"
+            />
           </div>
           <button
             type="button"
-            aria-label="关闭"
-            onClick={onClose}
+            aria-label={t("common.close")}
+            onClick={() => requestClose()}
             disabled={submitting}
             className="ml-auto grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"
           >
@@ -336,8 +371,16 @@ export function AgentComposeSheet(props: Props) {
               preview="live"
               visibleDragbar={false}
               commands={commands}
+              // The compose preview renders pasted Markdown, so it needs the
+              // same sanitizer as the chat pane: raw HTML runs inside the
+              // main WebView, which holds the Tauri IPC bridge.
+              previewOptions={{
+                rehypePlugins: [rehypeSanitize],
+                urlTransform: (url) =>
+                  url.startsWith("http://") || url.startsWith("https://") ? "" : url,
+              }}
               textareaProps={{
-                placeholder: "补充说明（Markdown）…  可写复现步骤、期望行为、注意事项",
+                placeholder: t("chat.contextPlaceholder"),
                 onPaste: (event) => {
                   const files = Array.from(event.clipboardData?.files ?? []).filter(
                     (file) => file.type.startsWith("image/"),
@@ -363,7 +406,7 @@ export function AgentComposeSheet(props: Props) {
 
         <footer className="flex shrink-0 items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <span className="shrink-0 text-ui-xs text-slate-400">本次任务使用</span>
+            <span className="shrink-0 text-ui-xs text-slate-400">{t("chat.forThisTask")}</span>
             <AgentPicker
               compact
               placement="up"
@@ -385,14 +428,14 @@ export function AgentComposeSheet(props: Props) {
               options={modelOptions}
               onChange={chooseModel}
               leadingIcon={<Cpu size={13} />}
-              placeholder="默认模型"
-              title="本次任务的模型；留空使用运行时的默认模型"
+              placeholder={t("chat.defaultModel")}
+              title={t("chat.modelHint")}
               disabled={submitting}
               menuHint={
                 modelsLoading
-                  ? "正在读取模型列表…"
+                  ? t("agent.models.loading")
                   : runtimeModels?.error
-                    ? "无法读取模型列表，可直接输入模型名"
+                    ? t("agent.models.error")
                     : undefined
               }
             />
@@ -409,15 +452,15 @@ export function AgentComposeSheet(props: Props) {
                 }))}
                 onChange={setPermissionMode}
                 leadingIcon={<ShieldCheck size={13} />}
-                placeholder="默认权限"
-                title="本次任务的访问权限"
+                placeholder={t("agent.config.permissionPlaceholder")}
+                title={t("chat.permissionHint")}
                 disabled={submitting}
               />
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={onClose} disabled={submitting}>
-              取消
+            <Button size="sm" variant="ghost" onClick={() => requestClose()} disabled={submitting}>
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
@@ -427,7 +470,7 @@ export function AgentComposeSheet(props: Props) {
               disabled={saving}
               onClick={submit}
             >
-              加入队列
+              {t("chat.addToQueue")}
             </Button>
           </div>
         </footer>
@@ -447,7 +490,7 @@ function AttachmentTray(props: {
 
   return (
     <div
-      title="也可以拖入或粘贴截图"
+      title={t("chat.dropOrPaste")}
       className={clsx(
         "flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-dashed px-2 py-1.5 transition",
         dragging
@@ -465,7 +508,7 @@ function AttachmentTray(props: {
           <span className="truncate">{fileName(path)}</span>
           <button
             type="button"
-            aria-label={`移除 ${fileName(path)}`}
+            aria-label={t("chat.removeAttachment", { name: fileName(path) })}
             onClick={() => onRemove(path)}
             className="grid h-4 w-4 shrink-0 place-items-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-600"
           >
@@ -481,7 +524,7 @@ function AttachmentTray(props: {
         className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-ui-xs text-slate-500 transition hover:bg-surface hover:text-slate-700 disabled:opacity-50"
       >
         {saving ? <Loader2 size={11} className="animate-spin" /> : <Paperclip size={11} />}
-        {saving ? "保存中" : paths.length > 0 ? "继续添加" : "添加图片 / 视频"}
+        {saving ? t("common.saving") : paths.length > 0 ? t("chat.addMore") : t("chat.addImageVideo")}
       </button>
     </div>
   );

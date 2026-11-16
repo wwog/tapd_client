@@ -2,6 +2,7 @@ import { CalendarClock, MessageSquare, MessageSquarePlus, Send } from "lucide-re
 import clsx from "clsx";
 
 import type { Comment } from "../lib/api";
+import { t } from "../lib/i18n";
 import { BugSectionTitle } from "./BugSectionTitle";
 import { Badge, Button } from "./ui";
 
@@ -13,12 +14,12 @@ export function BugComments(props: { comments: Comment[] }) {
     <section>
       <BugSectionTitle
         icon={<MessageSquare size={14} />}
-        title={`评论（${countComments(comments)}）`}
+        title={t("bugs.commentsCount", { count: countComments(comments) })}
       />
       <div className="mt-2 space-y-3">
         {comments.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-            还没有评论
+            {t("bugs.noComments")}
           </div>
         ) : (
           comments.map((comment) => (
@@ -43,7 +44,7 @@ export function BugCommentComposer(props: {
     <section>
       <BugSectionTitle
         icon={<MessageSquarePlus size={14} />}
-        title="添加评论"
+        title={t("bugs.addComment")}
       />
       <textarea
         value={text}
@@ -55,12 +56,12 @@ export function BugCommentComposer(props: {
           }
         }}
         rows={4}
-        placeholder="写评论（纯文本，⌘/Ctrl + Enter 发送）"
+        placeholder={t("bugs.commentPlaceholder")}
         className="mt-2 w-full resize-y rounded-xl border border-border bg-surface p-3 text-ui-caption leading-6 text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200"
       />
       <div className="mt-2 flex items-center justify-end gap-2">
         <span className="mr-auto text-ui-xs text-slate-400">
-          {text.length > 0 ? `${text.length} 字` : ""}
+          {text.length > 0 ? t("bugs.commentChars", { count: text.length }) : ""}
         </span>
         <Button
           size="sm"
@@ -70,7 +71,7 @@ export function BugCommentComposer(props: {
           disabled={busy !== null || text.trim().length === 0}
           onClick={onSubmit}
         >
-          发表评论
+          {t("bugs.postComment")}
         </Button>
       </div>
     </section>
@@ -91,15 +92,17 @@ function CommentItem(props: { comment: Comment; depth: number }) {
         <span className="grid h-5 w-5 place-items-center rounded-full bg-slate-100 text-ui-2xs text-slate-500">
           {comment.author ? comment.author.slice(-2) : "?"}
         </span>
-        <span className="font-normal text-slate-600">{comment.author || "未知"}</span>
+        <span className="font-normal text-slate-600">
+          {comment.author || t("common.unknown")}
+        </span>
         <span className="inline-flex items-center gap-1">
           <CalendarClock size={10} />
           {comment.created}
         </span>
-        {comment.isDeleted ? <Badge tone="red">已删除</Badge> : null}
+        {comment.isDeleted ? <Badge tone="red">{t("bugs.deleted")}</Badge> : null}
       </div>
       <p className="select-text mt-2 whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-700">
-        {comment.plainText || "（空评论）"}
+        {comment.plainText || t("bugs.emptyComment")}
       </p>
       {comment.replies.length > 0 ? (
         <div className="mt-2 space-y-2">

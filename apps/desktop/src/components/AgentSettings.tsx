@@ -3,6 +3,7 @@ import { Terminal } from "lucide-react";
 
 import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
 import type { SettingsSectionProps } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { Badge, Button, inputClass } from "./ui";
 
 const PROMPT_VARIABLES = [
@@ -53,9 +54,9 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
         <div>
           <h3
             className="text-ui-caption text-slate-800"
-            title={`${runtime.name} · 修改后自动保存`}
+            title={t("agent.settings.autoSave", { name: runtime.name })}
           >
-            运行时参数
+            {t("agent.settings.title")}
           </h3>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -66,7 +67,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
             loading={detecting}
             icon={<Terminal size={13} />}
           >
-            检测版本
+            {t("agent.settings.detectVersion")}
           </Button>
         </div>
       </div>
@@ -74,7 +75,7 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
       <div className="mt-3 space-y-4">
         <div>
           <label className="text-ui-sm font-normal text-slate-600">
-            {runtime.name} 可执行路径
+            {t("agent.settings.binaryPath", { name: runtime.name })}
           </label>
           <input
             value={config.binaryPath}
@@ -89,14 +90,14 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
         </div>
 
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5">
-          <div className="text-ui-xs text-slate-400">启动方式</div>
+          <div className="text-ui-xs text-slate-400">{t("agent.settings.launch")}</div>
           <div className="mt-1 break-all font-mono text-ui-caption text-slate-700">
             {[config.binaryPath || runtime.binary, ...runtime.args].join(" ")}
             {runtime.promptInjection === "argv"
-              ? " <提示词>"
+              ? ` ${t("agent.settings.promptPlaceholder")}`
               : runtime.promptInjection === "flag"
-                ? ` ${runtime.promptFlag ?? "-i"} <提示词>`
-                : "（启动后注入提示词）"}
+                ? ` ${runtime.promptFlag ?? "-i"} ${t("agent.settings.promptPlaceholder")}`
+                : t("agent.settings.promptInjected")}
           </div>
         </div>
 
@@ -104,12 +105,14 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span
               className="text-ui-sm text-slate-600"
-              title="变量会替换为缺陷信息；{{coworker}} 来自同事页启用的同事（没有插槽时自动追加）。"
+              title={t("agent.settings.promptVarsHint")}
             >
-              提示词模板
+              {t("agent.settings.promptTemplate")}
             </span>
             <span className="text-ui-xs text-slate-400">
-              支持变量：{PROMPT_VARIABLES.join(" ")}
+              {t("agent.settings.variableSupport", {
+                variables: PROMPT_VARIABLES.join(" "),
+              })}
             </span>
           </div>
           <textarea
@@ -130,33 +133,36 @@ export function AgentSettings({ config, runtime, onChange, onCommit, toast }: Pr
             ))}
           </div>
           <p className="mt-1.5 text-ui-xs text-slate-400">
-            当前启用 {config.coworkerIds?.length ?? 0} 位同事，任务开始时填入{" "}
-            <span className="font-mono">{"{{coworker}}"}</span>；模板没有该变量时自动追加。
+            {t("agent.settings.coworkersEnabled", {
+              count: config.coworkerIds?.length ?? 0,
+            })}{" "}
+            <span className="font-mono">{"{{coworker}}"}</span>
+            {t("agent.settings.coworkerAutoAppend")}
           </p>
         </div>
 
         <details className="rounded-xl border border-slate-100 bg-slate-50/50">
           <summary className="cursor-pointer select-none px-3 py-2 text-ui-sm text-slate-500">
-            高级
+            {t("agent.settings.advanced")}
           </summary>
           <div className="grid gap-3 p-3 pt-0 sm:grid-cols-2">
             <NumberField
-              label="就绪静默（ms）"
-              hint="输出静默达到该时长后注入任务"
+              label={t("agent.settings.readyQuiet")}
+              hint={t("agent.settings.readyQuietHint")}
               value={config.readyQuietMs}
               onChange={(value) => onChange({ readyQuietMs: value })}
               onCommit={() => onCommit()}
             />
             <NumberField
-              label="就绪超时（ms）"
-              hint="超时后强制注入"
+              label={t("agent.settings.readyTimeout")}
+              hint={t("agent.settings.readyTimeoutHint")}
               value={config.readyTimeoutMs}
               onChange={(value) => onChange({ readyTimeoutMs: value })}
               onCommit={() => onCommit()}
             />
             <NumberField
-              label="静默完成（ms）"
-              hint="TUI 运行时输出静默多久视为本轮结束；0 表示关闭"
+              label={t("agent.settings.idleComplete")}
+              hint={t("agent.settings.idleCompleteHint")}
               value={config.idleCompleteMs}
               onChange={(value) => onChange({ idleCompleteMs: value })}
               onCommit={() => onCommit()}

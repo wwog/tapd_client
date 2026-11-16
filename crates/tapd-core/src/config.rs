@@ -69,8 +69,17 @@ pub struct CompanionConfig {
     /// that knows the address pair directly — a deliberate test-phase relief,
     /// weaker by design, so the default stays on.
     pub require_pairing_code: bool,
-    /// Paired phones, one entry per device name (re-pairing overwrites).
+    /// Paired phones, one entry per device name. Re-pairing keeps the id and
+    /// management flag while rotating the token and pairing time.
     pub devices: Vec<CompanionDevice>,
+    /// Internal one-time migration marker: legacy configs predate per-device
+    /// management permissions. It lets [`Self::migrate_device_permissions`]
+    /// grant the first device once without undoing a later explicit revoke.
+    pub device_permissions_initialized: bool,
+    /// Allow paired phones to edit text files inside project folders. Off by
+    /// default: the phone stays preview-only until the desktop (or a device
+    /// with management permission) turns it on.
+    pub allow_file_write: bool,
 }
 
 impl Default for CompanionConfig {
@@ -82,7 +91,24 @@ impl Default for CompanionConfig {
             enabled: true,
             require_pairing_code: true,
             devices: Vec::new(),
+            device_permissions_initialized: false,
+            allow_file_write: false,
         }
+    }
+}
+
+impl CompanionConfig {
+    /// Legacy configs had no per-device management flag. Grant the first
+    /// paired device management once, then mark the migration done so a user
+    /// revoking that permission is not overridden on the next restart.
+    pub fn migrate_device_permissions(&mut self) {
+        if self.device_permissions_initialized {
+            return;
+        }
+        if let Some(first) = self.devices.first_mut() {
+            first.can_manage = true;
+        }
+        self.device_permissions_initialized = true;
     }
 }
 
@@ -92,12 +118,21 @@ impl Default for CompanionConfig {
 pub struct CompanionDevice {
     /// Stable id the unpair action targets.
     pub id: String,
+    /// Stable id generated once by the phone and kept across pairings. Two
+    /// phones with the same display name (two iPhones) stay separate devices.
+    /// Empty for configs paired by a client that predates it.
+    #[serde(default)]
+    pub device_id: String,
     /// Display name from pairing; blank names fall back to 移动设备.
     pub name: String,
     /// Lowercase hex SHA-256 of the phone's session token.
     pub token_hash: String,
     /// RFC 3339 time of the latest pairing with this name.
     pub paired_at: String,
+    /// Whether this device may manage other paired devices from the phone.
+    /// The first paired device defaults to true; the desktop can toggle any
+    /// device, including revoking the first one.
+    pub can_manage: bool,
 }
 
 /// A release the client must install before it can keep being used.
@@ -225,19 +260,66 @@ impl ConfigStore {
     }
 
     pub fn load(&self) -> AppConfig {
-        match std::fs::read_to_string(&self.path) {
-            Ok(raw) => {
-                let mut config: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
-                // Configs written before revision tracking used `onboarded: true`
-                // for the first guide. Keep that as revision 1 so an upgrade to
-                // revision 2 still shows the new flow exactly once.
-                if config.onboarded_version == 0 && legacy_onboarded(&raw) {
-                    config.onboarded_version = 1;
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                // A missing file is a first run. Anything else is a real
+                // failure and must not look like "no config yet": report it,
+                // and leave the file untouched so the next save does not
+                // silently replace whatever is still there.
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!(
+                        "config: could not read {}: {error}; running on defaults without writing it",
+                        self.path.display()
+                    );
                 }
-                config
+                return AppConfig::default();
             }
-            Err(_) => AppConfig::default(),
+        };
+        let mut config: AppConfig = match serde_json::from_str(&raw) {
+            Ok(config) => config,
+            Err(error) => {
+                // Never discard the user's file on a parse failure: move it
+                // aside so it can be recovered, and make the reset visible.
+                let backup = self.corrupt_backup_path();
+                let kept = std::fs::rename(&self.path, &backup).is_ok();
+                eprintln!(
+                    "config: {} is not valid JSON ({error}); {}",
+                    self.path.display(),
+                    if kept {
+                        format!("moved aside to {}", backup.display())
+                    } else {
+                        "left in place".to_string()
+                    }
+                );
+                let mut fallback = AppConfig::default();
+                // A corrupt file must never widen permissions: the MCP policy
+                // falls back to read-only until the user fixes the settings.
+                fallback.mcp_policy.writes_enabled = false;
+                fallback
+            }
+        };
+        // Configs written before revision tracking used `onboarded: true`
+        // for the first guide. Keep that as revision 1 so an upgrade to
+        // revision 2 still shows the new flow exactly once.
+        if config.onboarded_version == 0 && legacy_onboarded(&raw) {
+            config.onboarded_version = 1;
         }
+        config.companion.migrate_device_permissions();
+        config
+    }
+
+    fn corrupt_backup_path(&self) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.json");
+        self.path.with_file_name(format!("{name}.corrupt-{stamp}"))
     }
 
     pub fn save(&self, config: &AppConfig) -> io::Result<()> {
@@ -341,5 +423,79 @@ mod onboarding_tests {
         .expect("write config");
         assert_eq!(store.load().onboarded_version, 2);
         let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn legacy_companion_devices_grant_first_management() {
+        let store = temp_store("companion-legacy");
+        std::fs::write(
+            store.path(),
+            r#"{"companion":{"devices":[
+                {"id":"a","name":"A","tokenHash":"hash-a","pairedAt":"2026-11-13T00:00:00+00:00"},
+                {"id":"b","name":"B","tokenHash":"hash-b","pairedAt":"2026-11-13T00:01:00+00:00"}
+            ]}}"#,
+        )
+        .expect("write config");
+
+        let companion = store.load().companion;
+        assert!(companion.device_permissions_initialized);
+        assert!(companion.devices[0].can_manage);
+        assert!(!companion.devices[1].can_manage);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn explicit_revoke_is_not_regranted_on_reload() {
+        let store = temp_store("companion-revoked");
+        std::fs::write(
+            store.path(),
+            r#"{"companion":{
+                "devicePermissionsInitialized":true,
+                "devices":[
+                    {"id":"a","name":"A","tokenHash":"hash-a","pairedAt":"2026-11-13T00:00:00+00:00","canManage":false},
+                    {"id":"b","name":"B","tokenHash":"hash-b","pairedAt":"2026-11-13T00:01:00+00:00","canManage":false}
+                ]
+            }}"#,
+        )
+        .expect("write config");
+
+        let companion = store.load().companion;
+        assert!(companion.device_permissions_initialized);
+        assert!(!companion.devices[0].can_manage);
+        assert!(!companion.devices[1].can_manage);
+        let _ = std::fs::remove_file(store.path());
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::ConfigStore;
+
+    #[test]
+    fn corrupt_config_is_moved_aside_and_narrows_mcp_permissions() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("tapd-config-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ not json").expect("write corrupt config");
+
+        let config = ConfigStore::new(&path).load();
+        assert!(!config.mcp_policy.writes_enabled);
+        assert!(!path.exists(), "corrupt file must not stay at the live path");
+
+        let backup = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .expect("corrupt backup exists");
+        assert_eq!(
+            std::fs::read_to_string(backup.path()).expect("backup readable"),
+            "{ not json"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

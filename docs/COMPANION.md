@@ -34,7 +34,7 @@
 
 ```
 手机浏览器 ──HTTP──> companion axum server（0.0.0.0:0 随机端口）
-                    │  配对码（一次性，TTL 10min）→ session token（Bearer）
+                    │  配对码（一次性，配对成功后自动轮换）→ session token（Bearer）
                     │  静态资源：rust-embed 内嵌 companion SPA
                     ▼
       commands.rs 内部核心函数（与桌面 UI 同层，不经过 MCP）
@@ -51,6 +51,9 @@
 - 路由：
   - `GET /` + 资产 → rust-embed 嵌入 `dist-companion/`（debug 构建从磁盘读）
   - `POST /companion/api/pair`（免鉴权）：一次性配对码换长期 session token；简单内存限速
+  - `GET /companion/api/devices`（canManage）：已配对设备、在线状态与管理权限
+  - `POST /companion/api/devices/permission`（canManage）：开关其他设备的管理权限
+  - `POST /companion/api/devices/unpair`（canManage）：解除其他设备
   - `GET /companion/api/state`：`{ loggedIn, version, me, workspaces 概要 }`
   - `GET /companion/api/bugs`：参数同桌面 `BugQuery` → `BugListPage`
   - `GET /companion/api/bug`：`workspace_id + bug_id → BugDetail`（含评论）
@@ -60,24 +63,25 @@
 
 ### 4.2 配对持久化（config.json）
 
-- `tapd-core` `AppConfig` 新增 `companion: Option<CompanionConfig>`（serde default 向后兼容）：`enabled: bool` + `devices: Vec<{ id, name, token_hash, paired_at }>`（有界小列表，按惯例进配置而非 sqlite）。
-- 写入一律走 `state.update_config`（state.rs:47 惯例）；`token_hash` 用已有 sha2 存 sha256；手机端 token 只存 localStorage。
+- `tapd-core` `AppConfig` 新增 `companion: CompanionConfig`（serde default 向后兼容）：`enabled: bool` + `devices: Vec<{ id, name, token_hash, paired_at, can_manage }>`（有界小列表，按惯例进配置而非 sqlite）。`devicePermissionsInitialized` 是一次性迁移标记：老配置首次加载时把第一台设备设为 `canManage=true`，之后用户显式撤销不会被重启恢复。
+- 写入一律走 `state.update_config`（state.rs:47 惯例）；`token_hash` 用已有 sha2 存 sha256；手机端 token 只存 sessionStorage（按标签页隔离）。
 - 解除配对 = 删 device 项，手机下次请求 401；`RunEvent::Exit` 关 listener（内存一次性码自然消亡）。
 
 ### 4.3 局域网 IP 与 QR（Tauri commands）
 
 - 新依赖 `local-ip-address`：取首个私有 IPv4，多网卡取默认路由优先。
 - lib.rs `generate_handler` 追加：
-  - `companion_status` → enabled / port / lan_ip / devices
+  - `companion_status` → enabled / port / lan_ip / devices（含 `canManage`）
   - `companion_enable` / `companion_disable`
   - `companion_pairing_code` → 生成一次性码 + 返回 `http://<ip>:<port>/#/pair?t=<code>`
   - `companion_unpair(device_id)`
-- 一次性配对码：`opaque_token()` 生成，内存持有，TTL 10min、单次有效。
+  - `companion_set_device_manage(device_id, can_manage)`
+- 一次性配对码：`opaque_token()` 生成，内存持有，应用运行期间有效、单次有效；每次配对成功后弹窗自动生成新码。
 
 ### 4.4 桌面 UI：设置页 CompanionCard
 
 - 新 `components/CompanionCard.tsx`（照 `ui.tsx` cardClass + Switch + Button 卡片范式），`SettingsPage.tsx` 插一行。
-- 内容：启用 Switch → 启用后显示 QR（npm 新依赖 `qrcode`，前端渲染 data URL）+ 地址文字 + 已配对设备列表（名称 / 时间 / 解除）+「重新生成配对码」。
+- 内容：启用 Switch → 启用后显示 QR（npm 新依赖 `qrcode`，前端渲染 data URL）+ 地址文字 + 已配对设备列表（名称 / 时间 / 管理权限开关 / 解除）+ 多设备说明。
 - 文案遵循短文案偏好，说明收进 title。
 
 ### 4.5 移动端 SPA（新 workspace 包 `apps/companion/`）
@@ -108,12 +112,12 @@
 
 ## 5. 安全要点
 
-- v1 局域网为明文 HTTP（个人工具可接受）：一次性码 10min TTL + 单次有效 + 配对限速；session token 64hex 只存手机，配置里只存 hash（config.json 本身 0o600）。
+- v1 局域网为明文 HTTP（个人工具可接受）：一次性码应用运行期间有效 + 单次有效 + 配对限速；session token 64hex 只存手机，配置里只存 hash（config.json 本身 0o600）。
 - 未登录 → 全部接口返回 `not_logged_in` 语义；桌面退出即伴侣下线，手机端呈现离线态。
 
 ## 6. 验证
 
-1. `cargo test`：配对码 TTL / 单次消费、token hash 校验、device 增删（照 server.rs 内嵌 tests 风格）。
+1. `cargo test`：配对码单次消费、token hash 校验、device 增删（照 server.rs 内嵌 tests 风格）。
 2. `pnpm -C apps/companion build && pnpm dev` → 设置页启用伴侣 → QR 出现。
 3. 手机同 Wi-Fi 打开（或桌面浏览器 devtools 手机仿真访问 `http://<lan-ip>:<port>`）验证全链路：配对 → 列表 → 详情 → 图片 → 通知横幅（`/companion/api/notifications` 有条目时页面内出现）→ 主题 / 字号切换（独立于桌面，刷新后保留）→ 桌面会话掉线后手机显示掉线态、恢复后自动回到列表 → 解除配对后请求 401。
 
@@ -131,14 +135,69 @@
 - **`/companion/api/media` 鉴权支持 `t` 查询参数**：`<img>`/`<video>` 无法设置 Authorization 头，会话 token 经 `t=` 传递（与桌面 `/media?token=` 的既有模式同构）；前端 `mediaUrl` 同步拼参。
 - **`GET /companion/api/bug` 参数为 camelCase**（`workspaceId`/`bugId`，serde rename_all 统一）。
 - **`dist-companion/` 由构建链保证**：根 `build` / `dev` / `check:rust` / `test:rust` 都先 `build:companion` 再动 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。**CI 2026-11-13 修复**：GitHub Actions 上 `dist-companion/` 不存在导致 `RustEmbed` 编译失败，补完上述脚本前缀后 check/test job 只需 `pnpm check:rust` / `pnpm test:rust`；release job 增加显式 `pnpm build:companion` 步骤（发布包必须内嵌真实 SPA，不能落到占位页）。
-- **配对细节**：一次性码 TTL 10min 单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对覆盖旧 token；`companion_status` 不返回 token_hash。
+- **配对细节**：一次性码应用运行期间有效、单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对保留原 id 与管理权限，只轮换 token；`companion_status` 不返回 token_hash。**多设备权限**：第一台配对设备默认 `canManage=true`，其余默认 false；电脑端可开关任意设备（包括第一台）；手机端管理员只能开关/解除其他设备，不能改自己；不自动继承，允许暂时没有手机管理员。
 - **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
 - **联调修复（2026-11-13 真实环境）**：移动端列表改用 `/companion/api/workspaces`（state 不含项目）；项目下拉显示 `name`（TAPD `prettyName` 是数字 ID）；`fetch_tapd_media` 将站内相对路径（`/tfl/...`）补全到 `TAPD_HOME` 后再过白名单。
 - **debug 调试缝**：`GET /dev/companion`（运行态快照）与 `POST /dev/companion/pairing`（生成配对码），debug-only，供自动化测试绕开设置卡。
-- **真实环境交互走查（已做，IAB 移动视口 390×844 + 已登录 dev 应用 + Quick Tunnel）**：配对→列表（20 条/15 页）→搜索（关键词 2 条）→详情（信息栅格/短 ID/描述内联截图经媒体代理加载）→翻页（第 2 页）→主题浅/深/跟随系统与字号 14→16px（持久化 `companion.prefs`）→sessionStorage 标签页隔离（新标签页自动回 #/pair）→配对码独占（已消费码二次配对报「配对码无效或已过期」）→Quick Tunnel HTTPS 全链路（`isSecureContext=true`，系统通知分支就位，IAB 宿主 permission=denied 时回落页内横幅）。cargo test 全绿、双端 tsc 通过。桌面端真实手机扫码走查待用户验证。
+- **真实环境交互走查（已做，IAB 移动视口 390×844 + 已登录 dev 应用 + Quick Tunnel）**：配对→列表（20 条/15 页）→搜索（关键词 2 条）→详情（信息栅格/短 ID/描述内联截图经媒体代理加载）→翻页（第 2 页）→主题浅/深/跟随系统与字号 14→16px（持久化 `companion.prefs`）→sessionStorage 标签页隔离（新标签页自动回 #/pair）→配对码独占（已消费码二次配对报「配对码无效」）→Quick Tunnel HTTPS 全链路（`isSecureContext=true`，系统通知分支就位，IAB 宿主 permission=denied 时回落页内横幅）。cargo test 全绿、双端 tsc 通过。桌面端真实手机扫码走查待用户验证。
 - **配对码开关（2026-11-13）**：`CompanionConfig.requirePairingCode`（默认 true）。关闭后 `/companion/api/pair` 免码直连（知道地址即门槛，测试阶段便利性换取强度），移动端无码打开自动直连、失败提示扫码；桌面设置卡有「配对码」开关。dev 环境当前已关闭。
 - **v2（2026-11-13）**：Agent 任务查看/审核/历史/入队、同事包、缺陷筛选、桌面配置（Agent 执行 + 通知）全部落地。后端 = `POST /companion/api/feature` 白名单代理（18 项：agent_tasks_list/history/enqueue/review_approve/review_stop/review_diff/merge_start/merge_verify/task_cancel/task_retry/config_get/config_set/runtimes/scan/notification_settings_get/notification_settings_set/coworker_list/coworker_select），60 次/分钟限速，白名单外 403；companion.rs 按职责拆为 companion/ 目录（行为保持）。移动端新增底部 tab 导航（缺陷/Agent/设置 + 角标）、待审核卡（summary/files/diff/通过/搁置）、待合并卡、队列/历史/任务详情、同事页多选、缺陷筛选 bottom sheet（statuses/owners 多选 + priority/severity/creator 单选，`companion.bugFilter` 持久化）、入队 sheet（extraPrompt + 运行时选择）、设置页桌面端配置区（Agent 执行含 Worktree 锁定、通知设置即时提交）。真实走查七项 + 白名单拒绝 + `{config}` 包裹形状全部通过（移动端双形状防御覆盖）。cargo test 347 全绿（+6 新增）。
 - **v2 明确未做**：终端输出流（桌面无历史回放，仅 PTY 实时流）、agent_scan 安装检测 UI、队列恢复按钮（白名单外，横幅提示桌面恢复）、真机入队（走查止于表单，避免真实启动 Agent）。
 - **v2.1（2026-11-13）**：对齐桌面细节 + 请求频次优化。列表默认「我的」（owners=[me]）+ Segmented 切换；筛选处理人/创建人接 `/companion/api/members`（服务端复用 2h 缓存，客户端 30min）；排序控件（created/modified 双向，入 bugFilter）；详情动作区（复制链接 bugUrl、认领=update-field owner+claim、状态流转 sheet、评论）。**请求频次优化**：reqCache SWR（列表键 30s/详情 60s/workspaces 5min/state 15s，fresh 内回列表零请求、stale 先渲染旧值后台刷新、写后精确失效）+ 轮询自适应（Agent 页 8s/其他页 30s）+ 页面隐藏全暂停恢复补一轮 + 频次预算表（reqCache.ts 注释块，后续优化事实源）。后端 6 端点复用 commands.rs 提取的 *_core（356 测试全绿 +9）。真实走查：payload/排序/动作区四入口/端点（members 27 人、transitions 只读）全过；写操作止于表单（真实项目数据不落写）。
 - **v3（2026-11-13）扫码入口与隧道生命周期**：左侧栏「设置」上方新增移动端伴侣入口，仅在 `companion.enabled` 时显示；设置页只保留启用 / 配对码开关，不再出现二维码。`CompanionConfig.enabled` 默认改为 `true`（已有显式 `false` 保留）。弹窗默认外网 Quick Tunnel：`companion_cloudflared_check` 用 `shell_path::user_path()` 检测 `cloudflared`，`companion_tunnel_start` 拉起 `cloudflared tunnel --url http://127.0.0.1:<port> --protocol http2 --no-autoupdate`，后台线程解析 stderr 中的 `*.trycloudflare.com`，30 秒未就绪判失败；未安装时弹窗只显示安装教程与「我已安装」，不显示二维码。隧道在扫码 / 关闭弹窗后保持运行，仅在显式停止、停用伴侣或应用退出时清理；`companion_pairing_code(mode)` 支持 `tunnel`（隧道 URL）与 `lan`（测试）两种二维码。**握手 / 心跳**：配对成功即写入内存 presence 并 emit `companion://paired`；手机每 20 秒 `POST /companion/api/heartbeat`，桌面 60 秒内有心跳即在线，emit `companion://presence`；`companion_status.devices` 返回 `online` / `lastSeenAt`，弹窗与手机设置页各自渲染在线状态。新增 Tauri 事件 `companion://tunnel` / `companion://paired` / `companion://presence`。**扫码配对码保留（2026-11-13 修复）**：移动端无会话时不再把 URL 重写成裸 `#/pair`；未配对时 `agent_tasks_list` 轮询直接跳过；401 处理遇到带 `t=` 的扫码 URL 不改写；`PairPage` 直接从 `location.hash` 读取配对码并监听 `hashchange`，Safari 晚到 fragment 也能重新配对。
 - **遗留观察**：IAB 的 Playwright click 命中目标不可靠（fill/坐标点击正常），非产品问题；临时端口重启即换 → 手机端重启后需重新扫码（固有行为）。
+
+## 9. 远程终端（v4，2026-11-13）
+
+桌面端的底部终端与手机共用同一批 PTY 会话，所以手机看到的是桌面机器上真实运行的 shell，不是独立的远程登录。
+
+**桌面侧**（`src-tauri/src/terminal.rs`）
+
+- `terminal_create` / `terminal_list` / `terminal_input` / `terminal_resize` / `terminal_close` / `terminal_replay` / `terminal_ticket`，全部走 `feature_command` 的 `terminal_` 前缀；会话上限 8，**到上限时先回收已退出会话**（纯移除，不 kill），因此死标签不会挡住新开。
+- 每个会话一个 PTY、一个 16ms 帧批处理写线程、256 KiB 回放环与单调累计字节数 `seq`。`terminal://output` 带 `seq`，`terminal_replay` 返回快照的 `seq`，桌面视图据此丢弃已包含在快照里的实时帧。
+- **回放对齐**：回放固定以「reset + 清屏」开头；环形缓冲被截断时从第一个完整行开始，避免手机/桌面重挂时左上角出现半行残字。
+- **输入有界**：每个会话按排队字节封顶 1 MiB，超出返回 `terminal.busy` 并记日志；PTY 写入由会话自己的队列线程串行完成，async 路径不阻塞。
+- **退出必达**：`wait()` 放在独立 waiter 线程，shell 退出即上报，孙进程仍持有 PTY 也不会让会话永远「运行中」；上报后保留 150ms 排空最后一帧输出再收尾。
+- **OSC 标题与 cwd**：解析 OSC 0/2（标题）与 OSC 7（`file://host/path`，percent-decode）并更新 Tab/手机列表的标题与 cwd，序列跨帧分割也能正确拼接。
+- 事件：`terminal://output` / `terminal://exit` / `terminal://sessions`；关闭面板不杀进程，退出应用统一回收进程组。
+
+**手机侧**
+
+- `GET /companion/api/terminal/ws?ticket=<ticket>&id=<sessionId>`：先 `feature("terminal_ticket", { id })` 换**一次性票据**（60s、单次、绑定会话），再在同一次加锁里取「回放 + 订阅」，回放与实时输出不重叠、不缺口。旧的 `t=<sessionToken>` 仍兼容，但手机只用票据，长期 token 不再出现在 URL 与隧道日志里。
+- 下行 `{"type":"replay"|"data","data":…}`、`{"type":"exit","code":…}`、`{"type":"error","code":…}`；上行 `{"type":"input","data":…}`、`{"type":"resize","cols":…,"rows":…}`。会话不存在时在升级后回一帧 `{"type":"error","code":"not_found"}` 再关闭（浏览器拿不到握手 404）；手机显示「终端已结束」并停止重连。
+- 手机页面：`#/terminal` 会话列表（10s 轮询、新建 / 关闭；新建时可选「家目录」或某个项目，选项目则由桌面解析该项目配置的 `repoPath`），`#/terminal/s/<id>` 全屏 xterm + 按键条；断线 1s→2s→4s→…≤10s 回连，页面隐藏时暂停，恢复后重连并由 replay 复位重绘。会话页按 id 独立挂载，切换会话不会残留上一个的退出/结束状态。
+- 手机列表 / 新建 / 关闭 / 取票走 `/companion/api/feature` 白名单；输入与尺寸只走 WebSocket，避免逐键 HTTP，也不把 `terminal_input` 暴露成通用代理命令。
+- **输入：行输入为默认，直通为全屏程序备用**。Quick Tunnel 实测往返 0.8–2s，逐字符发、逐字符回显在物理上不可能跟手，所以手机端默认「行输入」：命令在手机本机编辑（零延迟），回车时整行 + `\r` 作为一帧发出；Tab / Esc / Ctrl / 方向键会先把当前草稿提交再发送对应序列，保证 shell 行内容与本地草稿一致。标题栏可切「直通」：按键实时下发，适合 vim、less、Agent TUI 等全屏程序。直通模式下按键按 30ms 封顶合并（不是空闲去抖，持续打字也按帧发出），Enter / Tab / Ctrl / Esc 立即发送。桌面端同样按 40ms 封顶合并。服务端每个会话有一个输入队列线程串行写 PTY，逐键不再各起一个阻塞任务，输入顺序保持不变。
+- 行输入细节：←/→ 移动本地光标（不发 PTY）；↑/↓ 浏览本机命令历史（`sessionStorage`，最近 50 条，第一次 ↑ 暂存草稿）；输入框可一键切换明文/遮蔽，方便在 `sudo`、`ssh` 等不回显的提示里隐藏内容；模式（行输入/直通）与每个会话的草稿都记在 `sessionStorage`，返回列表再进来不丢。键盘弹起时按键条默认收起，标题栏一个按钮可展开。
+- 行输入时 xterm 的 stdin 关闭、点击终端区会聚焦输入框。终端页固定在 `visualViewport` 的 `top/left/width/height` 上（同时监听 `resize` 与 `scroll`），键盘弹起或系统平移视口时整页跟着可视区域走，标题、终端内容、输入框与按键条都不会被键盘盖住或滚出屏幕；固定页自己补 `safe-area-inset-*`，按键条不压 Home 指示条。
+- **触摸滚动**：xterm 自带的触摸只用于选区，手指拖动不会滚屏，长输出在手机上无法回看。终端区自行把竖向拖动映射为 `scrollLines`（按行高换算，抬手后 200ms 内有短惯性、停顿后抬手不甩动），右侧滚动条仍归 xterm 自己拖动；滚动期间阻止默认手势与合成 click，结束后不会误聚焦输入框弹键盘。
+
+**安全与限制**
+
+- 门槛与伴侣相同：一次性配对码换 token，解除配对立即失效；WebSocket 另用 60s 单次票据，长期 token 不再进入 URL。隧道开启时远程终端等价于公网可达的桌面 shell，只在可信设备上配对。设备管理接口额外要求 `canManage`，非管理员返回 403。
+- 不做独立认证、二次确认、端口转发或可写文件传输；项目文件只有受控编辑（默认关闭，见 §10）。机型上的密码输入建议用遮蔽开关或直通模式。
+- 回放是原始输出尾部，不做终端状态序列化；全屏 TUI 中途重挂只能近似重建，手机断线超过 256 KiB 的输出会丢。
+
+## 10. 文件浏览与编辑（v5，2026-11-13；编辑 2026-11-14）
+
+浏览桌面项目配置的本地文件夹，不镜像桌面分屏布局。编辑默认关闭。
+
+- `GET /companion/api/files?workspaceId=&path=`（Bearer）→ `{ root, path, entries, truncated }`；一层目录、dirs-first、隐藏文件带 `hidden` 标记、单目录 5000 条截断。
+- `GET /companion/api/file?workspaceId=&path=`（Bearer）→ `{ kind, path, size, mtime, mtimeMs, text, truncated }`；文本 2 MiB 截断，图片 / 音视频只给 kind，50 MiB 以上为 `tooLarge`。
+- `GET /companion/api/file/raw?t=<token>&workspaceId=&path=`（查询 token，供 `<img>` / `<video>`）→ 原始字节，支持单段 `Range`。
+- `GET /companion/api/file/write`（Bearer）→ `{ enabled }`；`POST /companion/api/file/write-setting { enabled }`（仅 `canManage`）切换桌面配置 `companion.allowFileWrite`，默认 false。桌面伴侣弹窗也提供同一开关。
+- `POST /companion/api/file/write { workspaceId, path, text, mtimeMs?, force? }`（Bearer，需开关打开）→ `{ path, kind, size, mtime, mtimeMs }`；`text` 必填，只覆盖已存在的 UTF-8 文本文件（2 MiB），同目录 `create_new` 临时文件 + rename，`mtimeMs` 不一致返回 409 `conflict`，`force` 覆盖；二进制或超限现有文件直接拒绝。
+- 路径与桌面同一套 `fs.rs` 解析：根为项目 `repoPath`，只接受相对路径，拒绝绝对路径、`..`、`.git`、NUL 与符号链接逃逸；未配置文件夹返回 `no_folder:`，手机显示「在桌面端项目设置里选择本地文件夹」。
+- 手机页面：底部「文件」tab → `#/files?ws=&path=`（项目切换、面包屑、返回上级、隐藏文件开关、目录下钻）→ `#/file?ws=&path=`（文本 / Markdown、图片、音视频、二进制元信息）。预览用 highlight.js 上色（懒加载 chunk，输出经 DOMPurify 清洗后注入）；编辑开启且文件未截断时可切换等宽 textarea 编辑并保存，冲突时提示重新加载或覆盖。表单控件在手机上固定 16px，避免 iOS 聚焦时自动放大页面。
+
+## 11. 本地项目与事项（v6，2026-11-16）
+
+桌面端新增与 TAPD 无关的本地项目；手机端可创建项目、维护事项并发起 Agent 任务。
+
+- 底部新增「事项」tab（`#/local?p=<projectId>`）：项目下拉 + 新建 / 编辑项目（名称与项目规则）、待处理 / 处理中 / 已完成三段、事项新增 / 编辑 / 删除 / 移动 / 标记完成 / 重新打开、交给 Agent（可补充说明并选运行时）。任务成功后桌面自动把事项置为已完成，手机通过 Agent 任务流水的签名变化静默刷新列表。
+- 新建项目时用 `DirectoryPickerSheet` 浏览桌面目录：`local_browse_dirs { path? }` 只列目录，默认 `$HOME`；服务端在列目录前校验路径位于 `$HOME` 或已配置的本地仓库，其余返回 `local.browse.forbidden`。
+- 项目 / 事项 CRUD 全走 `/companion/api/feature` 的 `local_*` 命令（无 TAPD 登录门禁），数据在桌面 `local.sqlite3`；手机只是渲染与动作意图，不直接持有文件或数据库。项目规则随项目保存，入队时复制到任务并写进 `quest.json` / 提示词。
+- `local_item_enqueue` 返回 `{ task, item }`；桌面把事项置为 `in_progress` 并回传新行。任务与缺陷共用队列，`sourceKind = local_work_item`，任务页不显示缺陷链接，项目行显示本地项目名。
+- 文件 / 终端项目列表：TAPD 项目只有在 `agentConfig().projects[id].repoPath` 非空时才显示；本地项目始终显示；终端新建仍保留「家目录」。文件页额外提供 `__root__`（根目录）源，从 `/` 只读浏览，写接口对根目录返回 403。
+- 限制：交给 Agent 前桌面目录必须是带 `HEAD` 的 git 仓库，否则返回明确错误；根目录浏览只读，不能编辑系统文件。
+

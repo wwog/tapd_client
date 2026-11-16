@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, CalendarClock, ChevronDown, ChevronRight } from "lucide-react";
 
 import type { BugDetail, ChangeEntry, ChangeField } from "../lib/api";
+import { t } from "../lib/i18n";
 import { BugSectionTitle } from "./BugSectionTitle";
 
 /** Collapsible TAPD change history; collapsed again on every drawer open. */
@@ -28,18 +29,18 @@ export function BugChanges(props: { detail: BugDetail; open: boolean }) {
           icon={
             expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
           }
-          title={`变更记录（${changeCount}）`}
+          title={t("bugs.changesCount", { count: changeCount })}
         />
       </button>
       {expanded ? (
         <div className="mt-2 space-y-2">
           {changes.error ? (
             <div className="select-text break-all rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-sm leading-5 text-amber-700">
-              变更记录获取失败：{changes.error}
+              {t("bugs.changesFailed", { error: changes.error })}
             </div>
           ) : changes.changes.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border p-3 text-ui-caption text-slate-400">
-              暂无变更记录
+              {t("bugs.noChanges")}
             </div>
           ) : (
             <>
@@ -48,7 +49,10 @@ export function BugChanges(props: { detail: BugDetail; open: boolean }) {
               ))}
               {changeCount > changes.changes.length ? (
                 <p className="px-1 text-ui-xs text-slate-400">
-                  仅显示最近 {changes.changes.length} 条，共 {changeCount} 条。
+                  {t("bugs.changesTruncated", {
+                    shown: changes.changes.length,
+                    total: changeCount,
+                  })}
                 </p>
               ) : null}
             </>
@@ -64,7 +68,9 @@ function ChangeItem({ entry }: { entry: ChangeEntry }) {
     <div className="rounded-xl border border-slate-100 bg-surface p-3">
       <div className="flex flex-wrap items-center gap-2 text-ui-sm text-slate-400">
         <span className="font-mono text-slate-500">#{entry.seq}</span>
-        <span className="font-normal text-slate-600">{entry.author || "未知"}</span>
+        <span className="font-normal text-slate-600">
+          {entry.author || t("common.unknown")}
+        </span>
         <span className="inline-flex items-center gap-1">
           <CalendarClock size={10} />
           {entry.time}
@@ -76,7 +82,7 @@ function ChangeItem({ entry }: { entry: ChangeEntry }) {
         ) : null}
       </div>
       {entry.fields.length === 0 ? (
-        <p className="mt-2 text-ui-sm text-slate-400">（无字段明细）</p>
+        <p className="mt-2 text-ui-sm text-slate-400">{t("bugs.noFieldDetails")}</p>
       ) : (
         <dl className="select-text mt-2 space-y-1">
           {entry.fields.map((field, index) => (

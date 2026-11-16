@@ -11,6 +11,7 @@ import {
 import clsx from "clsx";
 
 import { useDismiss } from "../hooks/useDismiss";
+import { t } from "../lib/i18n";
 
 export type TableFilterOption = { value: string; label: string };
 
@@ -114,8 +115,8 @@ export function TableFilter(props: Props) {
         <button
           ref={anchorRef}
           type="button"
-          title={`筛选${label}`}
-          aria-label={`筛选${label}`}
+          title={t("bugs.filterBy", { label })}
+          aria-label={t("bugs.filterBy", { label })}
           aria-haspopup="dialog"
           aria-expanded={open}
           onClick={() => (open ? close() : openMenu())}
@@ -143,12 +144,12 @@ export function TableFilter(props: Props) {
             type="button"
             title={
               sort.direction === "asc"
-                ? `改为${label}降序`
+                ? t("bugs.sortDescending", { label })
                 : sort.direction === "desc"
-                  ? `取消${label}排序`
-                  : `按${label}升序`
+                  ? t("bugs.sortClear", { label })
+                  : t("bugs.sortAscending", { label })
             }
-            aria-label={`按${label}排序`}
+            aria-label={t("bugs.sortBy", { label })}
             onClick={sort.onToggle}
             className={clsx(
               "grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",
@@ -169,7 +170,11 @@ export function TableFilter(props: Props) {
 
         <button
           type="button"
-          title={open ? `收起${label}筛选` : `筛选${label}`}
+          title={
+            open
+              ? t("bugs.collapseFilter", { label })
+              : t("bugs.filterBy", { label })
+          }
           aria-hidden="true"
           tabIndex={-1}
           onClick={() => (open ? close() : openMenu())}
@@ -192,14 +197,14 @@ export function TableFilter(props: Props) {
             <>
               <button
                 type="button"
-                aria-label="关闭筛选"
+                aria-label={t("bugs.closeFilter")}
                 className="fixed inset-0 z-40 cursor-default"
                 onClick={close}
               />
               <div
                 ref={menuRef}
                 role="dialog"
-                aria-label={`筛选${label}`}
+                aria-label={t("bugs.filterBy", { label })}
                 style={{ left: position.left, top: position.top }}
                 className="fixed z-50 w-[208px] overflow-hidden rounded-lg border border-border bg-surface"
               >
@@ -212,7 +217,7 @@ export function TableFilter(props: Props) {
                     <input
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      placeholder={`匹配${label}`}
+                      placeholder={t("bugs.matchLabel", { label })}
                       className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
                     />
                   </div>
@@ -260,7 +265,7 @@ export function TableFilter(props: Props) {
                   })}
                   {shown.length === 0 ? (
                     <div className="px-2 py-3 text-center text-ui-xs text-slate-400">
-                      没有匹配项
+                      {t("bugs.noMatches")}
                     </div>
                   ) : null}
                 </div>
@@ -278,7 +283,7 @@ export function TableFilter(props: Props) {
                       }}
                       className="text-ui-xs text-sky-600 transition hover:text-sky-700"
                     >
-                      完成
+                      {t("common.done")}
                     </button>
                   </div>
                 ) : null}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import MDEditor from "@uiw/react-md-editor";
+import rehypeSanitize from "rehype-sanitize";
 import clsx from "clsx";
 import {
   AlertCircle,
@@ -28,6 +29,7 @@ import {
 } from "../lib/agent";
 import { describeTool, formatDuration, formatElapsed, oneLine, toolTarget } from "../lib/agentChat";
 import { relativeTime } from "../lib/api";
+import { t } from "../lib/i18n";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui";
 
@@ -198,7 +200,7 @@ export function AgentChatPane({
       >
         {truncated ? (
           <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-ui-xs text-amber-700">
-            会话记录较长，仅显示最近 2000 条消息。
+            {t("chat.truncatedNotice")}
           </div>
         ) : null}
 
@@ -238,7 +240,7 @@ export function AgentChatPane({
               disabled={!live || sending}
               rows={1}
               placeholder={
-                live ? "输入要发送给 Agent 的消息…" : "任务已结束，无法继续发送"
+                live ? t("chat.composerPlaceholder") : t("chat.composerDisabled")
               }
               className="max-h-40 min-h-9 flex-1 resize-none rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:bg-slate-50 disabled:text-slate-400"
             />
@@ -255,12 +257,12 @@ export function AgentChatPane({
                 )
               }
             >
-              发送
+              {t("common.send")}
             </Button>
           </div>
         )}
         <p className="mt-1 text-ui-2xs text-slate-400">
-          Enter 发送 · Shift+Enter 换行 · 写入当前终端
+          {t("chat.composerHint")}
         </p>
       </div>
     </div>
@@ -284,7 +286,7 @@ function EmptyState({
     return (
       <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
         <Loader2 size={14} className="animate-spin" />
-        正在读取会话…
+        {t("chat.reading")}
       </div>
     );
   }
@@ -294,9 +296,9 @@ function EmptyState({
     error ??
     (live
       ? chatMode
-        ? "会话已就绪，发送一条消息开始对话"
-        : "等待 Agent 输出…"
-      : "没有可展示的会话记录");
+        ? t("chat.readyToChat")
+        : t("chat.waitingOutput")
+      : t("chat.emptyConversation"));
   return (
     <div className="grid min-h-[180px] place-items-center px-4 text-center">
       <div className="max-w-sm">
@@ -306,7 +308,7 @@ function EmptyState({
         <p className="mt-2 text-ui-caption text-slate-600">{hint}</p>
         {error ? (
           <p className="mt-1 text-ui-2xs text-slate-400">
-            终端仍然可用，可以在终端里继续查看和操作。
+            {t("chat.terminalAvailable")}
           </p>
         ) : null}
         <Button
@@ -316,7 +318,7 @@ function EmptyState({
           onClick={onSwitchToTerminal}
           icon={<Terminal size={11} />}
         >
-          切换到终端
+          {t("chat.switchToTerminal")}
         </Button>
       </div>
     </div>
@@ -374,6 +376,7 @@ function Markdown({ text }: { text: string }) {
     <div className="agent-chat-markdown text-ui-caption leading-5 text-slate-700">
       <MDEditor.Markdown
         source={text}
+        rehypePlugins={[rehypeSanitize]}
         wrapperElement={{ "data-color-mode": "light" }}
         urlTransform={(url) =>
           url.startsWith("http://") || url.startsWith("https://") ? "" : url
@@ -391,7 +394,7 @@ function ThinkingCard({ text }: { text: string }) {
           size={11}
           className="shrink-0 transition-transform group-open:rotate-180"
         />
-        <span>思考</span>
+        <span>{t("chat.thinking")}</span>
         <span className="truncate text-slate-400">{oneLine(text, 60)}</span>
       </summary>
       <div className="mt-1.5 whitespace-pre-wrap break-words border-t border-slate-200 pt-1.5 text-ui-xs leading-5 text-slate-500">
@@ -442,7 +445,7 @@ function ToolCard({ tool }: { tool: AgentChatTool }) {
         <div className="space-y-2 border-t border-slate-100 px-2.5 py-2">
           {tool.input ? (
             <div>
-              <div className="mb-0.5 text-ui-2xs text-slate-400">参数</div>
+              <div className="mb-0.5 text-ui-2xs text-slate-400">{t("chat.parameters")}</div>
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 px-2 py-1.5 font-mono text-ui-2xs leading-4 text-slate-600">
                 {tool.input}
               </pre>
@@ -450,7 +453,7 @@ function ToolCard({ tool }: { tool: AgentChatTool }) {
           ) : null}
           {tool.output ? (
             <div>
-              <div className="mb-0.5 text-ui-2xs text-slate-400">输出</div>
+              <div className="mb-0.5 text-ui-2xs text-slate-400">{t("chat.output")}</div>
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-950 px-2 py-1.5 font-mono text-ui-2xs leading-4 text-zinc-300">
                 {tool.output}
               </pre>
@@ -511,18 +514,18 @@ function PendingBubble({
         <div className="mt-0.5 flex items-center justify-end gap-1.5 text-ui-2xs">
           {item.failed ? (
             <>
-              <span className="text-rose-600">未发送</span>
+              <span className="text-rose-600">{t("chat.unsent")}</span>
               <button
                 type="button"
                 className="text-sky-600 hover:underline"
                 onClick={onRetry}
               >
-                重试
+                {t("common.retry")}
               </button>
             </>
           ) : (
             <span className={unconfirmed ? "text-amber-600" : "text-slate-400"}>
-              {unconfirmed ? "未确认送达" : "发送中…"}
+              {unconfirmed ? t("chat.undelivered") : t("chat.sending")}
             </span>
           )}
         </div>
@@ -568,7 +571,7 @@ function WorkingBar({
             </span>
           ) : null}
           {shownModel ? (
-            <span className="truncate font-mono text-ui-2xs text-slate-400" title="当前模型">
+            <span className="truncate font-mono text-ui-2xs text-slate-400" title={t("chat.currentModel")}>
               {shownModel}
             </span>
           ) : null}
@@ -617,7 +620,7 @@ function PromptCard({
       <div className="flex items-center gap-1.5 text-ui-xs text-amber-800">
         <ShieldQuestion size={13} className="shrink-0" />
         <span className="font-normal">
-          {prompt.kind === "approval" ? "等待权限确认" : "等待回答"}
+          {prompt.kind === "approval" ? t("chat.waitingPermission") : t("chat.waitingAnswer")}
         </span>
         {prompt.tool ? (
           <span className="truncate font-mono text-ui-2xs text-amber-700/70">
@@ -631,7 +634,7 @@ function PromptCard({
         ) : null}
       </div>
       <p className="mt-1 whitespace-pre-wrap break-words text-ui-caption leading-5 text-slate-700">
-        {prompt.question ?? prompt.summary ?? "Agent 正在等待你的确认。"}
+        {prompt.question ?? prompt.summary ?? t("chat.awaitingConfirm")}
       </p>
       {prompt.canAnswer ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -659,7 +662,7 @@ function PromptCard({
       ) : (
         <div className="mt-1.5 flex items-center gap-2">
           <p className="min-w-0 flex-1 text-ui-2xs text-amber-700">
-            {prompt.answerHint ?? "该问题需要在 Agent 终端中回答。"}
+            {prompt.answerHint ?? t("chat.answerInTerminal")}
           </p>
           <Button
             size="sm"
@@ -667,7 +670,7 @@ function PromptCard({
             onClick={onSwitchToTerminal}
             icon={<Terminal size={11} />}
           >
-            切换到终端
+            {t("chat.switchToTerminal")}
           </Button>
         </div>
       )}

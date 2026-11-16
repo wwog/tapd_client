@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RefObject } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -11,29 +10,8 @@ import {
 } from "../lib/api";
 import { cacheApi } from "../lib/cache";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { ensureMembers, useMembers } from "../lib/members";
-import {
-  DETAIL_MAX_WIDTH,
-  DETAIL_MIN_WIDTH,
-  DETAIL_PANEL_WIDTH,
-  requiredWidth,
-} from "./useSidebarLayout";
-import { useDragResize } from "./useDragResize";
-
-/** Layout values read inside the stable open callback. */
-export type DetailLayoutRef = {
-  viewportWidth: number;
-  sidebarWidth: number;
-  detailWidth: number;
-  projectListHidden: boolean;
-};
-
-/** Sidebar controls the detail pane needs when it opens / resizes. */
-export type DetailPaneBridge = {
-  setSidebarCollapsed: (collapsed: boolean) => void;
-  setSidebarPeek: (peek: boolean) => void;
-  getSidebarWidth: () => number;
-};
 
 export type UseDetailPaneOptions = {
   workspaceId: string;
@@ -42,14 +20,19 @@ export type UseDetailPaneOptions = {
   me: string | null;
   bumpList: () => void;
   showToast: ToastFn;
-  layoutRef: RefObject<DetailLayoutRef>;
-  bridge: RefObject<DetailPaneBridge>;
+  /**
+   * Opens (or focuses) the singleton bug panel. The workbench owns placement;
+   * this hook only knows the bug resource. `label` is the tab title.
+   */
+  openPanel: (workspaceId: string, bugId: string, label?: string) => void;
+  /** Removes the singleton bug panel from the layout. */
+  closePanel: () => void;
 };
 
 /**
- * Right detail pane: cache-first fetch with sequence guards, the open/close
- * width animation (including growing the window), resize, export and the write
- * actions that re-read the bug.
+ * Bug detail data: cache-first fetch with sequence guards, reload after writes,
+ * export and the write actions. Opening/closing the visible pane belongs to the
+ * workbench layout; App watches the bug panel resource and calls `loadDetail`.
  */
 export function useDetailPane({
   workspaceId,
@@ -57,14 +40,11 @@ export function useDetailPane({
   me,
   bumpList,
   showToast,
-  layoutRef,
-  bridge,
+  openPanel,
+  closePanel,
 }: UseDetailPaneOptions) {
-  const [detailOpen, setDetailOpen] = useState(false);
-  /** Kept true during the close animation; false unmounts the pane entirely. */
-  const [detailRendered, setDetailRendered] = useState(false);
   /**
-   * Bug the pane was last asked to show, set before the fetch resolves so the
+   * Bug the panel was last asked to show, set before the fetch resolves so the
    * list can highlight its row immediately (the detail itself arrives later).
    */
   const [target, setTarget] = useState<{ workspaceId: string; bugId: string } | null>(
@@ -73,77 +53,38 @@ export function useDetailPane({
   const [detail, setDetail] = useState<BugDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [detailWidth, setDetailWidth] = useState(DETAIL_PANEL_WIDTH);
-  const [resizingDetail, setResizingDetail] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [lastExport, setLastExport] = useState<ExportResult | null>(null);
   /** Read inside stable callbacks without re-creating them on every detail load. */
   const detailRef = useRef<BugDetail | null>(null);
   detailRef.current = detail;
 
-  const effectiveDetailWidth = Math.max(
-    DETAIL_MIN_WIDTH,
-    Math.min(detailWidth, DETAIL_MAX_WIDTH),
-  );
-
-  /** Whether the pane currently occupies layout (true during close animation). */
-  const detailRenderedRef = useRef(false);
-  detailRenderedRef.current = detailRendered;
-  const detailCloseTimer = useRef<number | null>(null);
+  const openPanelRef = useRef(openPanel);
+  openPanelRef.current = openPanel;
+  const closePanelRef = useRef(closePanel);
+  closePanelRef.current = closePanel;
 
   /** Monotonic id so a slow detail response cannot replace a newer bug. */
   const detailSeq = useRef(0);
 
+  const clear = useCallback(() => {
+    setTarget(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
+    setLastExport(null);
+  }, []);
+
   /**
-   * Opens the detail pane cache-first. Opening it does not refresh the list and
-   * does not show the global "updating" indicator — only list refreshes do.
+   * Cache-first read for the bug the layout says is open. Called by App from an
+   * effect that watches the active bug panel resource.
    */
-  const loadBugDetail = useCallback(
-    (targetWorkspaceId: string, bugId: string) => {
+  const loadDetail = useCallback(
+    (workspaceId: string, bugId: string) => {
       const seq = ++detailSeq.current;
-      setTarget({ workspaceId: targetWorkspaceId, bugId });
+      setTarget({ workspaceId, bugId });
       // The owner / developer pickers need this workspace's people directory.
-      void ensureMembers(targetWorkspaceId);
-      // Codex-style pane: make room first (collapse the project list on narrow
-      // windows, then grow the window leftwards if needed), then animate in.
-      if (!detailRenderedRef.current) {
-        const layout = layoutRef.current;
-        const sidebarWidth = layout.projectListHidden ? 0 : layout.sidebarWidth;
-        const requiredWithSidebar = requiredWidth(sidebarWidth, layout.detailWidth);
-        const collapseSidebar =
-          !layout.projectListHidden && layout.viewportWidth < requiredWithSidebar;
-        if (collapseSidebar) {
-          bridge.current.setSidebarCollapsed(true);
-          bridge.current.setSidebarPeek(false);
-        }
-        const required = requiredWidth(
-          collapseSidebar ? 0 : sidebarWidth,
-          layout.detailWidth,
-        );
-        void api
-          .ensureWindowWidth(required)
-          .catch(() => 0)
-          .finally(() => {
-            if (seq !== detailSeq.current) return;
-            // Mount the pane at zero width, then grow it on the next frame so the
-            // width transition runs from a painted starting value.
-            setDetailRendered(true);
-            // Two frames: the first paints the zero-width pane, the second starts
-            // the width transition so the list and pane move together.
-            window.requestAnimationFrame(() => {
-              window.requestAnimationFrame(() => {
-                if (seq === detailSeq.current) setDetailOpen(true);
-              });
-            });
-          });
-      } else {
-        // Reopening during the close animation: grow back from the current width.
-        if (detailCloseTimer.current !== null) {
-          window.clearTimeout(detailCloseTimer.current);
-          detailCloseTimer.current = null;
-        }
-        setDetailOpen(true);
-      }
+      void ensureMembers(workspaceId);
       setDetail(null);
       setDetailError(null);
       setLastExport(null);
@@ -152,7 +93,7 @@ export function useDetailPane({
       void (async () => {
         let hasCache = false;
         try {
-          const cached = await cacheApi.bugDetail(targetWorkspaceId, bugId);
+          const cached = await cacheApi.bugDetail(workspaceId, bugId);
           if (seq === detailSeq.current && cached.data) {
             hasCache = true;
             setDetail(cached.data);
@@ -163,7 +104,7 @@ export function useDetailPane({
         }
         if (seq !== detailSeq.current) return;
         try {
-          const next = await api.bugDetail(targetWorkspaceId, bugId);
+          const next = await api.bugDetail(workspaceId, bugId);
           if (seq !== detailSeq.current) return;
           setDetail(next);
           setDetailError(null);
@@ -176,11 +117,37 @@ export function useDetailPane({
         }
       })();
     },
-    [bridge, layoutRef],
+    [],
   );
 
   /**
-   * Re-reads a bug after a write action. Unlike `loadBugDetail` it never paints
+   * Opens/focuses the bug panel and reads its data. The direct load also covers
+   * re-clicking the same bug (no layout change, so App's panel effect would not
+   * fire again); the App effect skips a resource whose target already matches.
+   */
+  const openDetail = useCallback(
+    (workspaceId: string, bugId: string, label?: string) => {
+      loadDetail(workspaceId, bugId);
+      openPanelRef.current(workspaceId, bugId, label);
+    },
+    [loadDetail],
+  );
+
+  /** Tab close: clears the fetch and removes the layout panel. */
+  const closeDetail = useCallback(() => {
+    detailSeq.current += 1;
+    clear();
+    closePanelRef.current();
+  }, [clear]);
+
+  /** The panel disappeared without going through `closeDetail` (e.g. logout). */
+  const reset = useCallback(() => {
+    detailSeq.current += 1;
+    clear();
+  }, [clear]);
+
+  /**
+   * Re-reads a bug after a write action. Unlike `loadDetail` it never paints
    * the (now stale) cache first, so the pane switches straight to fresh data.
    */
   const reloadBugDetail = useCallback(
@@ -203,7 +170,7 @@ export function useDetailPane({
     async (targetWorkspaceId: string, bugId: string) => {
       const currentUser = me;
       if (!currentUser) {
-        showToast("error", "未能识别当前用户，无法认领");
+        showToast("error", t("app.claim.noUser"));
         throw new Error("current user is unknown");
       }
       try {
@@ -214,7 +181,7 @@ export function useDetailPane({
           currentUser,
           true,
         );
-        showToast("ok", "已认领");
+        showToast("ok", t("app.claim.done"));
         bumpList();
         const open = detailRef.current;
         if (open?.id === bugId && open.workspaceId === targetWorkspaceId) {
@@ -242,7 +209,7 @@ export function useDetailPane({
     async (target: BugDetail, comment: string) => {
       try {
         await api.bugAddComment(target.workspaceId, target.id, comment);
-        showToast("ok", "评论已发表");
+        showToast("ok", t("app.comment.posted"));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -257,7 +224,10 @@ export function useDetailPane({
     async (target: BugDetail, field: string, value: string) => {
       try {
         await api.bugUpdateField(target.workspaceId, target.id, field, value);
-        showToast("ok", field === "de" ? "开发人员已更新" : "处理人已更新");
+        showToast(
+          "ok",
+          field === "de" ? t("app.detail.developerUpdated") : t("app.detail.ownerUpdated"),
+        );
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -281,7 +251,7 @@ export function useDetailPane({
           status,
           fields,
         );
-        showToast("ok", `状态已流转为「${result.label}」`);
+        showToast("ok", t("app.detail.statusChanged", { label: result.label }));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -296,28 +266,6 @@ export function useDetailPane({
     const id = detailRef.current?.workspaceId ?? workspaceId;
     if (id) void ensureMembers(id, true);
   }, [workspaceId]);
-
-  /** Shrinks the pane away, then removes it from layout to free the content area. */
-  const closeDetail = useCallback(() => {
-    detailSeq.current += 1;
-    setDetailOpen(false);
-    if (detailCloseTimer.current !== null) {
-      window.clearTimeout(detailCloseTimer.current);
-    }
-    detailCloseTimer.current = window.setTimeout(() => {
-      detailCloseTimer.current = null;
-      setDetailRendered(false);
-    }, 320);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (detailCloseTimer.current !== null) {
-        window.clearTimeout(detailCloseTimer.current);
-      }
-    },
-    [],
-  );
 
   const handleExport = useCallback(
     async (target: BugDetail) => {
@@ -339,30 +287,6 @@ export function useDetailPane({
     [context, showToast],
   );
 
-  /** Drag the divider on the detail pane's left edge (like the sidebar). */
-  const startDetailResize = useDragResize(() => {
-    let nextWidth = effectiveDetailWidth;
-    const sidebarWidth = bridge.current.getSidebarWidth();
-    setResizingDetail(true);
-
-    return {
-      onMove: (deltaX) => {
-        nextWidth = Math.max(
-          DETAIL_MIN_WIDTH,
-          Math.min(DETAIL_MAX_WIDTH, effectiveDetailWidth - deltaX),
-        );
-        setDetailWidth(nextWidth);
-      },
-      onEnd: () => {
-        setResizingDetail(false);
-        // A wider pane may need a wider window; grow leftwards if necessary.
-        void api
-          .ensureWindowWidth(requiredWidth(sidebarWidth, nextWidth))
-          .catch(() => 0);
-      },
-    };
-  });
-
   // The signed-in user must always be selectable, even if the member API omits
   // them (some projects only return the assignable subset).
   const { byWorkspace, loading: membersLoading } = useMembers();
@@ -377,25 +301,21 @@ export function useDetailPane({
   }, [byWorkspace, detail?.workspaceId, me, workspaceId]);
 
   return {
-    open: detailOpen,
-    rendered: detailRendered,
-    /** Bug the pane is showing (or about to show); used by the list highlight. */
+    /** Bug the panel is showing (or about to show); used by the list highlight. */
     target,
     detail,
     loading: detailLoading,
     error: detailError,
-    width: effectiveDetailWidth,
-    resizing: resizingDetail,
     exporting,
     lastExport,
     members: detailMembers,
     membersLoading: Boolean(membersLoading[detail?.workspaceId ?? workspaceId]),
-    openDetail: loadBugDetail,
-    reloadDetail: reloadBugDetail,
+    openDetail,
+    loadDetail,
     closeDetail,
+    reset,
     refreshMembers: refreshDetailMembers,
     exportDetail: handleExport,
-    startResize: startDetailResize,
     claimFromList: claimBugFromList,
     claimFromDetail: claimBugFromDetail,
     addComment: addBugComment,

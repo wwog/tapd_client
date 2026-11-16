@@ -10,8 +10,20 @@ import {
 } from "../lib/api";
 import { cacheApi } from "../lib/cache";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
+import { shellBootstrap, type ShellBootstrap } from "../lib/shellBootstrap";
 import { useTauriEvent } from "../lib/tauriEvent";
-import type { View } from "../components/NavRail";
+import type { View } from "../components/ActivityBar";
+
+/** Starting project, picked the same way the first `loadContext` does. */
+function initialWorkspaceId({ info, context }: ShellBootstrap): string {
+  if (!context) return "";
+  const hidden = new Set(info?.hiddenWorkspaceIds ?? []);
+  const visible = context.workspaces.filter((item) => !hidden.has(item.id));
+  const lastId = info?.lastWorkspaceId;
+  if (lastId && visible.some((item) => item.id === lastId)) return lastId;
+  return visible[0]?.id ?? context.workspaces[0]?.id ?? "";
+}
 
 export type ProjectMenu = {
   id: string;
@@ -29,6 +41,8 @@ export type WorkspacePaneBridge = {
 export type WorkspaceDataOptions = {
   view: View;
   setView: (view: View) => void;
+  /** Opens a TAPD project's page tab (notification jumps carry their own id). */
+  openWorkspacePage: (workspaceId: string) => void;
   showToast: ToastFn;
   pane: RefObject<WorkspacePaneBridge>;
 };
@@ -41,18 +55,28 @@ export type WorkspaceDataOptions = {
 export function useWorkspaceData({
   view,
   setView,
+  openWorkspacePage,
   showToast,
   pane,
 }: WorkspaceDataOptions) {
-  const [info, setInfo] = useState<AppInfo | null>(null);
-  const [context, setContext] = useState<WorkspaceContext | null>(null);
+  // `main.tsx` reads the same snapshots before the first render, so the shell
+  // already knows the session and the project list on its first frame.
+  const bootstrap = shellBootstrap();
+  const [info, setInfo] = useState<AppInfo | null>(bootstrap.info);
+  const [context, setContext] = useState<WorkspaceContext | null>(bootstrap.context);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState(() =>
+    initialWorkspaceId(bootstrap),
+  );
   const [refreshToken, setRefreshToken] = useState(0);
   /** Locally hidden TAPD projects (persisted in config.json). */
-  const [hiddenWorkspaceIds, setHiddenWorkspaceIds] = useState<string[]>([]);
+  const [hiddenWorkspaceIds, setHiddenWorkspaceIds] = useState<string[]>(
+    () => bootstrap.info?.hiddenWorkspaceIds ?? [],
+  );
   const hiddenInitializedRef = useRef(false);
+  /** A bootstrapped cache snapshot still needs one live refresh on this entry. */
+  const contextRefreshPendingRef = useRef(bootstrap.context !== null);
   /** Right-click context menu for a project row. */
   const [projectMenu, setProjectMenu] = useState<ProjectMenu | null>(null);
 
@@ -153,21 +177,6 @@ export function useWorkspaceData({
     setHiddenWorkspaceIds(info.hiddenWorkspaceIds ?? []);
   }, [info]);
 
-  // Dismiss the project context menu on any outside click / Escape.
-  useEffect(() => {
-    if (!projectMenu) return;
-    const close = () => setProjectMenu(null);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [projectMenu]);
-
   // Entering the account view refreshes the identity/session snapshot, so a
   // changed company/name (or a newly cached avatar) shows up immediately.
   useEffect(() => {
@@ -191,7 +200,9 @@ export function useWorkspaceData({
     "notification://open-bug",
     (payload) => {
       const { workspaceId: targetWorkspaceId, bugId } = payload;
-      setView("bugs");
+      // The notification owns the target project: open its tab directly (a
+      // `setView("bugs")` would still see the previous selection).
+      openWorkspacePage(targetWorkspaceId);
       setWorkspaceId(targetWorkspaceId);
       void api.setLastWorkspace(targetWorkspaceId);
       pane.current.loadBugDetail(targetWorkspaceId, bugId);
@@ -208,15 +219,26 @@ export function useWorkspaceData({
   );
 
   useEffect(() => {
-    if (info?.loggedIn && !context && !contextLoading && !contextError) {
-      void loadContext();
+    if (info?.loggedIn) {
+      // The bootstrapped cache snapshot paints immediately; the live list still
+      // loads once per entry so offline data never stays stale for the session.
+      if (
+        !contextLoading &&
+        !contextError &&
+        (!context || contextRefreshPendingRef.current)
+      ) {
+        contextRefreshPendingRef.current = false;
+        void loadContext();
+      }
+      return;
     }
-    if (!info?.loggedIn) {
-      setContext(null);
-      setContextError(null);
-      setWorkspaceId("");
-    }
-  }, [info?.loggedIn, context, contextLoading, contextError, loadContext]);
+    // Wait for `app_info`: a bootstrapped snapshot must not be dropped while
+    // the session check is still in flight.
+    if (!info) return;
+    setContext(null);
+    setContextError(null);
+    setWorkspaceId("");
+  }, [info, context, contextLoading, contextError, loadContext]);
 
   const visibleWorkspaces = useMemo(
     () =>
@@ -258,7 +280,7 @@ export function useWorkspaceData({
     }
 
     if (visibleWorkspaces.length <= 1) {
-      showToast("error", "至少保留一个项目");
+      showToast("error", t("app.projects.keepOne"));
       return;
     }
     if (hiddenWorkspaceIds.includes(id)) return;
@@ -270,14 +292,17 @@ export function useWorkspaceData({
       if (replacement) {
         pane.current.closeDetail();
         setWorkspaceId(replacement.id);
+        // The hidden project's tab must not stay in front: show the survivor.
+        openWorkspacePage(replacement.id);
         void api.setLastWorkspace(replacement.id);
       }
     }
   };
 
   const hideWorkspace = (id: string) => {
+    // The context menu closes itself (with its exit animation), so do not
+    // unmount it here.
     setWorkspaceVisible(id, false);
-    setProjectMenu(null);
   };
 
   const handleLogout = () => {

@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { featureCommand } from "./feature";
+import { localeTag, t, type MessageKey } from "./i18n";
 
 export type NotificationKind = "new" | "transferred" | "reopened" | "ai";
 export type NotificationItemState = "pending" | "handled" | "viewed" | "ignored";
@@ -119,19 +120,19 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   aiEnabled: true,
 };
 
-export const NOTIFICATION_KIND_LABELS: Record<NotificationKind, string> = {
-  new: "新缺陷",
-  transferred: "转派给我",
-  reopened: "重新打开",
-  ai: "AI 通知",
+export const NOTIFICATION_KIND_LABELS: Record<NotificationKind, MessageKey> = {
+  new: "settings.notify.kindNew",
+  transferred: "settings.notify.typeTransferred",
+  reopened: "settings.notify.typeReopened",
+  ai: "settings.notify.kindAi",
 };
 
-export const AI_TONE_LABELS: Record<AiTone, string> = {
-  info: "提示",
-  success: "成功",
-  warning: "警告",
-  error: "失败",
-  progress: "进行中",
+export const AI_TONE_LABELS: Record<AiTone, MessageKey> = {
+  info: "settings.aiTone.info",
+  success: "common.success",
+  warning: "settings.aiTone.warning",
+  error: "common.failed",
+  progress: "settings.aiTone.progress",
 };
 
 export const notificationApi = {
@@ -234,8 +235,8 @@ export const formatNotificationTime = (raw: string): string => {
 };
 
 export const formatPollTime = (iso: string | null): string => {
-  if (!iso) return "尚未轮询";
+  if (!iso) return t("settings.notify.notPolled");
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };

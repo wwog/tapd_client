@@ -7,6 +7,8 @@ import {
 } from "react";
 import clsx from "clsx";
 
+import { t } from "../lib/i18n";
+
 export type SegmentedOption<T extends string> = {
   value: T;
   label: ReactNode;
@@ -88,7 +90,7 @@ export function Segmented<T extends string>({
             aria-disabled={option.disabled || undefined}
             data-segment={option.value}
             disabled={option.disabled}
-            title={option.disabled ? "该运行时暂不支持对话视图" : undefined}
+            title={option.disabled ? t("app.segmented.unsupported") : undefined}
             onClick={() => {
               if (!option.disabled) onChange(option.value);
             }}

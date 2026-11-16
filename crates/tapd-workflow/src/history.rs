@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::task::{Task, TaskMerge, TaskStatus, Timestamp};
+use crate::task::{Task, TaskMerge, TaskSource, TaskStatus, Timestamp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +32,9 @@ pub struct HistoryRecord {
     pub workspace_name: String,
     pub bug_id: String,
     pub title: String,
+    /// Bug vs. local work item, so history can label the source.
+    #[serde(default)]
+    pub source_kind: TaskSource,
     pub status: TerminalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<Timestamp>,
@@ -57,6 +60,7 @@ impl HistoryRecord {
             workspace_name: task.spec.workspace_name.clone(),
             bug_id: task.spec.bug_id.clone(),
             title: task.spec.title.clone(),
+            source_kind: task.spec.source_kind,
             status,
             started_at: task.started_at.clone(),
             finished_at: task

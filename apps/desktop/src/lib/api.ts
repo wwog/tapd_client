@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import { localeTag, t } from "./i18n";
+
 export type AppPaths = {
   dataDir: string;
   logsDir: string;
@@ -153,11 +155,13 @@ export type Attachment = {
 
 export type MediaKind = "image" | "video" | "file";
 
-/** Image/video embedded in the rich-text description or a comment. */
+/** Resource embedded in the rich-text description or a comment. */
 export type MediaRef = {
   url: string;
   kind: MediaKind;
   filenameHint: string;
+  /** Size TAPD reported for an inline attachment card; 0 when unknown. */
+  size: number;
 };
 
 export type ChangeField = {
@@ -332,6 +336,8 @@ export type CompanionDevice = {
   /** A heartbeat arrived within the last minute. */
   online: boolean;
   lastSeenAt?: string | null;
+  /** May manage other devices from the phone. */
+  canManage: boolean;
 };
 
 /** A locally installed cloudflared binary, detected via the user's PATH. */
@@ -355,6 +361,8 @@ export type CompanionStatus = {
   enabled: boolean;
   running: boolean;
   requirePairingCode: boolean;
+  /** Paired phones may edit project text files (default false). */
+  allowFileWrite: boolean;
   port?: number;
   lanIp?: string | null;
   devices: CompanionDevice[];
@@ -365,11 +373,10 @@ export type CompanionStatus = {
 /** Where the pairing QR points: the public tunnel (default) or LAN (test). */
 export type PairingMode = "lan" | "tunnel";
 
-/** One-time pairing code: TTL 10 minutes, single use. */
+/** One-time pairing code: single use, no time-based expiry. */
 export type PairingCode = {
   code: string;
   url: string;
-  expiresAt: string;
 };
 
 export type OpenMediaMode = "file" | "browser" | "reveal" | "path";
@@ -416,6 +423,13 @@ export const api = {
   exportCaptures: (targetDir?: string | null) =>
     invoke<string>("capture_export", { targetDir: targetDir ?? null }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  /** Opens a local file with the saved "打开方式" app for `kind`. */
+  openFile: (path: string, kind?: string, target?: string) =>
+    invoke<void>("open_file", {
+      path,
+      kind: kind ?? null,
+      target: target ?? null,
+    }),
   /** Opens a bound project folder in the saved editor (or `target`). */
   openDirectory: (path: string, target?: string) =>
     invoke<void>("open_directory", { path, target: target ?? null }),
@@ -500,12 +514,18 @@ export const companionApi = {
   status: () => invoke<CompanionStatus>("companion_status"),
   setRequireCode: (require: boolean) =>
     invoke<void>("companion_set_require_code", { require }),
+  /** Toggles phone-side text editing; off by default. */
+  setFileWrite: (allow: boolean) =>
+    invoke<void>("companion_set_file_write", { allow }),
   setEnabled: (enabled: boolean) =>
     invoke<void>("companion_set_enabled", { enabled }),
   /** `tunnel` needs a live Quick Tunnel URL; `lan` is the test fallback. */
   pairingCode: (mode: PairingMode = "lan") =>
     invoke<PairingCode>("companion_pairing_code", { mode }),
   unpair: (deviceId: string) => invoke<void>("companion_unpair", { deviceId }),
+  /** Toggles whether a phone may manage other paired devices. */
+  setDeviceManage: (deviceId: string, canManage: boolean) =>
+    invoke<void>("companion_set_device_manage", { deviceId, canManage }),
   /** Re-detects cloudflared (after the user installs it). */
   cloudflaredCheck: () => invoke<CloudflaredInfo>("companion_cloudflared_check"),
   tunnelStart: () => invoke<CompanionTunnel>("companion_tunnel_start"),
@@ -576,8 +596,14 @@ export const relativeTime = (iso: string): string => {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) return iso;
   const delta = Date.now() - timestamp;
-  if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))} 秒前`;
-  if (delta < 3_600_000) return `${Math.round(delta / 60_000)} 分钟前`;
-  if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)} 小时前`;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  if (delta < 60_000) {
+    return t("bugs.secondsAgo", { n: Math.max(1, Math.round(delta / 1000)) });
+  }
+  if (delta < 3_600_000) {
+    return t("bugs.minutesAgo", { n: Math.round(delta / 60_000) });
+  }
+  if (delta < 86_400_000) {
+    return t("bugs.hoursAgo", { n: Math.round(delta / 3_600_000) });
+  }
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };

@@ -8,10 +8,12 @@ use crate::tapd::model::Attachment;
 use super::value::non_empty;
 
 pub const TAPD_BASE: &str = "https://www.tapd.cn";
+/// Files are served from their own host. Requests to `www.tapd.cn` attachment
+/// paths only redirect here, and that redirect drops the session cookie.
+pub const TAPD_FILE_BASE: &str = "https://file.tapd.cn";
 
 pub const PATH_BUG_LIST: &str = "/api/aggregation/bug_aggregation/get_bugs_list";
-pub const PATH_BUG_DETAIL: &str =
-    "/api/aggregation/workitem_aggregation/common_get_info";
+pub const PATH_BUG_DETAIL: &str = "/api/aggregation/workitem_aggregation/common_get_info";
 pub const PATH_USER_WORKSPACE: &str =
     "/api/aggregation/user_and_workspace_aggregation/get_user_and_workspace_basic_info";
 pub const PATH_WORKSPACE_MEMBERS: &str = "/api/basic/user/get_workspace_members";
@@ -269,7 +271,7 @@ pub fn bug_detail_body(workspace_id: &str, bug_id: &str) -> Value {
         "installed_app_entity": {
             "obj_id": bug_id,
             "obj_type": "bug",
-            "obj_name": "缺陷"
+            "obj_name": "缺陷" // i18n-exempt: TAPD request field value
         },
         "has_edit_rule_fields": [],
         "is_archived": 0,
@@ -311,7 +313,7 @@ pub fn user_chooser_all_body(workspace_id: &str) -> Value {
 
 pub fn attachment_download_url(workspace_id: &str, attachment: &Attachment) -> String {
     format!(
-        "https://file.tapd.cn/{workspace_id}/attachments/download/{}/{}",
+        "{TAPD_FILE_BASE}/{workspace_id}/attachments/download/{}/{}",
         attachment.id, attachment.filename
     )
 }

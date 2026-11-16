@@ -1,5 +1,7 @@
 export { formatBytes } from "./api";
 
+import { localeTag } from "./i18n";
+
 /** Accepts RFC3339 and TAPD's "YYYY-MM-DD HH:MM:SS"; null when unparseable. */
 const parseTimestamp = (value: string): number | null => {
   const trimmed = value.trim();
@@ -33,7 +35,7 @@ export const formatDateTime = (
   if (!isoOrTapd) return "—";
   const timestamp = parseTimestamp(isoOrTapd);
   if (timestamp === null) return isoOrTapd;
-  return new Date(timestamp).toLocaleString("zh-CN", options);
+  return new Date(timestamp).toLocaleString(localeTag(), options);
 };
 
 /** "2026-11-10T16:00:00+08:00" -> "2026/11/10 16:00:00". */
@@ -42,16 +44,16 @@ export const formatTimestamp = (value: string | number | Date | null): string =>
   if (value instanceof Date) {
     return Number.isNaN(value.getTime())
       ? "—"
-      : value.toLocaleString("zh-CN", { hour12: false });
+      : value.toLocaleString(localeTag(), { hour12: false });
   }
   if (typeof value === "number") {
     return Number.isFinite(value)
-      ? new Date(value).toLocaleString("zh-CN", { hour12: false })
+      ? new Date(value).toLocaleString(localeTag(), { hour12: false })
       : "—";
   }
   const timestamp = parseTimestamp(value);
   if (timestamp === null) return value;
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };
 
 const AUDIT_DATE_TIME: Intl.DateTimeFormatOptions = {

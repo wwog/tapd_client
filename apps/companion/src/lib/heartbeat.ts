@@ -1,12 +1,16 @@
 import { useSyncExternalStore } from "react";
 
 import { api } from "./api";
-import { getSession } from "./session";
+import { getSession, setMediaToken } from "./session";
 
 /** What the phone knows about its link to the desktop. */
 export type DesktopPresence = {
   online: boolean;
   deviceName: string | null;
+  /** Server-side id of this phone's device record. */
+  deviceId: string | null;
+  /** Whether this phone may manage other paired devices. */
+  canManage: boolean;
   version: string | null;
   /** Local timestamp of the last successful heartbeat. */
   lastSync: number | null;
@@ -17,6 +21,8 @@ const INTERVAL_MS = 20_000;
 let presence: DesktopPresence = {
   online: false,
   deviceName: null,
+  deviceId: null,
+  canManage: false,
   version: null,
   lastSync: null,
 };
@@ -36,9 +42,12 @@ async function beat(): Promise<void> {
   if (!getSession()) return;
   try {
     const data = await api.heartbeat();
+    setMediaToken(data.mediaToken);
     update({
       online: true,
       deviceName: data.deviceName,
+      deviceId: data.deviceId,
+      canManage: data.canManage,
       version: data.version,
       lastSync: Date.now(),
     });

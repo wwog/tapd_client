@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 
-import { getSession } from "./session";
+import { getMediaToken } from "./session";
 
 /**
  * Rich-text (description / comment) rendering: TAPD HTML is sanitized once
@@ -11,7 +11,7 @@ import { getSession } from "./session";
 /** Same-origin proxy URL for a TAPD media resource. `<img>` cannot set
  * headers, so the session token travels in a `t` query parameter. */
 export const mediaUrl = (src: string): string =>
-  `/companion/api/media?url=${encodeURIComponent(src)}&t=${encodeURIComponent(getSession() ?? "")}`;
+  `/companion/api/media?url=${encodeURIComponent(src)}&t=${encodeURIComponent(getMediaToken() ?? "")}`;
 
 // Registered once; runs for every sanitize call below.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {

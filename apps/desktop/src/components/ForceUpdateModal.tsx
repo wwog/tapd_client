@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
 import { ArrowUpCircle, Download, ShieldAlert } from "lucide-react";
 
+import { t } from "../lib/i18n";
 import {
   forcedUpdateOf,
   getUpdateSnapshot,
@@ -62,21 +63,24 @@ export function ForceUpdateModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="force-update-title"
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-900/55 p-6 backdrop-blur-sm"
+      className="modal-overlay fixed inset-0 z-[95] flex items-center justify-center bg-slate-900/55 p-6 backdrop-blur-sm"
     >
       <ModalDragStrip />
-      <div className="relative z-10 w-full max-w-[460px] rounded-2xl border border-border bg-surface p-6">
+      <div className="modal-panel relative z-10 w-full max-w-[460px] rounded-2xl border border-border bg-surface p-6">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-50 text-amber-600">
             <ShieldAlert size={16} />
           </span>
           <h2 id="force-update-title" className="text-ui-lg text-slate-900">
-            需要更新后才能继续
+            {t("settings.force.title")}
           </h2>
         </div>
 
         <p className="mt-3 text-ui-sm leading-5 text-slate-500">
-          当前版本 v{state.currentVersion} 已停止支持，请升级到 v{update.version}。
+          {t("settings.force.message", {
+            current: state.currentVersion,
+            version: update.version,
+          })}
         </p>
 
         {update.notes ? (
@@ -89,7 +93,7 @@ export function ForceUpdateModal() {
           <div className="mt-4">
             <div className="flex items-center justify-between text-ui-xs text-slate-500">
               <span>
-                {state.phase === "downloading" ? "正在下载更新" : "正在安装更新"}
+                {state.phase === "downloading" ? t("settings.force.downloading") : t("settings.force.installing")}
               </span>
               {percent !== null ? (
                 <span className="tabular-nums">{Math.round(percent)}%</span>
@@ -120,7 +124,7 @@ export function ForceUpdateModal() {
             onClick={manual}
             icon={<Download size={13} />}
           >
-            手动下载
+            {t("settings.update.manual")}
           </Button>
           <Button
             size="sm"
@@ -128,12 +132,12 @@ export function ForceUpdateModal() {
             loading={busy || installing}
             icon={<ArrowUpCircle size={13} />}
           >
-            {failed ? "重试升级" : "立即升级"}
+            {failed ? t("settings.force.retry") : t("settings.force.upgrade")}
           </Button>
         </div>
 
         <p className="mt-3 text-center text-ui-xs text-slate-400">
-          必须更新后才能继续使用，关闭应用不会跳过此更新。
+          {t("settings.force.footer")}
         </p>
       </div>
     </div>
