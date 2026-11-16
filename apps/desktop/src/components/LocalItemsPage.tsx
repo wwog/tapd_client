@@ -12,10 +12,12 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Sparkles,
   Trash2,
   Undo2,
 } from "lucide-react";
 
+import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { t } from "../lib/i18n";
 import {
   localApi,
@@ -47,6 +49,8 @@ export function LocalItemsPage({ project, toast }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkItemStatus>("pending");
   const [dialog, setDialog] = useState<{ item: WorkItem | null } | null>(null);
+  /** Item whose enqueue sheet is open; one sheet serves every row. */
+  const [handOver, setHandOver] = useState<WorkItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
@@ -217,6 +221,7 @@ export function LocalItemsPage({ project, toast }: Props) {
                 item={item}
                 busy={actionBusy === item.id}
                 onSetStatus={(status) => void setStatus(item, status)}
+                onHandOver={() => setHandOver(item)}
                 onEdit={() => setDialog({ item })}
                 onDelete={() => setDeleteTarget(item)}
               />
@@ -244,6 +249,18 @@ export function LocalItemsPage({ project, toast }: Props) {
           onConfirm={() => void confirmDelete()}
         />
       ) : null}
+
+      {handOver ? (
+        <EnqueueSheet
+          target={{
+            kind: "local",
+            projectId: project.id,
+            itemId: handOver.id,
+            title: handOver.title,
+          }}
+          onClose={() => setHandOver(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -252,10 +269,11 @@ function ItemRow(props: {
   item: WorkItem;
   busy: boolean;
   onSetStatus: (status: WorkItemStatus) => void;
+  onHandOver: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const { item, busy, onSetStatus, onEdit, onDelete } = props;
+  const { item, busy, onSetStatus, onHandOver, onEdit, onDelete } = props;
 
   return (
     <li>
@@ -307,6 +325,15 @@ function ItemRow(props: {
               icon={<Check size={13} />}
               disabled={busy}
               onClick={() => onSetStatus("done")}
+            />
+          ) : null}
+
+          {item.status !== "done" ? (
+            <RowAction
+              label={t("local.items.toAgent")}
+              icon={<Sparkles size={13} />}
+              disabled={busy}
+              onClick={onHandOver}
             />
           ) : null}
 

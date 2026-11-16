@@ -6,6 +6,11 @@
 //! event to [`dsh_host::transcript::Transcript`]; the registry is the one
 //! source the Tauri commands and the paired phone read.
 //!
+//! The socket is duplex: the plugin pushes frames in, and the newest connection
+//! that presented the token owns the control slot for `assign` / `cancel`
+//! frames going out. Tokens cross in both directions; a mismatch closes the
+//! connection instead of guessing.
+//!
 //! Locking: [`BridgeState::transcript`] is held only for the synchronous
 //! normalization pass. Every emitter runs after the guard is dropped, so a
 //! listener that calls back into `dsh_sessions` cannot deadlock. There is no
@@ -15,6 +20,7 @@
 //! into the child's environment and never leave the machine.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use chrono::{SecondsFormat, Utc};
@@ -23,9 +29,10 @@ use dsh_host::transcript::{
 };
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 use super::{EVENT_ENTRY, EVENT_SESSIONS, EVENT_STREAM};
 use tapd_i18n::tr;
@@ -37,12 +44,25 @@ pub struct BridgeEndpoint {
     pub token: String,
 }
 
+/// One plugin connection's outbound queue. `generation` identifies the
+/// connection so a late close cannot clear a newer slot.
+struct Control {
+    generation: u64,
+    lines: mpsc::UnboundedSender<String>,
+}
+
 #[derive(Default)]
 pub struct BridgeState {
     /// Single owner; see the module docs for the lock order.
     transcript: std::sync::Mutex<Transcript>,
     /// The accept loop for the current runtime, if any.
     listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// The connection that currently owns Rust → plugin frames.
+    control: std::sync::Mutex<Option<Control>>,
+    /// This runtime's token, echoed in every outbound frame.
+    token: std::sync::Mutex<Option<String>>,
+    /// Per-connection identity, see [`Control`].
+    connections: AtomicU64,
 }
 
 impl BridgeState {
@@ -59,6 +79,7 @@ impl BridgeState {
             .map_err(|error| format!("failed to read the bridge address: {error}"))?
             .port();
         let token = uuid::Uuid::new_v4().simple().to_string();
+        *self.token.lock().expect("dsh bridge token lock") = Some(token.clone());
 
         let bridge = self.clone();
         let app = app.clone();
@@ -79,6 +100,63 @@ impl BridgeState {
     pub async fn close(&self) {
         if let Some(task) = self.listener.lock().await.take() {
             task.abort();
+        }
+        // Frames queued for one runtime must never reach the next one.
+        *self.control.lock().expect("dsh bridge control lock") = None;
+        *self.token.lock().expect("dsh bridge token lock") = None;
+    }
+
+    /// Moves one session to `cwd` (used to point a task at its worktree). The
+    /// plugin applies it immediately when the session exists and on
+    /// `session/created` otherwise.
+    pub async fn assign_session(&self, session_id: &str, cwd: &str) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "assign",
+            "sessionId": session_id,
+            "cwd": cwd,
+        }))
+    }
+
+    /// Stops the current turn of one session without touching the others.
+    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
+        self.send_control(json!({ "type": "cancel", "sessionId": session_id }))
+    }
+
+    /// Queues one frame for the connected plugin.
+    ///
+    /// Fails when no plugin has connected since this runtime started: silently
+    /// dropping a worktree assignment would leave the task running in the wrong
+    /// directory, so the caller must surface the error.
+    fn send_control(&self, mut frame: Value) -> Result<(), String> {
+        let token = self
+            .token
+            .lock()
+            .expect("dsh bridge token lock")
+            .clone()
+            .ok_or_else(|| tr("dsh.bridge.unavailable").to_string())?;
+        frame["token"] = Value::from(token);
+        let control = self.control.lock().expect("dsh bridge control lock");
+        let Some(control) = control.as_ref() else {
+            return Err(tr("dsh.policy.bridge.offline").to_string());
+        };
+        control
+            .lines
+            .send(frame.to_string())
+            .map_err(|_| tr("dsh.policy.bridge.offline").to_string())
+    }
+
+    /// The newest connection that presented the token owns outbound frames.
+    fn claim_control(&self, generation: u64, lines: mpsc::UnboundedSender<String>) {
+        *self.control.lock().expect("dsh bridge control lock") = Some(Control { generation, lines });
+    }
+
+    fn release_control(&self, generation: u64) {
+        let mut control = self.control.lock().expect("dsh bridge control lock");
+        if control
+            .as_ref()
+            .is_some_and(|current| current.generation == generation)
+        {
+            *control = None;
         }
     }
 
@@ -155,6 +233,7 @@ impl BridgeState {
                 }
             }
             Some("stream") => self.ingest_stream(app, message),
+            Some("notice") => super::policy::notice(message),
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
             None => tracing::warn!("agent bridge: frame without a type"),
         }
@@ -219,6 +298,9 @@ impl BridgeState {
             tracing::debug!(event_type = %kind, "ignored an unrecognized dsh session event");
         }
         if let Some(entry) = ingested.entry {
+            // The task workflow owns `turn/end` transitions; it sees the row
+            // before the UI so the list is already correct on the next paint.
+            super::tasks::observe(app, session_id, &entry);
             let _ = app.emit(
                 EVENT_ENTRY,
                 json!({ "sessionId": session_id, "entry": entry }),
@@ -252,21 +334,29 @@ async fn accept_loop(
         let bridge = bridge.clone();
         let app = app.clone();
         let token = token.clone();
+        let generation = bridge.connections.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
-            serve_connection(socket, peer, app, bridge, token).await;
+            serve_connection(socket, peer, app, bridge, token, generation).await;
         });
     }
 }
 
-/// One plugin connection: newline-delimited JSON in, nothing back.
+/// One plugin connection: NDJSON in, queued NDJSON lines out.
 async fn serve_connection(
     socket: TcpStream,
     peer: SocketAddr,
     app: AppHandle,
     bridge: Arc<BridgeState>,
     token: String,
+    generation: u64,
 ) {
-    let mut lines = BufReader::new(socket).lines();
+    let (read, write) = socket.into_split();
+    let (lines_tx, lines_rx) = mpsc::unbounded_channel::<String>();
+    // The writer owns the half; it ends when the read loop drops the last
+    // sender, which also closes the socket.
+    tauri::async_runtime::spawn(pump_writes(write, lines_rx));
+
+    let mut lines = BufReader::new(read).lines();
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
@@ -279,7 +369,10 @@ async fn serve_connection(
                         let presented = message.get("token").and_then(Value::as_str);
                         if presented != Some(token.as_str()) {
                             tracing::warn!(%peer, "agent bridge token mismatch; closing");
-                            return;
+                            break;
+                        }
+                        if message.get("type").and_then(Value::as_str) == Some("hello") {
+                            bridge.claim_control(generation, lines_tx.clone());
                         }
                         bridge.dispatch(&app, &message);
                     }
@@ -294,6 +387,19 @@ async fn serve_connection(
                 tracing::debug!(%peer, %error, "agent bridge read failed");
                 break;
             }
+        }
+    }
+    bridge.release_control(generation);
+}
+
+/// Drains queued control frames onto the socket in order.
+async fn pump_writes(mut write: OwnedWriteHalf, mut lines: mpsc::UnboundedReceiver<String>) {
+    while let Some(line) = lines.recv().await {
+        if write.write_all(line.as_bytes()).await.is_err()
+            || write.write_all(b"\n").await.is_err()
+            || write.flush().await.is_err()
+        {
+            break;
         }
     }
 }
@@ -445,5 +551,61 @@ mod tests {
         assert_eq!(value["kind"], "turn");
         assert_eq!(value["state"], "start");
         assert!(value.get("reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn control_frames_require_a_connected_plugin() {
+        let bridge = BridgeState::default();
+        // No runtime token yet: nothing may be queued.
+        assert!(bridge.assign_session("s1", "/repo").await.is_err());
+
+        *bridge.token.lock().unwrap() = Some("t".into());
+        // Token present but no plugin connection: a clear error, not a silent
+        // assignment that never happens.
+        let error = bridge
+            .assign_session("s1", "/repo")
+            .await
+            .expect_err("offline");
+        assert_eq!(error, tr("dsh.policy.bridge.offline"));
+    }
+
+    #[tokio::test]
+    async fn assign_and_cancel_frames_carry_the_token() {
+        let bridge = BridgeState::default();
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge.assign_session("s1", "/repo").await.unwrap();
+        let line = rx.recv().await.expect("assign frame");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["type"], "assign");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["cwd"], "/repo");
+
+        bridge.cancel_session("s1").await.unwrap();
+        let line = rx.recv().await.expect("cancel frame");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["type"], "cancel");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+    }
+
+    #[tokio::test]
+    async fn a_stale_connection_cannot_clear_a_newer_control_slot() {
+        let bridge = BridgeState::default();
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (old_tx, _old_rx) = mpsc::unbounded_channel();
+        let (new_tx, mut new_rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, old_tx);
+        bridge.claim_control(2, new_tx);
+
+        // Connection 1 closing after connection 2 took over must not detach it.
+        bridge.release_control(1);
+        bridge.assign_session("s1", "/repo").await.expect("queued");
+
+        let frame: Value = serde_json::from_str(&new_rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "assign");
     }
 }

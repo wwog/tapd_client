@@ -20,6 +20,7 @@
 //! - `actions` — Tauri command dispatch, card actions and the accept flow.
 
 mod actions;
+pub(crate) mod agent;
 pub(crate) mod ai;
 pub(crate) mod model;
 mod poll;
@@ -445,6 +446,10 @@ pub fn init(app: &AppHandle, state: SharedState) {
     if SERVICE.set(service.clone()).is_err() {
         return;
     }
+
+    // The capsule answers the built-in agent's approvals and questions as well;
+    // requests arrive as Tauri events, so the listener is installed once here.
+    agent::mount(app);
 
     service.refresh_window();
 

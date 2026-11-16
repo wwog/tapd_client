@@ -1,0 +1,308 @@
+/**
+ * Permission gate for the built-in agent (docs/DSH.md §9.3).
+ *
+ * `tools/pre-execute` is the upstream waterfall for allow / ask before a tool
+ * body runs. This plugin is the deterministic half of the permission story:
+ * one rule table, no model call, no token cost, unit-testable. The mode comes
+ * from `TAPD_DSH_PERMISSION_MODE`, which the desktop app writes into the
+ * runtime's environment at start:
+ *
+ *   auto   (default)  hard + soft → ask (our capsule card)
+ *   notify            hard + soft → notice card, always allow
+ *   full              hard → ask, everything else allowed
+ *
+ * `ask` goes through the runtime's approval service (initialized with
+ * `approvalRequests: true`), which reaches the app as `approval/request`.
+ *
+ * Everything else here is deliberate:
+ * - `reason` is a short audited identifier line (`hard:rm_rf_root: rm -rf /`),
+ *   because `approval/request` carries no separate target field. The Rust side
+ *   splits it to localize the card and show the target.
+ * - notices are one-way frames on the TAPD bridge; without a bridge they are
+ *   dropped rather than blocking the call.
+ * - this plugin never throws into the tool pipeline: a classifier bug must not
+ *   break every tool call, so it fails open and logs.
+ */
+
+import { homedir } from 'node:os'
+import { isAbsolute, relative } from 'node:path'
+
+export const name = 'tapd-policy'
+export const inject = ['tools']
+
+const MODES = new Set(['auto', 'notify', 'full'])
+const MAX_TARGET = 160
+
+/** Tools whose first argument is a shell command line. */
+const SHELL_TOOLS = new Set(['bash', 'pwsh', 'bash_persistent', 'pwsh_persistent'])
+
+/** Tools that write exactly the paths in their arguments. */
+const FILE_TOOLS = new Set(['write', 'edit', 'apply_patch'])
+
+/** One-line descriptions for the SDK-side approval prompt (other clients). */
+const DESCRIPTIONS = {
+  sudo: { en: 'Runs a command as the superuser.', zh: '以超级用户身份执行命令。' },
+  mkfs: { en: 'Formats a filesystem.', zh: '格式化文件系统。' },
+  dd_disk: { en: 'Writes raw data to a device.', zh: '直接写入磁盘设备。' },
+  rm_rf_root: { en: 'Recursively deletes the home or filesystem root.', zh: '递归删除主目录或文件系统根目录。' },
+  chmod_root: { en: 'Makes the filesystem root world-writable.', zh: '把文件系统根目录改成所有人可写。' },
+  git_force_push: { en: 'Force-pushes and can erase remote history.', zh: '强制推送，可能抹掉远端历史。' },
+  drop_table: { en: 'Drops a database table.', zh: '删除数据库表。' },
+  pipe_to_shell: { en: 'Pipes a download into a shell.', zh: '把下载内容直接交给 shell 执行。' },
+  protected_path: { en: 'Writes credentials or keys.', zh: '写入凭证或密钥文件。' },
+  outside_cwd: { en: 'Writes outside the session directory.', zh: '写入会话工作目录之外。' },
+  package_install: { en: 'Installs dependencies.', zh: '安装依赖。' },
+  git_push: { en: 'Pushes commits to a remote.', zh: '向远端推送提交。' },
+  upload: { en: 'Uploads data to a remote host.', zh: '向远端上传数据。' },
+}
+
+export function apply(ctx) {
+  const raw = process.env.TAPD_DSH_PERMISSION_MODE
+  const mode = MODES.has(raw) ? raw : 'auto'
+  if (raw !== undefined && !MODES.has(raw)) {
+    ctx.logger.warn(`${name}: unknown TAPD_DSH_PERMISSION_MODE "${raw}", using auto`)
+  }
+
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    // The field name differs between the execution contract (`name`) and the
+    // SDK approval request (`toolName`); accept both so a rename upstream does
+    // not silently disable the gate.
+    const tool = String(exec?.toolName ?? exec?.name ?? '')
+    let hit
+    try {
+      hit = classifyCall({
+        tool,
+        args: exec?.arguments ?? {},
+        cwd: sessionCwd(ctx, exec),
+        home: homedir(),
+      })
+    } catch (error) {
+      ctx.logger.warn(`${name}: classifier failed, allowing ${tool}: ${String(error)}`)
+      return next()
+    }
+    if (!hit.risk) return next()
+
+    if (mode === 'notify') {
+      raiseNotice(ctx, exec, hit)
+      return next()
+    }
+    if (mode === 'full' && hit.risk !== 'hard') return next()
+
+    return {
+      kind: 'ask',
+      reason: `${hit.risk}:${hit.rule}: ${hit.target}`,
+      displayReason: {
+        en: `${DESCRIPTIONS[hit.rule]?.en ?? 'Sensitive operation.'} (${hit.target})`,
+        zh: `${DESCRIPTIONS[hit.rule]?.zh ?? '敏感操作。'}（${hit.target}）`,
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Classification (pure; exported for tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decides whether one call is risky. Returns `{ risk, rule, target }`, with
+ * `risk: null` when the call is ordinary. Paths and the home directory are
+ * arguments so the rule table is testable without a live session.
+ */
+export function classifyCall({ tool, args = {}, cwd = '', home = '' }) {
+  if (SHELL_TOOLS.has(tool)) {
+    return classifyShell(String(args.command ?? args.cmd ?? ''), { cwd, home })
+  }
+  if (FILE_TOOLS.has(tool)) {
+    return classifyPaths(writeTargets(tool, args), { cwd, home })
+  }
+  return { risk: null }
+}
+
+function classifyShell(command, { cwd, home }) {
+  const text = command.trim()
+  if (!text) return { risk: null }
+  const target = truncate(text)
+
+  for (const [rule, matches] of HARD_SHELL) {
+    if (matches(text, home)) return { risk: 'hard', rule, target }
+  }
+  if (WRITE_VERB.test(text) && shellPaths(text, cwd, home).some((path) => isProtected(path, home))) {
+    return { risk: 'hard', rule: 'protected_path', target }
+  }
+  for (const [rule, matches] of SOFT_SHELL) {
+    if (matches(text)) return { risk: 'soft', rule, target }
+  }
+  if (WRITE_VERB.test(text)) {
+    const outside = shellPaths(text, cwd, home).find((path) => outsideOf(path, cwd))
+    if (outside) return { risk: 'soft', rule: 'outside_cwd', target: truncate(outside) }
+  }
+  return { risk: null }
+}
+
+function classifyPaths(paths, { cwd, home }) {
+  // File tools name their targets relative to the session directory, so the
+  // session cwd (never the process cwd) resolves them.
+  const absolute = paths.map((path) => resolvePath(path, home, cwd))
+  const protectedHit = absolute.find((path) => isProtected(path, home))
+  if (protectedHit) {
+    return { risk: 'hard', rule: 'protected_path', target: truncate(protectedHit) }
+  }
+  const outside = absolute.find((path) => outsideOf(path, cwd))
+  if (outside) return { risk: 'soft', rule: 'outside_cwd', target: truncate(outside) }
+  return { risk: null }
+}
+
+const HARD_SHELL = [
+  ['sudo', (text) => /(^|[;&|]\s*)sudo\b/.test(text)],
+  ['mkfs', (text) => /(^|[;&|]\s*)mkfs(\.\w+)?\b/.test(text)],
+  ['dd_disk', (text) => /\bdd\b[^;&|]*\bof=\/dev\//.test(text)],
+  ['rm_rf_root', (text) => deletesRoot(text)],
+  ['chmod_root', (text) => /chmod\s+(-[A-Za-z]+\s+)*(777|a\+rwx|\+rwx)\s+(-[A-Za-z]+\s+)*(\/(\*)?|~(\/)?)(\s|$|[;&|])/.test(text)],
+  ['git_force_push', (text) => /git\s+push\b[^;&|]*\s(--force(-with-lease)?|-[a-z]*f[a-z]*)(\s|$)/.test(text)],
+  ['drop_table', (text) => /drop\s+table\b/i.test(text)],
+  ['pipe_to_shell', (text) => /(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|da)?sh\b/.test(text)],
+]
+
+const SOFT_SHELL = [
+  ['package_install', (text) => /\b(npm|pnpm|yarn|bun)\s+(i|install|add)\b/.test(text)],
+  ['package_install', (text) => /\b(brew|pip|pip3|uv)\s+(install|add)\b/.test(text)],
+  ['git_push', (text) => /\bgit\s+push\b/.test(text)],
+  ['upload', (text) => /\bcurl\b[^;&|]*\s(-T|--upload-file)\b/.test(text)],
+  ['upload', (text) => /(^|[;&|]\s*)scp\b/.test(text)],
+]
+
+/** Commands that create, replace, move or delete something on disk. */
+const WRITE_VERB = /\b(rm|rmdir|mv|cp|tee|dd|chmod|chown|ln|touch|mkdir|install|shred|truncate|unlink)\b|>>?/
+
+function deletesRoot(text) {
+  const call = /\brm\s+([^;&|]*)/g
+  let match
+  while ((match = call.exec(text)) !== null) {
+    const words = match[1].trim().split(/\s+/)
+    const recursive = words.some((word) => /^-[A-Za-z]*[rR]/.test(word) || word === '--recursive')
+    const force = words.some((word) => /^-[A-Za-z]*f/.test(word) || word === '--force')
+    const targets = words.filter((word) => !word.startsWith('-'))
+    if (recursive && force && targets.some(isRootPath)) return true
+  }
+  return false
+}
+
+const ROOT_PATHS = new Set(['/', '/*', '~', '~/', '~/*', '$HOME', '$HOME/', '$HOME/*'])
+
+function isRootPath(path) {
+  return ROOT_PATHS.has(stripQuotes(path))
+}
+
+/** Paths a write tool would touch; `apply_patch` names them in the patch body. */
+function writeTargets(tool, args) {
+  if (tool !== 'apply_patch') {
+    return [String(args.file_path ?? args.path ?? '')].filter(Boolean)
+  }
+  const patch = String(args.input ?? '')
+  const paths = []
+  const header = /^\*\*\*\s+(?:Add|Update|Delete) File:\s*(.+)$/gm
+  let match
+  while ((match = header.exec(patch)) !== null) paths.push(match[1].trim())
+  const move = /^\*\*\*\s+Move to:\s*(.+)$/gm
+  while ((match = move.exec(patch)) !== null) paths.push(match[1].trim())
+  return paths.filter(Boolean)
+}
+
+/**
+ * Absolute-looking path tokens in a shell line. Quoted strings are ignored on
+ * purpose: `echo "rm -rf /"` is text, not a command.
+ */
+function shellPaths(text, cwd, home) {
+  const tokens = text
+    .replace(/"[^"]*"|'[^']*'/g, ' ')
+    .split(/[\s;|&()<>]+/)
+    .map(stripQuotes)
+    .filter(Boolean)
+    .filter((token) => !token.startsWith('-'))
+    .filter(
+      (token) =>
+        token.startsWith('/') ||
+        token.startsWith('~') ||
+        token.startsWith('./') ||
+        token.startsWith('../') ||
+        token.startsWith('$HOME'),
+    )
+  return tokens.map((token) => resolvePath(token, home, cwd))
+}
+
+function resolvePath(path, home, cwd = '') {
+  const cleaned = stripQuotes(path.trim())
+  if (cleaned.startsWith('$HOME')) return home + cleaned.slice(5)
+  if (cleaned === '~') return home
+  if (cleaned.startsWith('~/')) return `${home}${cleaned.slice(1)}`
+  if (!isAbsolute(cleaned) && cwd) return `${cwd.replace(/\/$/, '')}/${cleaned}`
+  return cleaned
+}
+
+/**
+ * Credential locations under the user's home. Anchoring on `home` keeps a
+ * repository's own `.ssh` directory out of the hard set while catching both
+ * `~/.ssh/id_rsa` and `/Users/me/.ssh/id_rsa`.
+ */
+const PROTECTED_SUFFIXES = ['/.ssh', '/.aws', '/Library/Keychains']
+
+function isProtected(path, home) {
+  if (!home) return false
+  const root = home.replace(/\/$/, '')
+  return PROTECTED_SUFFIXES.some(
+    (suffix) => path === `${root}${suffix}` || path.startsWith(`${root}${suffix}/`),
+  )
+}
+
+function outsideOf(path, cwd) {
+  if (!path || !cwd) return false
+  const rel = relative(cwd, path)
+  return rel.startsWith('..') || isAbsolute(rel)
+}
+
+function stripQuotes(token) {
+  return token.replace(/^['"]|['"]$/g, '').replace(/[,:]+$/, '')
+}
+
+function truncate(text) {
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > MAX_TARGET ? `${oneLine.slice(0, MAX_TARGET - 1)}…` : oneLine
+}
+
+// ---------------------------------------------------------------------------
+// Session cwd and the notice channel
+// ---------------------------------------------------------------------------
+
+/**
+ * The session's effective directory. `workingDirectory` owns it (a task can
+ * move the session into a worktree); the header cwd is the fallback for
+ * sessions created before that service is consulted.
+ */
+function sessionCwd(ctx, exec) {
+  const session = exec?.agent?.session
+  try {
+    const workingDirectory = ctx.get('workingDirectory')
+    if (workingDirectory && session) return workingDirectory.get(session)
+  } catch {
+    // Service unavailable: the header cwd below is good enough for a rule check.
+  }
+  return session?.header?.cwd ?? process.cwd()
+}
+
+/**
+ * Notify mode is advisory: the call always runs. A missing bridge (standalone
+ * dsh, payload smoke test) simply means nobody to notify.
+ */
+function raiseNotice(ctx, exec, hit) {
+  try {
+    const bridge = ctx.get('tapdBridge')
+    bridge?.notice({
+      sessionId: exec?.agent?.session?.id ?? '',
+      tool: String(exec?.toolName ?? exec?.name ?? ''),
+      target: hit.target,
+      risk: hit.risk,
+    })
+  } catch (error) {
+    ctx.logger.warn(`${name}: notice failed: ${String(error)}`)
+  }
+}

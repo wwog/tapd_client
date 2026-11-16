@@ -75,9 +75,12 @@ pub fn session_entries(app: &AppHandle, session_id: &str) -> Result<Value, Strin
 
 /// Allocates an id and its (empty) registry row. The runtime creates the real
 /// session on the first prompt.
-pub fn new_session(app: &AppHandle) -> Result<Value, String> {
+pub async fn new_session(app: &AppHandle) -> Result<Value, String> {
     let session_id = uuid::Uuid::new_v4().to_string();
     bridge(app)?.create_session(app, &session_id);
+    // Chats live in the same unified list as tasks, so the row exists before
+    // the first message; `tasks::observe` names it from the first user line.
+    super::tasks::create_chat(app, &session_id).await?;
     Ok(json!({ "sessionId": session_id }))
 }
 
@@ -162,6 +165,8 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_start" => serde_json::to_value(start(app).await?).map_err(|error| error.to_string()),
         "dsh_stop" => serde_json::to_value(stop(app).await?).map_err(|error| error.to_string()),
         "dsh_sessions" => sessions(app),
+        name if name.starts_with("dsh_task") => super::tasks::command(app, name, payload).await,
+        name if name.starts_with("dsh_policy_") => super::policy::command(app, name, payload).await,
         "dsh_pending" => pending(app),
         "dsh_session_entries" => {
             let request: SessionIdPayload = parse(payload, "dsh_session_entries")?;
@@ -171,7 +176,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             let request: PromptPayload = parse(payload, "dsh_prompt")?;
             prompt(app, &request.session_id, &request.text).await
         }
-        "dsh_new_session" => new_session(app),
+        "dsh_new_session" => new_session(app).await,
         "dsh_approval_answer" => {
             let request: ApprovalPayload = parse(payload, "dsh_approval_answer")?;
             approval_answer(app, request.rpc_id, &request.outcome).await?;

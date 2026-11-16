@@ -6,7 +6,12 @@ import { ScrollingName } from "../components/ScrollingName";
 import { useCoworkers } from "../components/CoworkerPicker";
 import { Button, Spinner, Switch, cardClass, inputClass, selectClass } from "../components/ui";
 import { t } from "../lib/i18n";
-import type { DshAgentConfig, DshModelConfig, DshModelProtocol } from "../lib/dsh";
+import type {
+  DshAgentConfig,
+  DshModelConfig,
+  DshModelProtocol,
+  DshPermissionMode,
+} from "../lib/dsh";
 import type { AgentConfigDraft } from "./store";
 import { agentActions, agentStore } from "./store";
 
@@ -63,6 +68,9 @@ export function AgentConfigTab({ toast }: Props) {
   const [draft, setDraft] = useState<DshAgentConfig | null>(null);
   const [modelsText, setModelsText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The permission mode saves on click, not with the form. */
+  const [policySaving, setPolicySaving] = useState(false);
+  const [policySaved, setPolicySaved] = useState(false);
   const selection = useCoworkers(toast);
 
   useEffect(() => {
@@ -106,6 +114,27 @@ export function AgentConfigTab({ toast }: Props) {
   // Start uses the stored profile, not an unsaved draft.
   const modelReady = Boolean(config.dshModel.baseUrl.trim() && config.dshModel.model.trim());
   const modelList = modelsText ?? model.models.join("\n");
+  const permissionModes: Array<{
+    value: DshPermissionMode;
+    label: string;
+    hint: string;
+  }> = [
+    {
+      value: "auto",
+      label: t("agent.config.permissionAuto"),
+      hint: t("agent.config.permissionAutoHint"),
+    },
+    {
+      value: "notify",
+      label: t("agent.config.permissionNotify"),
+      hint: t("agent.config.permissionNotifyHint"),
+    },
+    {
+      value: "full",
+      label: t("agent.config.permissionFull"),
+      hint: t("agent.config.permissionFullHint"),
+    },
+  ];
 
   const patchDraft = (patch: Partial<DshAgentConfig>) =>
     setDraft((current) => (current ? { ...current, ...patch } : current));
@@ -137,6 +166,19 @@ export function AgentConfigTab({ toast }: Props) {
       toast("error", String(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const choosePermission = async (mode: DshPermissionMode) => {
+    if (policySaving || config.permissionMode === mode) return;
+    setPolicySaving(true);
+    try {
+      await agentActions.setPermissionMode(mode);
+      setPolicySaved(true);
+    } catch (error) {
+      toast("error", String(error));
+    } finally {
+      setPolicySaving(false);
     }
   };
 
@@ -281,6 +323,43 @@ export function AgentConfigTab({ toast }: Props) {
                 />
               </div>
             </div>
+          </section>
+
+          <section className={cardClass}>
+            <h2 className="text-ui-base text-slate-900" title={t("agent.config.permissionHint")}>
+              {t("agent.config.permission")}
+            </h2>
+            <div className="mt-3 flex flex-col gap-1">
+              {permissionModes.map((mode) => {
+                const selected = config.permissionMode === mode.value;
+                return (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    aria-pressed={selected}
+                    title={mode.hint}
+                    disabled={policySaving}
+                    onClick={() => void choosePermission(mode.value)}
+                    className={clsx(
+                      "flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition disabled:cursor-default disabled:opacity-60",
+                      selected
+                        ? "border-sky-200 bg-sky-50"
+                        : "border-border bg-surface hover:border-slate-300",
+                    )}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
+                      {mode.label}
+                    </span>
+                    {selected ? <Check size={13} className="shrink-0 text-sky-600" /> : null}
+                  </button>
+                );
+              })}
+            </div>
+            {policySaved ? (
+              <div className="mt-2 text-ui-xs text-amber-700">
+                {t("agent.config.permissionRestart")}
+              </div>
+            ) : null}
           </section>
 
           <section className={cardClass}>

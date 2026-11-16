@@ -103,7 +103,7 @@ pub async fn dsh_pending(app: AppHandle) -> Result<Value, String> {
 /// session on the first prompt.
 #[tauri::command]
 pub async fn dsh_new_session(app: AppHandle) -> Result<Value, String> {
-    feature::new_session(&app)
+    feature::new_session(&app).await
 }
 
 /// Queues one user message on a session.

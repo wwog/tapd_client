@@ -122,6 +122,15 @@ pub struct RuntimeState {
     /// Server-initiated requests still waiting for an answer. The runtime owns
     /// their lifecycle: `remember` on arrival, `respond` removes, exit clears.
     pending: std::sync::Mutex<Vec<PendingRequest>>,
+    /// Server-owned wire ids, keyed by the numeric alias the UI answers with.
+    ///
+    /// The SDK transport keys its `approval/request` and `user-question/ask`
+    /// frames by `req_<uuid>` strings and only resolves the caller when that
+    /// exact id comes back. The documented UI contract (§8.7) answers with a
+    /// numeric `rpcId`, so a string id gets a stable alias and `respond` maps it
+    /// back before writing the frame.
+    server_ids: std::sync::Mutex<HashMap<u64, RpcId>>,
+    aliases: AtomicU64,
 }
 
 /// A question or approval the runtime is blocked on. `request` is the typed
@@ -149,6 +158,8 @@ impl Default for RuntimeState {
             running: Mutex::new(None),
             start_lock: Mutex::new(()),
             pending: std::sync::Mutex::new(Vec::new()),
+            server_ids: std::sync::Mutex::new(HashMap::new()),
+            aliases: AtomicU64::new(0),
         }
     }
 }
@@ -171,6 +182,10 @@ impl RuntimeState {
 
     pub fn clear_pending(&self) {
         self.pending.lock().expect("dsh pending lock").clear();
+        self.server_ids
+            .lock()
+            .expect("dsh server id lock")
+            .clear();
     }
 
     fn forget_pending(&self, rpc_id: u64) {
@@ -178,6 +193,22 @@ impl RuntimeState {
             .lock()
             .expect("dsh pending lock")
             .retain(|item| item.rpc_id != rpc_id);
+    }
+
+    /// Numeric id the UI answers with. A server-owned `req_<uuid>` id gets a
+    /// fresh alias so the documented numeric `rpcId` contract stays intact.
+    fn alias_for(&self, id: RpcId) -> u64 {
+        match id {
+            RpcId::Number(id) => id,
+            RpcId::Text(_) => {
+                let alias = self.aliases.fetch_add(1, Ordering::SeqCst) + 1;
+                self.server_ids
+                    .lock()
+                    .expect("dsh server id lock")
+                    .insert(alias, id);
+                alias
+            }
+        }
     }
 
     fn set_status(&self, app: &AppHandle, status: DshStatus) -> DshStatus {
@@ -236,7 +267,13 @@ impl RuntimeState {
             Err(error) => return Err(self.fail(app, "bridge_failed", error)),
         };
 
-        let mut child = match spawn_runtime(&node_path, &layout, &config.dsh_model, &endpoint) {
+        let mut child = match spawn_runtime(
+            &node_path,
+            &layout,
+            &config.dsh_model,
+            &endpoint,
+            config.permission_mode.as_env(),
+        ) {
             Ok(child) => child,
             Err(error) => {
                 bridge::shutdown(app).await;
@@ -359,7 +396,7 @@ impl RuntimeState {
             running.pending.lock().await.insert(id, tx);
             running
                 .stdin
-                .send(rpc::encode_request(RpcId(id), method, params))
+                .send(rpc::encode_request(&RpcId::Number(id), method, params))
                 .map_err(|_| tr("dsh.runtime.exited").to_string())?;
             id
         };
@@ -378,16 +415,29 @@ impl RuntimeState {
         }
     }
 
-    /// Answers a server-initiated request (approval / question) by its RPC id.
+    /// Answers a server-initiated request by the numeric id the UI was given.
     pub async fn respond(&self, id: u64, result: Value) -> Result<(), String> {
         self.forget_pending(id);
+        // A server-owned string id must be echoed back verbatim; the UI only
+        // ever sees the alias.
+        let wire = self
+            .server_ids
+            .lock()
+            .expect("dsh server id lock")
+            .remove(&id)
+            .unwrap_or(RpcId::Number(id));
+        self.respond_wire(&wire, result).await
+    }
+
+    /// Writes one response for the exact wire id.
+    async fn respond_wire(&self, id: &RpcId, result: Value) -> Result<(), String> {
         let running = self.running.lock().await;
         let Some(running) = running.as_ref() else {
             return Err(tr("dsh.runtime.notStarted").to_string());
         };
         running
             .stdin
-            .send(rpc::encode_success(RpcId(id), result))
+            .send(rpc::encode_success(id, result))
             .map_err(|_| tr("dsh.runtime.exited").to_string())
     }
 
@@ -417,7 +467,7 @@ impl RuntimeState {
         };
         let _ = running
             .stdin
-            .send(rpc::encode_request(RpcId(0), rpc::METHOD_SHUTDOWN, Value::Null));
+            .send(rpc::encode_request(&RpcId::Number(0), rpc::METHOD_SHUTDOWN, Value::Null));
         let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
         loop {
             match running.child.try_wait() {
@@ -566,6 +616,7 @@ fn spawn_runtime(
     layout: &RuntimeLayout,
     model: &DshModelConfig,
     bridge: &bridge::BridgeEndpoint,
+    permission_mode: &str,
 ) -> Result<Child, String> {
     let mut command = Command::new(node);
     command
@@ -576,6 +627,8 @@ fn spawn_runtime(
         .env("DSH_HOME", &layout.home)
         .env("TAPD_DSH_BRIDGE_URL", &bridge.url)
         .env("TAPD_DSH_BRIDGE_TOKEN", &bridge.token)
+        // Read by the policy plugin; a change needs a runtime restart.
+        .env("TAPD_DSH_PERMISSION_MODE", permission_mode)
         // Finder-launched apps inherit a minimal PATH; the runtime shells out.
         .env("PATH", shell_path::user_path())
         .stdin(std::process::Stdio::piped())
@@ -610,7 +663,12 @@ fn spawn_reader(
                 Ok(Some(line)) => {
                     match rpc::decode(&line) {
                         Ok(Some(Incoming::Response { id, result })) => {
-                            if let Some(sender) = pending.lock().await.remove(&id.0) {
+                            // Responses echo our own numeric request ids.
+                            let slot = match id.number() {
+                                Some(id) => pending.lock().await.remove(&id),
+                                None => None,
+                            };
+                            if let Some(sender) = slot {
                                 let _ = sender.send(result);
                             }
                         }
@@ -649,15 +707,15 @@ fn spawn_reader(
 }
 
 /// Server → client requests become UI events; the answer travels back by RPC id.
+///
+/// The id in the event is the numeric one the UI answers with (`remember`
+/// allocates an alias for string ids); the wire id is kept only in the state.
 fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
     match method {
         rpc::METHOD_APPROVAL_REQUEST => match serde_json::from_value::<ApprovalRequestParams>(params) {
             Ok(params) => {
-                remember(app, id, PendingKind::Approval, &params.session_id, &params);
-                let _ = app.emit(
-                    EVENT_APPROVAL,
-                    json!({ "rpcId": id.0, "request": params }),
-                );
+                let rpc_id = remember(app, id, PendingKind::Approval, &params.session_id, &params);
+                let _ = app.emit(EVENT_APPROVAL, json!({ "rpcId": rpc_id, "request": params }));
             }
             Err(error) => {
                 tracing::warn!(%error, "invalid approval/request payload");
@@ -666,8 +724,8 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
         },
         rpc::METHOD_USER_QUESTION => match serde_json::from_value::<UserQuestionRequest>(params) {
             Ok(params) => {
-                remember(app, id, PendingKind::Question, &params.session_id, &params);
-                let _ = app.emit(EVENT_QUESTION, json!({ "rpcId": id.0, "request": params }));
+                let rpc_id = remember(app, id, PendingKind::Question, &params.session_id, &params);
+                let _ = app.emit(EVENT_QUESTION, json!({ "rpcId": rpc_id, "request": params }));
             }
             Err(error) => {
                 tracing::warn!(%error, "invalid user-question payload");
@@ -684,23 +742,26 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
 
 /// Records a blocking request so a page opened after the event still sees it.
 /// The typed payload is serialized once; the UI receives the same shape.
+/// Returns the numeric id the UI answers with.
 fn remember(
     app: &AppHandle,
     id: RpcId,
     kind: PendingKind,
     session_id: &str,
     request: &impl serde::Serialize,
-) {
+) -> u64 {
     let Some(state) = app.try_state::<Arc<RuntimeState>>() else {
-        return;
+        return 0;
     };
+    let rpc_id = state.inner().alias_for(id);
     let request = serde_json::to_value(request).unwrap_or(Value::Null);
     state.inner().remember_pending(PendingRequest {
-        rpc_id: id.0,
+        rpc_id,
         session_id: session_id.to_string(),
         kind,
         request,
     });
+    rpc_id
 }
 
 fn answer_now(app: &AppHandle, id: RpcId, result: &Value) {
@@ -708,7 +769,9 @@ fn answer_now(app: &AppHandle, id: RpcId, result: &Value) {
         let state = state.inner().clone();
         let result = result.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = state.respond(id.0, result).await;
+            if let Err(error) = state.respond_wire(&id, result).await {
+                tracing::warn!(%error, "agent request could not be answered");
+            }
         });
     }
 }

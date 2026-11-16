@@ -412,3 +412,101 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - `assistant/attempt`（失败/被取消的模型尝试）与 `session/title` 被忽略：模型失败只通过
   `turn` 行的 `reason` 呈现，标题由第一条人类 user 行生成（不用 dsh 自带的标题投影）。
 - 未做 token 侧合并（见 8.5），高吞吐模型下 NDJSON 行数等于 delta 帧数。
+
+## 9. 任务工作流与权限模式（P3 / P4 契约）
+
+本节是 P3/P4 的唯一契约。前端只消费本节的结构；实现分别落在
+`dsh/policy.rs`（P3）与 `dsh/tasks.rs`（P4）。
+
+### 9.1 统一任务 `DshTask`
+
+一个列表项 = 一条 dsh 会话 + 我们附加的任务元数据。运行时不再区分
+「运行中 / 待审核 / 历史」三个清单，全部由 `workflow` 字段表达。
+
+```jsonc
+{
+  "id": "<dsh session id>",
+  "kind": "chat" | "bug" | "local_item",
+  "project": { "id": "45336192", "name": "UU-Rust", "kind": "tapd" }
+           | { "id": "lp_…", "name": "test", "kind": "local" }
+           | null,                       // 无项目的自由会话
+  "title": "登录崩溃",                    // bug 标题 / 事项标题 / 首条用户消息
+  "bugId": "11223344",                   // kind=bug 才有
+  "workflow": "running" | "awaiting_review" | "awaiting_merge"
+            | "done" | "failed" | "canceled",
+  "status": "idle" | "running" | "failed", // dsh 会话实时状态
+  "repoPath": "/repo",
+  "worktreePath": "/…/dsh/worktrees/<id>",  // 开启 Worktree 才有
+  "branch": "tapd/11223344-…",
+  "jsonPath": "/…/bug.json",
+  "createdAt": "RFC3339", "updatedAt": "RFC3339",
+  "messageCount": 3,
+  "changes": { "files": 2, "additions": 30, "deletions": 4 } | null,
+  "review": { "summary": "…", "files": ["src/a.rs"], "risk": "…" } | null,
+  "merge": { "error": "…", "instructions": "…" } | null
+}
+```
+
+自由会话同样进这个列表：`kind: "chat"`、`project: null`，`workflow` 保持 `running`
+（列表不显示 chip，只显示实时状态点），标题取第一条人类消息的首行（≤60 字）。
+它在回合结束后不做 worktree / 审核判定——没有仓库可审。
+
+迁移规则（单一入口，终态防回退）：
+
+- 创建：`bug` / `local_item` 任务先导出（`bug.json` / `quest.json`），
+  Worktree 开启时建 worktree 并把会话 cwd 指过去，然后发送渲染好的提示词。
+- `running → awaiting_review`：回合结束（`turn/end`）且有改动；无改动 → `done`。
+- `awaiting_review → awaiting_merge`：`dsh_task_approve` 提交改动后（Worktree 关闭时直接 `done` 并回写）。
+- `awaiting_merge → done`：`dsh_task_merge` 合并成功且分支已是 HEAD 祖先，随后回写 TAPD。
+- 任意非终态 → `canceled`：`dsh_task_cancel`（可选 `stash: true`）。
+- 失败只在准备阶段（导出 / worktree / 启动）置 `failed`；运行中的模型失败仍由 `turn` 行为准。
+
+### 9.2 命令面（桌面 invoke 与手机 feature 同一实现）
+
+| 名称 | 入参 | 返回 |
+| --- | --- | --- |
+| `dsh_tasks` | — | `{ tasks: DshTask[] }`（按 `updatedAt` 降序） |
+| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments? }` | `{ task }` |
+| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments? }` | `{ task }` |
+| `dsh_task_approve` | `{ sessionId }` | `{ task }` |
+| `dsh_task_merge` | `{ sessionId }` | `{ task }` |
+| `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }` |
+| `dsh_task_diff` | `{ sessionId, file? }` | `{ diff }`（统一 diff 文本） |
+| `dsh_task_resume` | `{ sessionId }` | `{ task }`（恢复 dsh 持久化会话） |
+| `dsh_policy_get` / `dsh_policy_set` | `{ mode }` | `{ mode }` |
+
+事件：`dsh://tasks { tasks }`（列表变化），其余沿用第 8 节。
+
+持久化：`cache.sqlite3` 新表 `dsh_tasks`（schema v9），元数据进库，transcript 仍由 dsh 自己保存。
+重启后 `dsh_tasks` 提供列表；打开任务时按需 `dsh_task_resume`。
+
+### 9.3 权限模式
+
+| 模式 | 行为 | 判定 |
+| --- | --- | --- |
+| `auto`（默认） | 只在有风险时请求授权 | 命中「硬 / 软」规则 → `ask`；其余放行 |
+| `notify` | 全部放行，执行前推一条通知 | 命中硬 / 软规则 → 通知（不阻塞） |
+| `full` | 除硬黑名单外全部放行 | 仅命中硬规则 → `ask` |
+
+- 规则由 `dsh/plugins/tapd-policy` 在 `tools/pre-execute` 判定，返回
+  `{kind:'allow'|'ask'|'deny'}`；`ask` 走 `user-approval` → 我们的审批卡。
+- 硬规则：`rm -rf /`、`mkfs`、`dd` 写磁盘、`sudo`、`git push --force`、
+  `DROP TABLE`、`curl … | sh`、写 `~/.ssh` / `~/.aws` / keychain、`chmod -R 777 /`。
+- 软规则：工作区外写入、删除工作区文件、安装依赖、`git push`、网络上传。
+- 提示词只要求模型「改代码 + 跑测试」，明确不 commit、不 push、不写 TAPD：提交、合并与回写
+  由宿主在审核后确定性地做。仍带 `tapd_add_bug_comment` / `tapd_update_bug_status` 等旧工具的
+  模板会被判定为失效并替换成新默认模板（校验而非迁移）。
+- 模式来自 `agent.json.permissionMode`，通过 `TAPD_DSH_PERMISSION_MODE`
+  传入运行时；切换模式需要重启运行时（UI 明说）。
+- 不做模型审查：规则是确定性的，零 token，可单测。若以后要模型审查，
+  再挂上游 `dsh-experimental-auto-review` 作为 `auto` 的一层。
+
+### 9.4 胶囊与移动端
+
+- 审批：胶囊 AI 卡（`notification::raise_ai`），动作「允许一次 / 拒绝」，
+  回执走 `dsh_approval_answer`；超时/关闭不放行。
+- 提问：单问题单选 → 直接在胶囊作答；多问题/多选 → 胶囊只提示
+  「需要你选择 N 项」+「去处理」，主窗口打开对应会话的 QuestionSheet。
+- `notify` 模式：每次写/执行前推一张非阻塞通知卡（不等待）。
+- 手机：任务页可回答审批与提问（`dsh_approval_answer` / `dsh_question_answer`），
+  Agent tab 用角标显示待处理数量；PWA 没有系统推送，进程内轮询为准。

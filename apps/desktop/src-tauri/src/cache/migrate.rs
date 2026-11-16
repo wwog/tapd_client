@@ -5,14 +5,15 @@
 //!
 //! v8 removes the external-agent queue/chat tables. The cache is disposable and
 //! the built-in agent keeps its sessions in the dsh store, so those tables are
-//! dropped instead of migrated.
+//! dropped instead of migrated. v9 adds `dsh_tasks`, the task workflow rows
+//! (metadata only; the transcript still lives in the dsh store).
 
 use rusqlite::Connection;
 
 /// Schema version. Bumped only when the stored shape changes; fresh and
 /// pre-release databases are rebuilt from scratch, while shipped shapes are
 /// upgraded in place.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -49,6 +50,7 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
                 DROP TABLE IF EXISTS chat_messages_fts;
                 DROP TABLE IF EXISTS chat_messages;
                 DROP TABLE IF EXISTS chat_sessions;
+                DROP TABLE IF EXISTS dsh_tasks;
                 "#,
             )
             .map_err(|error| error.to_string())?;
@@ -150,6 +152,21 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             workspace_id TEXT PRIMARY KEY,
             cursor TEXT NOT NULL
         );
+
+        -- One row per built-in agent task. `payload` is the serialized task
+        -- record; the columns exist for ordering, filtering and the workflow
+        -- compare-and-swap, not for rendering.
+        CREATE TABLE IF NOT EXISTS dsh_tasks (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            project_id TEXT NOT NULL DEFAULT '',
+            workflow TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            payload TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS dsh_tasks_updated ON dsh_tasks(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS dsh_tasks_workflow ON dsh_tasks(workflow);
         "#,
     )
     .map_err(|error| error.to_string())
@@ -246,13 +263,16 @@ mod tests {
                 .expect("table lookup");
             assert_eq!(exists, 0, "{table} must be dropped");
         }
-        assert!(!column_exists(&conn, "notification_settings", "settings_version").expect("columns"));
+        assert!(
+            !column_exists(&conn, "notification_settings", "settings_version").expect("columns")
+        );
     }
 
     #[test]
     fn v5_upgrade_survives_a_database_without_its_task_table() {
         let conn = v5_connection();
-        conn.execute_batch("DROP TABLE agent_tasks").expect("simulate partial");
+        conn.execute_batch("DROP TABLE agent_tasks")
+            .expect("simulate partial");
 
         run(&conn).expect("recoverable migration");
 

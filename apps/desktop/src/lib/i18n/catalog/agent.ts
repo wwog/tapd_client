@@ -6,21 +6,55 @@ import type { Catalog } from "../types";
 
 export const agent = {
   // Tabs.
-  "agent.tab.sessions": ["会话", "Sessions"],
+  "agent.tab.tasks": ["任务", "Tasks"],
   "agent.tab.config": ["配置", "Configuration"],
 
-  // Session list.
+  // Task list.
   "agent.session.new": ["新建会话", "New session"],
-  "agent.session.empty": ["还没有会话", "No sessions yet"],
-  "agent.session.emptyHint": [
-    "点「新建会话」开始；会话在第一次发送后出现在这里。",
-    "Start with New session; it appears here after the first message.",
+  "agent.task.noProject": ["未关联项目", "No project"],
+  "agent.task.untitled": ["新会话", "New session"],
+  "agent.task.empty": ["还没有任务", "No tasks yet"],
+  "agent.task.emptyHint": [
+    "在缺陷页点「用 Agent 修复」，或在事项页点「交给 Agent」创建任务。",
+    "Use \"Fix with agent\" on a bug, or \"Hand to Agent\" on a work item.",
   ],
-  "agent.session.untitled": ["新会话", "New session"],
-  "agent.session.loadFailed": ["会话列表读取失败", "Could not load sessions"],
-  "agent.session.statusRunning": ["运行中", "Running"],
-  "agent.session.statusIdle": ["空闲", "Idle"],
-  "agent.session.statusFailed": ["失败", "Failed"],
+  "agent.task.loadFailed": ["任务列表读取失败", "Could not load tasks"],
+  "agent.task.workflowRunning": ["进行中", "Running"],
+  "agent.task.workflowAwaitingReview": ["待审核", "In review"],
+  "agent.task.workflowAwaitingMerge": ["待合并", "To merge"],
+  "agent.task.workflowDone": ["已完成", "Done"],
+  "agent.task.workflowFailed": ["失败", "Failed"],
+  "agent.task.workflowCanceled": ["已取消", "Canceled"],
+  "agent.task.live": ["运行中", "Running"],
+
+  // Task actions.
+  "agent.task.fix": ["修复", "Fix"],
+  "agent.task.changes": ["{files} 个文件", "{files} files"],
+  "agent.task.changesHint": ["相对任务起点的改动", "Changes since the task started"],
+  "agent.task.viewDiff": ["查看改动", "View changes"],
+  "agent.task.hideDiff": ["收起改动", "Hide changes"],
+  "agent.task.diffEmpty": ["没有改动", "No changes"],
+  "agent.task.diffTruncated": [
+    "改动过大，只显示前一部分。",
+    "The diff is too large; only the first part is shown.",
+  ],
+  "agent.task.approve": ["通过并提交", "Approve and commit"],
+  "agent.task.cancelStash": ["停止并储藏", "Stop and stash"],
+  "agent.task.merge": ["合并回主仓库", "Merge into the repository"],
+  "agent.task.cancel": ["取消任务", "Cancel task"],
+  "agent.task.stop": ["停止", "Stop"],
+  "agent.task.openExport": ["打开导出目录", "Open export folder"],
+
+  // Enqueue sheet (bug footer, bug row, local item row).
+  "agent.enqueue.bugHint": ["导出缺陷并交给 Agent 修复", "Export the bug and let the agent fix it"],
+  "agent.enqueue.placeholder": [
+    "补充说明（可选）",
+    "Extra instructions (optional)",
+  ],
+  "agent.enqueue.hint": [
+    "说明会追加到任务提示词。",
+    "Appended to the task prompt.",
+  ],
 
   // Stream.
   "agent.stream.noSession": ["还没有选择会话", "No session selected"],
@@ -142,6 +176,30 @@ export const agent = {
   "agent.config.unitsHint": [
     "同时运行的任务数，1–8；关闭 worktree 时固定为 1。",
     "Concurrent tasks, 1-8; fixed at 1 when worktree isolation is off.",
+  ],
+  "agent.config.permission": ["权限模式", "Permission mode"],
+  "agent.config.permissionHint": [
+    "规则在执行前判定；切换后需要重启运行时。",
+    "Rules are checked before each call; a change needs a runtime restart.",
+  ],
+  "agent.config.permissionAuto": ["自主", "Autonomous"],
+  "agent.config.permissionAutoHint": [
+    "只有风险操作才询问。",
+    "Only risky operations ask for approval.",
+  ],
+  "agent.config.permissionNotify": ["变更前通知", "Notify before changes"],
+  "agent.config.permissionNotifyHint": [
+    "全部放行，执行前推一条通知。",
+    "Everything is allowed; a notice is sent before it runs.",
+  ],
+  "agent.config.permissionFull": ["完全访问", "Full access"],
+  "agent.config.permissionFullHint": [
+    "除硬黑名单外全部放行。",
+    "Everything except the hard blocklist is allowed.",
+  ],
+  "agent.config.permissionRestart": [
+    "重启运行时后生效",
+    "Takes effect after the runtime restarts",
   ],
   "agent.config.coworkers": ["同事", "Coworkers"],
   "agent.config.coworkersHint": [

@@ -21,6 +21,10 @@ const CONFIG_FILE: &str = "agent.json";
 
 pub const DEFAULT_PROMPT_KEY: &str = "agent.prompt.default";
 
+/// Local work items have no TAPD counterpart, so they use a built-in neutral
+/// template instead of the user's bug template (which mentions bug.json).
+pub const LOCAL_PROMPT_KEY: &str = "agent.prompt.local";
+
 /// Per-project agent settings, edited from the project card.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -49,9 +53,36 @@ pub struct AgentConfig {
     /// 同时运行的任务数；仅在开启 worktree 时生效。
     #[serde(default = "default_execution_units")]
     pub execution_units: u32,
-    /// 自定义模型 API（设置 → 模型）。内置运行时启动时渲染进 profile。
+    /// 自定义模型 API。内置运行时启动时渲染进 profile。
     #[serde(default)]
     pub dsh_model: DshModelConfig,
+    /// 权限模式（P3）：自主 / 变更前通知 / 完全访问。运行时启动时生效。
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
+}
+
+/// 内置 Agent 的权限模式。默认「自主」：只有风险操作才询问。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    /// 命中风险规则才请求授权。
+    #[default]
+    Auto,
+    /// 放行，但执行前推一条通知。
+    Notify,
+    /// 除硬黑名单外全部放行。
+    Full,
+}
+
+impl PermissionMode {
+    /// Value passed to the runtime as `TAPD_DSH_PERMISSION_MODE`.
+    pub fn as_env(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Notify => "notify",
+            Self::Full => "full",
+        }
+    }
 }
 
 /// 自定义模型提供商。只支持「自定义 API」这一种形态：
@@ -151,6 +182,7 @@ impl Default for AgentConfig {
             worktree_enabled: false,
             execution_units: default_execution_units(),
             dsh_model: DshModelConfig::default(),
+            permission_mode: PermissionMode::Auto,
         }
     }
 }
@@ -429,6 +461,11 @@ fn template_uses_removed_contract(template: &str) -> bool {
         "tapd_claim_bug",
         "tapd_release_bug",
         "tapd_export_bug_md",
+        // The host commits, merges and writes back now: a template that still
+        // asks the model to do it would duplicate those writes.
+        "tapd_add_bug_comment",
+        "tapd_update_bug_status",
+        "tapd_get_bug_transitions",
     ]
     .iter()
     .any(|marker| template.contains(marker))

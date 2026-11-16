@@ -1,34 +1,45 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowUp,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   LoaderCircle,
+  Play,
   Plus,
   RefreshCw,
   Wrench,
+  X,
 } from "lucide-react";
 
 import { asApiError } from "../lib/api";
+import { Badge, type BadgeTone } from "../components/Badge";
+import { BottomSheet } from "../components/BottomSheet";
 import {
+  applyAgentTask,
   dshApi,
+  isTerminalWorkflow,
+  refreshAgentFeed,
+  useAgentFeed,
+  type DshAnswer,
+  type DshApprovalOutcome,
   type DshEntry,
   type DshPendingRequest,
-  type DshSession,
   type DshStatus,
+  type DshTask,
   type DshToolStatus,
+  type DshWorkflow,
 } from "../lib/dsh";
 import { absoluteTime, relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
 
+/** Runtime status cadence; the task/approval feed is polled once by `App`. */
 const LIST_POLL_MS = 8_000;
 const SESSION_POLL_MS = 3_000;
-/** Session title/status change rarely; refresh them every third poll. */
-const META_EVERY = 3;
 /** Soft cap on the composer's growth before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 120;
 
@@ -46,16 +57,22 @@ const PHASE_DOTS: Record<DshStatus["phase"], string> = {
   failed: "bg-rose-500",
 };
 
-const SESSION_LABELS: Record<DshSession["status"], MessageKey> = {
-  idle: "mobile.agent.sessionIdle",
-  running: "mobile.agent.sessionRunning",
-  failed: "common.failed",
+const WORKFLOW_LABELS: Record<DshWorkflow, MessageKey> = {
+  running: "mobile.agent.workflowRunning",
+  awaiting_review: "mobile.agent.workflowReview",
+  awaiting_merge: "mobile.agent.workflowMerge",
+  done: "mobile.agent.workflowDone",
+  failed: "mobile.agent.workflowFailed",
+  canceled: "mobile.agent.workflowCanceled",
 };
 
-const SESSION_DOTS: Record<DshSession["status"], string> = {
-  idle: "bg-slate-300",
-  running: "bg-sky-500",
-  failed: "bg-rose-500",
+const WORKFLOW_TONES: Record<DshWorkflow, BadgeTone> = {
+  running: "blue",
+  awaiting_review: "amber",
+  awaiting_merge: "cyan",
+  done: "green",
+  failed: "red",
+  canceled: "neutral",
 };
 
 const TOOL_LABELS: Record<DshToolStatus, MessageKey> = {
@@ -63,6 +80,16 @@ const TOOL_LABELS: Record<DshToolStatus, MessageKey> = {
   ok: "common.done",
   error: "common.failed",
 };
+
+type ApprovalPending = Extract<DshPendingRequest, { kind: "approval" }>;
+type QuestionPending = Extract<DshPendingRequest, { kind: "question" }>;
+type TaskAction = "approve" | "merge" | "cancel" | "diff";
+
+function WorkflowChip(props: { workflow: DshWorkflow }) {
+  return (
+    <Badge tone={WORKFLOW_TONES[props.workflow]}>{t(WORKFLOW_LABELS[props.workflow])}</Badge>
+  );
+}
 
 function ListSkeleton() {
   return (
@@ -234,19 +261,73 @@ function EntryRow(props: { entry: DshEntry }) {
   }
 }
 
+/* -------------------------------------------------------------------------
+   Task list
+   ------------------------------------------------------------------------- */
+
+type TaskGroup = { key: string; project: DshTask["project"]; tasks: DshTask[] };
+
+/** Group by project (local projects included); newest first inside a group. */
+function groupTasks(tasks: DshTask[]): TaskGroup[] {
+  const groups = new Map<string, TaskGroup>();
+  for (const task of tasks) {
+    const key = task.project?.id ?? "";
+    const group = groups.get(key);
+    if (group) group.tasks.push(task);
+    else groups.set(key, { key, project: task.project, tasks: [task] });
+  }
+  const list = [...groups.values()];
+  for (const group of list) {
+    group.tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+  // Groups follow their newest task, so the whole list stays newest-first.
+  list.sort((left, right) =>
+    (right.tasks[0]?.updatedAt ?? "").localeCompare(left.tasks[0]?.updatedAt ?? ""),
+  );
+  return list;
+}
+
+function TaskRow(props: { task: DshTask }) {
+  const task = props.task;
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`#/agent/session/${encodeURIComponent(task.id)}`)}
+      className="flex min-h-11 w-full flex-col border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
+    >
+      <span className="flex items-start gap-2">
+        {task.status === "running" ? (
+          <span
+            title={t("mobile.agent.workflowRunning")}
+            className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
+          />
+        ) : null}
+        <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
+          {task.title || t("mobile.agent.untitledSession")}
+        </span>
+      </span>
+      <span className="mt-1 flex items-center gap-2">
+        {task.kind === "chat" ? null : <WorkflowChip workflow={task.workflow} />}
+        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+          {relativeTime(task.updatedAt)}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 /**
- * Agent tab: the built-in dsh runtime on the desktop. The phone starts a
- * session (or opens an existing one) and renders its transcript; approvals and
- * questions still belong to the desktop.
+ * Agent tab: the built-in dsh runtime on the desktop and one unified task list
+ * grouped by project. The task/approval snapshot is shared with the tab badge
+ * and the session page (`useAgentFeed`), so this page does not poll it itself.
  */
 export function AgentPage() {
+  const feed = useAgentFeed();
   const [status, setStatus] = useState<DshStatus | null>(null);
   const [statusError, setStatusError] = useState<{
     message: string;
     title: MessageKey;
   } | null>(null);
-  const [sessions, setSessions] = useState<DshSession[] | null>(null);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -259,44 +340,36 @@ export function AgentPage() {
     };
   }, []);
 
-  const refresh = useCallback(async () => {
-    const [statusResult, sessionsResult] = await Promise.allSettled([
-      dshApi.status(),
-      dshApi.sessions(),
-    ]);
-    if (!alive.current) return;
-    if (statusResult.status === "fulfilled") {
-      setStatus(statusResult.value);
+  const refreshStatus = useCallback(async () => {
+    try {
+      const next = await dshApi.status();
+      if (!alive.current) return;
+      setStatus(next);
       setStatusError(null);
-    } else {
+    } catch (err) {
+      if (!alive.current) return;
       setStatusError({
-        message: asApiError(statusResult.reason).message,
+        message: asApiError(err).message,
         title: "mobile.agent.statusLoadFailed",
       });
-    }
-    if (sessionsResult.status === "fulfilled") {
-      setSessions(sessionsResult.value.sessions);
-      setSessionsError(null);
-    } else {
-      setSessionsError(asApiError(sessionsResult.reason).message);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refreshStatus();
     const timer = window.setInterval(() => {
-      if (!isPageHidden()) void refresh();
+      if (!isPageHidden()) void refreshStatus();
     }, LIST_POLL_MS);
     const off = onPageVisibilityChange(() => {
-      if (!isPageHidden()) void refresh();
+      if (!isPageHidden()) void refreshStatus();
     });
     return () => {
       window.clearInterval(timer);
       off();
     };
-  }, [refresh]);
+  }, [refreshStatus]);
 
-  /** Failed runtime: extract the payload and start it again. */
+  /** A stopped or failed runtime gets one explicit start/retry button. */
   const startRuntime = async () => {
     if (starting) return;
     setStarting(true);
@@ -332,6 +405,8 @@ export function AgentPage() {
     }
   };
 
+  const groups = useMemo(() => groupTasks(feed.tasks ?? []), [feed.tasks]);
+
   const runtimeLabel =
     status?.phase === "ready"
       ? [status.provider, status.model]
@@ -357,7 +432,7 @@ export function AgentPage() {
 
       <section className="border-b border-border px-4 py-3">
         {status ? (
-          <p className="flex items-center gap-2 text-ui-caption text-slate-900">
+          <div className="flex items-center gap-2 text-ui-caption text-slate-900">
             <span
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${PHASE_DOTS[status.phase]} ${
                 status.phase === "starting" ? "animate-pulse" : ""
@@ -365,11 +440,14 @@ export function AgentPage() {
             />
             <span className="shrink-0">{t(PHASE_LABELS[status.phase])}</span>
             {runtimeLabel ? (
-              <span className="min-w-0 truncate font-mono text-ui-xs text-slate-400" title={runtimeLabel}>
+              <span
+                className="min-w-0 truncate font-mono text-ui-xs text-slate-400"
+                title={runtimeLabel}
+              >
                 {runtimeLabel}
               </span>
             ) : null}
-            {status.phase === "failed" ? (
+            {status.phase === "stopped" || status.phase === "failed" ? (
               <button
                 type="button"
                 disabled={starting}
@@ -378,13 +456,15 @@ export function AgentPage() {
               >
                 {starting ? (
                   <LoaderCircle size={12} className="animate-spin" />
-                ) : (
+                ) : status.phase === "failed" ? (
                   <RefreshCw size={12} />
+                ) : (
+                  <Play size={12} />
                 )}
-                {t("common.retry")}
+                {status.phase === "failed" ? t("common.retry") : t("mobile.agent.start")}
               </button>
             ) : null}
-          </p>
+          </div>
         ) : statusError ? null : (
           <p className="text-ui-caption text-slate-400">{t("common.reading")}</p>
         )}
@@ -409,18 +489,27 @@ export function AgentPage() {
         </p>
       ) : null}
 
-      {sessionsError ? (
+      {feed.tasksError ? (
         <p
           className="px-4 py-3 text-ui-caption text-rose-600"
           title={t("mobile.agent.loadFailed")}
         >
-          {sessionsError}
+          {feed.tasksError}
         </p>
       ) : null}
 
-      {sessions === null && !sessionsError ? <ListSkeleton /> : null}
+      {feed.pendingError && feed.pendingError !== feed.tasksError ? (
+        <p
+          className="px-4 py-3 text-ui-caption text-rose-600"
+          title={t("mobile.agent.pendingLoadFailed")}
+        >
+          {feed.pendingError}
+        </p>
+      ) : null}
 
-      {sessions && sessions.length === 0 && !sessionsError ? (
+      {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
+
+      {feed.tasks && feed.tasks.length === 0 && !feed.tasksError ? (
         <p
           className="px-4 py-10 text-center text-ui-base text-slate-400"
           title={t("mobile.agent.emptyHint")}
@@ -429,49 +518,461 @@ export function AgentPage() {
         </p>
       ) : null}
 
-      {sessions?.map((session) => (
-        <button
-          key={session.id}
-          type="button"
-          onClick={() => navigate(`#/agent/session/${encodeURIComponent(session.id)}`)}
-          className="flex min-h-11 w-full items-center gap-2 border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-        >
-          <span
-            title={t(SESSION_LABELS[session.status])}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${SESSION_DOTS[session.status]}`}
-          />
-          <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900">
-            {session.title || t("mobile.agent.untitledSession")}
-          </span>
-          <span className="shrink-0 text-ui-xs text-slate-400">
-            {relativeTime(session.updatedAt)}
-          </span>
-        </button>
+      {groups.map((group) => (
+        <section key={group.key || "__none__"}>
+          <h2 className="border-b border-border bg-overlay-soft px-4 py-1.5 text-ui-2xs text-slate-500">
+            {group.project?.name ?? t("mobile.agent.noProject")}
+          </h2>
+          {group.tasks.map((task) => (
+            <TaskRow key={task.id} task={task} />
+          ))}
+        </section>
       ))}
     </div>
   );
 }
 
+/* -------------------------------------------------------------------------
+   Task page building blocks
+   ------------------------------------------------------------------------- */
+
+function TaskButton(props: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  tone?: "primary" | "neutral" | "danger";
+}) {
+  const tone = props.tone ?? "neutral";
+  const palette =
+    tone === "primary"
+      ? "bg-primary text-primary-foreground active:bg-primary-hover"
+      : tone === "danger"
+        ? "border border-rose-200 bg-rose-50 text-rose-700 active:bg-overlay-soft"
+        : "border border-border bg-surface text-slate-700 active:bg-overlay-soft";
+  return (
+    <button
+      type="button"
+      disabled={props.disabled || props.busy}
+      onClick={props.onClick}
+      className={`inline-flex min-h-11 flex-1 basis-24 items-center justify-center gap-1.5 rounded-lg px-3 text-ui-sm transition disabled:opacity-40 ${palette}`}
+    >
+      {props.busy ? <LoaderCircle size={13} className="animate-spin" /> : null}
+      {props.label}
+    </button>
+  );
+}
+
+function DiffSheet(props: {
+  open: boolean;
+  diff: { text: string; truncated: boolean } | null;
+  error: string | null;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  if (!props.open) return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-canvas"
+      style={{
+        // The portal escapes #root's safe-area padding.
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+    >
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-canvas px-2 py-2">
+        <button
+          type="button"
+          aria-label={t("common.close")}
+          onClick={props.onClose}
+          className="shrink-0 rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
+        >
+          <X size={18} />
+        </button>
+        <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900">
+          {t("mobile.agent.viewDiff")}
+        </span>
+        {props.diff?.truncated ? (
+          <Badge tone="amber">{t("mobile.agent.diffTruncated")}</Badge>
+        ) : null}
+      </header>
+      <div className="min-h-0 flex-1 overflow-auto overscroll-contain bg-surface">
+        {props.busy ? (
+          <p className="px-4 py-6 text-ui-caption text-slate-400">{t("common.reading")}</p>
+        ) : props.error ? (
+          <p
+            className="px-4 py-6 text-ui-caption leading-5 text-rose-600"
+            title={t("mobile.agent.diffFailed")}
+          >
+            {props.error}
+          </p>
+        ) : props.diff && props.diff.text ? (
+          <pre className="w-max min-w-full px-3 py-3 font-mono text-ui-xs leading-5 break-normal whitespace-pre text-slate-700 select-text">
+            {props.diff.text}
+          </pre>
+        ) : (
+          <p className="px-4 py-6 text-ui-caption text-slate-400">
+            {t("mobile.agent.diffEmpty")}
+          </p>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function ApprovalCard(props: { request: ApprovalPending }) {
+  const [busy, setBusy] = useState<DshApprovalOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const approval = props.request.request;
+
+  const answer = async (outcome: DshApprovalOutcome) => {
+    if (busy) return;
+    setBusy(outcome);
+    setError(null);
+    try {
+      await dshApi.approvalAnswer(props.request.rpcId, outcome);
+      await refreshAgentFeed();
+    } catch (err) {
+      setError(asApiError(err).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+      <p className="text-ui-xs text-slate-500">{t("mobile.agent.approvalRequest")}</p>
+      <p className="mt-1.5 flex items-baseline gap-2">
+        <span className="shrink-0 text-ui-2xs text-slate-400">
+          {t("mobile.agent.approvalTool")}
+        </span>
+        <span className="min-w-0 flex-1 break-all font-mono text-ui-xs text-slate-900">
+          {approval.toolName}
+        </span>
+      </p>
+      {approval.reason ? (
+        <p className="mt-1 flex items-baseline gap-2">
+          <span className="shrink-0 text-ui-2xs text-slate-400">
+            {t("mobile.agent.approvalTarget")}
+          </span>
+          <span className="min-w-0 flex-1 select-text break-words whitespace-pre-wrap text-ui-xs leading-5 text-slate-600">
+            {approval.reason}
+          </span>
+        </p>
+      ) : null}
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void answer("allowed-once")}
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-40"
+        >
+          {busy === "allowed-once" ? <LoaderCircle size={13} className="animate-spin" /> : null}
+          {t("mobile.agent.allowOnce")}
+        </button>
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void answer("rejected")}
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 text-ui-sm text-rose-700 transition active:bg-overlay-soft disabled:opacity-40"
+        >
+          {busy === "rejected" ? <LoaderCircle size={13} className="animate-spin" /> : null}
+          {t("mobile.agent.reject")}
+        </button>
+      </div>
+      {error ? (
+        <p
+          className="mt-2 text-ui-xs leading-5 text-rose-600"
+          title={t("mobile.agent.approvalFailed")}
+        >
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function QuestionCard(props: { request: QuestionPending; onAnswer: () => void }) {
+  const first = props.request.request.questions[0];
+  return (
+    <div className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+      <p className="text-ui-xs text-slate-500">{t("mobile.agent.questionRequest")}</p>
+      <p className="mt-1 line-clamp-3 select-text text-ui-caption leading-5 text-slate-900">
+        {first?.question ?? t("common.empty")}
+      </p>
+      <button
+        type="button"
+        onClick={props.onAnswer}
+        className="mt-2 inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover"
+      >
+        {t("mobile.agent.answerQuestion")}
+      </button>
+    </div>
+  );
+}
+
 /**
- * One dsh session: header (title + status), polled transcript, composer.
- * The phone cannot answer approvals/questions, so a blocked request shows
- * one quiet pointer to the desktop instead of dead buttons.
+ * One runtime question set. A single single-select question answers with one
+ * tap; everything else walks question i/N with optional custom text. Closing
+ * the sheet dismisses the request (`answers: null`), it never approves it.
+ */
+function QuestionSheet(props: { pending: QuestionPending; onClose: () => void }) {
+  const request = props.pending.request;
+  const questions = request.questions;
+  const [index, setIndex] = useState(0);
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const current = questions[index];
+  const singleSelect = questions.length === 1 && !current?.multiSelect;
+  const hasOptions = (current?.options?.length ?? 0) > 0;
+
+  const answer = async (answers: DshAnswer[] | null) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await dshApi.questionAnswer(props.pending.rpcId, answers);
+      await refreshAgentFeed();
+      props.onClose();
+    } catch (err) {
+      setError(asApiError(err).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const answersFor = (
+    picked: Record<string, string[]>,
+    texts: Record<string, string>,
+    override?: { id: string; selected: string[] },
+  ): DshAnswer[] =>
+    questions.map((question) => {
+      if (override && question.id === override.id) {
+        return { id: question.id, selected: override.selected };
+      }
+      const value = picked[question.id] ?? [];
+      const text = (texts[question.id] ?? "").trim();
+      return text
+        ? { id: question.id, selected: value, custom: text }
+        : { id: question.id, selected: value };
+    });
+
+  const toggle = (label: string) => {
+    if (!current) return;
+    setSelected((prev) => {
+      const value = prev[current.id] ?? [];
+      if (!current.multiSelect) return { ...prev, [current.id]: [label] };
+      return {
+        ...prev,
+        [current.id]: value.includes(label)
+          ? value.filter((item) => item !== label)
+          : [...value, label],
+      };
+    });
+  };
+
+  /** Skip clears the current question; on the last one it submits the set. */
+  const skip = () => {
+    if (!current || busy) return;
+    const clearedSelected = { ...selected, [current.id]: [] };
+    const clearedCustom = { ...custom, [current.id]: "" };
+    setSelected(clearedSelected);
+    setCustom(clearedCustom);
+    if (index < questions.length - 1) {
+      setIndex(index + 1);
+      return;
+    }
+    void answer(answersFor(clearedSelected, clearedCustom));
+  };
+
+  const next = () => {
+    if (busy) return;
+    if (index < questions.length - 1) setIndex(index + 1);
+    else void answer(answersFor(selected, custom));
+  };
+
+  const footer =
+    questions.length === 0 ? (
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void answer(null)}
+        className="min-h-11 w-full rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+      >
+        {t("common.close")}
+      </button>
+    ) : singleSelect && hasOptions ? undefined : (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || index === 0}
+          onClick={() => setIndex(index - 1)}
+          className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+        >
+          {t("common.back")}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={skip}
+          className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+        >
+          {t("common.skip")}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={next}
+          className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-40"
+        >
+          {busy ? <LoaderCircle size={13} className="animate-spin" /> : null}
+          {index < questions.length - 1 ? t("common.next") : t("common.submit")}
+        </button>
+      </div>
+    );
+
+  return (
+    <BottomSheet
+      open
+      title={t("mobile.agent.questionRequest")}
+      onClose={() => {
+        if (!busy) void answer(null);
+      }}
+      footer={footer}
+    >
+      {current ? (
+        <>
+          {questions.length > 1 ? (
+            <p className="text-ui-2xs text-slate-400">
+              {t("mobile.agent.questionProgress", { i: index + 1, n: questions.length })}
+            </p>
+          ) : null}
+          {current.header ? (
+            <p className="text-ui-xs text-slate-500">{current.header}</p>
+          ) : null}
+          <p className="mt-1 select-text whitespace-pre-wrap text-ui-caption leading-5 text-slate-900">
+            {current.question}
+          </p>
+          {current.detail ? (
+            <p className="mt-2 max-h-60 select-text overflow-y-auto overscroll-contain rounded-lg border border-border bg-canvas px-2.5 py-2 text-ui-xs leading-5 whitespace-pre-wrap text-slate-600">
+              {current.detail}
+            </p>
+          ) : null}
+          {(current.options ?? []).length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {(current.options ?? []).map((option) => {
+                const picked = (selected[current.id] ?? []).includes(option.label);
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    disabled={busy}
+                    aria-pressed={picked}
+                    onClick={() => {
+                      if (singleSelect) {
+                        void answer([{ id: current.id, selected: [option.label] }]);
+                      } else {
+                        toggle(option.label);
+                      }
+                    }}
+                    className={`flex min-h-11 w-full flex-col items-start rounded-lg border px-3 py-2 text-left transition disabled:opacity-40 ${
+                      picked
+                        ? "border-sky-300 bg-sky-50"
+                        : "border-border bg-surface active:bg-overlay-soft"
+                    }`}
+                  >
+                    <span className="text-ui-caption text-slate-900">{option.label}</span>
+                    {option.description ? (
+                      <span className="mt-0.5 text-ui-xs leading-5 text-slate-500">
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {singleSelect && hasOptions ? null : (
+            <label className="mt-3 block">
+              <span className="text-ui-sm text-slate-500">
+                {t("mobile.agent.questionCustom")}
+              </span>
+              <input
+                value={custom[current.id] ?? ""}
+                onChange={(event) =>
+                  setCustom((prev) => ({ ...prev, [current.id]: event.target.value }))
+                }
+                placeholder={t("mobile.agent.questionCustomPlaceholder")}
+                className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-base text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+              />
+            </label>
+          )}
+          {error ? (
+            <p
+              className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
+              title={t("mobile.agent.questionFailed")}
+            >
+              {error}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p className="text-ui-caption text-slate-400">{t("common.empty")}</p>
+      )}
+    </BottomSheet>
+  );
+}
+
+/**
+ * One task: header (title + workflow chip), workflow actions, polled
+ * transcript, answerable approvals/questions and the composer. No live token
+ * streaming — the transcript is always the committed rows.
  */
 export function AgentSessionPage(props: { id: string }) {
   const { id } = props;
+  const feed = useAgentFeed();
+  const task = useMemo(
+    () => feed.tasks?.find((row) => row.id === id) ?? null,
+    [feed.tasks, id],
+  );
+  const pending = useMemo(
+    () => feed.pending.filter((item) => item.sessionId === id),
+    [feed.pending, id],
+  );
+  const approvals = useMemo(
+    () => pending.filter((item): item is ApprovalPending => item.kind === "approval"),
+    [pending],
+  );
+  const questions = useMemo(
+    () => pending.filter((item): item is QuestionPending => item.kind === "question"),
+    [pending],
+  );
+
   const [entries, setEntries] = useState<DshEntry[] | null>(null);
+  /** `false` = the runtime has not seen this session yet (desktop restart). */
+  const [entriesKnown, setEntriesKnown] = useState<boolean | null>(null);
   const [entriesError, setEntriesError] = useState<string | null>(null);
-  const [session, setSession] = useState<DshSession | null>(null);
-  /** Requests the runtime is blocked on; only the desktop can answer them. */
-  const [pending, setPending] = useState<DshPendingRequest[]>([]);
-  const [metaError, setMetaError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
+  const [taskBusy, setTaskBusy] = useState<TaskAction | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [activeQuestion, setActiveQuestion] = useState<number | null>(null);
+
   const alive = useRef(true);
   const entriesInFlight = useRef(false);
+  const resumeTried = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const lastSeq = useRef(0);
@@ -494,6 +995,7 @@ export function AgentSessionPage(props: { id: string }) {
           // `known: false` means the desktop restarted before the bridge saw
           // this session; the transcript is simply empty, not a failure.
           setEntries(result.entries);
+          setEntriesKnown(result.known);
           setEntriesError(null);
         }
       } catch (err) {
@@ -506,38 +1008,100 @@ export function AgentSessionPage(props: { id: string }) {
     [id],
   );
 
-  const loadSession = useCallback(async () => {
-    try {
-      const [result, blocking] = await Promise.all([dshApi.sessions(), dshApi.pending()]);
-      if (!alive.current) return;
-      setSession(result.sessions.find((row) => row.id === id) ?? null);
-      setPending(blocking.requests);
-      setMetaError(null);
-    } catch (err) {
-      if (alive.current) setMetaError(asApiError(err).message);
-    }
-  }, [id]);
-
   useEffect(() => {
-    let ticks = 0;
     const poll = () => {
-      if (isPageHidden()) return;
-      void loadEntries(true);
-      if (ticks++ % META_EVERY === 0) void loadSession();
+      if (!isPageHidden()) void loadEntries(true);
     };
     void loadEntries(false);
-    void loadSession();
     const timer = window.setInterval(poll, SESSION_POLL_MS);
     const off = onPageVisibilityChange(() => {
       if (isPageHidden()) return;
       void loadEntries(true);
-      void loadSession();
+      void refreshAgentFeed();
     });
     return () => {
       window.clearInterval(timer);
       off();
     };
-  }, [loadEntries, loadSession]);
+  }, [loadEntries]);
+
+  // A task restored from a previous desktop run has no live session until it
+  // is resumed. Do that once, on open, so its persisted transcript appears.
+  useEffect(() => {
+    if (entriesKnown !== false || task === null || resumeTried.current) return;
+    resumeTried.current = true;
+    setResuming(true);
+    setResumeError(null);
+    void (async () => {
+      try {
+        const { task: resumed } = await dshApi.taskResume(id);
+        applyAgentTask(resumed);
+        await loadEntries(false);
+        void refreshAgentFeed();
+      } catch (err) {
+        if (alive.current) setResumeError(asApiError(err).message);
+      } finally {
+        if (alive.current) setResuming(false);
+      }
+    })();
+  }, [entriesKnown, task, id, loadEntries]);
+
+  const runTaskAction = async (
+    action: TaskAction,
+    run: () => Promise<{ task: DshTask }>,
+  ) => {
+    if (taskBusy) return;
+    setTaskBusy(action);
+    setTaskError(null);
+    try {
+      const { task: updated } = await run();
+      applyAgentTask(updated);
+      // The workflow may have entered a new phase; the follow-up read also
+      // refreshes pending and covers a lost response.
+      void refreshAgentFeed();
+    } catch (err) {
+      if (alive.current) setTaskError(asApiError(err).message);
+    } finally {
+      if (alive.current) setTaskBusy(null);
+    }
+  };
+
+  const approveTask = () => void runTaskAction("approve", () => dshApi.taskApprove(id));
+  const mergeTask = () => void runTaskAction("merge", () => dshApi.taskMerge(id));
+  const cancelTask = (stash: boolean) =>
+    void runTaskAction("cancel", () => dshApi.taskCancel(id, stash));
+
+  const openDiff = async () => {
+    if (taskBusy) return;
+    setTaskBusy("diff");
+    setDiff(null);
+    setDiffError(null);
+    setDiffOpen(true);
+    try {
+      const result = await dshApi.taskDiff(id);
+      if (alive.current) setDiff({ text: result.diff, truncated: result.truncated });
+    } catch (err) {
+      if (alive.current) setDiffError(asApiError(err).message);
+    } finally {
+      if (alive.current) setTaskBusy(null);
+    }
+  };
+
+  const closeDiff = () => {
+    setDiffOpen(false);
+    setDiff(null);
+    setDiffError(null);
+  };
+
+  const openQuestion = useMemo(
+    () => questions.find((item) => item.rpcId === activeQuestion) ?? null,
+    [questions, activeQuestion],
+  );
+
+  // Answered on the desktop (or cancelled by the runtime): close the sheet.
+  useEffect(() => {
+    if (activeQuestion !== null && openQuestion === null) setActiveQuestion(null);
+  }, [activeQuestion, openQuestion]);
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -557,8 +1121,7 @@ export function AgentSessionPage(props: { id: string }) {
     }
     // The prompt is queued; entry polling picks the committed rows up.
     void loadEntries(true);
-    void loadSession();
-  }, [draft, sending, id, loadEntries, loadSession]);
+  }, [draft, sending, id, loadEntries]);
 
   // Composer grows with the draft up to a soft cap, then scrolls internally.
   useEffect(() => {
@@ -594,44 +1157,137 @@ export function AgentSessionPage(props: { id: string }) {
     void send();
   };
 
-  // Only a request the runtime itself reports as blocking counts; a tool row
-  // still `running` is not proof the agent is waiting for a human.
-  const awaitingInteraction = pending.some((item) => item.sessionId === id);
-  const title = session?.title || t("mobile.agent.untitledSession");
+  const title = task?.title || t("mobile.agent.untitledSession");
 
   return (
     <div>
-      <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
-        <button
-          type="button"
-          aria-label={t("mobile.nav.back")}
-          onClick={() => navigate("#/agent")}
-          className="shrink-0 rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
-        >
-          <ChevronLeft size={18} />
-        </button>
-        <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900" title={title}>
-          {title}
-        </span>
-        {session ? (
-          <span className="flex shrink-0 items-center gap-1.5 text-ui-xs text-slate-500">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${SESSION_DOTS[session.status]}`}
-              title={t(SESSION_LABELS[session.status])}
-            />
-            {t(SESSION_LABELS[session.status])}
+      {/* Header and workflow actions share one sticky block: opening a task
+          must never scroll its primary action out from under the title. */}
+      <div className="sticky top-0 z-20 bg-canvas">
+        <header className="flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
+          <button
+            type="button"
+            aria-label={t("mobile.nav.back")}
+            onClick={() => navigate("#/agent")}
+            className="shrink-0 rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
+          >
+            <ChevronLeft size={18} />
+          </button>
+          <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900" title={title}>
+            {title}
           </span>
-        ) : null}
-      </header>
+          {task && task.kind !== "chat" ? <WorkflowChip workflow={task.workflow} /> : null}
+        </header>
+
+        {task && !isTerminalWorkflow(task.workflow) ? (
+          <section className="border-b border-border px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {task.workflow === "awaiting_review" ? (
+              <>
+                <TaskButton
+                  label={t("mobile.agent.approve")}
+                  tone="primary"
+                  busy={taskBusy === "approve"}
+                  disabled={taskBusy !== null}
+                  onClick={approveTask}
+                />
+                <TaskButton
+                  label={t("mobile.agent.viewDiff")}
+                  busy={taskBusy === "diff"}
+                  disabled={taskBusy !== null}
+                  onClick={() => void openDiff()}
+                />
+                <TaskButton
+                  label={t("mobile.agent.stopAndStash")}
+                  tone="danger"
+                  busy={taskBusy === "cancel"}
+                  disabled={taskBusy !== null}
+                  onClick={() => cancelTask(true)}
+                />
+              </>
+            ) : task.workflow === "awaiting_merge" ? (
+              <>
+                <TaskButton
+                  label={t("mobile.agent.merge")}
+                  tone="primary"
+                  busy={taskBusy === "merge"}
+                  disabled={taskBusy !== null}
+                  onClick={mergeTask}
+                />
+                <TaskButton
+                  label={t("mobile.agent.viewDiff")}
+                  busy={taskBusy === "diff"}
+                  disabled={taskBusy !== null}
+                  onClick={() => void openDiff()}
+                />
+                <TaskButton
+                  label={t("mobile.agent.cancelTask")}
+                  tone="danger"
+                  busy={taskBusy === "cancel"}
+                  disabled={taskBusy !== null}
+                  onClick={() => cancelTask(false)}
+                />
+              </>
+            ) : task.workflow === "running" ? (
+              <TaskButton
+                label={t("mobile.agent.stop")}
+                tone="danger"
+                busy={taskBusy === "cancel"}
+                disabled={taskBusy !== null}
+                onClick={() => cancelTask(false)}
+              />
+            ) : null}
+          </div>
+          {task.workflow === "awaiting_merge" &&
+          (task.merge?.error || task.merge?.instructions) ? (
+            <div className="mt-2 space-y-1">
+              {task.merge?.error ? (
+                <p className="select-text text-ui-xs leading-5 text-rose-600">
+                  {task.merge.error}
+                </p>
+              ) : null}
+              {task.merge?.instructions ? (
+                <pre className="select-text overflow-x-auto rounded-lg border border-border bg-surface px-2.5 py-2 font-mono text-ui-2xs leading-5 whitespace-pre-wrap text-slate-600">
+                  {task.merge.instructions}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+          {taskError ? (
+            <p
+              className="mt-2 text-ui-xs leading-5 text-rose-600"
+              title={t("common.actionFailed")}
+            >
+              {taskError}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+      </div>
 
       {/* Fixed-height line so the poll indicator never shifts the transcript. */}
       <div className="h-5 px-4 text-ui-2xs leading-5 text-slate-400">
-        {syncing ? t("mobile.agent.syncing") : ""}
+        {syncing || resuming ? t("mobile.agent.syncing") : ""}
       </div>
 
-      {metaError ? (
+      {feed.tasksError ? (
         <p className="px-4 pb-1 text-ui-xs text-rose-600" title={t("mobile.agent.loadFailed")}>
-          {metaError}
+          {feed.tasksError}
+        </p>
+      ) : null}
+
+      {feed.pendingError && feed.pendingError !== feed.tasksError ? (
+        <p
+          className="px-4 pb-1 text-ui-xs text-rose-600"
+          title={t("mobile.agent.pendingLoadFailed")}
+        >
+          {feed.pendingError}
+        </p>
+      ) : null}
+
+      {resumeError ? (
+        <p className="px-4 pb-1 text-ui-xs text-rose-600" title={t("mobile.agent.resumeFailed")}>
+          {resumeError}
         </p>
       ) : null}
 
@@ -662,14 +1318,17 @@ export function AgentSessionPage(props: { id: string }) {
         </div>
       ) : null}
 
-      {awaitingInteraction ? (
-        <div
-          className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-2"
-          title={t("mobile.agent.approvalHint")}
-        >
-          <p className="text-ui-xs leading-5 text-slate-500">{t("mobile.agent.approvalTitle")}</p>
-        </div>
-      ) : null}
+      {approvals.map((request) => (
+        <ApprovalCard key={request.rpcId} request={request} />
+      ))}
+
+      {questions.map((request) => (
+        <QuestionCard
+          key={request.rpcId}
+          request={request}
+          onAnswer={() => setActiveQuestion(request.rpcId)}
+        />
+      ))}
 
       <div className="sticky bottom-14 z-20 border-t border-border bg-canvas px-3 py-2">
         {sendError ? (
@@ -703,6 +1362,22 @@ export function AgentSessionPage(props: { id: string }) {
           </button>
         </div>
       </div>
+
+      <DiffSheet
+        open={diffOpen}
+        diff={diff}
+        error={diffError}
+        busy={taskBusy === "diff"}
+        onClose={closeDiff}
+      />
+
+      {openQuestion ? (
+        <QuestionSheet
+          key={openQuestion.rpcId}
+          pending={openQuestion}
+          onClose={() => setActiveQuestion(null)}
+        />
+      ) : null}
 
       <div ref={bottomRef} aria-hidden="true" />
     </div>

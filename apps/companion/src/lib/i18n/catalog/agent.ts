@@ -1,15 +1,21 @@
-/** agent catalogue: built-in dsh runtime status, sessions and transcripts. */
+/** agent catalogue: built-in dsh runtime, unified task list, task actions and
+ *  the approvals/questions the phone can answer. */
 import type { Catalog } from "../types";
 
 export const agent = {
   /* -- Tab ---------------------------------------------------------------- */
   "mobile.agent.newSession": ["新建会话", "New session"],
   "mobile.agent.creating": ["创建中…", "Creating…"],
-  "mobile.agent.loading": ["正在读取会话…", "Reading sessions…"],
-  "mobile.agent.loadFailed": ["读取会话失败", "Couldn't load sessions"],
+  "mobile.agent.loadFailed": ["读取任务失败", "Couldn't load tasks"],
   "mobile.agent.newSessionFailed": ["新建会话失败", "Couldn't create a session"],
-  "mobile.agent.empty": ["还没有会话", "No sessions yet"],
-  "mobile.agent.emptyHint": ["新建一个会话开始对话。", "Start a session to begin."],
+  "mobile.agent.empty": ["还没有任务", "No tasks yet"],
+  "mobile.agent.emptyHint": [
+    "任务来自「事项」或桌面端。",
+    "Tasks come from work items or the desktop.",
+  ],
+  "mobile.agent.untitledSession": ["未命名会话", "Untitled session"],
+  "mobile.agent.noProject": ["未关联项目", "No project"],
+  "mobile.agent.badgeHint": ["{n} 项待处理", "{n} pending"],
 
   /* -- Runtime status ----------------------------------------------------- */
   "mobile.agent.phaseStopped": ["未启动", "Stopped"],
@@ -20,12 +26,48 @@ export const agent = {
     "读取运行时状态失败",
     "Couldn't read the runtime status",
   ],
+  "mobile.agent.start": ["启动", "Start"],
   "mobile.agent.startFailed": ["启动运行时失败", "Couldn't start the runtime"],
 
-  /* -- Session list ------------------------------------------------------- */
-  "mobile.agent.untitledSession": ["未命名会话", "Untitled session"],
-  "mobile.agent.sessionIdle": ["空闲", "Idle"],
-  "mobile.agent.sessionRunning": ["运行中", "Running"],
+  /* -- Workflow chips ----------------------------------------------------- */
+  "mobile.agent.workflowRunning": ["进行中", "Running"],
+  "mobile.agent.workflowReview": ["待审核", "Awaiting review"],
+  "mobile.agent.workflowMerge": ["待合并", "Awaiting merge"],
+  "mobile.agent.workflowDone": ["已完成", "Done"],
+  "mobile.agent.workflowFailed": ["失败", "Failed"],
+  "mobile.agent.workflowCanceled": ["已取消", "Canceled"],
+
+  /* -- Task actions ------------------------------------------------------- */
+  "mobile.agent.viewDiff": ["查看改动", "View changes"],
+  "mobile.agent.approve": ["通过并提交", "Approve and commit"],
+  "mobile.agent.stopAndStash": ["停止并储藏", "Stop and stash"],
+  "mobile.agent.merge": ["合并回主仓库", "Merge into main"],
+  "mobile.agent.cancelTask": ["取消任务", "Cancel task"],
+  "mobile.agent.stop": ["停止", "Stop"],
+  "mobile.agent.diffTruncated": ["已截断", "Truncated"],
+  "mobile.agent.diffEmpty": ["没有可显示的改动", "No changes to show"],
+  "mobile.agent.diffFailed": ["读取改动失败", "Couldn't load the changes"],
+  "mobile.agent.resumeFailed": ["恢复会话失败", "Couldn't resume the session"],
+
+  /* -- Approvals ---------------------------------------------------------- */
+  "mobile.agent.approvalRequest": ["授权请求", "Approval request"],
+  "mobile.agent.approvalTool": ["工具", "Tool"],
+  "mobile.agent.approvalTarget": ["目标", "Target"],
+  "mobile.agent.allowOnce": ["允许一次", "Allow once"],
+  "mobile.agent.reject": ["拒绝", "Reject"],
+  "mobile.agent.approvalFailed": ["审批失败", "Couldn't answer the approval"],
+  "mobile.agent.pendingLoadFailed": [
+    "读取待处理请求失败",
+    "Couldn't load pending requests",
+  ],
+
+  /* -- Questions ---------------------------------------------------------- */
+  "mobile.agent.questionRequest": ["需要你的回答", "Question"],
+  "mobile.agent.answerQuestion": ["去回答", "Answer"],
+  "mobile.agent.questionProgress": ["问题 {i}/{n}", "Question {i} of {n}"],
+  "mobile.agent.questionCustom": ["自定义回答", "Custom answer"],
+  "mobile.agent.questionCustomPlaceholder": ["输入回答", "Type an answer"],
+  "mobile.agent.questionFailed": ["提交回答失败", "Couldn't submit the answer"],
 
   /* -- Session view ------------------------------------------------------- */
   "mobile.agent.syncing": ["同步中", "Syncing"],
@@ -46,12 +88,4 @@ export const agent = {
   "mobile.agent.toolArgs": ["参数", "Arguments"],
   "mobile.agent.toolResult": ["结果", "Result"],
   "mobile.agent.turnEnded": ["本轮结束", "Turn ended"],
-  "mobile.agent.approvalTitle": [
-    "审批与提问需在桌面端处理",
-    "Approvals and questions are handled on the desktop",
-  ],
-  "mobile.agent.approvalHint": [
-    "手机端暂时不能应答 Agent 的审批与提问；出现时请在桌面端处理。",
-    "The phone cannot answer Agent approvals or questions in this phase; handle them on the desktop.",
-  ],
 } as const satisfies Catalog;

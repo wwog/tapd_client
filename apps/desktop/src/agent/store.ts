@@ -1,16 +1,18 @@
 /**
- * Agent page state: runtime status, sessions, the selected history, live
- * streams and pending approvals / questions.
+ * Agent page state: runtime status, the unified task list, the selected
+ * history, live streams and pending approvals / questions.
  *
  * It is a module store rather than component state because Tauri events arrive
- * outside React and the same facts are read by the session list, the stream and
+ * outside React and the same facts are read by the task list, the stream and
  * the configuration tab. Streams are kept only for the selected session: the
  * backend replays history on demand, so stale buffers never need to survive a
  * switch.
  */
 import {
   dshApi,
+  dshPolicyApi,
   dshSettingsApi,
+  dshTaskApi,
   type DshAgentConfig,
   type DshApprovalEvent,
   type DshApprovalOutcome,
@@ -18,16 +20,18 @@ import {
   type DshEntry,
   type DshEntryEvent,
   type DshErrorEvent,
+  type DshFocusSessionEvent,
   type DshQuestionEvent,
-  type DshSession,
   type DshSessionEvent,
   type DshStatus,
   type DshStream,
+  type DshTask,
+  type DshTasksEvent,
 } from "../lib/dsh";
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
 
-export type AgentTab = "sessions" | "config";
+export type AgentTab = "tasks" | "config";
 
 export type LiveToolCall = {
   callId: string;
@@ -66,7 +70,7 @@ export type PendingQuestion = {
 };
 
 /** The part of the agent settings the configuration tab owns. Projects and
- *  repository paths stay with the projects page and are merged on save. */
+ *  the permission mode are written through their own entry points. */
 export type AgentConfigDraft = Pick<
   DshAgentConfig,
   "promptTemplate" | "worktreeEnabled" | "executionUnits" | "dshModel"
@@ -75,8 +79,8 @@ export type AgentConfigDraft = Pick<
 export type AgentState = {
   tab: AgentTab;
   selectedId: string | null;
-  sessions: DshSession[] | null;
-  sessionsError: string | null;
+  tasks: DshTask[] | null;
+  tasksError: string | null;
   status: DshStatus | null;
   statusError: string | null;
   config: DshAgentConfig | null;
@@ -93,17 +97,24 @@ export type AgentState = {
   lastError: { code: string | null; message: string } | null;
 };
 
-/** Selected session and active tab are view state, but they survive page
+/** Selected task and active tab are view state, but they survive page
  *  unmounts and restarts through the config.json preference blob. */
 const UI_PREF_KEY = "agent.ui.v1";
 
 type AgentPrefs = { tab?: unknown; sessionId?: unknown };
 
+/**
+ * Sessions allocated by 新建会话 in this app run. They are free conversations:
+ * the task table only stores work handed over from a bug or a work item, so a
+ * new chat has no task row until the backend creates one.
+ */
+const drafts = new Set<string>();
+
 const initialState: AgentState = {
-  tab: "sessions",
+  tab: "tasks",
   selectedId: null,
-  sessions: null,
-  sessionsError: null,
+  tasks: null,
+  tasksError: null,
   status: null,
   statusError: null,
   config: null,
@@ -140,7 +151,7 @@ function persistPrefs(): void {
 function hydratePrefs(): void {
   const saved = readPref<AgentPrefs>(UI_PREF_KEY);
   if (!saved) return;
-  const tab: AgentTab = saved.tab === "config" ? "config" : "sessions";
+  const tab: AgentTab = saved.tab === "config" ? "config" : "tasks";
   const sessionId =
     typeof saved.sessionId === "string" && saved.sessionId ? saved.sessionId : null;
   update((state) => ({
@@ -174,6 +185,73 @@ function mergeEntries(fetched: DshEntry[], live: DshEntry[]): DshEntry[] {
   for (const entry of fetched) merged.set(entryKey(entry), entry);
   for (const entry of live) merged.set(entryKey(entry), entry);
   return [...merged.values()].sort((a, b) => a.seq - b.seq);
+}
+
+// ---------------------------------------------------------------------------
+// Task list and selection
+// ---------------------------------------------------------------------------
+
+/** Newest first; `updatedAt` is fixed-width RFC3339, so string order is time. */
+function byUpdatedDesc(a: DshTask, b: DshTask): number {
+  return b.updatedAt.localeCompare(a.updatedAt);
+}
+
+function isSelectable(state: AgentState, id: string): boolean {
+  return drafts.has(id) || (state.tasks ?? []).some((task) => task.id === id);
+}
+
+/** Keeps a draft chat or a task; anything else falls back to the newest task. */
+function nextSelection(state: AgentState, id: string | null): string | null {
+  if (id && isSelectable(state, id)) return id;
+  return state.tasks?.[0]?.id ?? null;
+}
+
+function replaceTask(task: DshTask): void {
+  update((state) => {
+    const current = state.tasks ?? [];
+    const known = current.some((item) => item.id === task.id);
+    const tasks = (known
+      ? current.map((item) => (item.id === task.id ? task : item))
+      : [task, ...current]
+    ).sort(byUpdatedDesc);
+    return { ...state, tasks };
+  });
+}
+
+/** Installs a fresh list, keeping or repairing the selection. */
+function adoptTasks(tasks: DshTask[]): void {
+  const before = agentStore.get();
+  const selectedId = nextSelection({ ...before, tasks }, before.selectedId);
+  const moved = selectedId !== null && selectedId !== before.selectedId;
+
+  update((state) => ({
+    ...state,
+    tasks,
+    tasksError: null,
+    selectedId,
+    // A stream from an earlier visit must not be painted over the new task.
+    live: moved && selectedId ? { ...state.live, [selectedId]: undefined } : state.live,
+  }));
+  persistPrefs();
+
+  if (moved && selectedId) void loadEntries(selectedId);
+}
+
+function clearSelection(sessionId: string): void {
+  drafts.delete(sessionId);
+  update((state) => {
+    const entries = { ...state.entries };
+    delete entries[sessionId];
+    const fallback = (state.tasks ?? []).find((task) => task.id !== sessionId)?.id ?? null;
+    return {
+      ...state,
+      selectedId: state.selectedId === sessionId ? fallback : state.selectedId,
+      entries,
+    };
+  });
+  persistPrefs();
+  const selected = agentStore.get().selectedId;
+  if (selected) void loadEntries(selected);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +386,29 @@ function applyQuestion(payload: DshQuestionEvent): void {
   });
 }
 
+/**
+ * Fetches history. A task restored from a previous app run is unknown to the
+ * runtime until it is resumed, so an unknown *task* gets one resume and a
+ * second read; a draft chat that is unknown simply never existed.
+ */
+async function readHistory(
+  sessionId: string,
+): Promise<{ known: boolean; entries: DshEntry[] }> {
+  const first = await dshApi.sessionEntries(sessionId);
+  if (first.known) return first;
+  const isTask = (agentStore.get().tasks ?? []).some((task) => task.id === sessionId);
+  if (!isTask) return first;
+  try {
+    // Opening a persisted task re-attaches the dsh session; a runtime that is
+    // not up yet starts on demand.
+    await dshTaskApi.resume(sessionId);
+  } catch {
+    // Best effort: a failed re-attach leaves an empty history, not an error.
+    return first;
+  }
+  return dshApi.sessionEntries(sessionId);
+}
+
 async function loadEntries(sessionId: string): Promise<void> {
   update((state) => ({
     ...state,
@@ -320,22 +421,25 @@ async function loadEntries(sessionId: string): Promise<void> {
       },
     },
   }));
+
   try {
-    const { entries, known } = await dshApi.sessionEntries(sessionId);
-    if (!known) {
-      // The runtime no longer knows this session (app restarted before the
-      // bridge repopulated). Drop the stale selection instead of showing an
-      // error the user can do nothing about.
-      update((state) => {
-        const next = { ...state.entries };
-        delete next[sessionId];
-        return {
+    const result = await readHistory(sessionId);
+    if (!result.known) {
+      const isTask = (agentStore.get().tasks ?? []).some((task) => task.id === sessionId);
+      if (isTask) {
+        // The task row survives an unreachable runtime: keep it selected with
+        // an empty history instead of dropping a task the user can still act on.
+        update((state) => ({
           ...state,
-          selectedId: state.selectedId === sessionId ? null : state.selectedId,
-          entries: next,
-        };
-      });
-      persistPrefs();
+          entries: {
+            ...state.entries,
+            [sessionId]: { items: [], loaded: true, error: null },
+          },
+        }));
+        return;
+      }
+      // A draft chat the runtime never registered: fall back to a real task.
+      clearSelection(sessionId);
       return;
     }
     update((state) => {
@@ -346,7 +450,7 @@ async function loadEntries(sessionId: string): Promise<void> {
         entries: {
           ...state.entries,
           [sessionId]: {
-            items: mergeEntries(entries, current.items),
+            items: mergeEntries(result.entries, current.items),
             loaded: true,
             error: null,
           },
@@ -394,6 +498,7 @@ async function selectSession(sessionId: string): Promise<void> {
 
 async function allocateSession(): Promise<string> {
   const { sessionId } = await dshApi.newSession();
+  drafts.add(sessionId);
   update((state) => ({
     ...state,
     selectedId: sessionId,
@@ -409,23 +514,14 @@ async function allocateSession(): Promise<string> {
 }
 
 export const agentActions = {
-  /** Re-reads status, sessions and settings; called when the page mounts. */
+  /** Re-reads status, tasks and settings; called when the page mounts. */
   bootstrap: async (): Promise<void> => {
     hydratePrefs();
     // Errors belong to the previous visit; the fresh reads below replace them.
     update((state) => ({ ...state, lastError: null }));
-    const selected = agentStore.get().selectedId;
-    if (selected) {
-      // Refresh the selected history without treating it as a new selection.
-      update((state) => ({
-        ...state,
-        live: { ...state.live, [selected]: undefined },
-      }));
-      void loadEntries(selected);
-    }
     await Promise.all([
       agentActions.refreshStatus(),
-      agentActions.refreshSessions(),
+      agentActions.refreshTasks(),
       agentActions.loadConfig(),
       // A blocking ask can arrive before this page was ever opened; seed the
       // same reducers the live events use so the cards render on first paint.
@@ -470,17 +566,71 @@ export const agentActions = {
     }
   },
 
-  refreshSessions: async (): Promise<void> => {
+  /** Re-reads the unified list and refreshes the selected history. */
+  refreshTasks: async (): Promise<void> => {
+    const before = agentStore.get().selectedId;
     try {
-      const { sessions } = await dshApi.sessions();
-      update((state) => ({ ...state, sessions, sessionsError: null }));
-      const state = agentStore.get();
-      if (!state.selectedId && sessions.length > 0) {
-        await selectSession(sessions[0].id);
+      const { tasks } = await dshTaskApi.list();
+      adoptTasks(tasks);
+      const selected = agentStore.get().selectedId;
+      // A repaired selection was loaded by `adoptTasks`; only an unchanged one
+      // still needs its history refreshed.
+      if (selected && selected === before) {
+        update((state) => ({
+          ...state,
+          live: { ...state.live, [selected]: undefined },
+        }));
+        await loadEntries(selected);
       }
     } catch (error) {
-      update((state) => ({ ...state, sessionsError: String(error) }));
+      update((state) => ({ ...state, tasksError: String(error) }));
     }
+  },
+
+  /** Selects a task returned by an enqueue and puts it at the top of the list. */
+  adoptTask: (task: DshTask): void => {
+    replaceTask(task);
+    update((state) => ({
+      ...state,
+      tab: "tasks",
+      selectedId: task.id,
+      entries: {
+        ...state.entries,
+        [task.id]: state.entries[task.id] ?? { items: [], loaded: false, error: null },
+      },
+      live: { ...state.live, [task.id]: undefined },
+      pendingPrompts: { ...state.pendingPrompts, [task.id]: [] },
+      lastError: null,
+    }));
+    persistPrefs();
+    void loadEntries(task.id);
+  },
+
+  /** Task workflow actions. They throw so the action bar shows the reason next
+   *  to the buttons; the returned task is already installed in the list. */
+  approveTask: async (sessionId: string): Promise<DshTask> => {
+    const { task } = await dshTaskApi.approve(sessionId);
+    replaceTask(task);
+    return task;
+  },
+
+  mergeTask: async (sessionId: string): Promise<DshTask> => {
+    const { task } = await dshTaskApi.merge(sessionId);
+    replaceTask(task);
+    return task;
+  },
+
+  cancelTask: async (sessionId: string, stash = false): Promise<DshTask> => {
+    const { task } = await dshTaskApi.cancel(sessionId, stash);
+    replaceTask(task);
+    return task;
+  },
+
+  setPermissionMode: async (mode: DshAgentConfig["permissionMode"]): Promise<void> => {
+    const { mode: saved } = await dshPolicyApi.set(mode);
+    update((state) =>
+      state.config ? { ...state, config: { ...state.config, permissionMode: saved } } : state,
+    );
   },
 
   refreshStatus: async (): Promise<void> => {
@@ -543,8 +693,8 @@ export const agentActions = {
   },
 
   saveConfig: async (draft: AgentConfigDraft): Promise<DshAgentConfig> => {
-    // Read right before writing: repositories are edited on the projects page
-    // and must not be overwritten by a stale copy loaded earlier.
+    // Read right before writing: repositories and the permission mode are
+    // edited elsewhere and must not be overwritten by a stale copy.
     const latest = await dshSettingsApi.get();
     const saved = await dshSettingsApi.save({ ...latest, ...draft });
     update((state) => ({ ...state, config: saved, configError: null }));
@@ -659,5 +809,13 @@ export const agentEvents = {
   stream: (payload: DshSessionEvent): void => applyStream(payload),
   approval: (payload: DshApprovalEvent): void => applyApproval(payload),
   question: (payload: DshQuestionEvent): void => applyQuestion(payload),
+  /** The list is authoritative; replace it and repair the selection. */
+  tasks: (payload: DshTasksEvent): void => adoptTasks(payload.tasks),
+  /** The capsule asked for a session: show the task list on that task. */
+  focusSession: (payload: DshFocusSessionEvent): void => {
+    update((state) => ({ ...state, tab: "tasks" }));
+    persistPrefs();
+    void selectSession(payload.sessionId);
+  },
   error: (payload: DshErrorEvent): void => setError(payload.message, payload.code),
 };

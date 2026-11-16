@@ -160,43 +160,20 @@ Requirements:
 4. After the commit succeeds, use tapd_add_bug_comment to add a comment explaining the cause, the fix and the impact, then tapd_update_bug_status to update the bug status.
 5. If the working tree has no uncommitted changes, the previous turn already committed: check the commit log and update TAPD directly without committing again.
 6. Never comment on or update TAPD status before a commit succeeds."),
-    ("agent.prompt.default", "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.json 和 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push），然后用 tapd_add_bug_comment 说明原因、方案与影响范围，并用 tapd_update_bug_status 更新状态；可先调用 tapd_get_bug_transitions 查看允许的下一步。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit，也不要评论或更新 TAPD；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n5. 任何情况下都不要在提交成功前评论或更新 TAPD 状态。", "Fix TAPD bug: {{title}}
-
-Bug details: {{json_path}}
-Local repository: {{repo_path}}
-Project: {{workspace_name}} / Severity: {{severity}} / Priority: {{priority}}
-
-{{coworker}}
-
-Requirements:
-1. Read bug.json and the screenshots and videos under assets/ in full first.
-2. Find the root cause, make the smallest necessary change, and follow the team's coding conventions.
-3. Run the relevant tests or build after changing code.
-4. Judge the complexity of the change:
-   - Simple task: one file or a few files, a local change that does not touch public interfaces / data models / dependencies / build configuration, and the tests pass. Run git commit directly (do not push), then use tapd_add_bug_comment to explain the cause, the fix and the impact, and tapd_update_bug_status to update the status; call tapd_get_bug_transitions first to see the allowed next step.
-   - Complex task: many files, cross-module, touching public interfaces / data models / dependencies / build configuration, or high risk or failing tests. Do not commit, and do not comment on or update TAPD; explain the root cause, the plan, the impact and the risk, then end the turn. The client puts uncommitted changes into the review list for the user.
-5. Never comment on or update TAPD status before a commit succeeds."),
+    (
+        "agent.prompt.default",
+        "请修复 TAPD 缺陷：{{title}}\n\n缺陷详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 严重程度：{{severity}} / 优先级：{{priority}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 bug.json 与 assets/ 下的截图、视频。\n2. 定位根因，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 不要 git commit、不要 push，也不要写 TAPD（评论与状态由客户端在审核、合并后统一处理）。\n5. 结束时用简短列表说明：根因、改动文件、验证方式、风险点。",
+        "Fix TAPD bug: {{title}}\n\nBug details: {{json_path}}\nLocal repository: {{repo_path}}\nProject: {{workspace_name}} / Severity: {{severity}} / Priority: {{priority}}\n\n{{coworker}}\n\nRequirements:\n1. Read bug.json and the screenshots and videos under assets/ in full first.\n2. Find the root cause, make the smallest necessary change, and follow the team's coding conventions.\n3. Run the relevant tests or build after changing code.\n4. Do not commit, do not push, and do not write to TAPD (the client comments and updates status after review and merge).\n5. Finish with a short list: root cause, changed files, how you verified, and risks.",
+    ),
     ("agent.prompt.keys.claude", "按 1 允许 · Esc 拒绝", "Press 1 to allow, Esc to reject"),
     ("agent.prompt.keys.codex", "按 y 允许 · n 拒绝", "Press y to allow, n to reject"),
     ("agent.prompt.keys.opencode", "回车允许 · Esc 拒绝", "Enter to allow, Esc to reject"),
     ("agent.prompt.keys.options", "按选项序号回答", "Press the option number to answer"),
-    ("agent.prompt.local", "请处理本地工作事项：{{title}}\n\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 事项 {{bug_id}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读 quest.json 中的标题、描述与项目信息。\n2. 这是一个只保存在本地的项目，不存在缺陷系统：不要调用任何写回类工具，也不要评论或更新事项状态。\n3. 定位根因，做最小必要修改，并遵循仓库现有的代码规范。\n4. 修改后运行相关测试或构建。\n5. 判断改动复杂度：\n   - 简单任务：单文件或少量文件、局部改动，不涉及公共接口 / 数据模型 / 依赖 / 构建配置，且测试通过。直接 git commit（不要 push）。\n   - 复杂任务：多文件、跨模块、涉及公共接口 / 数据模型 / 依赖 / 构建配置，或风险较高、测试失败。不要 commit；说明根因、方案、影响范围与风险，然后结束本轮。客户端会把未提交改动放进待审核列表，等待用户操作。\n6. 结束时说明改动内容、涉及文件与验证方式。", "Handle this local work item: {{title}}
-
-Item details: {{json_path}}
-Local repository: {{repo_path}}
-Project: {{workspace_name}} / item {{bug_id}}
-
-{{coworker}}
-
-Requirements:
-1. Read the title, description and project info in quest.json in full first.
-2. This project exists only on this machine and has no bug tracker: do not call any write-back tools, and do not comment on or update the item status.
-3. Find the root cause, make the smallest necessary change, and follow the repository's existing conventions.
-4. Run the relevant tests or build after changing code.
-5. Judge the complexity of the change:
-   - Simple task: one file or a few files, a local change that does not touch public interfaces / data models / dependencies / build configuration, and the tests pass. Run git commit directly (do not push).
-   - Complex task: many files, cross-module, touching public interfaces / data models / dependencies / build configuration, or high risk or failing tests. Do not commit; explain the root cause, the plan, the impact and the risk, then end the turn. The client puts uncommitted changes into the review list for the user.
-6. Explain the change, the files involved and how it was verified when done."),
+    (
+        "agent.prompt.local",
+        "请处理这个本地事项：{{title}}\n\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}}\n\n{{coworker}}\n\n要求：\n1. 先完整阅读事项详情与 assets/ 下的截图、视频。\n2. 定位要改的地方，做最小必要修改，并遵循团队代码规范。\n3. 修改后运行相关测试或构建。\n4. 不要 git commit、不要 push（审核与合并由客户端统一处理）。\n5. 结束时用简短列表说明：改动文件、验证方式、风险点。",
+        "Handle this local work item: {{title}}\n\nItem details: {{json_path}}\nLocal repository: {{repo_path}}\nProject: {{workspace_name}}\n\n{{coworker}}\n\nRequirements:\n1. Read the item details and the screenshots and videos under assets/ in full first.\n2. Find what to change, make the smallest necessary change, and follow the team's coding conventions.\n3. Run the relevant tests or build after changing code.\n4. Do not commit and do not push (the client handles review and merge).\n5. Finish with a short list: changed files, how you verified, and risks.",
+    ),
     ("agent.prompt.local.commit", "审核已通过，请完成本地工作事项：{{title}}\n\n事项详情：{{json_path}}\n本地仓库：{{repo_path}}\n项目：{{workspace_name}} / 事项 {{bug_id}}\n\n要求：\n1. 当前工作区保留了上一轮审核过的修改。先运行 git status / git diff 核对改动，不要重做或扩大范围。\n2. 运行必要的测试或构建，确认改动与事项相关。\n3. 提交代码（git commit，不要 push）。\n4. 本地项目没有缺陷系统：不要调用任何写回类工具，也不要评论或更新事项状态。\n5. 如果工作区已经没有未提交改动，说明上一轮已提交：核对提交记录后直接结束，不要重复提交。", "Review approved; finish the local work item: {{title}}
 
 Item details: {{json_path}}

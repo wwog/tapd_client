@@ -302,7 +302,14 @@ impl TaskWorkspace {
         let ish = self.baseline_ish().unwrap_or(EMPTY_TREE);
         let file = file.map(str::trim).filter(|file| !file.is_empty());
         let text = match file {
-            None => git.stdout(&["diff", "--no-color", "--no-renames", ish])?,
+            None => {
+                // `git diff` never shows untracked files, but they are exactly
+                // what a task usually creates. Append their per-file diffs so
+                // the review shows the same files `summary()` counts.
+                let mut text = git.stdout(&["diff", "--no-color", "--no-renames", ish])?;
+                text.push_str(&self.untracked_diff(&git, root)?);
+                text
+            }
             Some(file) => {
                 let path = self.checked_file_path(file, root)?;
                 if git.is_tracked(&path)? {
@@ -318,6 +325,32 @@ impl TaskWorkspace {
             }
         };
         Ok(diff_view(text))
+    }
+
+    /// Per-file diffs for files git has never seen. Bounded by the same
+    /// listing cap as the summary; the text cap in [`diff_view`] applies after
+    /// the concatenation.
+    fn untracked_diff(&self, git: &Git, root: &Path) -> Result<String, WorkspaceError> {
+        let excluded = self.excluded_set(root);
+        let listed = git.stdout(&["ls-files", "--others", "--exclude-standard"])?;
+        let mut text = String::new();
+        for path in listed
+            .lines()
+            .filter(|line| !line.is_empty())
+            .take(MAX_LISTED_FILES)
+        {
+            if self.is_excluded(&excluded, path, root) {
+                continue;
+            }
+            // `--no-index` exits 1 for "there is a difference"; only higher
+            // codes are failures.
+            let diff = git.stdout_allowed(
+                &["diff", "--no-index", "--no-color", "--", "/dev/null", path],
+                &[1],
+            )?;
+            text.push_str(&diff);
+        }
+        Ok(text)
     }
 
     fn ref_diff(&self, branch: &str, file: Option<&str>) -> Result<DiffView, WorkspaceError> {
@@ -414,7 +447,8 @@ impl TaskWorkspace {
         }
 
         let absolute = root.join(candidate);
-        if let (Ok(real_root), Ok(real_file)) = (fs::canonicalize(root), fs::canonicalize(&absolute))
+        if let (Ok(real_root), Ok(real_file)) =
+            (fs::canonicalize(root), fs::canonicalize(&absolute))
         {
             if !real_file.starts_with(&real_root) {
                 return Err(WorkspaceError::new(tr_args(

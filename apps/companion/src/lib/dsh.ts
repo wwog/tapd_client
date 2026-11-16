@@ -9,8 +9,16 @@
  * Types are the contract of `dsh_*` commands (see docs/DSH.md). Everything is
  * funnelled through `dshApi`, so one transport/shape change is made in one
  * place.
+ *
+ * The task list and the blocking requests share one polled feed (`agentFeed`):
+ * the tab bar badge, the task list and the session page all read the same
+ * snapshot, so there is exactly one polling loop for `dsh_tasks` +
+ * `dsh_pending` in the app.
  */
-import { feature } from "./api";
+import { useEffect, useSyncExternalStore } from "react";
+
+import { asApiError, feature } from "./api";
+import { isPageHidden, onPageVisibilityChange } from "./visibility";
 
 export type DshPhase = "stopped" | "starting" | "ready" | "failed";
 
@@ -35,6 +43,56 @@ export type DshSession = {
   messageCount: number;
 };
 
+/* -------------------------------------------------------------------------
+   Unified task list (docs/DSH.md §9.1)
+   ------------------------------------------------------------------------- */
+
+export type DshTaskKind = "chat" | "bug" | "local_item";
+export type DshProjectKind = "tapd" | "local";
+export type DshWorkflow =
+  | "running"
+  | "awaiting_review"
+  | "awaiting_merge"
+  | "done"
+  | "failed"
+  | "canceled";
+
+export type DshTaskProject = { id: string; name: string; kind: DshProjectKind };
+
+export type DshTaskChanges = { files: number; additions: number; deletions: number };
+
+/** Reserved for a model-written review; no producer yet. */
+export type DshTaskReview = { summary: string; files: string[]; risk: string };
+
+export type DshTaskMerge = { error?: string; instructions?: string };
+
+/** One list row = one dsh session plus our workflow metadata. */
+export type DshTask = {
+  id: string;
+  kind: DshTaskKind;
+  /** `null` for a free chat with no project behind it. */
+  project: DshTaskProject | null;
+  title: string;
+  /** Only on `kind: "bug"`. */
+  bugId?: string;
+  workflow: DshWorkflow;
+  status: DshSessionStatus;
+  repoPath?: string;
+  worktreePath?: string;
+  branch?: string;
+  jsonPath?: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  changes?: DshTaskChanges | null;
+  review?: DshTaskReview | null;
+  merge?: DshTaskMerge | null;
+};
+
+export function isTerminalWorkflow(workflow: DshWorkflow): boolean {
+  return workflow === "done" || workflow === "failed" || workflow === "canceled";
+}
+
 export type DshToolStatus = "running" | "ok" | "error";
 
 /** One rendered transcript row; `seq` is unique and monotonic per session. */
@@ -53,15 +111,44 @@ export type DshEntry =
     }
   | { kind: "turn"; seq: number; at: string; state: "start" | "end"; reason?: string };
 
+/* -------------------------------------------------------------------------
+   Blocking requests: approvals and user questions (docs/DSH.md §4.4, §8.7)
+   ------------------------------------------------------------------------- */
+
 /** Only `allowed-once` grants a tool call; the rest deny or cancel it. */
 export type DshApprovalOutcome = "allowed-once" | "rejected" | "cancelled";
 
-export type DshAnswer = { id: string; selected: string[]; custom?: string };
+export type DshApprovalRequest = {
+  sessionId: string;
+  toolName: string;
+  callId?: string;
+  reason?: string;
+};
 
-/** A request the runtime is still blocked on; the phone only renders it. */
+export type DshQuestionOption = { label: string; description?: string };
+
+export type DshQuestion = {
+  id: string;
+  question: string;
+  detail?: string;
+  header?: string;
+  options?: DshQuestionOption[];
+  multiSelect?: boolean;
+  /** Presentation hint (`plan-review`, `approval`, …); display only. */
+  intent?: unknown;
+};
+
+export type DshQuestionRequest = {
+  requestId: string;
+  sessionId: string;
+  questions: DshQuestion[];
+};
+
 export type DshPendingRequest =
-  | { rpcId: number; sessionId: string; kind: "approval"; request: { sessionId: string; toolName: string; reason?: string } }
-  | { rpcId: number; sessionId: string; kind: "question"; request: { sessionId: string; questions: unknown[] } };
+  | { rpcId: number; sessionId: string; kind: "approval"; request: DshApprovalRequest }
+  | { rpcId: number; sessionId: string; kind: "question"; request: DshQuestionRequest };
+
+export type DshAnswer = { id: string; selected: string[]; custom?: string };
 
 export const dshApi = {
   status: () => feature<DshStatus>("dsh_status"),
@@ -82,9 +169,118 @@ export const dshApi = {
   prompt: (sessionId: string, text: string) =>
     feature<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
 
-  /** Answers are desktop-only for now; typed so the contract stays in one place. */
+  tasks: () => feature<{ tasks: DshTask[] }>("dsh_tasks"),
+  taskApprove: (sessionId: string) =>
+    feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),
+  taskMerge: (sessionId: string) =>
+    feature<{ task: DshTask }>("dsh_task_merge", { sessionId }),
+  /** `stash` preserves the working tree changes instead of discarding them. */
+  taskCancel: (sessionId: string, stash = false) =>
+    feature<{ task: DshTask }>("dsh_task_cancel", { sessionId, stash }),
+  taskDiff: (sessionId: string, file?: string) =>
+    feature<{ diff: string; truncated: boolean }>("dsh_task_diff", {
+      sessionId,
+      file: file ?? null,
+    }),
+  /** Reattaches a task's persisted dsh session after a desktop restart. */
+  taskResume: (sessionId: string) =>
+    feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
+
   approvalAnswer: (rpcId: number, outcome: DshApprovalOutcome) =>
-    feature<unknown>("dsh_approval_answer", { rpcId, outcome }),
+    feature<{ ok: true }>("dsh_approval_answer", { rpcId, outcome }),
+  /** `answers: null` dismisses the question (the runtime gets a cancellation). */
   questionAnswer: (rpcId: number, answers: DshAnswer[] | null) =>
-    feature<unknown>("dsh_question_answer", { rpcId, answers }),
+    feature<{ ok: true }>("dsh_question_answer", { rpcId, answers }),
 };
+
+/* -------------------------------------------------------------------------
+   Polled task/request feed — the single source for the list, the badge and
+   the session page.
+   ------------------------------------------------------------------------- */
+
+export type AgentFeed = {
+  /** `null` until the first successful load. */
+  tasks: DshTask[] | null;
+  tasksError: string | null;
+  /** Oldest first, exactly as the runtime reports them. */
+  pending: DshPendingRequest[];
+  pendingError: string | null;
+};
+
+/** Task list cadence; the badge is part of the same loop. */
+const FEED_POLL_MS = 8_000;
+
+let feed: AgentFeed = { tasks: null, tasksError: null, pending: [], pendingError: null };
+const feedListeners = new Set<() => void>();
+let queue: Promise<void> = Promise.resolve();
+
+const publish = (next: AgentFeed): void => {
+  feed = next;
+  for (const listener of feedListeners) listener();
+};
+
+const fetchFeed = async (): Promise<void> => {
+  const [tasks, pending] = await Promise.allSettled([dshApi.tasks(), dshApi.pending()]);
+  publish({
+    // A failed call keeps the last good rows: an inline error explains the gap.
+    tasks: tasks.status === "fulfilled" ? tasks.value.tasks : feed.tasks,
+    tasksError: tasks.status === "fulfilled" ? null : asApiError(tasks.reason).message,
+    pending: pending.status === "fulfilled" ? pending.value.requests : feed.pending,
+    pendingError:
+      pending.status === "fulfilled" ? null : asApiError(pending.reason).message,
+  });
+};
+
+/**
+ * Refreshes both halves once. Calls are serialised so an answer that lands
+ * while a poll is in flight still gets a request made after the answer.
+ */
+export const refreshAgentFeed = (): Promise<void> => {
+  const next = queue.then(fetchFeed, fetchFeed);
+  queue = next.catch(() => undefined);
+  return next;
+};
+
+/** Folds one command's returned task into the current snapshot. */
+export const applyAgentTask = (task: DshTask): void => {
+  if (feed.tasks === null) return;
+  const tasks = feed.tasks
+    .map((row) => (row.id === task.id ? task : row))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  publish({ ...feed, tasks, tasksError: null });
+};
+
+const subscribeFeed = (listener: () => void): (() => void) => {
+  feedListeners.add(listener);
+  return () => {
+    feedListeners.delete(listener);
+  };
+};
+
+const getFeed = (): AgentFeed => feed;
+
+/** One snapshot for the tab badge, the task list and the session page. */
+export function useAgentFeed(): AgentFeed {
+  return useSyncExternalStore(subscribeFeed, getFeed, getFeed);
+}
+
+/**
+ * Starts the feed's only polling loop. Mounted once by `App` (the badge lives
+ * in the tab bar, so the loop must outlive the Agent tab).
+ */
+export function useAgentFeedPolling(enabled: boolean): void {
+  useEffect(() => {
+    if (!enabled) return;
+    void refreshAgentFeed();
+    const timer = window.setInterval(() => {
+      if (!isPageHidden()) void refreshAgentFeed();
+    }, FEED_POLL_MS);
+    const off = onPageVisibilityChange(() => {
+      if (!isPageHidden()) void refreshAgentFeed();
+    });
+    return () => {
+      window.clearInterval(timer);
+      off();
+    };
+  }, [enabled]);
+}

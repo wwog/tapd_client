@@ -384,7 +384,7 @@ impl NotificationService {
         Ok(item)
     }
 
-    fn ai_state(&self, id: &str) -> (bool, Option<AiResolution>) {
+    pub(super) fn ai_state(&self, id: &str) -> (bool, Option<AiResolution>) {
         let items = self.ai_items.lock().expect("ai notification lock");
         match items.iter().find(|item| item.id == id) {
             Some(item) => (true, item.ai.as_ref().and_then(|ai| ai.resolution.clone())),

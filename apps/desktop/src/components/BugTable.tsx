@@ -1,9 +1,10 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
   ArrowUpNarrowWide,
   Loader2,
+  Sparkles,
   UserPlus,
 } from "lucide-react";
 import clsx from "clsx";
@@ -14,6 +15,7 @@ import {
 } from "../lib/api";
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { t } from "../lib/i18n";
+import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { ScrollingName } from "./ScrollingName";
 import { TableFilter } from "./TableFilter";
 import { Badge, PRIORITY_TONES, SEVERITY_TONES, STATUS_TONES } from "./ui";
@@ -104,6 +106,8 @@ export function BugTable(props: Props) {
     onRowContextMenu,
     onClaim,
   } = props;
+  /** Bug whose enqueue sheet is open; one sheet serves every row. */
+  const [fixTarget, setFixTarget] = useState<BugSummary | null>(null);
 
   const visibleColumns = columns.filter(
     (column) => column.visible && !(hideOwner && column.key === "owner"),
@@ -335,13 +339,38 @@ export function BugTable(props: Props) {
                       {claimingId === bug.id ? t("bugs.claiming") : t("bugs.claim")}
                     </button>
                   </div>
-                ) : null}
+                ) : (
+                  <div className="flex items-center justify-center">
+                    <button
+                      type="button"
+                      title={t("agent.enqueue.bugHint")}
+                      aria-label={t("bugs.fixWithAgent")}
+                      onClick={() => setFixTarget(bug)}
+                      className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                    >
+                      <Sparkles size={12} />
+                      {t("agent.task.fix")}
+                    </button>
+                  </div>
+                )}
               </td>
             </tr>
             );
           })}
         </tbody>
       </table>
+
+      {fixTarget ? (
+        <EnqueueSheet
+          target={{
+            kind: "bug",
+            workspaceId: fixTarget.workspaceId,
+            bugId: fixTarget.id,
+            title: fixTarget.title,
+          }}
+          onClose={() => setFixTarget(null)}
+        />
+      ) : null}
     </>
   );
 }

@@ -24,9 +24,37 @@ pub const METHOD_SESSION_EVENT: &str = "session.event";
 pub const METHOD_SESSION_STATUS: &str = "session.status";
 pub const METHOD_SESSION_QUERY_COMPLETED: &str = "session.query.completed";
 
-/// Outbound request identity. Monotonic within one runtime process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RpcId(pub u64);
+/// Wire correlation id.
+///
+/// Client→server requests use numbers, but the SDK transport keys its own
+/// server→client requests by `req_<uuid>` strings and only resolves the caller
+/// when the response echoes that exact value. Both forms are preserved as-is;
+/// `DecodeError` never silently treats a string-id request as a notification.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RpcId {
+    Number(u64),
+    Text(String),
+}
+
+/// Reads a JSON `id`: a non-negative integer or a non-empty string.
+fn parse_id(value: &Value) -> Option<RpcId> {
+    match value {
+        Value::Number(number) => number.as_u64().map(RpcId::Number),
+        Value::String(text) if !text.is_empty() => Some(RpcId::Text(text.clone())),
+        _ => None,
+    }
+}
+
+impl RpcId {
+    /// The numeric form, for response routing against our own request ids.
+    pub fn number(&self) -> Option<u64> {
+        match self {
+            Self::Number(id) => Some(*id),
+            Self::Text(_) => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct RpcError {
@@ -68,7 +96,7 @@ pub fn decode(line: &str) -> Result<Option<Incoming>, DecodeError> {
         return Ok(None);
     }
     let frame: Value = serde_json::from_str(trimmed)?;
-    let id = frame.get("id").and_then(Value::as_u64).map(RpcId);
+    let id = frame.get("id").and_then(parse_id);
     let method = frame
         .get("method")
         .and_then(Value::as_str)
@@ -92,24 +120,26 @@ pub fn decode(line: &str) -> Result<Option<Incoming>, DecodeError> {
             }
         }
         (None, Some(method)) => Ok(Some(Incoming::Notification { method, params })),
+        // An unusable id (null, object, …) is malformed, not a notification:
+        // misrouting it would drop the request without an answer.
         (None, None) => Err(DecodeError::Empty),
     }
 }
 
-pub fn encode_request(id: RpcId, method: &str, params: Value) -> String {
-    let frame = json!({ "jsonrpc": "2.0", "id": id.0, "method": method, "params": params });
+pub fn encode_request(id: &RpcId, method: &str, params: Value) -> String {
+    let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     format!("{frame}\n")
 }
 
-pub fn encode_success(id: RpcId, result: Value) -> String {
-    let frame = json!({ "jsonrpc": "2.0", "id": id.0, "result": result });
+pub fn encode_success(id: &RpcId, result: Value) -> String {
+    let frame = json!({ "jsonrpc": "2.0", "id": id, "result": result });
     format!("{frame}\n")
 }
 
-pub fn encode_error(id: RpcId, code: i64, message: &str) -> String {
+pub fn encode_error(id: &RpcId, code: i64, message: &str) -> String {
     let frame = json!({
         "jsonrpc": "2.0",
-        "id": id.0,
+        "id": id,
         "error": { "code": code, "message": message }
     });
     format!("{frame}\n")
@@ -125,7 +155,7 @@ pub struct RequestIds {
 impl RequestIds {
     pub fn alloc(&mut self) -> RpcId {
         self.next = self.next.wrapping_add(1);
-        RpcId(self.next.max(1))
+        RpcId::Number(self.next.max(1))
     }
 }
 
@@ -138,7 +168,7 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":3,"result":{"serverInfo":{"name":"dsh"}}}"#;
         match decode(line).expect("decode").expect("frame") {
             Incoming::Response { id, result } => {
-                assert_eq!(id, RpcId(3));
+                assert_eq!(id, RpcId::Number(3));
                 assert_eq!(result.expect("ok")["serverInfo"]["name"], "dsh");
             }
             other => panic!("unexpected frame: {other:?}"),
@@ -150,7 +180,7 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"boom"}}"#;
         match decode(line).expect("decode").expect("frame") {
             Incoming::Response { id, result } => {
-                assert_eq!(id, RpcId(7));
+                assert_eq!(id, RpcId::Number(7));
                 let error = result.expect_err("error frame");
                 assert_eq!(error.code, -32603);
                 assert_eq!(error.message, "boom");
@@ -160,11 +190,28 @@ mod tests {
     }
 
     #[test]
+    fn string_request_ids_are_requests_not_notifications() {
+        // The SDK transport keys server→client requests by `req_<uuid>` and only
+        // resolves the caller when that exact id comes back.
+        let line = r#"{"jsonrpc":"2.0","id":"req_abc123","method":"approval/request","params":{"sessionId":"s"}}"#;
+        match decode(line).expect("decode").expect("frame") {
+            Incoming::Request { id, method, .. } => {
+                assert_eq!(id, RpcId::Text("req_abc123".into()));
+                assert_eq!(method, METHOD_APPROVAL_REQUEST);
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        let response = encode_success(&RpcId::Text("req_abc123".into()), json!({ "outcome": "rejected" }));
+        let value: Value = serde_json::from_str(response.trim()).expect("json");
+        assert_eq!(value["id"], "req_abc123");
+    }
+
+    #[test]
     fn decodes_requests_and_notifications() {
         let request = r#"{"jsonrpc":"2.0","id":9,"method":"approval/request","params":{"sessionId":"s"}}"#;
         match decode(request).expect("decode").expect("frame") {
             Incoming::Request { id, method, params } => {
-                assert_eq!(id, RpcId(9));
+                assert_eq!(id, RpcId::Number(9));
                 assert_eq!(method, METHOD_APPROVAL_REQUEST);
                 assert_eq!(params["sessionId"], "s");
             }
@@ -191,7 +238,7 @@ mod tests {
     #[test]
     fn encodes_one_line_per_frame() {
         let line = encode_request(
-            RpcId(1),
+            &RpcId::Number(1),
             METHOD_SESSION_QUERY,
             json!({ "sessionId": "s", "contentBlocks": [] }),
         );
@@ -205,7 +252,7 @@ mod tests {
     #[test]
     fn ids_start_at_one_and_increase() {
         let mut ids = RequestIds::default();
-        assert_eq!(ids.alloc(), RpcId(1));
-        assert_eq!(ids.alloc(), RpcId(2));
+        assert_eq!(ids.alloc(), RpcId::Number(1));
+        assert_eq!(ids.alloc(), RpcId::Number(2));
     }
 }

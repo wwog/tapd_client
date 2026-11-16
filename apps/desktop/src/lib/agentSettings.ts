@@ -26,6 +26,8 @@ export type DshModelConfig = {
   models: string[];
 };
 
+export type DshPermissionMode = "auto" | "notify" | "full";
+
 export type AgentConfig = {
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
@@ -33,6 +35,8 @@ export type AgentConfig = {
   worktreeEnabled: boolean;
   executionUnits: number;
   dshModel: DshModelConfig;
+  /** 自主 / 变更前通知 / 完全访问；运行时重启后生效。 */
+  permissionMode: DshPermissionMode;
 };
 
 export const agentSettingsApi = {

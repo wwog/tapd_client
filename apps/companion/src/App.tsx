@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Bug, Bot, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
+import { useAgentFeed, useAgentFeedPolling } from "./lib/dsh";
 import { startHeartbeat } from "./lib/heartbeat";
 import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
@@ -78,7 +79,7 @@ const tabOf = (route: Route): TabKey => {
   }
 };
 
-function TabBar(props: { active: TabKey }) {
+function TabBar(props: { active: TabKey; agentBadge: number }) {
   return (
     <nav
       aria-label={t("mobile.nav.main")}
@@ -87,6 +88,7 @@ function TabBar(props: { active: TabKey }) {
       <div className="flex h-14 items-stretch">
         {TABS.map((tab) => {
           const active = tab.key === props.active;
+          const badge = tab.key === "agent" ? props.agentBadge : 0;
           return (
             <button
               key={tab.key}
@@ -104,6 +106,14 @@ function TabBar(props: { active: TabKey }) {
                 {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
+                {badge > 0 ? (
+                  <span
+                    title={t("mobile.agent.badgeHint", { n: badge })}
+                    className="absolute -top-1.5 -right-2 grid h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[10px] leading-none text-white"
+                  >
+                    {badge > 99 ? "99+" : badge}
+                  </span>
+                ) : null}
               </span>
               <span className="text-ui-2xs">{t(tab.label)}</span>
             </button>
@@ -118,6 +128,15 @@ export default function App() {
   const route = useRoute();
   const connection = useConnection();
   const session = getSession();
+  // The task/approval feed is polled here once: the badge is part of the tab
+  // bar, so the loop must live above the pages that consume the snapshot.
+  const feed = useAgentFeed();
+  useAgentFeedPolling(Boolean(session));
+  const agentBadge =
+    feed.pending.length +
+    (feed.tasks ?? []).filter(
+      (task) => task.workflow === "awaiting_review" || task.workflow === "awaiting_merge",
+    ).length;
   // Presence handshake: the desktop marks this device online while beats
   // arrive, and the settings page renders the same state locally.
   useEffect(() => {
@@ -216,7 +235,7 @@ export default function App() {
         {route.name === "settings" ? <SettingsPage /> : null}
       </main>
       {route.name !== "pair" && !fullBleed ? (
-        <TabBar active={tabOf(route)} />
+        <TabBar active={tabOf(route)} agentBadge={agentBadge} />
       ) : null}
     </div>
   );

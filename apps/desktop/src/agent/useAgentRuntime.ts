@@ -5,9 +5,11 @@ import type {
   DshApprovalEvent,
   DshEntryEvent,
   DshErrorEvent,
+  DshFocusSessionEvent,
   DshQuestionEvent,
   DshSessionEvent,
   DshStatus,
+  DshTasksEvent,
 } from "../lib/dsh";
 import { agentActions, agentEvents } from "./store";
 
@@ -34,10 +36,9 @@ function subscribeAgentEvents(): void {
   subscribe<DshSessionEvent>("dsh://stream", agentEvents.stream);
   subscribe<DshApprovalEvent>("dsh://approval", agentEvents.approval);
   subscribe<DshQuestionEvent>("dsh://question", agentEvents.question);
+  subscribe<DshTasksEvent>("dsh://tasks", agentEvents.tasks);
+  subscribe<DshFocusSessionEvent>("dsh://focus-session", agentEvents.focusSession);
   subscribe<DshErrorEvent>("dsh://error", agentEvents.error);
-  subscribe<null>("dsh://sessions", () => {
-    void agentActions.refreshSessions();
-  });
 }
 
 /**

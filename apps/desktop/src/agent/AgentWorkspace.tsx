@@ -4,7 +4,8 @@ import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
 import { RuntimeNotice } from "./RuntimeNotice";
-import { SessionList } from "./SessionList";
+import { TaskActions } from "./TaskActions";
+import { TaskList } from "./TaskList";
 import { agentActions, agentStore } from "./store";
 
 type Props = {
@@ -12,12 +13,13 @@ type Props = {
 };
 
 /**
- * Session sidebar + stream, with the configuration as the second tab. Runtime
- * facts stay in the configuration tab; the session tab only explains why it
- * cannot send right now.
+ * Task list + stream, with the configuration as the second tab. Runtime facts
+ * stay in the configuration tab; the task tab only explains why it cannot send
+ * right now, plus the workflow actions of the selected task.
  */
 export function AgentWorkspace({ toast }: Props) {
   const state = agentStore.use();
+  const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -27,16 +29,19 @@ export function AgentWorkspace({ toast }: Props) {
           value={state.tab}
           onChange={agentActions.setTab}
           options={[
-            { value: "sessions", label: t("agent.tab.sessions") },
+            { value: "tasks", label: t("agent.tab.tasks") },
             { value: "config", label: t("agent.tab.config") },
           ]}
         />
       </header>
 
-      {state.tab === "sessions" ? (
+      {state.tab === "tasks" ? (
         <div className="flex min-h-0 flex-1">
-          <SessionList />
+          <TaskList />
           <div className="flex min-w-0 flex-1 flex-col">
+            {selected && selected.kind !== "chat" ? (
+              <TaskActions key={selected.id} task={selected} />
+            ) : null}
             <MessageStream key={state.selectedId ?? "draft"} />
             <div className="shrink-0 border-t border-border">
               <RuntimeNotice />

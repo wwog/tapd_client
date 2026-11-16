@@ -1,8 +1,10 @@
-import { Download, UserPlus } from "lucide-react";
+import { useState } from "react";
+import { Download, Sparkles, UserPlus } from "lucide-react";
 
 import type { BugDetail, ExportResult } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { t } from "../lib/i18n";
+import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { Button } from "./ui";
 
 type Props = {
@@ -18,7 +20,7 @@ type Props = {
   onExport: (detail: BugDetail) => void;
 };
 
-/** Sticky action footer: last export, claim and bug.json export. */
+/** Sticky action footer: last export, claim, Agent hand-over and bug.json export. */
 export function BugDrawerFooter(props: Props) {
   const {
     detail,
@@ -31,6 +33,7 @@ export function BugDrawerFooter(props: Props) {
     onClaim,
     onExport,
   } = props;
+  const [enqueueOpen, setEnqueueOpen] = useState(false);
 
   return (
     <div className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
@@ -88,7 +91,17 @@ export function BugDrawerFooter(props: Props) {
           >
             {t("bugs.claim")}
           </Button>
-        ) : null}
+        ) : (
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<Sparkles size={13} />}
+            title={t("agent.enqueue.bugHint")}
+            onClick={() => setEnqueueOpen(true)}
+          >
+            {t("bugs.fixWithAgent")}
+          </Button>
+        )}
         <Button
           size="sm"
           variant="secondary"
@@ -99,6 +112,18 @@ export function BugDrawerFooter(props: Props) {
           {exporting ? t("bugs.exporting") : t("bugs.export")}
         </Button>
       </div>
+
+      {enqueueOpen ? (
+        <EnqueueSheet
+          target={{
+            kind: "bug",
+            workspaceId: detail.workspaceId,
+            bugId: detail.id,
+            title: detail.title,
+          }}
+          onClose={() => setEnqueueOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
