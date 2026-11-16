@@ -5,7 +5,6 @@ import {
   FileText,
   GitBranch,
   Loader2,
-  X,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -24,7 +23,6 @@ import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
-import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { SkeletonBlock } from "./Skeleton";
 import {
   Badge,
@@ -48,7 +46,6 @@ type Props = {
   error: string | null;
   exporting: boolean;
   lastExport: ExportResult | null;
-  onClose: () => void;
   onOpenWeb: (url: string) => void;
   onCopy: (text: string) => void;
   onExport: (detail: BugDetail) => void;
@@ -90,7 +87,6 @@ function BugDetailDrawerImpl(props: Props) {
     error,
     exporting,
     lastExport,
-    onClose,
     onOpenWeb,
     onCopy,
     onExport,
@@ -138,24 +134,6 @@ function BugDetailDrawerImpl(props: Props) {
     if (!open) return;
     void ensureMediaEndpoint().then(() => bumpMedia((value) => value + 1));
   }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // The preview handles its own Escape; don't also close the drawer.
-      if (previewOpenRef.current) return;
-      // A header filter or a resource menu in front owns this Escape. The
-      // drawer's listener was registered first, so it must ask instead of
-      // relying on propagation order.
-      if (hasOpenDismissLayer()) return;
-      // The transition form handles its own Escape; don't close the drawer.
-      if (transitionTarget) return;
-      onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose, transitionTarget]);
 
   // A different bug starts with an empty comment box.
   useEffect(() => {
@@ -276,7 +254,7 @@ function BugDetailDrawerImpl(props: Props) {
         )}
       >
         <div
-          className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"
+          className="border-b border-slate-100 px-5 py-4"
           data-tauri-drag-region
         >
           <div className="min-w-0">
@@ -341,15 +319,6 @@ function BugDetailDrawerImpl(props: Props) {
               </h2>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("bugs.closeDetail")}
-            title={t("bugs.closeDetail")}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-          >
-            <X size={16} />
-          </button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">

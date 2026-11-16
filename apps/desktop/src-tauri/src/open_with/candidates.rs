@@ -52,12 +52,6 @@ pub(super) const CANDIDATES: &[Candidate] = &[
         path: "/System/Applications/TextEdit.app",
         kinds: FILE,
     },
-    Candidate {
-        id: "music",
-        label: "app.openwith.music",
-        path: "/System/Applications/Music.app",
-        kinds: VIDEO,
-    },
     // Browsers
     Candidate {
         id: "safari",

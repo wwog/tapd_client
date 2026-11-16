@@ -46,7 +46,11 @@ import { useAgentQueue } from "./hooks/useAgentQueue";
 import { useLocalProjects } from "./hooks/useLocalProjects";
 import { usePoll } from "./hooks/usePoll";
 import { useDetailPane } from "./hooks/useDetailPane";
-import { useSidebarLayout } from "./hooks/useSidebarLayout";
+import {
+  LAYOUT_GUTTER,
+  RAIL_WIDTH,
+  useSidebarLayout,
+} from "./hooks/useSidebarLayout";
 import { useTerminalPanel } from "./hooks/useTerminalPanel";
 import {
   useWorkspaceData,
@@ -281,7 +285,9 @@ export default function App() {
 
   /**
    * The column hides only for a single TAPD project with no local projects:
-   * local rows are part of the same list, so they must keep it visible.
+   * local rows are part of the same list, so they must keep it visible. Both
+   * sides are bootstrapped before the first render (`shellBootstrap`), so this
+   * answer is already correct on the first frame.
    */
   const projectListHidden = workspaceListHidden && local.projects.length === 0;
 
@@ -403,12 +409,94 @@ export default function App() {
     loadBugDetail(targetWorkspaceId, bugId);
   }, [bugPanel?.id, detailTarget, loadBugDetail, resetBugDetail]);
 
+  /** Width the layout area needs beside the rail and the project column. */
+  const contentMinWidth = layoutContentMinWidth(layoutApi);
+  /**
+   * Window width the current docks need. The extra `GROUP_GAP * 2` is slack:
+   * `ensure_window_width` resizes to whole logical pixels and `innerWidth`
+   * floors the result, so an exact fit would read as "too narrow" and collapse
+   * the column right after growing.
+   */
+  const requiredWindowWidth =
+    RAIL_WIDTH +
+    layoutApi.sidebarWidth +
+    contentMinWidth +
+    LAYOUT_GUTTER +
+    GROUP_GAP * 2;
+
+  /** Secondary dock contents; a change fills or empties the dock. */
+  const secondaryKindKey =
+    layoutApi.groups
+      .find((group) => group.role === "secondary")
+      ?.panels.map((panel) => panel.kind)
+      .join("|") ?? "";
+  /** Dock content key whose window growth was already requested this entry. */
+  const growthRequestedKey = useRef(secondaryKindKey);
+  /** Viewport width a programmatic growth is heading for. */
+  const [growingViewportWidth, setGrowingViewportWidth] = useState<number | null>(
+    null,
+  );
+
+  /**
+   * The render that fills the dock also grows `contentMinWidth`, but the resize
+   * is requested by an effect (after paint). Treat the window as already wide
+   * enough for that commit so the column keeps its width instead of collapsing
+   * and popping back once the resize lands.
+   */
+  const pendingViewportWidth =
+    growingViewportWidth ??
+    (growthRequestedKey.current === secondaryKindKey
+      ? null
+      : requiredWindowWidth);
+
   const sidebar = useSidebarLayout({
     projectListHidden,
     sidebarWidth: layoutApi.sidebarWidth,
     setSidebarWidth: layoutApi.setSidebarWidth,
-    contentMinWidth: layoutContentMinWidth(layoutApi),
+    contentMinWidth,
+    pendingViewportWidth,
   });
+
+  /**
+   * Window growth: a newly filled secondary dock needs room for the primary
+   * minimum, the secondary minimum and the rail/column. Watching the dock's
+   * panel kinds catches every path (bug panel, `services.open`, drag into the
+   * dock); a restored layout is skipped so startup never resizes the window.
+   */
+  const requiredWindowWidthRef = useRef(requiredWindowWidth);
+  requiredWindowWidthRef.current = requiredWindowWidth;
+  useEffect(() => {
+    if (growthRequestedKey.current === secondaryKindKey) return;
+    growthRequestedKey.current = secondaryKindKey;
+    if (!secondaryKindKey) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    const target = requiredWindowWidthRef.current;
+    if (target <= window.innerWidth + 1) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    setGrowingViewportWidth(target);
+    void api
+      .ensureWindowWidth(target)
+      // A monitor clamp returns the capped width: the column then collapses
+      // (correctly) after the resize lands, instead of flickering before it.
+      .then((achieved) => setGrowingViewportWidth(achieved))
+      .catch(() => setGrowingViewportWidth(null));
+  }, [secondaryKindKey]);
+
+  // Release the reservation once the window reports the new width, or after a
+  // moment when no resize arrives (the OS refused the growth).
+  useEffect(() => {
+    if (pendingViewportWidth === null) return;
+    if (sidebar.viewportWidth + 2 >= pendingViewportWidth) {
+      setGrowingViewportWidth(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setGrowingViewportWidth(null), 1_200);
+    return () => window.clearTimeout(timer);
+  }, [pendingViewportWidth, sidebar.viewportWidth]);
 
   const terminal = useTerminalPanel({ workspaceId, showToast });
 

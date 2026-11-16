@@ -7,6 +7,7 @@ import {
   type LocalProjectPatch,
 } from "../lib/local";
 import { readPref, writePref } from "../lib/uiPrefs";
+import { shellBootstrap } from "../lib/shellBootstrap";
 
 /** Last local project the user opened; `null` means "TAPD project active". */
 const PREF_KEY = "local.lastProject";
@@ -20,8 +21,11 @@ const PREF_KEY = "local.lastProject";
  * deleted project cannot pin the local page to a missing row.
  */
 export function useLocalProjects() {
-  const [projects, setProjects] = useState<LocalProject[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Preloaded by `main.tsx`: the side bar decides whether to show its column
+  // from these rows, so the first frame must already have them.
+  const bootstrap = shellBootstrap();
+  const [projects, setProjects] = useState<LocalProject[]>(bootstrap.localProjects);
+  const [loading, setLoading] = useState(!bootstrap.ready);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     readPref<string>(PREF_KEY),

@@ -34,6 +34,12 @@ const SEARCH_WIDTH = 256;
 const COLUMNS_BUTTON_WIDTH = 32;
 /** Slack so sub-pixel rounding cannot push the search onto a second row. */
 const ROW_SLACK = 4;
+/**
+ * How long the row may stay too narrow before the search is dropped. A dock
+ * expanding next to the table (or the window growing for it) narrows the row
+ * for a few frames; toggle on that dip and the field blinks out and back.
+ */
+const HIDE_DELAY_MS = 300;
 
 type Props = {
   scope: BugScope;
@@ -78,15 +84,32 @@ export function BugTableToolbar(props: Props) {
    * row can hold it again.
    */
   const [showSearch, setShowSearch] = useState(true);
+  /** Latest measurement, re-checked when a pending hide fires. */
+  const searchFitsRef = useRef(true);
+  const hideTimerRef = useRef<number | null>(null);
+  /** The first real measurement is a settled layout, not an animation frame. */
+  const measuredRef = useRef(false);
 
   // Measure against the real content, not a breakpoint: the scope switch grows
-  // with a third segment and the UI font size is user-configurable.
+  // with a third segment and the UI font size is user-configurable. The row
+  // never wraps (a dock opening beside it would otherwise fold the field onto a
+  // second line for a frame); it only drops the search once the width has
+  // stayed too narrow, so a transient dip does not blink it.
   useLayoutEffect(() => {
     const toolbar = toolbarRef.current;
     const leading = leadingRef.current;
     if (!toolbar || !leading) return;
 
+    const clearHideTimer = () => {
+      if (hideTimerRef.current === null) return;
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    };
+
     const measure = () => {
+      const width = toolbar.clientWidth;
+      // Zero means the window/layout has not been measured yet.
+      if (width <= 0) return;
       const style = getComputedStyle(toolbar);
       const gap = parseFloat(style.columnGap) || 0;
       const padding =
@@ -99,14 +122,32 @@ export function BugTableToolbar(props: Props) {
         SEARCH_WIDTH +
         COLUMNS_BUTTON_WIDTH +
         ROW_SLACK;
-      setShowSearch(toolbar.clientWidth >= needed);
+      const fits = width >= needed;
+      searchFitsRef.current = fits;
+
+      if (fits) {
+        clearHideTimer();
+        setShowSearch(true);
+      } else if (!measuredRef.current) {
+        // Startup with a restricted pane: decide at once, nothing is animating.
+        setShowSearch(false);
+      } else if (hideTimerRef.current === null) {
+        hideTimerRef.current = window.setTimeout(() => {
+          hideTimerRef.current = null;
+          if (!searchFitsRef.current) setShowSearch(false);
+        }, HIDE_DELAY_MS);
+      }
+      measuredRef.current = true;
     };
 
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(toolbar);
     observer.observe(leading);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      clearHideTimer();
+    };
   }, []);
 
   // Dismiss the column popover on outside click or Escape.
@@ -194,9 +235,9 @@ export function BugTableToolbar(props: Props) {
   return (
     <div
       ref={toolbarRef}
-      className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-5 py-3"
+      className="flex items-center gap-2 border-b border-border bg-surface px-5 py-3"
     >
-      <div ref={leadingRef} className="flex items-center gap-2">
+      <div ref={leadingRef} className="flex shrink-0 items-center gap-2">
         <Segmented
           value={scope}
           onChange={onScopeChange}
@@ -220,9 +261,9 @@ export function BugTableToolbar(props: Props) {
         ) : null}
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex min-w-0 items-center gap-2">
         {showSearch ? (
-          <div className="relative w-64">
+          <div className="relative w-64 min-w-24 shrink">
             <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
             <input
               value={keyword}
@@ -234,7 +275,7 @@ export function BugTableToolbar(props: Props) {
           </div>
         ) : null}
 
-        <div ref={columnsRef} className="relative">
+        <div ref={columnsRef} className="relative shrink-0">
           <button
             type="button"
             title={t("bugs.columnsAndSort")}

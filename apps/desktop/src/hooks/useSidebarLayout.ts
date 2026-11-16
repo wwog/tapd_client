@@ -25,6 +25,12 @@ export type SidebarLayoutOptions = {
    * plus the secondary group's minimum when it has panels.
    */
   contentMinWidth: number;
+  /**
+   * Width the window is growing to (programmatic resize). Collapse decisions
+   * use it until the real viewport catches up, so filling a dock does not hide
+   * the column for the frame before the resize lands.
+   */
+  pendingViewportWidth?: number | null;
 };
 
 export type SidebarLayout = {
@@ -63,6 +69,7 @@ export function useSidebarLayout({
   sidebarWidth,
   setSidebarWidth,
   contentMinWidth,
+  pendingViewportWidth = null,
 }: SidebarLayoutOptions): SidebarLayout {
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 1280 : window.innerWidth,
@@ -94,9 +101,15 @@ export function useSidebarLayout({
 
   // On narrow windows the project list yields instead of squeezing the layout.
   // The comparison uses the secondary group's minimum, so opening a detail
-  // panel collapses the list before the bug list gets unusable.
+  // panel collapses the list before the bug list gets unusable. A window that
+  // is being grown for that panel counts at its target width: the column must
+  // not blink out while the resize is in flight.
+  const decisionViewportWidth =
+    pendingViewportWidth !== null && pendingViewportWidth > viewportWidth
+      ? pendingViewportWidth
+      : viewportWidth;
   const autoCollapseSidebar =
-    viewportWidth <
+    decisionViewportWidth <
     RAIL_WIDTH +
       expandedSidebarWidth +
       contentMinWidth +
@@ -115,7 +128,10 @@ export function useSidebarLayout({
     ? 0
     : Math.max(
         MIN_SIDEBAR_WIDTH,
-        Math.min(sidebarWidth, viewportWidth - RAIL_WIDTH - contentMinWidth),
+        Math.min(
+          sidebarWidth,
+          decisionViewportWidth - RAIL_WIDTH - contentMinWidth,
+        ),
       );
 
   const autoCollapseRef = useRef(autoCollapseSidebar);

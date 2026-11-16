@@ -255,9 +255,10 @@ test("project pages open as tabs beside each other; global pages share one", () 
   layout = openPage(layout, "local", "local-1", "Local One");
   layout = openPage(layout, "bugs", "ws-2", "Project Two");
   primary = findRoleGroup(layout.root, "primary")!;
+  // Local project tabs lead the strip; TAPD project tabs follow.
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:bugs:ws-1", "page:local:local-1", "page:bugs:ws-2"],
+    ["page:local:local-1", "page:bugs:ws-1", "page:bugs:ws-2"],
   );
   assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-2" });
 
@@ -280,6 +281,33 @@ test("project pages open as tabs beside each other; global pages share one", () 
   layout = closePanel(layout, panelId.page("bugs", "ws-2"));
   assert.equal(findPanel(layout.root, panelId.page("bugs", "ws-2")), null);
   assert.equal(closePanel(layout, panelId.page("agent")), layout);
+});
+
+test("a project page in front keeps no shared navigation tab", () => {
+  // Opening a project drops the navigation tab it was launched from.
+  let layout = openPage(defaultLayout(), "projects");
+  layout = openPage(layout, "bugs", "ws-1");
+  let primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(
+    primary.panels.map((panel) => panel.id),
+    ["page:bugs:ws-1"],
+  );
+
+  // A navigation page still gets its single tab while it is visible.
+  layout = openPage(layout, "agent");
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(
+    primary.panels.map((panel) => panel.id),
+    ["page:bugs:ws-1", "page:agent"],
+  );
+
+  // Going back to the project tab drops it again.
+  layout = activatePanel(layout, panelId.page("bugs", "ws-1"));
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(
+    primary.panels.map((panel) => panel.id),
+    ["page:bugs:ws-1"],
+  );
 });
 
 test("retargetPage adopts a generic page and drops a duplicate", () => {
@@ -323,10 +351,12 @@ test("normalize keeps every project page in primary and one global page", () => 
   const next = normalize(layout);
   const primary = findRoleGroup(next.root, "primary")!;
   const secondary = findRoleGroup(next.root, "secondary")!;
-  assert.deepEqual(
-    primary.panels.map((panel) => panel.id).sort(),
-    ["page:bugs:ws-1", "page:local:local-1", "page:settings"].sort(),
-  );
+  // Local project page first, then the TAPD project page, then the global tab.
+  assert.deepEqual(primary.panels.map((panel) => panel.id), [
+    "page:local:local-1",
+    "page:bugs:ws-1",
+    "page:settings",
+  ]);
   assert.equal(secondary.panels.length, 0);
   assert.ok(
     primary.panels.some((panel) => panel.id === primary.activePanelId),

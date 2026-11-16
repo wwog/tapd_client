@@ -389,14 +389,38 @@ function isProjectPage(panel: PanelRef): boolean {
   );
 }
 
+/** A navigation page (设置 / Agent / …) that is not tied to a project. */
+function isNavigationPage(panel: PanelRef): boolean {
+  return (
+    panel.kind === "page" &&
+    panel.resource.type === "page" &&
+    !panel.resource.projectId
+  );
+}
+
+/**
+ * Drops the shared navigation tab once a project page is the visible tab.
+ * While a project is in front the strip only carries project tabs; the
+ * activity bar recreates the navigation tab on demand.
+ */
+function pruneNavigationPages(primary: GroupNode): void {
+  const activePanel = primary.panels.find(
+    (panel) => panel.id === primary.activePanelId,
+  );
+  if (!activePanel || !isProjectPage(activePanel)) return;
+  primary.panels = primary.panels.filter((panel) => !isNavigationPage(panel));
+}
+
 /**
  * Ensures exactly one primary group exists and that every page tab lives there.
  *
  * Project pages (`bugs` / `local` carrying a project id) are one tab per
- * project and stay open until closed. Global pages (`settings`, `agent`, …)
- * share a single navigation tab: extra globals collapse into the preferred one
- * (the primary's active global, else its first global, else the first global),
- * so handing a stale layout to `normalize` cannot leave two 设置 tabs.
+ * project and stay open until closed; local project tabs are ordered first.
+ * Global pages (`settings`, `agent`, …) share a single navigation tab: extra
+ * globals collapse into the preferred one (the primary's active global, else
+ * its first global, else the first global), so handing a stale layout to
+ * `normalize` cannot leave two 设置 tabs. A global page only lives while it is
+ * the visible page; activating a project tab drops it.
  */
 function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode } {
   const seenRoles = new Set<GroupRole>();
@@ -444,6 +468,23 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
       primary.panels.push(page.panel);
     }
   }
+
+  // Local projects are the everyday entry point: their tabs lead the strip.
+  // The filter is stable, so several local projects keep their open order.
+  const localPages = primary.panels.filter(
+    (panel) =>
+      panel.kind === "page" &&
+      panel.resource.type === "page" &&
+      panel.resource.view === "local" &&
+      Boolean(panel.resource.projectId),
+  );
+  if (localPages.length > 0) {
+    const rest = primary.panels.filter((panel) => !localPages.includes(panel));
+    primary.panels = [...localPages, ...rest];
+  }
+
+  // A project page in front makes the shared navigation tab stale.
+  pruneNavigationPages(primary);
 
   if (pages.length === dropped.size) {
     primary.panels.push(makePanel({ type: "page", view: "bugs" }));
@@ -810,6 +851,10 @@ export function activatePanel(layout: LayoutState, panelIdToActivate: string): L
   if (!current) return layout;
   current.group.activePanelId = panelIdToActivate;
   next.activeGroupId = current.group.id;
+  // Activation does not run a full `normalize`, so the navigation-tab prune
+  // has to be applied here as well (clicking a project tab must drop 项目/设置).
+  const primary = findRoleGroup(next.root, "primary");
+  if (primary) pruneNavigationPages(primary);
   return next;
 }
 

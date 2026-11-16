@@ -5,8 +5,8 @@ import { usePanelServices, type PanelProps } from "./context";
  * The singleton bug detail panel. The drawer is reused unchanged; the group
  * card supplies the chrome, so the drawer's own card border is neutralized.
  */
-export function BugPanel({ panel, active }: PanelProps) {
-  const { bug, closePanel } = usePanelServices();
+export function BugPanel({ active }: PanelProps) {
+  const { bug } = usePanelServices();
 
   return (
     <div className="h-full [&>aside]:h-full [&>aside]:rounded-none [&>aside]:border-0">
@@ -17,7 +17,6 @@ export function BugPanel({ panel, active }: PanelProps) {
         error={bug.error}
         exporting={bug.exporting}
         lastExport={bug.lastExport}
-        onClose={() => closePanel(panel.id)}
         onOpenWeb={bug.onOpenWeb}
         onCopy={bug.onCopy}
         onExport={bug.onExport}

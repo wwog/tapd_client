@@ -133,7 +133,7 @@ export function useDetailPane({
     [loadDetail],
   );
 
-  /** Drawer close / tab close: clears the fetch and removes the layout panel. */
+  /** Tab close: clears the fetch and removes the layout panel. */
   const closeDetail = useCallback(() => {
     detailSeq.current += 1;
     clear();

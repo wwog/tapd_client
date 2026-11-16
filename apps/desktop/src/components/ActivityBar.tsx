@@ -84,6 +84,12 @@ export function ActivityBar({
   onActivate,
 }: Props) {
   const accountAnim = railAnim?.id === "account" ? railAnim : null;
+  /**
+   * Local projects have no rail entry of their own; their items page is the
+   * local counterpart of the bug list, so the 缺陷 entry carries the focus
+   * while one is open.
+   */
+  const railView: View = view === "local" ? "bugs" : view;
 
   return (
     <div className="flex w-[52px] shrink-0 flex-col items-center pb-2">
@@ -97,7 +103,7 @@ export function ActivityBar({
             onClick={() => onActivate(item.id)}
             className={clsx(
               "grid h-9 w-9 place-items-center rounded-xl transition",
-              view === item.id
+              railView === item.id
                 ? "bg-overlay text-slate-900"
                 : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
             )}

@@ -17,18 +17,9 @@ import {
 
 import { AlertTriangle } from "lucide-react";
 
-import { api as appApi } from "../lib/api";
 import { t } from "../lib/i18n";
 import { Button } from "../components/ui";
 import { Dialog } from "../components/Dialog";
-import {
-  LAYOUT_GUTTER,
-  RAIL_WIDTH,
-} from "../hooks/useSidebarLayout";
-import {
-  GROUP_GAP,
-  groupMinSize,
-} from "./layout/defaults";
 import {
   type DropZone,
   type PanelRef,
@@ -137,39 +128,10 @@ export function Workbench({
   );
 
   /**
-   * Window growth: a newly filled/expanded secondary dock needs room for the
-   * primary minimum, the secondary minimum and the rail/sidebar. Watching the
-   * dock's panel kinds catches every path (App bug panel, services.open, drag
-   * into the dock); the first render is skipped so a restored layout does not
-   * resize the window at startup.
+   * Window growth for a newly filled/expanded secondary dock lives in `App`:
+   * it also owns the side bar, and the collapse decision has to know about the
+   * resize before it lands (otherwise the column blinks out and back).
    */
-  const secondaryKindKey =
-    api.groups
-      .find((group) => group.role === "secondary")
-      ?.panels.map((panel) => panel.kind)
-      .join("|") ?? "";
-  const previousSecondaryKey = useRef(secondaryKindKey);
-  useEffect(() => {
-    if (
-      !secondaryKindKey ||
-      secondaryKindKey === previousSecondaryKey.current
-    ) {
-      previousSecondaryKey.current = secondaryKindKey;
-      return;
-    }
-    previousSecondaryKey.current = secondaryKindKey;
-    const secondary = api.groups.find((group) => group.role === "secondary");
-    const primary = api.groups.find((group) => group.role === "primary");
-    if (!secondary) return;
-    const required =
-      RAIL_WIDTH +
-      api.sidebarWidth +
-      (primary ? groupMinSize(primary).width : 460) +
-      groupMinSize(secondary).width +
-      LAYOUT_GUTTER +
-      GROUP_GAP * 2;
-    void appApi.ensureWindowWidth(required).catch(() => 0);
-  }, [secondaryKindKey, api]);
 
   /** Programmatic open: restore a maximized layout so the new dock is visible. */
   const openService = useCallback(

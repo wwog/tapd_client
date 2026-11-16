@@ -116,7 +116,6 @@ export const bugs = {
   // ---------------------------------------------------------------- drawer
   "bugs.copyId": ["复制缺陷 ID", "Copy bug ID"],
   "bugs.detailTitle": ["缺陷详情", "Bug details"],
-  "bugs.closeDetail": ["关闭详情", "Close details"],
   "bugs.currentOwner": ["当前处理人：{owner}", "Current owner: {owner}"],
   "bugs.unassigned": ["未分配", "Unassigned"],
   "bugs.claimFirst": [

@@ -86,7 +86,6 @@ pub static MESSAGES: &[Message] = &[
     ("app.open.mode", "不支持的打开方式：{}", "Unsupported open mode: {}"),
     ("app.openwith.default", "默认浏览器", "Default browser"),
     ("app.openwith.finder", "访达", "Finder"),
-    ("app.openwith.music", "音乐", "Music"),
     ("app.openwith.photos", "照片", "Photos"),
     ("app.openwith.preview", "预览", "Preview"),
     ("app.openwith.system", "系统默认应用", "System default app"),
