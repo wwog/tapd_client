@@ -51,11 +51,35 @@ fn tool_key(name: &str) -> String {
 }
 
 /// 构造权限确认卡片。`summary` 为空时卡片只显示工具名。
+///
+/// `allow_always` 由客户端上报（opencode 的 `permission.asked.always`）：只有
+/// 这次请求能记住规则时才补「总是允许」，否则按键会落到别的选项上。
 pub(super) fn approval(
     tool: Option<String>,
     summary: Option<String>,
     prompt_id: &str,
+    allow_always: bool,
 ) -> AgentPendingPrompt {
+    let mut options = vec![
+        AgentPromptOption {
+            id: "allow_once".to_string(),
+            label: "允许一次".to_string(),
+            description: None,
+        },
+    ];
+    if allow_always {
+        // 位置与终端对话框一致：允许一次 / 总是允许 / 拒绝。
+        options.push(AgentPromptOption {
+            id: "allow_always".to_string(),
+            label: "总是允许".to_string(),
+            description: Some("之后同类请求不再询问（会话内有效）".to_string()),
+        });
+    }
+    options.push(AgentPromptOption {
+        id: "reject".to_string(),
+        label: "拒绝".to_string(),
+        description: None,
+    });
     AgentPendingPrompt {
         prompt_id: prompt_id.to_string(),
         kind: "approval".to_string(),
@@ -63,18 +87,7 @@ pub(super) fn approval(
         summary,
         question: None,
         header: None,
-        options: vec![
-            AgentPromptOption {
-                id: "allow_once".to_string(),
-                label: "允许一次".to_string(),
-                description: None,
-            },
-            AgentPromptOption {
-                id: "reject".to_string(),
-                label: "拒绝".to_string(),
-                description: None,
-            },
-        ],
+        options,
         can_answer: false,
         answer_hint: None,
     }
@@ -202,6 +215,8 @@ pub(super) fn answer_keys(
             (KeyFamily::Claude, "allow_once") => Some(vec!["1"]),
             (KeyFamily::Codex, "allow_once") => Some(vec!["y"]),
             (KeyFamily::OpenCode, "allow_once") => Some(vec!["\r"]),
+            // 右移选中「Allow always」→ 回车 → 二次确认（Confirm）再回车。
+            (KeyFamily::OpenCode, "allow_always") => Some(vec!["l", "\r", "\r"]),
             (_, "reject") => Some(vec!["\x1b"]),
             _ => None,
         },
@@ -317,12 +332,30 @@ mod tests {
 
     #[test]
     fn unsupported_runtimes_cannot_answer() {
-        let prompt = approval(Some("Bash".into()), None, "p1");
+        let prompt = approval(Some("Bash".into()), None, "p1", false);
         assert!(!can_answer("omp", &prompt));
         assert_eq!(
             answer_hint("omp", &prompt).as_deref(),
             Some("在 Agent 终端中回答")
         );
         assert!(can_answer("claude", &prompt));
+    }
+
+    #[test]
+    fn opencode_gets_an_always_allow_option() {
+        // 客户端上报 always 时才补「总是允许」，顺序与终端对话框一致。
+        let prompt = approval(Some("external_directory".into()), None, "p1", true);
+        let ids: Vec<&str> = prompt.options.iter().map(|option| option.id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "allow_always", "reject"]);
+        // 右移选 Allow always → 回车 → 二次确认再回车。
+        assert_eq!(
+            answer_keys("opencode", "approval", "allow_always"),
+            Some(vec!["l", "\r", "\r"])
+        );
+
+        // 请求不能记住规则时不给该按钮，避免按键落到「拒绝」上。
+        let once = approval(Some("bash".into()), None, "p1", false);
+        assert_eq!(once.options.len(), 2);
+        assert_eq!(answer_keys("codex", "approval", "allow_always"), None);
     }
 }

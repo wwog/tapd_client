@@ -27,6 +27,7 @@ import {
   type AgentComposePayload,
 } from "./components/AgentComposeSheet";
 import { BugListView } from "./components/BugListView";
+import { ChatPage } from "./components/ChatPage";
 import { CompanionDialog } from "./components/CompanionDialog";
 import { CoworkerPage } from "./components/CoworkerPage";
 import { DetailPaneHost } from "./components/DetailPaneHost";
@@ -76,6 +77,7 @@ type AgentTarget = {
 /** Header title for every view whose title is static. */
 const VIEW_TITLES: Record<Exclude<View, "bugs">, string> = {
   projects: "项目管理",
+  chat: "对话",
   agent: "Agent",
   coworker: "同事",
   mcp: "MCP",
@@ -591,6 +593,15 @@ export default function App() {
               />
             </div>
           </div>
+        );
+      case "chat":
+        return (
+          <ChatPage
+            defaultWorkspaceId={workspaceId}
+            workspaces={context?.workspaces ?? []}
+            toast={showToast}
+            onOpenProjects={() => setView("projects")}
+          />
         );
       case "agent":
         return (

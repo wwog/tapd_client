@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { Bot, Check, ChevronDown, Search } from "lucide-react";
 
 import type { AgentRuntimeDescriptor, AgentScanResult } from "../lib/agent";
+import { computeMenuPosition, type MenuPosition } from "../lib/menuPosition";
 import { useDismiss } from "../hooks/useDismiss";
 import { AgentIcon } from "./AgentIcon";
 
@@ -19,11 +20,11 @@ type Props = {
   placement?: "down" | "up";
   /** Single-line trigger for tight toolbars (compose sheet footer). */
   compact?: boolean;
+  /** 未选择时的副行提示；默认沿用 Agent 修复的文案。 */
+  emptyHint?: string;
   onChange: (runtimeId: string) => void;
   className?: string;
 };
-
-type MenuPosition = { left: number; width: number; top?: number; bottom?: number };
 
 /**
  * 运行时选择器。样式与列表筛选 / 设置卡片一致：一个带边框的触发行 + 门户
@@ -38,6 +39,7 @@ export function AgentPicker(props: Props) {
     disabled = false,
     placement = "down",
     compact = false,
+    emptyHint,
     onChange,
     className,
   } = props;
@@ -60,19 +62,7 @@ export function AgentPicker(props: Props) {
   const openMenu = () => {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const width = Math.max(rect.width, 300);
-    const left = Math.min(
-      Math.max(8, rect.left),
-      Math.max(8, window.innerWidth - width - 8),
-    );
-    // 空间不够时向上翻转，避免菜单被窗口底部裁掉。
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const wantUp = placement === "up" ? spaceBelow < 320 : spaceBelow < 280;
-    setPosition(
-      wantUp
-        ? { left, width, bottom: window.innerHeight - rect.top + 6 }
-        : { left, width, top: rect.bottom + 6 },
-    );
+    setPosition(computeMenuPosition(rect, { placement }));
     setQuery("");
     setOpen(true);
   };
@@ -161,7 +151,7 @@ export function AgentPicker(props: Props) {
             <span className="mt-0.5 block truncate font-mono text-ui-xs text-slate-400">
               {selected
                 ? `${selected.vendor} · ${selectedScan?.resolvedPath || selected.binary}`
-                : "运行时决定用哪个 Agent 修复缺陷"}
+                : emptyHint ?? "运行时决定用哪个 Agent 修复缺陷"}
             </span>
           )}
         </span>
@@ -194,10 +184,11 @@ export function AgentPicker(props: Props) {
                   top: position.top,
                   bottom: position.bottom,
                   width: position.width,
+                  maxHeight: position.maxHeight,
                 }}
-                className="fixed z-[120] overflow-hidden rounded-xl border border-border bg-surface"
+                className="fixed z-[120] flex flex-col overflow-hidden rounded-xl border border-border bg-surface"
               >
-                <div className="border-b border-slate-100 p-1.5">
+                <div className="shrink-0 border-b border-slate-100 p-1.5">
                   <div className="relative">
                     <Search
                       size={11}
@@ -214,7 +205,7 @@ export function AgentPicker(props: Props) {
                   </div>
                 </div>
 
-                <div className="max-h-72 overflow-y-auto p-1">
+                <div className="min-h-0 flex-1 overflow-y-auto p-1">
                   {groups.map((group) =>
                     group.items.length > 0 ? (
                       <div key={group.key}>

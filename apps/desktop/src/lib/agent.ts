@@ -133,6 +133,20 @@ export type AgentScanSnapshot = {
   results: AgentScanResult[];
 };
 
+/** 一个可选的模型；`id` 是传给 CLI 的值，`label` 只用于展示。 */
+export type AgentModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+/** `agent_models` 的响应；CLI 读取失败时 `models` 回退到目录里的静态建议。 */
+export type AgentModels = {
+  runtimeId: string;
+  models: AgentModelOption[];
+  error?: string;
+};
+
 /** A complex change paused for the user's commit decision. */
 export type AgentApproval = {
   summary: string;
@@ -557,6 +571,9 @@ export const agentApi = {
   /** Declared runtime catalog (lifecycle + capabilities + limitations). */
   runtimes: () =>
     featureCommand<{ runtimes: AgentRuntimeDescriptor[] }>("agent_runtimes"),
+  /** 某个运行时当前可用的模型；OpenCode 系列读取 `models` 子命令。 */
+  models: (runtimeId: string) =>
+    featureCommand<AgentModels>("agent_models", { runtimeId }),
   configGet: () => featureCommand<{ config: AgentConfig }>("agent_config_get"),
   configSet: (patch: Partial<AgentConfig>) =>
     featureCommand<{ config: AgentConfig }>("agent_config_set", patch),

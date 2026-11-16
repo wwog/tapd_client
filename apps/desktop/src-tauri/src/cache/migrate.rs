@@ -6,9 +6,9 @@
 use rusqlite::Connection;
 
 /// Schema version. Bumped only when the stored shape changes; fresh and
-/// pre-release databases are rebuilt from scratch, while the shipped v5
-/// shape is upgraded in place.
-const SCHEMA_VERSION: i64 = 6;
+/// pre-release databases are rebuilt from scratch, while shipped shapes are
+/// upgraded in place.
+const SCHEMA_VERSION: i64 = 7;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -18,9 +18,11 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
         return Ok(());
     }
 
-    if version >= 5 {
+    if version == 5 {
+        // Only the shipped v5 shape needs the in-place upgrade; v6 is the
+        // current shape, so it only gains the new tables from create_schema.
         upgrade_v5(conn)?;
-    } else {
+    } else if version < 5 {
         // Fresh install or a pre-1.0 development database: this data is
         // disposable (snapshots / task history), so rebuild instead of
         // carrying five incremental migrations for shapes nobody ships.
@@ -38,6 +40,9 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
             DROP TABLE IF EXISTS notification_ignored;
             DROP TABLE IF EXISTS notification_cursors;
             DROP TABLE IF EXISTS notification_baseline;
+            DROP TABLE IF EXISTS chat_messages_fts;
+            DROP TABLE IF EXISTS chat_messages;
+            DROP TABLE IF EXISTS chat_sessions;
             COMMIT;
             "#,
         )
@@ -48,7 +53,7 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|error| error.to_string())?;
 
-    if version >= 5 {
+    if version == 5 {
         restore_v5_agent_tasks(conn)?;
     }
     Ok(())
@@ -146,6 +151,69 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             workspace_id TEXT PRIMARY KEY,
             cursor TEXT NOT NULL
         );
+
+        -- 自由对话：会话元数据仍以 ChatSession JSON 写入 payload，索引列只
+        -- 用于按项目 / 运行时 / 模型 / 状态过滤与按时间排序。
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            workspace_name TEXT NOT NULL DEFAULT '',
+            runtime_id TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chat_sessions_updated_idx
+            ON chat_sessions(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS chat_sessions_workspace_idx
+            ON chat_sessions(workspace_id);
+        CREATE INDEX IF NOT EXISTS chat_sessions_runtime_idx
+            ON chat_sessions(runtime_id);
+        CREATE INDEX IF NOT EXISTS chat_sessions_model_idx
+            ON chat_sessions(model);
+
+        -- 消息历史：rowid 保持首次写入顺序，UNIQUE 用于同一消息的 upsert
+        -- （工具结果回填会更新已有行，rowid 不变）。
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            at TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(chat_id, message_id)
+        );
+        CREATE INDEX IF NOT EXISTS chat_messages_chat_idx
+            ON chat_messages(chat_id, id);
+
+        -- 关键字搜索：trigram 支持中文子串（>=3 字）；短词由查询层回退 LIKE。
+        CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+            text,
+            content='chat_messages',
+            content_rowid='id',
+            tokenize='trigram'
+        );
+        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai
+        AFTER INSERT ON chat_messages BEGIN
+            INSERT INTO chat_messages_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad
+        AFTER DELETE ON chat_messages BEGIN
+            INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text)
+                VALUES ('delete', old.id, old.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au
+        AFTER UPDATE ON chat_messages BEGIN
+            INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text)
+                VALUES ('delete', old.id, old.text);
+            INSERT INTO chat_messages_fts(rowid, text) VALUES (new.id, new.text);
+        END;
         "#,
     )
     .map_err(|error| error.to_string())

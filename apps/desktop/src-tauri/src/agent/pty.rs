@@ -94,6 +94,24 @@ pub(super) struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    /// Builds the runtime handle for a freshly spawned PTY. Used by the
+    /// free-form chat runner, which shares the same id-keyed runtime map.
+    pub(super) fn new(
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        killer: Box<dyn ChildKiller + Send + Sync>,
+        pid: Option<u32>,
+        canceled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            master,
+            writer,
+            killer,
+            pid,
+            canceled,
+        }
+    }
+
     /// Signals the TUI process group and the direct child.
     pub(super) fn kill(&mut self) {
         if let Some(pid) = self.pid {
@@ -167,16 +185,16 @@ pub(super) fn take_utf8_prefix(buffer: &mut Vec<u8>) -> Vec<u8> {
 /// quiet. A full-screen TUI repaints every ~17 ms while it animates, so an
 /// idle-gated flush never fires and seconds of output pile up in memory before
 /// the console sees the first byte — that is what made typing feel dead.
-const OUTPUT_FRAME: Duration = Duration::from_millis(16);
+pub(super) const OUTPUT_FRAME: Duration = Duration::from_millis(16);
 /// Hard cap per emit, so the terminal never parses tens of thousands of escape
 /// sequences in a single write.
-const OUTPUT_BATCH_MAX: usize = 32 * 1024;
+pub(super) const OUTPUT_BATCH_MAX: usize = 32 * 1024;
 /// Idle wait when nothing is buffered; the next chunk wakes the thread early.
-const OUTPUT_IDLE_WAIT: Duration = Duration::from_millis(250);
+pub(super) const OUTPUT_IDLE_WAIT: Duration = Duration::from_millis(250);
 
 /// Ships the buffered PTY bytes to the console. Nothing is recorded: the live
 /// terminal is the only place the agent's output exists.
-fn flush_output(app: &AppHandle, task_id: &str, pending: &mut Vec<u8>) {
+pub(super) fn flush_output(app: &AppHandle, task_id: &str, pending: &mut Vec<u8>) {
     if pending.is_empty() {
         return;
     }
@@ -573,7 +591,7 @@ impl AgentCore {
     }
 }
 
-fn join_with_timeout(handle: Option<std::thread::JoinHandle<()>>, timeout: Duration) {
+pub(super) fn join_with_timeout(handle: Option<std::thread::JoinHandle<()>>, timeout: Duration) {
     let Some(handle) = handle else {
         return;
     };

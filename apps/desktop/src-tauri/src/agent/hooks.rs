@@ -37,12 +37,16 @@ pub(crate) enum SessionHookKind {
         events: &'static [&'static str],
     },
     /// Cursor：`~/.cursor/hooks.json`，字段是扁平的 `command`。
+    #[allow(dead_code)]
     Cursor,
     /// Gemini CLI：`~/.gemini/settings.json`，事件名是 AfterAgent 等。
+    #[allow(dead_code)]
     Gemini,
     /// Kimi Code：`~/.kimi-code/config.toml` 的 `[[hooks]]` 表。
+    #[allow(dead_code)]
     Kimi,
     /// ZCode：`~/.zcode/cli/config.json` 的 `hooks.events`。
+    #[allow(dead_code)]
     Zcode,
 }
 
@@ -81,6 +85,8 @@ pub(crate) const CLAUDE_EVENTS: &[&str] = &[
 ];
 
 /// Qwen Code / Qoder / CodeBuddy 的官方事件枚举。
+/// 这些客户端当前未暴露在运行时清单里，常量保留给后续接入。
+#[allow(dead_code)]
 pub(crate) const QWEN_EVENTS: &[&str] = &[
     "SessionStart",
     "SessionEnd",
@@ -298,6 +304,10 @@ fn opencode_plugin_path() -> Result<PathBuf, String> {
 /// OpenCode 插件没有配置项，落一个全局插件文件即可。插件在没有任务环境变量
 /// 时完全不发请求，所以常驻也不会影响日常使用。
 const OPENCODE_PLUGIN: &str = r#"// TAPD agent session monitor: 只在桌面端启动的任务里上报回合状态。
+//
+// OpenCode 1.x 要求 default 导出对象带 server()（返回 v1 的 hook 表）；
+// 2.x 读取同一个对象的 id 与 setup()，事件通过 ctx.event.subscribe 的
+// async iterable 读取，并忽略 server()。一个默认导出同时满足两代加载器。
 import { request } from "node:http";
 
 const post = (event, sessionId, payload = {}) => {
@@ -357,8 +367,12 @@ const messageRoles = new Map();
 const userPromptPosted = new Set();
 const toolStates = new Map();
 const toolStarted = new Set();
+const toolNames = new Map();
 const lastAssistant = new Map();
 const lastModel = new Map();
+// 未处理的权限请求：OpenCode 会把同一轮的并发权限排成队列逐个弹出。
+// key 是 permission.asked 的 PermissionID，value 是卡片要展示的内容。
+const pendingPermissions = new Map();
 
 const clip = (value, limit) => {
   if (value == null) return "";
@@ -378,208 +392,471 @@ const cap = (map, limit = 512) => {
   while (map.size > limit) map.delete(map.keys().next().value);
 };
 
-export const TapdSessionMonitor = async () => ({
-  event: async ({ event }) => {
-    if (!event?.type) return;
-    if (!process.env.TAPD_AGENT_HOOK_URL) return;
-    const sessionID = event.properties?.sessionID;
-    const isRoot = (id) => !id || rootSessions.size === 0 || rootSessions.has(id);
-    if (event.type === "session.created") {
-      const info = event.properties?.info;
-      if (!info?.id) return;
-      if (info.parentID) {
-        childSessions.add(info.id);
-        // 子会话 id 不能覆盖主任务的 resume session id。
-        post("SubagentStart", "", { agent_id: info.id, subagent_type: info.title || "" });
+// v2 事件在 data，v1 在 properties。
+const dataOf = (event) => event?.data ?? event?.properties ?? {};
+
+const markActivity = () => {
+  sawUserPrompt = true;
+  sawActivity = true;
+  attention = false;
+  lastError = "";
+};
+
+const handleEvent = (event) => {
+  if (!event?.type) return;
+  if (!process.env.TAPD_AGENT_HOOK_URL) return;
+  const data = dataOf(event);
+  const sessionID = data.sessionID;
+  const isRoot = (id) => !id || rootSessions.size === 0 || rootSessions.has(id);
+
+  if (event.type === "session.created") {
+    const info = data.info;
+    const id = info?.id ?? sessionID;
+    if (!id) return;
+    const parentID = info?.parentID ?? data.parentID;
+    if (parentID) {
+      childSessions.add(id);
+      // 子会话 id 不能覆盖主任务的 resume session id。
+      post("SubagentStart", "", { agent_id: id, subagent_type: info?.title || "" });
+    } else {
+      rootSessions.add(id);
+      post("SessionStart", id, { message: "会话已启动" });
+    }
+    return;
+  }
+
+  if (event.type === "session.deleted") {
+    const deletedID = data.info?.id ?? sessionID;
+    if (!deletedID) return;
+    if (rootSessions.delete(deletedID)) {
+      post("SessionEnd", deletedID, {});
+    } else if (childSessions.delete(deletedID)) {
+      post("SubagentStop", "", { agent_id: deletedID });
+    }
+    return;
+  }
+
+  if (!isRoot(sessionID)) {
+    // 子会话只上报 SubagentStop；工具/消息细节不污染主任务状态。
+    if (event.type === "session.idle" && childSessions.delete(sessionID)) {
+      post("SubagentStop", "", { agent_id: sessionID });
+    }
+    return;
+  }
+
+  if (event.type === "session.status") {
+    const status = data.status;
+    const type = typeof status === "string" ? status : status?.type;
+    // 只用 busy/retry 判断「本轮真的开始了」；启动时加载历史消息不会触发。
+    if (type === "busy" || type === "retry") {
+      markActivity();
+      if (type === "retry") {
+        post("Notification", sessionID, { message: "正在重试" });
       } else {
-        rootSessions.add(info.id);
-        post("SessionStart", info.id, { message: "会话已启动" });
+        post("AgentStart", sessionID, {});
       }
-      return;
     }
-    if (event.type === "session.deleted") {
-      const deletedID = event.properties?.info?.id || event.properties?.sessionID;
-      if (!deletedID) return;
-      if (rootSessions.delete(deletedID)) {
-        post("SessionEnd", deletedID, {});
-      } else if (childSessions.delete(deletedID)) {
-        post("SubagentStop", "", { agent_id: deletedID });
-      }
-      return;
-    }
-    if (!isRoot(sessionID)) {
-      // 子会话只上报 SubagentStop；工具/消息细节不污染主任务状态。
-      if (event.type === "session.idle" && childSessions.delete(sessionID)) {
-        post("SubagentStop", "", { agent_id: sessionID });
-      }
-      return;
-    }
-    if (event.type === "session.status") {
-      const status = event.properties?.status;
-      const type = typeof status === "string" ? status : status?.type;
-      // 只用 busy/retry 判断「本轮真的开始了」；启动时加载历史消息不会触发。
-      if (type === "busy" || type === "retry") {
-        sawUserPrompt = true;
-        sawActivity = true;
-        attention = false;
-        lastError = "";
-        if (type === "retry") {
-          post("Notification", sessionID, { message: "正在重试" });
-        } else {
-          post("AgentStart", sessionID, {});
-        }
-      }
-      return;
-    }
-    if (event.type === "message.updated") {
-      const info = event.properties?.info;
-      if (info?.id && info.role) messageRoles.set(info.id, info.role);
-      if (info?.modelID && sessionID) lastModel.set(sessionID, info.modelID);
-      cap(messageRoles);
-      cap(lastModel);
-      const created = info?.time?.created;
-      // 历史会话加载也会发 user message；只认插件启动之后创建的消息。
-      if (info?.role === "user" && typeof created === "number" && created >= startedAt - 2000) {
-        sawUserPrompt = true;
-        sawActivity = true;
-        attention = false;
-        lastError = "";
-      }
-      return;
-    }
-    if (event.type === "message.part.updated") {
-      const part = event.properties?.part;
-      if (!part) return;
-      if (part.type === "text") {
-        const role = messageRoles.get(part.messageID);
-        if (role === "user" && part.text && !userPromptPosted.has(part.messageID)) {
-          userPromptPosted.add(part.messageID);
-          cap(userPromptPosted);
-          // 历史会话加载时也会发 text part；只有本轮 busy 之后才上报。
-          if (sawUserPrompt) {
-            post("UserPromptSubmit", sessionID, {
-              prompt: clip(part.text, 200),
-              model: lastModel.get(sessionID),
-            });
-          }
-        } else if (role === "assistant" && part.text && sawUserPrompt) {
-          lastAssistant.set(sessionID, clip(part.text, 400));
-          cap(lastAssistant);
-        }
-        return;
-      }
-      if (part.type === "tool") {
-        const key = part.callID || part.id || `${part.tool}:${sessionID}`;
-        const status = part.state?.status || "";
-        if (toolStates.get(key) === status) return;
-        toolStates.set(key, status);
-        cap(toolStates);
-        if (status === "running" || status === "pending") {
-          if (toolStarted.has(key)) return;
-          toolStarted.add(key);
-          cap(toolStarted);
-          // 能执行工具说明提示词已经被处理，启动阶段的 idle 不再算本轮结束。
-          sawUserPrompt = true;
-          sawActivity = true;
-          attention = false;
-          lastError = "";
-          post("PreToolUse", sessionID, {
-            tool_name: part.tool,
-            tool_input: part.state?.input,
-            model: lastModel.get(sessionID),
-          });
-        } else if (status === "completed") {
-          toolStarted.delete(key);
-          post("PostToolUse", sessionID, {
-            tool_name: part.tool,
-            tool_response: part.state?.output,
-            model: lastModel.get(sessionID),
-          });
-        } else if (status === "error") {
-          toolStarted.delete(key);
-          post("PostToolUseFailure", sessionID, {
-            tool_name: part.tool,
-            error: part.state?.error || "工具执行失败",
-            model: lastModel.get(sessionID),
-          });
-        }
-        return;
-      }
-      return;
-    }
-    if (event.type === "permission.asked") {
-      sawActivity = true;
-      attention = true;
-      const permission = event.properties?.permission || {};
-      post("PermissionRequest", sessionID, {
-        tool_name: permission.type || permission.tool || "",
-        message: permission.title || permission.message || "等待权限确认",
+    return;
+  }
+
+  // -- OpenCode 2.3 的回合生命周期 ------------------------------------------
+  //
+  // 2.3 起不再为隐式创建的新会话发送 session.created / session.status：
+  // 用户提示词入队是 inbox.enqueued，一轮执行由 execution.started /
+  // succeeded / failed / interrupted 包住。会话 id 也从这些事件的 data
+  // 里取，否则桌面端始终拿不到 transcript 定位所需的 id。
+
+  if (event.type === "session.inbox.enqueued") {
+    if (!sessionID) return;
+    // 用户提示词一定属于主会话，先登记，避免子 Agent 的 id 覆盖。
+    rootSessions.add(sessionID);
+    markActivity();
+    const prompt = data.item?.payload?.text;
+    post("UserPromptSubmit", sessionID, {
+      prompt: clip(prompt || "", 200),
+      model: lastModel.get(sessionID),
+    });
+    return;
+  }
+
+  if (event.type === "session.execution.started") {
+    markActivity();
+    post("AgentStart", sessionID, {});
+    return;
+  }
+
+  if (
+    event.type === "session.execution.succeeded" ||
+    event.type === "session.execution.failed" ||
+    event.type === "session.execution.interrupted"
+  ) {
+    const failed = event.type === "session.execution.failed";
+    const error = failed
+      ? clip(data.error?.message || data.error || "会话执行出错", 200)
+      : "";
+    const message = lastAssistant.get(sessionID) || "";
+    sawUserPrompt = false;
+    sawActivity = false;
+    lastAssistant.delete(sessionID);
+    lastError = "";
+    // 一轮结束后不再有排队的权限请求；未回复的请求随会话结束作废，
+    // 不能留到下一轮当成还挂着的卡片。
+    pendingPermissions.clear();
+    // 失败直接收尾成 StopFailure，任务队列不必等静默兜底。
+    post(failed ? "StopFailure" : "Stop", sessionID, failed ? { error } : { message });
+    return;
+  }
+
+  // -- OpenCode v2 的流式事件 ------------------------------------------------
+
+  if (event.type === "session.text.delta") {
+    markActivity();
+    const previous = lastAssistant.get(sessionID) || "";
+    lastAssistant.set(sessionID, clip(previous + (data.delta || ""), 400));
+    cap(lastAssistant);
+    return;
+  }
+
+  if (event.type === "session.text.ended") {
+    markActivity();
+    lastAssistant.set(sessionID, clip(data.text || "", 400));
+    cap(lastAssistant);
+    return;
+  }
+
+  if (event.type === "session.tool.input.started") {
+    markActivity();
+    if (data.id) toolNames.set(data.id, data.name || "");
+    cap(toolNames);
+    return;
+  }
+
+  if (event.type === "session.tool.called") {
+    markActivity();
+    const name = toolNames.get(data.id) || data.name || "";
+    if (!toolStarted.has(data.id)) {
+      toolStarted.add(data.id);
+      cap(toolStarted);
+      post("PreToolUse", sessionID, {
+        tool_name: name,
+        tool_input: data.input,
+        model: lastModel.get(sessionID),
       });
-      return;
     }
-    if (event.type === "question.asked") {
-      sawActivity = true;
+    return;
+  }
+
+  if (event.type === "session.tool.success" || event.type === "session.tool.failed") {
+    markActivity();
+    const failed = event.type === "session.tool.failed";
+    const name = toolNames.get(data.id) || data.name || "";
+    // 某些工具可能没有 called 事件；补一条 PreToolUse 再收尾。
+    if (!toolStarted.has(data.id)) {
+      post("PreToolUse", sessionID, {
+        tool_name: name,
+        tool_input: data.input,
+        model: lastModel.get(sessionID),
+      });
+    }
+    toolStarted.delete(data.id);
+    toolNames.delete(data.id);
+    post(failed ? "PostToolUseFailure" : "PostToolUse", sessionID, {
+      tool_name: name,
+      ...(failed
+        ? { error: data.error || "工具执行失败" }
+        : { tool_response: data.content }),
+      model: lastModel.get(sessionID),
+    });
+    return;
+  }
+
+  // -- 权限 / 提问 -----------------------------------------------------------
+
+  if (event.type === "permission.asked") {
+    sawActivity = true;
+    attention = true;
+    const permission = data.permission ?? data;
+    const pattern = Array.isArray(data.patterns) ? data.patterns[0] : "";
+    const name =
+      typeof permission === "string"
+        ? permission
+        : permission.source?.type || permission.type || permission.tool || "";
+    const info = {
+      tool_name: name,
+      // 1.x 的 permission 是权限名（external_directory / bash …），patterns
+      // 是被访问的路径；带上路径，排队的两张卡片才分得清。
+      message:
+        permission.title ||
+        permission.message ||
+        (name && pattern ? `${name} · ${pattern}` : "等待权限确认"),
+      // always 非空表示这次请求能记住规则；桌面端据此决定是否显示「总是允许」。
+      allow_always: Array.isArray(data.always) && data.always.length > 0,
+    };
+    // 只展示队首请求：TUI 按到达顺序逐个弹出对话框，卡片跟当前弹出的那个
+    // 保持一致；后面的请求等前一个被回答时再补发。
+    const showingQueued = pendingPermissions.size > 0;
+    if (typeof data.id === "string") {
+      pendingPermissions.set(data.id, info);
+      cap(pendingPermissions);
+    }
+    if (!showingQueued) post("PermissionRequest", sessionID, info);
+    return;
+  }
+
+  if (event.type === "form.created") {
+    sawActivity = true;
+    attention = true;
+    const form = data.form ?? {};
+    const question =
+      form.questions?.[0]?.question ||
+      form.question ||
+      form.message ||
+      form.title ||
+      "等待用户回答";
+    post("QuestionAsked", sessionID, { message: clip(question, 200) });
+    return;
+  }
+
+  if (event.type === "question.asked") {
+    sawActivity = true;
+    attention = true;
+    const question =
+      data.questions?.[0]?.question ||
+      data.question ||
+      data.message ||
+      "等待用户回答";
+    post("QuestionAsked", sessionID, { message: clip(question, 200) });
+    return;
+  }
+
+  if (event.type === "permission.replied") {
+    // 同一会话可能同时有多个权限请求在排队（例如并发读取导出目录与技能包）。
+    // 回复其中一个时如果还有未处理的请求，就补发下一张卡片；直接发
+    // PermissionResolved 会让桌面端先清掉卡片，剩下的对话框只能回终端确认。
+    // permission.replied 的 payload 是 { requestID, reply }。
+    const requestID = typeof data.requestID === "string" ? data.requestID : "";
+    if (requestID) {
+      pendingPermissions.delete(requestID);
+    } else {
+      pendingPermissions.clear();
+    }
+    const next = pendingPermissions.values().next().value;
+    if (next) {
       attention = true;
-      const question =
-        event.properties?.questions?.[0]?.question ||
-        event.properties?.question ||
-        event.properties?.message ||
-        "等待用户回答";
-      post("QuestionAsked", sessionID, { message: clip(question, 200) });
-      return;
-    }
-    if (
-      event.type === "permission.replied" ||
-      event.type === "question.replied" ||
-      event.type === "question.rejected"
-    ) {
+      post("PermissionRequest", sessionID, next);
+    } else {
       attention = false;
       post("PermissionResolved", sessionID, {});
+    }
+    return;
+  }
+
+  if (
+    event.type === "question.replied" ||
+    event.type === "question.rejected" ||
+    event.type === "form.replied" ||
+    event.type === "form.cancelled"
+  ) {
+    attention = false;
+    post("PermissionResolved", sessionID, {});
+    return;
+  }
+
+  // -- 回合开始 / 错误 / 结束 ------------------------------------------------
+
+  if (
+    event.type === "session.next.prompt.admitted" ||
+    event.type === "session.next.step.started" ||
+    event.type === "session.step.started" ||
+    event.type === "session.text.started"
+  ) {
+    // 只有真正处理过用户提示词后才允许 idle 结束本轮；启动时的 idle 不算。
+    markActivity();
+    if (event.type === "session.step.started" && data.model?.id) {
+      lastModel.set(sessionID, data.model.id);
+      cap(lastModel);
+    }
+    const prompt = data.prompt?.text ?? data.text;
+    if (prompt) {
+      post("UserPromptSubmit", sessionID, {
+        prompt: clip(prompt, 200),
+        model: lastModel.get(sessionID),
+      });
+    }
+    return;
+  }
+
+  if (event.type === "session.error") {
+    const error = data.error || data.message || "会话执行出错";
+    lastError = clip(error, 200);
+    post("SessionError", sessionID, { error: lastError });
+    return;
+  }
+
+  if (event.type === "session.idle") {
+    if (attention || !sawUserPrompt || !sawActivity) return;
+    sawUserPrompt = false;
+    sawActivity = false;
+    const message = lastAssistant.get(sessionID) || "";
+    lastAssistant.delete(sessionID);
+    pendingPermissions.clear();
+    // 出错后没有恢复就直接 idle，按失败收尾，不能标记成完成。
+    if (lastError) {
+      post("StopFailure", sessionID, { error: lastError });
+      lastError = "";
+    } else {
+      post("Stop", sessionID, { message });
+    }
+    return;
+  }
+
+  // -- OpenCode v1 的完整消息事件（v2 不再发送） -----------------------------
+
+  if (event.type === "message.updated") {
+    const info = data.info;
+    if (info?.id && info.role) messageRoles.set(info.id, info.role);
+    if (info?.modelID && sessionID) lastModel.set(sessionID, info.modelID);
+    cap(messageRoles);
+    cap(lastModel);
+    const created = info?.time?.created;
+    // 历史会话加载也会发 user message；只认插件启动之后创建的消息。
+    if (info?.role === "user" && typeof created === "number" && created >= startedAt - 2000) {
+      markActivity();
+    }
+    return;
+  }
+
+  if (event.type === "message.part.updated") {
+    const part = data.part;
+    if (!part) return;
+    if (part.type === "text") {
+      const role = messageRoles.get(part.messageID);
+      if (role === "user" && part.text && !userPromptPosted.has(part.messageID)) {
+        userPromptPosted.add(part.messageID);
+        cap(userPromptPosted);
+        // 历史会话加载时也会发 text part；只有本轮 busy 之后才上报。
+        if (sawUserPrompt) {
+          post("UserPromptSubmit", sessionID, {
+            prompt: clip(part.text, 200),
+            model: lastModel.get(sessionID),
+          });
+        }
+      } else if (role === "assistant" && part.text && sawUserPrompt) {
+        lastAssistant.set(sessionID, clip(part.text, 400));
+        cap(lastAssistant);
+      }
       return;
     }
-    if (
-      event.type === "session.next.prompt.admitted" ||
-      event.type === "session.next.step.started"
-    ) {
-      // 只有真正处理过用户提示词后才允许 idle 结束本轮；启动时的 idle 不算。
-      sawUserPrompt = true;
-      sawActivity = true;
-      lastError = "";
-      const prompt = event.properties?.prompt?.text;
-      if (prompt) {
-        post("UserPromptSubmit", sessionID, {
-          prompt: clip(prompt, 200),
+    if (part.type === "tool") {
+      const key = part.callID || part.id || `${part.tool}:${sessionID}`;
+      const status = part.state?.status || "";
+      if (toolStates.get(key) === status) return;
+      toolStates.set(key, status);
+      cap(toolStates);
+      if (status === "running" || status === "pending") {
+        if (toolStarted.has(key)) return;
+        toolStarted.add(key);
+        cap(toolStarted);
+        // 能执行工具说明提示词已经被处理，启动阶段的 idle 不再算本轮结束。
+        markActivity();
+        post("PreToolUse", sessionID, {
+          tool_name: part.tool,
+          tool_input: part.state?.input,
+          model: lastModel.get(sessionID),
+        });
+      } else if (status === "completed") {
+        toolStarted.delete(key);
+        post("PostToolUse", sessionID, {
+          tool_name: part.tool,
+          tool_response: part.state?.output,
+          model: lastModel.get(sessionID),
+        });
+      } else if (status === "error") {
+        toolStarted.delete(key);
+        post("PostToolUseFailure", sessionID, {
+          tool_name: part.tool,
+          error: part.state?.error || "工具执行失败",
           model: lastModel.get(sessionID),
         });
       }
       return;
     }
-    if (event.type === "session.error") {
-      const error = event.properties?.error || event.properties?.message || "会话执行出错";
-      lastError = clip(error, 200);
-      post("SessionError", sessionID, { error: lastError });
-      return;
-    }
-    if (event.type === "session.idle") {
-      if (attention || !sawUserPrompt || !sawActivity) return;
-      sawUserPrompt = false;
-      sawActivity = false;
-      const message = lastAssistant.get(sessionID) || "";
-      lastAssistant.delete(sessionID);
-      // 出错后没有恢复就直接 idle，按失败收尾，不能标记成完成。
-      if (lastError) {
-        post("StopFailure", sessionID, { error: lastError });
-        lastError = "";
-      } else {
-        post("Stop", sessionID, { message });
-      }
-    }
+  }
+};
+
+const EVENT_TYPES = [
+  "session.created",
+  "session.deleted",
+  "session.status",
+  "session.text.started",
+  "session.text.delta",
+  "session.text.ended",
+  "session.tool.input.started",
+  "session.tool.input.ended",
+  "session.tool.called",
+  "session.tool.success",
+  "session.tool.failed",
+  "permission.asked",
+  "permission.replied",
+  "form.created",
+  "form.replied",
+  "form.cancelled",
+  "session.execution.started",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+  "session.inbox.enqueued",
+  "session.step.started",
+  "session.idle",
+];
+
+// 默认导出同时兼容两代加载器：
+// - OpenCode 1.x 要求 default 导出对象带 server()，并调用它拿到 v1 hook 表；
+// - OpenCode 2.x 只读 id 与 setup()，忽略 server()，事件走 async iterable。
+export default {
+  id: "tapd-session-monitor",
+
+  async server() {
+    return {
+      event: async ({ event }) => {
+        handleEvent(event);
+      },
+    };
   },
-});
+
+  async setup(ctx) {
+    // 订阅要在后台跑：setup 必须尽快返回，否则 OpenCode 会卡在
+    // "plugins did not finish activating"。
+    const events = ctx.event.subscribe({ types: EVENT_TYPES });
+    void (async () => {
+      try {
+        for await (const event of events) {
+          handleEvent(event);
+        }
+      } catch {
+        // 服务退出或插件重载时订阅会中断，不影响会话本身。
+      }
+    })();
+  },
+};
 "#;
 
 fn install_opencode_plugin() -> Result<(), String> {
     write_opencode_plugin(&opencode_plugin_path()?)
+}
+
+/// 启动时修复历史版本写入的 OpenCode 插件。只覆盖已存在的文件，不会给
+/// 从未使用过 OpenCode 的用户凭空创建全局插件。
+pub(crate) fn repair_opencode_plugin() {
+    let Ok(path) = opencode_plugin_path() else {
+        return;
+    };
+    if !path.is_file() {
+        return;
+    }
+    if let Err(error) = write_opencode_plugin(&path) {
+        tracing::warn!(%error, "failed to refresh the opencode plugin");
+    }
 }
 
 fn write_opencode_plugin(path: &Path) -> Result<(), String> {
@@ -1218,6 +1495,22 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
         cleanup(&dir);
+    }
+
+    #[test]
+    fn opencode_plugin_supports_v1_and_v2_loaders() {
+        // v1：default 导出必须带 server()（返回 v1 的 hook 表）；
+        // v2：同一个 default 导出提供 id 与 setup()。
+        assert!(OPENCODE_PLUGIN.contains("export default {"));
+        assert!(OPENCODE_PLUGIN.contains("async server()"));
+        assert!(OPENCODE_PLUGIN.contains("id: \"tapd-session-monitor\""));
+        assert!(OPENCODE_PLUGIN.contains("ctx.event.subscribe"));
+        // setup 必须立即返回，订阅放到后台，否则 v2 会卡在插件激活。
+        assert!(OPENCODE_PLUGIN.contains("void (async () =>"));
+        // 并发权限排队：回复一个请求后如果还有未处理的，补发下一张卡片，
+        // 不能提前发 PermissionResolved（否则桌面端只剩终端里的对话框）。
+        assert!(OPENCODE_PLUGIN.contains("pendingPermissions"));
+        assert!(OPENCODE_PLUGIN.contains("requestID"));
     }
 
     #[cfg(unix)]

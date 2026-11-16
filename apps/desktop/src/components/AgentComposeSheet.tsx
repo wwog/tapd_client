@@ -4,10 +4,12 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MDEditor, { type ICommand } from "@uiw/react-md-editor";
 import { getCommands as getChineseCommands } from "@uiw/react-md-editor/commands-cn";
 import {
+  Cpu,
   FileText,
   Image as ImageIcon,
   Loader2,
   Paperclip,
+  ShieldCheck,
   Sparkles,
   Video,
   X,
@@ -15,12 +17,20 @@ import {
 import clsx from "clsx";
 
 import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
+import {
+  buildModelOptions,
+  readRecentModels,
+  readRememberedModel,
+  rememberModel,
+  useRuntimeModels,
+} from "../lib/agentModels";
 import { useAgentScan } from "../lib/agentScan";
 import { bugTitle } from "../lib/bug";
 import { useResolvedTheme } from "../lib/appearance";
 import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { AgentPicker } from "./AgentPicker";
+import { SelectPicker } from "./SelectPicker";
 import { Button, ModalDragStrip } from "./ui";
 
 export type AgentComposePayload = {
@@ -66,6 +76,8 @@ export function AgentComposeSheet(props: Props) {
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState("");
   const { byRuntime, snapshot: scan } = useAgentScan();
+  /** 模型列表与「上次选择」和对话页共用；切换运行时自动重取。 */
+  const { models: runtimeModels, loading: modelsLoading } = useRuntimeModels(runtimeId);
 
   // Every opening starts clean; the bug id is part of the panel key upstream,
   // so switching targets also remounts this sheet.
@@ -93,7 +105,8 @@ export function AgentComposeSheet(props: Props) {
         const nextRuntimeId = configResult.config.runtimeId;
         setRuntimeId(nextRuntimeId);
         const defaults = configResult.config.runtimeOptions?.[nextRuntimeId];
-        setModel(defaults?.model ?? "");
+        // 与对话页共用「上次选择」；没有记录时才回退到配置里的默认模型。
+        setModel(readRememberedModel(nextRuntimeId) ?? defaults?.model ?? "");
         setPermissionMode(
           defaults?.permissionMode ||
             nextRuntimes
@@ -108,12 +121,12 @@ export function AgentComposeSheet(props: Props) {
     };
   }, [open]);
 
-  /** 切换运行时同时把模型/权限切回该运行时的默认值。 */
+  /** 切换运行时同时把模型/权限切回该运行时的默认值（模型优先用共享偏好）。 */
   const changeRuntime = useCallback(
     (nextId: string) => {
       setRuntimeId(nextId);
       const defaults = config?.runtimeOptions?.[nextId];
-      setModel(defaults?.model ?? "");
+      setModel(readRememberedModel(nextId) ?? defaults?.model ?? "");
       setPermissionMode(
         defaults?.permissionMode ||
           runtimes.find((runtime) => runtime.id === nextId)?.permissions[0]?.id ||
@@ -126,6 +139,26 @@ export function AgentComposeSheet(props: Props) {
   const selectedRuntime =
     runtimes.find((runtime) => runtime.id === runtimeId) ?? null;
   const permissionOptions = selectedRuntime?.permissions ?? [];
+  const recentModels = useMemo(() => readRecentModels(runtimeId), [model, runtimeId]);
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        runtimeModels,
+        selectedRuntime?.models,
+        model,
+        recentModels,
+      ),
+    [model, recentModels, runtimeModels, selectedRuntime?.models],
+  );
+
+  /** 选择模型时同时写入共享偏好，对话页下次打开会沿用。 */
+  const chooseModel = useCallback(
+    (next: string) => {
+      setModel(next);
+      rememberModel(runtimeId, next);
+    },
+    [runtimeId],
+  );
 
   const addPaths = useCallback((paths: string[]) => {
     const next = paths.map((path) => path.trim()).filter(Boolean);
@@ -342,37 +375,44 @@ export function AgentComposeSheet(props: Props) {
               disabled={submitting || runtimes.length === 0}
               onChange={changeRuntime}
             />
-            <input
+            <SelectPicker
+              compact
+              searchable
+              allowCustom
+              placement="up"
+              className="w-[190px]"
               value={model}
-              onChange={(event) => setModel(event.target.value)}
-              list={selectedRuntime ? `agent-model-${selectedRuntime.id}` : undefined}
-              disabled={submitting}
-              spellCheck={false}
-              title="本次任务的模型；留空使用运行时的默认模型"
+              options={modelOptions}
+              onChange={chooseModel}
+              leadingIcon={<Cpu size={13} />}
               placeholder="默认模型"
-              className="h-[30px] w-[170px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
+              title="本次任务的模型；留空使用运行时的默认模型"
+              disabled={submitting}
+              menuHint={
+                modelsLoading
+                  ? "正在读取模型列表…"
+                  : runtimeModels?.error
+                    ? "无法读取模型列表，可直接输入模型名"
+                    : undefined
+              }
             />
-            {selectedRuntime ? (
-              <datalist id={`agent-model-${selectedRuntime.id}`}>
-                {selectedRuntime.models.map((item) => (
-                  <option key={item} value={item} />
-                ))}
-              </datalist>
-            ) : null}
-            {permissionOptions.length > 1 ? (
-              <select
+            {permissionOptions.length > 0 ? (
+              <SelectPicker
+                compact
+                placement="up"
+                className="w-[150px]"
                 value={permissionMode || permissionOptions[0]?.id || "default"}
-                onChange={(event) => setPermissionMode(event.target.value)}
-                disabled={submitting}
+                options={permissionOptions.map((option) => ({
+                  value: option.id,
+                  label: option.label,
+                  description: option.description,
+                }))}
+                onChange={setPermissionMode}
+                leadingIcon={<ShieldCheck size={13} />}
+                placeholder="默认权限"
                 title="本次任务的访问权限"
-                className="h-[30px] w-[150px] rounded-lg border border-border bg-surface px-2 text-ui-xs text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
-              >
-                {permissionOptions.map((option) => (
-                  <option key={option.id} value={option.id} title={option.description}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                disabled={submitting}
+              />
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
