@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { Check, ChevronDown, Search } from "lucide-react";
 
 import { useDismiss } from "../hooks/useDismiss";
+import { t } from "../lib/i18n";
 import { computeMenuPosition, type MenuPosition } from "../lib/menuPosition";
 
 export type SelectOption = {
@@ -49,7 +50,7 @@ export function SelectPicker(props: Props) {
     value,
     options,
     onChange,
-    placeholder = "请选择",
+    placeholder = t("common.select"),
     emptyHint,
     leadingIcon,
     compact = false,
@@ -191,7 +192,7 @@ export function SelectPicker(props: Props) {
             <>
               <button
                 type="button"
-                aria-label="关闭选择"
+                aria-label={t("common.picker.close")}
                 tabIndex={-1}
                 className="fixed inset-0 z-[110] cursor-default"
                 onClick={close}
@@ -221,7 +222,9 @@ export function SelectPicker(props: Props) {
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
                         onKeyDown={onSearchKeyDown}
-                        placeholder={allowCustom ? "搜索或输入模型" : "搜索"}
+                        placeholder={
+                          allowCustom ? t("common.picker.searchOrTypeModel") : t("common.search")
+                        }
                         className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
                       />
                     </div>
@@ -236,7 +239,7 @@ export function SelectPicker(props: Props) {
                       className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-50"
                     >
                       <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
-                        使用「{custom}」
+                        {t("common.picker.useValue", { value: custom })}
                       </span>
                     </button>
                   ) : null}
@@ -292,7 +295,7 @@ export function SelectPicker(props: Props) {
 
                   {shown.length === 0 && !custom ? (
                     <div className="px-2 py-3 text-center text-ui-xs text-slate-400">
-                      没有匹配项
+                      {t("agent.picker.noMatch")}
                     </div>
                   ) : null}
                 </div>

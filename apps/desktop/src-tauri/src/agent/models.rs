@@ -18,6 +18,7 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use tapd_i18n::{tr, tr_args};
 
 use crate::shell_path;
 
@@ -96,7 +97,7 @@ fn read_line_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
     let output = run_to_completion(binary, &["models"], None)?;
     let models = parse_line_models(&output);
     if models.is_empty() {
-        Err(format!("{} models 没有输出", binary.display()))
+        Err(tr_args("agent.models.list.empty", &[&binary.display()]))
     } else {
         Ok(models)
     }
@@ -144,15 +145,15 @@ fn read_claude_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("无法启动 {display}：{error}"))?;
+        .map_err(|error| tr_args("agent.scan.start.failed", &[&display, &error]))?;
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| format!("{display} stdin 不可用"))?;
+        .ok_or_else(|| tr_args("agent.models.stdin.unavailable", &[&display]))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| format!("{display} stdout 不可用"))?;
+        .ok_or_else(|| tr_args("agent.models.stdout.unavailable", &[&display]))?;
     let _ = writeln!(stdin, "{CLAUDE_LIST_MODELS_STDIN}");
     let _ = stdin.flush();
 
@@ -173,7 +174,7 @@ fn read_claude_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
         if remaining.is_zero() {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("{display} 模型列表读取超时"));
+            return Err(tr_args("agent.models.timeout", &[&display]));
         }
         match rx.recv_timeout(remaining) {
             Ok(line) => {
@@ -185,7 +186,7 @@ fn read_claude_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
             Err(RecvTimeoutError::Timeout) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{display} 模型列表读取超时"));
+                return Err(tr_args("agent.models.timeout", &[&display]));
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -195,7 +196,7 @@ fn read_claude_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
     let _ = child.kill();
     let _ = child.wait();
     if models.is_empty() {
-        Err(format!("{display} 没有返回模型列表"))
+        Err(tr_args("agent.models.list.missing", &[&display]))
     } else {
         Ok(models)
     }
@@ -293,15 +294,15 @@ fn read_codex_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("无法启动 {display}：{error}"))?;
+        .map_err(|error| tr_args("agent.scan.start.failed", &[&display, &error]))?;
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| format!("{display} stdin 不可用"))?;
+        .ok_or_else(|| tr_args("agent.models.stdin.unavailable", &[&display]))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| format!("{display} stdout 不可用"))?;
+        .ok_or_else(|| tr_args("agent.models.stdout.unavailable", &[&display]))?;
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -367,7 +368,7 @@ fn read_codex_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
     let _ = child.kill();
     let _ = child.wait();
     if models.is_empty() {
-        Err(format!("{display} 没有返回模型列表"))
+        Err(tr_args("agent.models.list.missing", &[&display]))
     } else {
         Ok(models)
     }
@@ -388,16 +389,17 @@ fn codex_request(
         Some(params) => json!({ "method": method, "id": id, "params": params }),
         None => json!({ "method": method, "id": id }),
     };
-    writeln!(stdin, "{payload}").map_err(|error| format!("写入 Codex 请求失败：{error}"))?;
+    writeln!(stdin, "{payload}")
+        .map_err(|error| tr_args("agent.models.codex.write.failed", &[&error]))?;
     stdin
         .flush()
-        .map_err(|error| format!("写入 Codex 请求失败：{error}"))?;
+        .map_err(|error| tr_args("agent.models.codex.write.failed", &[&error]))?;
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             let _ = child.kill();
-            return Err("Codex 模型列表读取超时".to_string());
+            return Err(tr("agent.models.codex.timeout").to_string());
         }
         match rx.recv_timeout(remaining) {
             Ok(line) => {
@@ -412,16 +414,17 @@ fn codex_request(
                     continue;
                 }
                 if let Some(error) = value.get("error") {
-                    return Err(format!("Codex {method} 失败：{error}"));
+                    let message = tr_args("agent.models.codex.request.failed", &[&method, &error]);
+                    return Err(message);
                 }
                 return Ok(value.get("result").cloned().unwrap_or(Value::Null));
             }
             Err(RecvTimeoutError::Timeout) => {
                 let _ = child.kill();
-                return Err("Codex 模型列表读取超时".to_string());
+                return Err(tr("agent.models.codex.timeout").to_string());
             }
             Err(RecvTimeoutError::Disconnected) => {
-                return Err("Codex app-server 已退出".to_string());
+                return Err(tr("agent.models.codex.exited").to_string());
             }
         }
     }
@@ -474,11 +477,11 @@ fn read_omp_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("无法启动 {display}：{error}"))?;
+        .map_err(|error| tr_args("agent.scan.start.failed", &[&display, &error]))?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| format!("{display} stdout 不可用"))?;
+        .ok_or_else(|| tr_args("agent.models.stdout.unavailable", &[&display]))?;
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
@@ -526,7 +529,7 @@ fn read_omp_models(binary: &Path) -> Result<Vec<AgentModelOption>, String> {
         None => parse_omp_models(&output).unwrap_or_default(),
     };
     if models.is_empty() {
-        Err(format!("{display} 没有返回模型列表"))
+        Err(tr_args("agent.models.list.missing", &[&display]))
     } else {
         Ok(models)
     }
@@ -536,14 +539,14 @@ fn parse_omp_models(output: &str) -> Result<Vec<AgentModelOption>, String> {
     let trimmed = output.trim();
     let (start, end) = match (trimmed.find('{'), trimmed.rfind('}')) {
         (Some(start), Some(end)) if end > start => (start, end),
-        _ => return Err("OMP 模型列表不是 JSON".to_string()),
+        _ => return Err(tr("agent.models.omp.notJson").to_string()),
     };
     let value: Value = serde_json::from_str(&trimmed[start..=end])
-        .map_err(|error| format!("解析 OMP 模型列表失败：{error}"))?;
+        .map_err(|error| tr_args("agent.models.omp.parse.failed", &[&error]))?;
     let rows = value
         .get("models")
         .and_then(Value::as_array)
-        .ok_or_else(|| "OMP 模型列表格式不正确".to_string())?;
+        .ok_or_else(|| tr("agent.models.omp.invalid").to_string())?;
     let mut models: Vec<AgentModelOption> = Vec::new();
     for row in rows {
         let provider = row
@@ -608,7 +611,7 @@ fn run_to_completion(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("无法启动 {display}：{error}"))?;
+        .map_err(|error| tr_args("agent.scan.start.failed", &[&display, &error]))?;
     if let Some(payload) = stdin_payload {
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(payload.as_bytes());
@@ -624,17 +627,17 @@ fn run_to_completion(
                 if started.elapsed() >= PROBE_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("{display} 模型列表读取超时"));
+                    return Err(tr_args("agent.models.timeout", &[&display]));
                 }
                 thread::sleep(Duration::from_millis(80));
             }
-            Err(error) => return Err(format!("等待 {display} 失败：{error}")),
+            Err(error) => return Err(tr_args("agent.models.wait.failed", &[&display, &error])),
         }
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("读取 {display} 输出失败：{error}"))?;
+        .map_err(|error| tr_args("agent.models.read.output.failed", &[&display, &error]))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -644,9 +647,9 @@ fn run_to_completion(
             .find(|line| !line.is_empty())
             .unwrap_or("");
         return Err(if detail.is_empty() {
-            format!("{display} 没有输出")
+            tr_args("agent.models.noOutput", &[&display])
         } else {
-            format!("{display} 没有输出：{detail}")
+            tr_args("agent.models.noOutput.detail", &[&display, &detail])
         });
     }
     Ok(stdout)

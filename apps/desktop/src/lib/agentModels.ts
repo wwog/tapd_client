@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { SelectOption } from "../components/SelectPicker";
 import { agentApi, type AgentModels, type AgentRuntimeDescriptor } from "./agent";
+import { t } from "./i18n";
 import { readPref, writePref } from "./uiPrefs";
 
 /**
@@ -146,7 +147,11 @@ export function buildModelOptions(
   }
 
   const options: SelectOption[] = [
-    { value: "", label: "默认模型", description: "使用运行时的默认模型" },
+    {
+      value: "",
+      label: t("chat.defaultModel"),
+      description: t("chat.runtimeDefaultModel"),
+    },
   ];
   const added = new Set<string>();
 
@@ -160,7 +165,7 @@ export function buildModelOptions(
       value,
       label: info?.label ?? value,
       description: info?.description,
-      group: "最近使用",
+      group: t("chat.recentModels"),
     });
   }
 

@@ -30,6 +30,7 @@ import { useAgentScan } from "../lib/agentScan";
 import { relativeTime, type Workspace } from "../lib/api";
 import { chatApi, type ChatSessionView, type ChatStatus } from "../lib/chat";
 import type { ToastFn } from "../lib/feature";
+import { t } from "../lib/i18n";
 import { useAgentChat } from "../hooks/useAgentChat";
 import { useChatSessions } from "../hooks/useChatSessions";
 import { AgentChatPane } from "./AgentChatPane";
@@ -52,13 +53,27 @@ type ChatView = "chat" | "terminal";
 
 const STATUS_META: Record<
   ChatStatus,
-  { label: string; tone: "neutral" | "blue" | "green" | "red"; text: string }
+  { tone: "neutral" | "blue" | "green" | "red"; text: string }
 > = {
-  starting: { label: "启动中", tone: "blue", text: "text-sky-600" },
-  running: { label: "运行中", tone: "green", text: "text-emerald-600" },
-  stopped: { label: "已停止", tone: "neutral", text: "text-slate-400" },
-  failed: { label: "失败", tone: "red", text: "text-rose-600" },
+  starting: { tone: "blue", text: "text-sky-600" },
+  running: { tone: "green", text: "text-emerald-600" },
+  stopped: { tone: "neutral", text: "text-slate-400" },
+  failed: { tone: "red", text: "text-rose-600" },
 };
+
+/** 会话状态文案在渲染时取，避免模块级常量冻结启动语言。 */
+function statusLabel(status: ChatStatus): string {
+  switch (status) {
+    case "starting":
+      return t("chat.status.starting");
+    case "running":
+      return t("agent.status.running");
+    case "stopped":
+      return t("chat.status.stopped");
+    case "failed":
+      return t("common.failed");
+  }
+}
 
 /**
  * 对话页：左侧会话列表，右侧新建面板 / 会话详情。
@@ -262,7 +277,7 @@ export function ChatPage({
         <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
           <div className="flex shrink-0 items-center gap-1.5 border-b border-slate-100 px-3 py-2">
             <MessagesSquare size={13} className="text-slate-400" />
-            <span className="text-ui-sm text-slate-700">会话</span>
+            <span className="text-ui-sm text-slate-700">{t("chat.sessions")}</span>
             <Button
               size="sm"
               variant="secondary"
@@ -274,7 +289,7 @@ export function ChatPage({
                 setConfirmDelete(null);
               }}
             >
-              新建
+              {t("chat.new")}
             </Button>
           </div>
 
@@ -282,7 +297,7 @@ export function ChatPage({
             {sessions === null && loading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
                 <Loader2 size={13} className="animate-spin" />
-                正在读取会话…
+                {t("chat.reading")}
               </div>
             ) : error ? (
               <div className="m-1 rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-2 text-ui-xs leading-5 text-rose-700">
@@ -302,7 +317,7 @@ export function ChatPage({
               </div>
             ) : (
               <p className="px-2 py-6 text-center text-ui-xs text-slate-400">
-                还没有对话记录
+                {t("chat.noSessions")}
               </p>
             )}
           </div>
@@ -313,14 +328,14 @@ export function ChatPage({
             <div className="grid min-h-0 flex-1 place-items-center text-ui-caption text-slate-400">
               <div className="flex items-center gap-2">
                 <Loader2 size={14} className="animate-spin" />
-                正在读取会话…
+                {t("chat.reading")}
               </div>
             </div>
           ) : !config ? (
             <div className="grid min-h-0 flex-1 place-items-center text-ui-caption text-slate-400">
               <div className="flex items-center gap-2">
                 <Loader2 size={14} className="animate-spin" />
-                正在读取项目配置…
+                {t("chat.readingConfig")}
               </div>
             </div>
           ) : showForm ? (
@@ -332,9 +347,9 @@ export function ChatPage({
                   </div>
                   <h3
                     className="mt-3 text-ui-lg text-slate-900"
-                    title="请先在「项目」页为 TAPD 项目配置本地仓库路径，然后回到这里开启对话。"
+                    title={t("chat.noRepoHint")}
                   >
-                    还没有可用的项目目录
+                    {t("chat.noProjects")}
                   </h3>
                   <Button
                     size="sm"
@@ -342,7 +357,7 @@ export function ChatPage({
                     className="mt-4"
                     onClick={onOpenProjects}
                   >
-                    去配置项目
+                    {t("chat.configureProjects")}
                   </Button>
                 </div>
               </div>
@@ -355,14 +370,14 @@ export function ChatPage({
                     </div>
                     <h2
                       className="mt-3 text-ui-lg text-slate-900"
-                      title="会话会直接在项目仓库目录运行，不创建 worktree。"
+                      title={t("chat.repoDirectHint")}
                     >
-                      新建对话
+                      {t("chat.newChat")}
                     </h2>
                   </div>
 
                   <div className="mt-6 space-y-4">
-                    <Field label="项目">
+                    <Field label={t("chat.fieldProject")}>
                       <SelectPicker
                         value={projectId}
                         options={projects.map((item) => ({
@@ -371,8 +386,8 @@ export function ChatPage({
                           description: item.repoPath,
                         }))}
                         onChange={setProjectId}
-                        placeholder="选择项目"
-                        emptyHint="选择已配置仓库的项目"
+                        placeholder={t("chat.selectProject")}
+                        emptyHint={t("chat.projectHint")}
                         leadingIcon={<FolderGit2 size={14} />}
                         disabled={projects.length === 0}
                       />
@@ -386,7 +401,7 @@ export function ChatPage({
                         hasScan={Boolean(scan)}
                         disabled={runtimes.length === 0}
                         onChange={setRuntimeId}
-                        emptyHint="选择本次对话使用的 Agent"
+                        emptyHint={t("chat.selectAgent")}
                         className="w-full"
                       />
                     </Field>
@@ -396,7 +411,7 @@ export function ChatPage({
                         permissionOptions.length > 0 ? "grid grid-cols-2 gap-3" : undefined
                       }
                     >
-                      <Field label="模型">
+                      <Field label={t("chat.fieldModel")}>
                         <SelectPicker
                           compact
                           searchable
@@ -405,20 +420,20 @@ export function ChatPage({
                           options={modelOptions}
                           onChange={chooseModel}
                           leadingIcon={<Cpu size={13} />}
-                          placeholder="默认模型"
-                          title="本次对话的模型；留空使用运行时的默认模型"
+                          placeholder={t("chat.defaultModel")}
+                          title={t("chat.sessionModelHint")}
                           menuHint={
                             modelsLoading
-                              ? "正在读取模型列表…"
+                              ? t("agent.models.loading")
                               : runtimeModels?.error
-                                ? "无法读取模型列表，可直接输入模型名"
+                                ? t("agent.models.error")
                                 : undefined
                           }
                         />
                       </Field>
 
                       {permissionOptions.length > 0 ? (
-                        <Field label="权限">
+                        <Field label={t("chat.fieldPermission")}>
                           <SelectPicker
                             compact
                             value={permissionMode || permissionOptions[0]?.id || "default"}
@@ -429,7 +444,7 @@ export function ChatPage({
                             }))}
                             onChange={setPermissionMode}
                             leadingIcon={<ShieldCheck size={13} />}
-                            placeholder="默认权限"
+                            placeholder={t("agent.config.permissionPlaceholder")}
                           />
                         </Field>
                       ) : null}
@@ -437,7 +452,7 @@ export function ChatPage({
 
                     {runtimes.length === 0 ? (
                       <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-ui-xs leading-5 text-amber-700">
-                        没有检测到可用的 Agent，请先在「Agent → 配置」里检查命令与安装状态。
+                        {t("chat.noAgents")}
                       </div>
                     ) : null}
 
@@ -449,7 +464,7 @@ export function ChatPage({
                       onClick={() => void startSession()}
                       icon={<Play size={12} />}
                     >
-                      开始对话
+                      {t("chat.startChat")}
                     </Button>
                   </div>
                 </div>
@@ -471,7 +486,7 @@ export function ChatPage({
                       </h2>
                       {statusMeta ? (
                         <Badge tone={statusMeta.tone} dot>
-                          {statusMeta.label}
+                          {statusLabel(selected.status)}
                         </Badge>
                       ) : null}
                     </div>
@@ -481,7 +496,7 @@ export function ChatPage({
                         {runtimeName(selected.runtimeId)}
                       </span>
                       {currentModel ? (
-                        <span className="truncate font-mono" title="当前模型">
+                        <span className="truncate font-mono" title={t("chat.currentModel")}>
                           {currentModel}
                         </span>
                       ) : null}
@@ -499,7 +514,7 @@ export function ChatPage({
                         icon={<Square size={11} />}
                         onClick={() => void stopSession()}
                       >
-                        停止
+                        {t("chat.stop")}
                       </Button>
                     ) : (
                       <Button
@@ -509,12 +524,12 @@ export function ChatPage({
                         disabled={!selected.agentSessionId}
                         title={
                           selected.agentSessionId
-                            ? "用同一个 CLI 会话继续对话"
-                            : "该运行时没有捕获到会话 id，无法续接"
+                            ? t("chat.resumeHint")
+                            : t("chat.resumeUnavailable")
                         }
                         onClick={() => void resumeSession()}
                       >
-                        继续会话
+                        {t("chat.resume")}
                       </Button>
                     )}
                     <Button
@@ -522,7 +537,9 @@ export function ChatPage({
                       variant={confirmDelete === selected.id ? "danger" : "ghost"}
                       onClick={() => void removeSession()}
                     >
-                      {confirmDelete === selected.id ? "确认删除" : "删除"}
+                      {confirmDelete === selected.id
+                        ? t("chat.confirmDelete")
+                        : t("common.delete")}
                     </Button>
                     {running && canChat ? (
                       <Segmented<ChatView>
@@ -536,12 +553,12 @@ export function ChatPage({
                         options={[
                           {
                             value: "chat",
-                            label: "对话",
+                            label: t("agent.view.chat"),
                             icon: <MessagesSquare size={11} />,
                           },
                           {
                             value: "terminal",
-                            label: "终端",
+                            label: t("agent.view.terminal"),
                             icon: <Terminal size={11} />,
                           },
                         ]}
@@ -574,10 +591,10 @@ export function ChatPage({
                       <Loader2 size={18} className="animate-spin" />
                     </div>
                     <p className="mt-2 text-ui-caption text-slate-600">
-                      正在启动 Agent…
+                      {t("chat.startingAgent")}
                     </p>
                     <p className="mt-1 text-ui-2xs leading-5 text-slate-400">
-                      首次输出后即可在对话中发送消息，也可以先切换到终端查看启动过程。
+                      {t("chat.startingHint")}
                     </p>
                     <Button
                       size="sm"
@@ -591,7 +608,7 @@ export function ChatPage({
                         }))
                       }
                     >
-                      切换到终端
+                      {t("chat.switchToTerminal")}
                     </Button>
                   </div>
                 </div>
@@ -624,10 +641,10 @@ export function ChatPage({
                       <Terminal size={22} />
                     </div>
                     <p className="mt-3 text-ui-base text-slate-700">
-                      该运行时不支持对话视图
+                      {t("chat.noChatView")}
                     </p>
                     <p className="mt-1 text-ui-xs leading-5 text-slate-400">
-                      重新开始会话后，可以在终端中继续操作。
+                      {t("chat.terminalFallback")}
                     </p>
                   </div>
                 </div>
@@ -684,7 +701,9 @@ function SessionRow({
       </div>
       <div className="mt-0.5 flex items-center gap-1.5 pl-[20px] text-ui-2xs">
         <span className="truncate text-slate-400">{session.workspaceName}</span>
-        <span className={clsx("ml-auto shrink-0", meta.text)}>{meta.label}</span>
+        <span className={clsx("ml-auto shrink-0", meta.text)}>
+          {statusLabel(session.status)}
+        </span>
       </div>
     </button>
   );

@@ -421,7 +421,7 @@ const handleEvent = (event) => {
       post("SubagentStart", "", { agent_id: id, subagent_type: info?.title || "" });
     } else {
       rootSessions.add(id);
-      post("SessionStart", id, { message: "会话已启动" });
+      post("SessionStart", id, { message: "会话已启动" }); // i18n-exempt: hook script body
     }
     return;
   }
@@ -452,7 +452,7 @@ const handleEvent = (event) => {
     if (type === "busy" || type === "retry") {
       markActivity();
       if (type === "retry") {
-        post("Notification", sessionID, { message: "正在重试" });
+        post("Notification", sessionID, { message: "正在重试" }); // i18n-exempt: hook script body
       } else {
         post("AgentStart", sessionID, {});
       }
@@ -493,7 +493,7 @@ const handleEvent = (event) => {
   ) {
     const failed = event.type === "session.execution.failed";
     const error = failed
-      ? clip(data.error?.message || data.error || "会话执行出错", 200)
+      ? clip(data.error?.message || data.error || "会话执行出错", 200) // i18n-exempt: hook script body
       : "";
     const message = lastAssistant.get(sessionID) || "";
     sawUserPrompt = false;
@@ -564,7 +564,7 @@ const handleEvent = (event) => {
     post(failed ? "PostToolUseFailure" : "PostToolUse", sessionID, {
       tool_name: name,
       ...(failed
-        ? { error: data.error || "工具执行失败" }
+        ? { error: data.error || "工具执行失败" } // i18n-exempt: hook script body
         : { tool_response: data.content }),
       model: lastModel.get(sessionID),
     });
@@ -589,7 +589,7 @@ const handleEvent = (event) => {
       message:
         permission.title ||
         permission.message ||
-        (name && pattern ? `${name} · ${pattern}` : "等待权限确认"),
+        (name && pattern ? `${name} · ${pattern}` : "等待权限确认"), // i18n-exempt: hook script body
       // always 非空表示这次请求能记住规则；桌面端据此决定是否显示「总是允许」。
       allow_always: Array.isArray(data.always) && data.always.length > 0,
     };
@@ -613,7 +613,7 @@ const handleEvent = (event) => {
       form.question ||
       form.message ||
       form.title ||
-      "等待用户回答";
+      "等待用户回答"; // i18n-exempt: hook script body
     post("QuestionAsked", sessionID, { message: clip(question, 200) });
     return;
   }
@@ -625,7 +625,7 @@ const handleEvent = (event) => {
       data.questions?.[0]?.question ||
       data.question ||
       data.message ||
-      "等待用户回答";
+      "等待用户回答"; // i18n-exempt: hook script body
     post("QuestionAsked", sessionID, { message: clip(question, 200) });
     return;
   }
@@ -688,7 +688,7 @@ const handleEvent = (event) => {
   }
 
   if (event.type === "session.error") {
-    const error = data.error || data.message || "会话执行出错";
+    const error = data.error || data.message || "会话执行出错"; // i18n-exempt: hook script body
     lastError = clip(error, 200);
     post("SessionError", sessionID, { error: lastError });
     return;
@@ -776,7 +776,7 @@ const handleEvent = (event) => {
         toolStarted.delete(key);
         post("PostToolUseFailure", sessionID, {
           tool_name: part.tool,
-          error: part.state?.error || "工具执行失败",
+          error: part.state?.error || "工具执行失败", // i18n-exempt: hook script body
           model: lastModel.get(sessionID),
         });
       }

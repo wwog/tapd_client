@@ -21,6 +21,7 @@ use portable_pty::PtySize;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tapd_core::store::{read_json, write_json_atomic};
+use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
@@ -31,7 +32,6 @@ use super::{
 use crate::cache::{ChatSearchQuery, ChatSessionQuery};
 
 const CHAT_FILE: &str = "chat-sessions.json";
-const DEFAULT_TITLE: &str = "新对话";
 const TITLE_MAX_CHARS: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,7 +405,7 @@ impl AgentCore {
             Ok(mut store) => match store.sessions.get_mut(id) {
                 Some(session) => {
                     session.updated_at = now();
-                    if session.title.trim().is_empty() || session.title == DEFAULT_TITLE {
+                    if session.title.trim().is_empty() || session.title == default_chat_title() {
                         let title = chat_title(text);
                         if !title.is_empty() && title != session.title {
                             session.title = title;
@@ -433,18 +433,18 @@ impl AgentCore {
         let config = self.config_snapshot();
         let workspace_id = request.workspace_id.trim().to_string();
         if workspace_id.is_empty() {
-            return Err("缺少 workspaceId".to_string());
+            return Err(tr("agent.request.missing.workspaceId").to_string());
         }
         let project = config
             .projects
             .get(&workspace_id)
-            .ok_or_else(|| format!("项目 {workspace_id} 还没有配置本地仓库目录"))?;
+            .ok_or_else(|| tr_args("agent.chat.repo.unconfigured", &[&workspace_id]))?;
         let repo_path = project.repo_path.trim().to_string();
         if repo_path.is_empty() {
-            return Err("项目还没有配置本地仓库目录，请先在「项目」页配置".to_string());
+            return Err(tr("agent.chat.repo.unset").to_string());
         }
         if !Path::new(&repo_path).is_dir() {
-            return Err(format!("项目仓库目录不存在：{repo_path}"));
+            return Err(tr_args("agent.chat.repo.missing", &[&repo_path]));
         }
 
         let requested_runtime = request.runtime_id.trim();
@@ -454,7 +454,7 @@ impl AgentCore {
             config.runtime_id.clone()
         };
         if runtime_descriptor(&runtime_id).is_none() {
-            return Err(format!("未知的 Agent 运行时：{runtime_id}"));
+            return Err(tr_args("agent.runtime.unknown", &[&runtime_id]));
         }
         let runtime_options = config
             .runtime_options
@@ -480,7 +480,7 @@ impl AgentCore {
         let binary = binary_for_task(&config, &runtime_id, self.scan_snapshot().as_ref());
         let binary = tokio::task::spawn_blocking(move || validate_binary(&binary))
             .await
-            .map_err(|error| format!("检查 Agent 命令失败：{error}"))??;
+            .map_err(|error| tr_args("agent.binary.check.failed", &[&error]))??;
 
         let workspace_name = request
             .workspace_name
@@ -498,7 +498,7 @@ impl AgentCore {
             runtime_id,
             model,
             permission_mode,
-            title: DEFAULT_TITLE.to_string(),
+            title: default_chat_title(),
             created_at: at.clone(),
             updated_at: at,
             status: ChatStatus::Starting,
@@ -539,7 +539,7 @@ impl AgentCore {
             self.finish_chat(
                 &id,
                 ChatPtyOutcome {
-                    error: Some(format!("启动对话线程失败：{error}")),
+                    error: Some(tr_args("agent.chat.thread.failed", &[&error])),
                     ..ChatPtyOutcome::default()
                 },
             );
@@ -561,7 +561,7 @@ impl AgentCore {
         }
         let Some(descriptor) = runtime_descriptor(&session.runtime_id) else {
             return ChatPtyOutcome {
-                error: Some(format!("未知的 Agent 运行时：{}", session.runtime_id)),
+                error: Some(tr_args("agent.runtime.unknown", &[&session.runtime_id])),
                 ..ChatPtyOutcome::default()
             };
         };
@@ -584,7 +584,7 @@ impl AgentCore {
                 .filter(|id| !id.is_empty())
             else {
                 return ChatPtyOutcome {
-                    error: Some("没有可续接的会话".to_string()),
+                    error: Some(tr("agent.chat.resume.none").to_string()),
                     ..ChatPtyOutcome::default()
                 };
             };
@@ -609,7 +609,7 @@ impl AgentCore {
                 Ok(handles) => handles,
                 Err(error) => {
                     return ChatPtyOutcome {
-                        error: Some(format!("启动 Agent 终端失败：{error}")),
+                        error: Some(tr_args("agent.pty.start.failed", &[&error])),
                         ..ChatPtyOutcome::default()
                     }
                 }
@@ -646,7 +646,7 @@ impl AgentCore {
         {
             let _ = child.clone_killer().kill();
             return ChatPtyOutcome {
-                error: Some(format!("启动 Agent 终端失败：{error}")),
+                error: Some(tr_args("agent.pty.start.failed", &[&error])),
                 ..ChatPtyOutcome::default()
             };
         }
@@ -769,13 +769,13 @@ impl AgentCore {
                 Ok(Some(status)) => {
                     outcome.exit_code = Some(status.exit_code() as i32);
                     if let Some(signal) = status.signal() {
-                        outcome.error = Some(format!("Agent 进程被信号终止：{signal}"));
+                        outcome.error = Some(tr_args("agent.pty.signal", &[&signal]));
                     }
                     break;
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    outcome.error = Some(format!("等待 Agent 进程失败：{error}"));
+                    outcome.error = Some(tr_args("agent.pty.wait.failed", &[&error]));
                     break;
                 }
             }
@@ -800,7 +800,7 @@ impl AgentCore {
         } else if let Some(code) = outcome.exit_code.filter(|code| *code != 0) {
             (
                 ChatStatus::Failed,
-                Some(format!("Agent 进程异常退出（exit {code}）")),
+                Some(tr_args("agent.pty.exit.failed", &[&code])),
             )
         } else {
             (ChatStatus::Stopped, None)
@@ -828,7 +828,7 @@ impl AgentCore {
 
     fn chat_stop(&self, id: &str) -> Result<(), String> {
         if !self.is_chat_session(id) {
-            return Err("会话不存在".to_string());
+            return Err(tr("agent.chat.not.found").to_string());
         }
         // 先落状态再杀进程：PTY 线程可能还没把 runtime 插入 map，状态是兜底。
         let changed = match self.chats.lock() {
@@ -875,14 +875,14 @@ impl AgentCore {
             .map(|runtimes| runtimes.contains_key(id))
             .unwrap_or(false)
         {
-            return Err("会话仍在停止中，请稍候".to_string());
+            return Err(tr("agent.chat.stopping").to_string());
         }
         let mut session = self
             .chat_session(id)
-            .ok_or_else(|| "会话不存在".to_string())?;
+            .ok_or_else(|| tr("agent.chat.not.found").to_string())?;
         // 刚创建、线程尚未插入 runtime 时也不能重复拉起。
         if !matches!(session.status, ChatStatus::Stopped | ChatStatus::Failed) {
-            return Err("会话仍在运行".to_string());
+            return Err(tr("agent.chat.running").to_string());
         }
         if session
             .agent_session_id
@@ -891,10 +891,10 @@ impl AgentCore {
             .filter(|session_id| !session_id.is_empty())
             .is_none()
         {
-            return Err("没有可续接的会话，请新建对话".to_string());
+            return Err(tr("agent.chat.resume.none.new").to_string());
         }
         if !Path::new(&session.repo_path).is_dir() {
-            return Err(format!("项目仓库目录不存在：{}", session.repo_path));
+            return Err(tr_args("agent.chat.repo.missing", &[&session.repo_path]));
         }
 
         let config = self.config_snapshot();
@@ -922,7 +922,7 @@ impl AgentCore {
             Err(_) => false,
         };
         if !removed {
-            return Err("会话不存在".to_string());
+            return Err(tr("agent.chat.not.found").to_string());
         }
         self.stop_chat_runtime(id);
         self.teardown_task(id);
@@ -1035,6 +1035,11 @@ fn import_legacy_chats(path: &Path) -> Option<ChatStore> {
     Some(store)
 }
 
+/// 会话标题的本地化默认值，首条消息会覆盖它。
+fn default_chat_title() -> String {
+    tr("agent.chat.defaultTitle").to_string()
+}
+
 /// 首条消息 → 单行标题。
 fn chat_title(text: &str) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1044,13 +1049,13 @@ fn chat_title(text: &str) -> String {
 pub(crate) async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Value, String> {
     let core = app
         .try_state::<Arc<AgentCore>>()
-        .ok_or_else(|| "Agent 未初始化".to_string())?
+        .ok_or_else(|| tr("agent.chat.uninitialized").to_string())?
         .inner()
         .clone();
     match name {
         "chat_sessions" => {
             let request: ChatSessionsRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的会话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.session", &[&error]))?;
             let query = request.into_query();
             // 没有过滤条件时直接返回内存列表，保持原有行为（含运行状态）。
             if !query_has_constraints(&query) {
@@ -1072,7 +1077,7 @@ pub(crate) async fn command(app: &AppHandle, name: &str, payload: Value) -> Resu
         }
         "chat_search" => {
             let request: ChatSearchRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的搜索参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.search", &[&error]))?;
             let query = request.into_query();
             if query.keyword.is_empty() {
                 return Ok(json!({ "hits": [] }));
@@ -1086,25 +1091,25 @@ pub(crate) async fn command(app: &AppHandle, name: &str, payload: Value) -> Resu
         }
         "chat_start" => {
             let request: ChatStartRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的对话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.chat", &[&error]))?;
             let session = core.chat_start(request).await?;
             Ok(json!({ "session": session }))
         }
         "chat_stop" => {
             let request: ChatIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的会话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.session", &[&error]))?;
             core.chat_stop(request.id.trim())?;
             Ok(json!({ "ok": true }))
         }
         "chat_resume" => {
             let request: ChatIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的会话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.session", &[&error]))?;
             let session = core.chat_resume(request.id.trim())?;
             Ok(json!({ "session": session }))
         }
         "chat_delete" => {
             let request: ChatIdRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的会话参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.session", &[&error]))?;
             core.chat_delete(request.id.trim())?;
             Ok(json!({ "deleted": true }))
         }
@@ -1125,7 +1130,7 @@ mod tests {
             runtime_id: "claude".to_string(),
             model: String::new(),
             permission_mode: String::new(),
-            title: DEFAULT_TITLE.to_string(),
+            title: default_chat_title(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             status,

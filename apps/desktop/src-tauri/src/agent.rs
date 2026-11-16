@@ -2943,7 +2943,7 @@ impl AgentCore {
     /// 目录里的静态建议。成功结果缓存 10 分钟。
     async fn runtime_models(&self, runtime_id: &str) -> Result<AgentModelsPayload, String> {
         let Some(descriptor) = runtime_descriptor(runtime_id) else {
-            return Err(format!("未知的 Agent 运行时：{runtime_id}"));
+            return Err(tr_args("agent.runtime.unknown", &[&runtime_id]));
         };
         let static_models: Vec<models::AgentModelOption> = descriptor
             .models
@@ -2974,12 +2974,12 @@ impl AgentCore {
         let binary = binary_for_task(&config, runtime_id, self.scan_snapshot().as_ref());
         let binary = tokio::task::spawn_blocking(move || validate_binary(&binary))
             .await
-            .map_err(|error| format!("检查 Agent 命令失败：{error}"))??;
+            .map_err(|error| tr_args("agent.binary.check.failed", &[&error]))??;
         let runtime_for_probe = runtime_id.to_string();
         let read =
             tokio::task::spawn_blocking(move || models::discover(&runtime_for_probe, &binary))
                 .await
-                .map_err(|error| format!("读取模型列表失败：{error}"))?;
+                .map_err(|error| tr_args("agent.models.read.failed", &[&error]))?;
         match read {
             Ok(listed) => {
                 self.store_models_cache(runtime_id, listed.clone(), None);
@@ -4448,13 +4448,13 @@ impl AgentCore {
         // 自由对话：TUI 产生输出后才允许写入，避免消息被启动过程吞掉。
         if let Some(chat) = self.chat_session(task_id) {
             if chat.status != chat::ChatStatus::Running {
-                return Err("会话未在运行".to_string());
+                return Err(tr("agent.chat.not.running").to_string());
             }
             if !chat.ready {
-                return Err("会话正在启动，请稍候".to_string());
+                return Err(tr("agent.chat.starting").to_string());
             }
             if waiting {
-                return Err("请先处理当前的权限确认或提问".to_string());
+                return Err(tr("agent.chat.prompt.pending").to_string());
             }
             // bracketed paste 保证多行文本不会在第一个换行处提交。
             let payload = format!("\x1b[200~{text}\x1b[201~\r");
@@ -4465,9 +4465,9 @@ impl AgentCore {
 
         let task = self
             .workflow_view(task_id)
-            .ok_or_else(|| "任务不存在".to_string())?;
+            .ok_or_else(|| tr("agent.task.missing").to_string())?;
         if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
-            return Err("任务未在运行".to_string());
+            return Err(tr("agent.task.not.running").to_string());
         }
         if waiting {
             return Err(tr("agent.chat.prompt.pending").to_string());
@@ -6252,10 +6252,10 @@ pub async fn command(
         "agent_runtimes" => Ok(json!({ "runtimes": runtime_catalog() })),
         "agent_models" => {
             let request: ModelsRequest = serde_json::from_value(payload)
-                .map_err(|error| format!("无效的模型参数：{error}"))?;
+                .map_err(|error| tr_args("agent.request.invalid.models", &[&error]))?;
             let runtime_id = request.runtime_id.trim();
             if runtime_id.is_empty() {
-                return Err("缺少 runtimeId".to_string());
+                return Err(tr("agent.request.missing.runtimeId").to_string());
             }
             let result = core.runtime_models(runtime_id).await?;
             Ok(json!(result))
