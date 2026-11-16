@@ -85,9 +85,21 @@ pub(crate) fn kill_process_group(_pid: u32, _signal: i32) -> bool {
     false
 }
 
+/// One write for the PTY writer thread. The optional ack carries the result
+/// back to a blocking caller (the startup prompt injection).
+pub(super) enum PtyInput {
+    Data(
+        Vec<u8>,
+        Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+    ),
+}
+
 pub(super) struct AgentRuntime {
     pub(super) master: Box<dyn MasterPty + Send>,
-    pub(super) writer: Box<dyn Write + Send>,
+    /// All writes go through one thread: `write_all` blocks when the TUI stops
+    /// reading, which must never happen on a tokio worker (keystrokes arrive
+    /// from async commands) and must not interleave with the prompt injection.
+    input: Arc<std::sync::mpsc::SyncSender<PtyInput>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// The TUI is started with `setsid`, so its pid is also the process-group
     /// id used to kill the whole TUI tree.
@@ -96,6 +108,26 @@ pub(super) struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    /// A sender that can be used without holding the runtime lock. The startup
+    /// prompt injection clones it so a stalled TUI never blocks `input` calls.
+    pub(super) fn input_sender(&self) -> Arc<std::sync::mpsc::SyncSender<PtyInput>> {
+        self.input.clone()
+    }
+
+    /// Hands input to the writer thread without ever blocking the caller.
+    pub(super) fn try_write(&self, data: &[u8]) -> Result<(), String> {
+        self.input
+            .try_send(PtyInput::Data(data.to_vec(), None))
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(_) => {
+                    tr("agent.pty.input.busy").to_string()
+                }
+                std::sync::mpsc::TrySendError::Disconnected(_) => {
+                    tr("agent.task.not.running").to_string()
+                }
+            })
+    }
+
     /// Signals the TUI process group and the direct child.
     pub(super) fn kill(&mut self) {
         if let Some(pid) = self.pid {
@@ -109,6 +141,21 @@ impl AgentRuntime {
             kill_process_group(pid, SIGKILL);
         }
     }
+}
+
+/// Blocking write used by the startup prompt injection (already on the PTY
+/// thread). Waits for the writer thread's result without holding any lock.
+pub(super) fn write_blocking(
+    input: &std::sync::mpsc::SyncSender<PtyInput>,
+    data: &[u8],
+) -> Result<(), String> {
+    let (ack, result) = std::sync::mpsc::sync_channel(1);
+    input
+        .try_send(PtyInput::Data(data.to_vec(), Some(ack)))
+        .map_err(|_| tr("agent.pty.input.busy").to_string())?;
+    result
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|_| tr("agent.pty.input.busy").to_string())?
 }
 
 #[derive(Debug, Default)]
@@ -208,8 +255,9 @@ impl AgentCore {
         monitor_hook: bool,
     ) -> PtyOutcome {
         // A cancel can land between the status update and this thread starting;
-        // don't spawn a process that is already doomed.
-        if self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
+        // don't spawn a process that is already doomed. Shutdown is the same
+        // case: its teardown already ran and would not find this runtime.
+        if self.shutting_down() || self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
             return PtyOutcome {
                 canceled: true,
                 ..PtyOutcome::default()
@@ -240,10 +288,42 @@ impl AgentCore {
             mut child,
         } = handles;
 
+        // One writer thread owns the PTY writer. Callers only enqueue, so a TUI
+        // that stops reading can never block a tokio worker or reorder input.
+        let (input, input_queue) = std::sync::mpsc::sync_channel::<PtyInput>(256);
+        let input = Arc::new(input);
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("agent-input-{}", task.id))
+            .spawn(move || {
+                let mut writer = writer;
+                while let Ok(PtyInput::Data(data, ack)) = input_queue.recv() {
+                    let result = writer
+                        .write_all(&data)
+                        .and_then(|_| writer.flush())
+                        .map_err(|error| error.to_string());
+                    let failed = result.is_err();
+                    if let Some(ack) = ack {
+                        let _ = ack.send(result);
+                    }
+                    if failed {
+                        break;
+                    }
+                }
+            })
+        {
+            // The writer thread could not start, so the shell would never
+            // receive input: kill it instead of leaving a stuck session.
+            let _ = child.clone_killer().kill();
+            return PtyOutcome {
+                error: Some(tr_args("agent.pty.start.failed", &[&error])),
+                ..PtyOutcome::default()
+            };
+        }
+
         let canceled = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(Mutex::new(AgentRuntime {
             master,
-            writer,
+            input,
             killer: child.clone_killer(),
             pid: child.process_id(),
             canceled: canceled.clone(),
@@ -271,9 +351,9 @@ impl AgentCore {
             }
         }
 
-        // Close the race where a cancel arrived just before the runtime became
-        // visible to `agent_task_cancel`.
-        if self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
+        // Close the race where a cancel (or shutdown) arrived just before the
+        // runtime became visible to `agent_task_cancel` / `teardown_task`.
+        if self.shutting_down() || self.workflow_status(&task.id) == Some(WorkflowStatus::Canceled) {
             canceled.store(true, Ordering::SeqCst);
             if let Ok(mut runtime) = runtime.lock() {
                 runtime.kill();
@@ -404,11 +484,14 @@ impl AgentCore {
                 payload.extend_from_slice(task.prompt.as_bytes());
                 payload.extend_from_slice(b"\x1b[201~\r");
                 let injected = {
-                    let mut runtime = runtime.lock().expect("agent runtime lock");
-                    runtime
-                        .writer
-                        .write_all(&payload)
-                        .and_then(|_| runtime.writer.flush())
+                    // Clone the sender and release the runtime lock: a TUI that
+                    // stops reading must not block other input calls for the
+                    // whole 30 s wait.
+                    let input = {
+                        let runtime = runtime.lock().expect("agent runtime lock");
+                        runtime.input_sender()
+                    };
+                    write_blocking(&input, &payload)
                 };
                 match injected {
                     Ok(()) => {

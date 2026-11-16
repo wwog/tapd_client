@@ -262,24 +262,59 @@ async fn file_proxy(
         Err(error) => return fs_error_response(&error),
     };
     let requested = query.path;
-    let result =
-        tokio::task::spawn_blocking(move || crate::fs::read_bytes(&root, &requested)).await;
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    stream_file_response(root, requested, range).await
+}
 
-    let (bytes, content_type) = match result {
-        Ok(Ok(body)) => body,
+/// Serves one project file, reading only the requested `Range` span.
+///
+/// A `206` seek must not read the whole file: the old path buffered it and
+/// sliced afterwards, so every video seek cost one full disk read.
+pub(crate) async fn stream_file_response(
+    root: std::path::PathBuf,
+    relative: String,
+    range: Option<String>,
+) -> Response {
+    let opened =
+        tokio::task::spawn_blocking(move || crate::fs::open_stream(&root, &relative)).await;
+    let file = match opened {
+        Ok(Ok(file)) => file,
         Ok(Err(error)) => return fs_error_response(&error),
         Err(error) => {
             return file_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("file read failed: {error}"),
+                &format!("file open failed: {error}"),
             )
         }
     };
 
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|value| value.to_str().ok());
-    file_stream_response(bytes, &content_type, range)
+    let total = file.size();
+    let content_type = file.content_type().to_string();
+    let span = range
+        .as_deref()
+        .and_then(|header| parse_single_range(header, total));
+    let (status, content_range, start, len) = match span {
+        Some((start, end)) => (
+            StatusCode::PARTIAL_CONTENT,
+            Some(format!("bytes {start}-{end}/{total}")),
+            start,
+            end - start + 1,
+        ),
+        None => (StatusCode::OK, None, 0, total),
+    };
+
+    let read = tokio::task::spawn_blocking(move || file.read(start, len)).await;
+    match read {
+        Ok(Ok(body)) => file_body_response(status, &content_type, content_range, body),
+        Ok(Err(error)) => fs_error_response(&error),
+        Err(error) => file_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("file read failed: {error}"),
+        ),
+    }
 }
 
 /// Converts a failed fs operation into the status the streaming route uses:
@@ -299,25 +334,13 @@ pub(crate) fn fs_error_response(error: &crate::fs::FsError) -> Response {
     file_error(fs_error_status(error.kind), &error.message())
 }
 
-/// Builds a `200`/`206` response for a buffered file body. `range` is the raw
-/// `Range` header; a malformed or unsatisfiable range falls back to the whole
-/// body, which every browser media element accepts.
-pub(crate) fn file_stream_response(
-    bytes: Vec<u8>,
+/// Builds the response for an already-sliced file body.
+pub(crate) fn file_body_response(
+    status: StatusCode,
     content_type: &str,
-    range: Option<&str>,
+    content_range: Option<String>,
+    body: Vec<u8>,
 ) -> Response {
-    let total = bytes.len() as u64;
-    let (status, content_range, body) =
-        match range.and_then(|header| parse_single_range(header, total)) {
-            Some((start, end)) => (
-                StatusCode::PARTIAL_CONTENT,
-                Some(format!("bytes {start}-{end}/{total}")),
-                bytes[start as usize..=end as usize].to_vec(),
-            ),
-            None => (StatusCode::OK, None, bytes),
-        };
-
     let mut response = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
@@ -330,6 +353,26 @@ pub(crate) fn file_stream_response(
     response
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|error| file_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()))
+}
+
+/// Builds a `200`/`206` response from an in-memory body, slicing it to `range`.
+/// Only tests use this now; the routes read their span from disk.
+#[cfg(test)]
+pub(crate) fn file_stream_response(
+    bytes: Vec<u8>,
+    content_type: &str,
+    range: Option<&str>,
+) -> Response {
+    let total = bytes.len() as u64;
+    match range.and_then(|header| parse_single_range(header, total)) {
+        Some((start, end)) => file_body_response(
+            StatusCode::PARTIAL_CONTENT,
+            content_type,
+            Some(format!("bytes {start}-{end}/{total}")),
+            bytes[start as usize..=end as usize].to_vec(),
+        ),
+        None => file_body_response(StatusCode::OK, content_type, None, bytes),
+    }
 }
 
 /// Parses one `bytes=` range against a known length. Multi-range and malformed

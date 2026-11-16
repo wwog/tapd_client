@@ -81,7 +81,11 @@ pub(crate) async fn fetch_tapd_media(
         // The proxy buffers bodies in memory, so it keeps its own ceiling even
         // for entries an export cached under the larger limit.
         if cached.size <= media::MAX_PROXY_BYTES {
-            if let Ok(bytes) = std::fs::read(&cached.path) {
+            // Cache reads can reach 200 MB: never run them on a tokio worker.
+            let path = cached.path.clone();
+            if let Ok(Ok(bytes)) =
+                tokio::task::spawn_blocking(move || std::fs::read(path)).await
+            {
                 return Ok(cached_fetch(cached.content_type, bytes, range.as_deref()));
             }
         }
@@ -143,15 +147,22 @@ pub(crate) async fn fetch_tapd_media(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    let bytes = upstream
-        .bytes()
+    // Read with a running cap: `bytes()` would buffer a 1–2 GB attachment in
+    // full before the size check ever runs.
+    let mut upstream = upstream;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = upstream
+        .chunk()
         .await
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
-    if bytes.len() as u64 > media::MAX_PROXY_BYTES {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "media file is too large".to_string(),
-        ));
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?
+    {
+        if bytes.len() as u64 + chunk.len() as u64 > media::MAX_PROXY_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "media file is too large".to_string(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     if !status.is_success() {
         let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(160)]).to_string();
@@ -167,7 +178,16 @@ pub(crate) async fn fetch_tapd_media(
     };
 
     if !ranged {
-        crate::media_cache::put(&cache_dir, &absolute, &content_type, &bytes);
+        // Writing up to 200 MB plus the cache trim (`read_dir` + `metadata`
+        // over every entry) blocks; keep it off the async workers.
+        let put_dir = cache_dir.clone();
+        let put_url = absolute.clone();
+        let put_type = content_type.clone();
+        let put_bytes = bytes.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::media_cache::put(&put_dir, &put_url, &put_type, &put_bytes)
+        })
+        .await;
     }
 
     Ok(MediaFetch {
@@ -178,7 +198,7 @@ pub(crate) async fn fetch_tapd_media(
         },
         content_type,
         content_range,
-        bytes,
+        bytes: bytes.into(),
     })
 }
 

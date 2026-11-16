@@ -14,7 +14,13 @@ import {
   createGroup,
   groupMinSize,
 } from "./defaults.ts";
-import { dragPair, minSizesPx } from "./geometry.ts";
+import {
+  activeChildren,
+  dragPair,
+  minSizesPx,
+  renderFractions,
+  storedFractions,
+} from "./geometry.ts";
 import {
   activateGroup as activateGroupOp,
   activatePanel as activatePanelOp,
@@ -223,6 +229,11 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       }
       const snapshot = split.sizes.slice();
       const minPx = minSizesPx(split, groupMinSize);
+      // Drag in the space the renderer uses: empty canonical docks collapse
+      // and the filled children are renormalized over their own sum, so
+      // dragging stored fractions would move the divider by the wrong amount.
+      const active = activeChildren(split, groupMinSize);
+      const rendered = renderFractions(snapshot, active);
       return {
         move: (deltaPx: number, containerPx: number) => {
           if (
@@ -232,7 +243,11 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
           ) {
             return;
           }
-          const sizes = dragPair(snapshot, index, deltaPx, containerPx, minPx);
+          const dragged =
+            active.length > 1
+              ? dragPair(rendered, index, deltaPx, containerPx, minPx)
+              : rendered;
+          const sizes = storedFractions(snapshot, dragged, active);
           commit((layout) => setSizesOp(layout, splitId, sizes));
         },
         end: noopDrag,
@@ -272,6 +287,11 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       const hSnapshot = hSplit.sizes.slice();
       const vMinPx = minSizesPx(vSplit, groupMinSize);
       const hMinPx = minSizesPx(hSplit, groupMinSize);
+      // Same rendered-space conversion as a plain sash drag.
+      const vActive = activeChildren(vSplit, groupMinSize);
+      const hActive = activeChildren(hSplit, groupMinSize);
+      const vRendered = renderFractions(vSnapshot, vActive);
+      const hRendered = renderFractions(hSnapshot, hActive);
 
       return {
         move: (dx: number, dy: number) => {
@@ -279,24 +299,36 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
             Number.isFinite(dx) &&
             Number.isFinite(vertical.containerPx) &&
             vertical.containerPx > 0
-              ? dragPair(
+              ? storedFractions(
                   vSnapshot,
-                  vertical.index,
-                  dx,
-                  vertical.containerPx,
-                  vMinPx,
+                  vActive.length > 1
+                    ? dragPair(
+                        vRendered,
+                        vertical.index,
+                        dx,
+                        vertical.containerPx,
+                        vMinPx,
+                      )
+                    : vRendered,
+                  vActive,
                 )
               : null;
           const hSizes =
             Number.isFinite(dy) &&
             Number.isFinite(horizontal.containerPx) &&
             horizontal.containerPx > 0
-              ? dragPair(
+              ? storedFractions(
                   hSnapshot,
-                  horizontal.index,
-                  dy,
-                  horizontal.containerPx,
-                  hMinPx,
+                  hActive.length > 1
+                    ? dragPair(
+                        hRendered,
+                        horizontal.index,
+                        dy,
+                        horizontal.containerPx,
+                        hMinPx,
+                      )
+                    : hRendered,
+                  hActive,
                 )
               : null;
           if (!vSizes && !hSizes) return;

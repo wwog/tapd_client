@@ -37,11 +37,19 @@ pub(super) async fn download_one(
         }
     }
 
-    let response = client
+    let mut request = client
         .get(&download_url)
-        .header(reqwest::header::COOKIE, cookie)
         .header(reqwest::header::REFERER, media::REFERER)
-        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT, "*/*");
+    // Bug bodies can reference third-party images. The TAPD session cookie
+    // must never follow those: it would hand the whole session to that host.
+    // Bug bodies can reference third-party images. The TAPD session cookie
+    // must never follow those: it would hand the whole session to that host.
+    if crate::commands::open::is_tapd_media_url(&download_url) {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|error| error.to_string())?;

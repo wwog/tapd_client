@@ -104,16 +104,11 @@ pub(super) async fn api_file_raw(
         Err(error) => return fs_error(&error),
     };
     let path = query.path;
-    let result = tokio::task::spawn_blocking(move || fs::read_bytes(&root, &path)).await;
-    let (bytes, content_type) = match result {
-        Ok(Ok(body)) => body,
-        Ok(Err(error)) => return fs_error(&error),
-        Err(error) => return err_data(StatusCode::INTERNAL_SERVER_ERROR, "io", &error.to_string()),
-    };
     let range = headers
         .get(header::RANGE)
-        .and_then(|value| value.to_str().ok());
-    server::file_stream_response(bytes, &content_type, range)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    server::stream_file_response(root, path, range).await
 }
 
 #[derive(Deserialize)]

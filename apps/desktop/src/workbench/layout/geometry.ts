@@ -151,6 +151,73 @@ export function hasContent(node: LayoutNode): boolean {
   return node.children.some(hasContent);
 }
 
+/**
+ * Children the renderer actually lays out: empty canonical docks collapse to
+ * 0px, so they neither take a share nor offer a sash.
+ */
+export function activeChildren(
+  split: SplitNode,
+  groupMinSize: (group: GroupNode) => PanelSize,
+): number[] {
+  const mins = minSizesPx(split, groupMinSize);
+  return split.children
+    .map((_, index) => index)
+    .filter((index) => (mins[index] ?? 0) > 0 && hasContent(split.children[index]!));
+}
+
+/**
+ * Stored fractions as the renderer sees them: only the active children share
+ * the container, so they are renormalized over their own sum.
+ *
+ * Sash dragging must use this space. Dragging stored fractions while the
+ * renderer renormalizes over the filled children makes the divider jump or
+ * refuse to move as soon as an empty dock is a sibling.
+ */
+export function renderFractions(
+  sizes: readonly number[],
+  active: readonly number[],
+): number[] {
+  const sum = active.reduce(
+    (total, index) => total + Math.max(0, sizes[index] ?? 0),
+    0,
+  );
+  return sizes.map((value, index) =>
+    active.includes(index) && sum > 0 ? Math.max(0, value) / sum : 0,
+  );
+}
+
+/**
+ * Maps dragged rendered fractions back to stored sizes.
+ *
+ * Empty docks keep their share of the container, and the active children split
+ * the rest by their dragged fractions, so a re-render reproduces exactly the
+ * pixels the pointer asked for.
+ */
+export function storedFractions(
+  snapshot: readonly number[],
+  dragged: readonly number[],
+  active: readonly number[],
+): number[] {
+  const next = snapshot.slice();
+  // A single filled child takes the whole container; rewriting its slot to 1
+  // would leave a dock that is reopened later with zero width.
+  if (active.length < 2) return next;
+  const allTotal = snapshot.reduce(
+    (total, value) => total + Math.max(0, isFiniteNumber(value) ? value : 0),
+    0,
+  );
+  const activeTotal = active.reduce(
+    (total, index) => total + Math.max(0, snapshot[index] ?? 0),
+    0,
+  );
+  if (!(allTotal > 0) || !(activeTotal > 0)) return next;
+  const activeShare = activeTotal / allTotal;
+  for (const index of active) {
+    next[index] = (dragged[index] ?? 0) * activeShare;
+  }
+  return next;
+}
+
 export type SashPosition = {
   /** Boundary index: sits between `children[index]` and `children[index + 1]`. */
   index: number;

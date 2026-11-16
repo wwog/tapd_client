@@ -14,7 +14,7 @@
 
 use std::{
     fs as std_fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -500,6 +500,11 @@ pub(crate) fn read_file(root: &Path, relative: &str) -> Result<FsContent, FsErro
     if metadata.is_dir() {
         return Err(FsError::invalid("path is a directory"));
     }
+    // Only regular files are readable: a FIFO would block the read, and
+    // `/dev/zero` streams forever with `len() == 0`.
+    if !metadata.is_file() {
+        return Err(FsError::invalid("path is not a regular file"));
+    }
     let display = relative_display(&canonical, &target)?;
     let size = metadata.len();
     let mtime = unix_secs(&metadata);
@@ -527,6 +532,22 @@ pub(crate) fn read_file(root: &Path, relative: &str) -> Result<FsContent, FsErro
 
     let (kind, text) = match String::from_utf8(bytes) {
         Ok(text) => {
+            let kind = if MARKDOWN_EXTENSIONS.contains(&extension_lower(&target).as_str()) {
+                FsContentKind::Markdown
+            } else {
+                FsContentKind::Text
+            };
+            (kind, Some(text))
+        }
+        // The 2 MiB cut can land inside a multi-byte character. Truncating a
+        // valid UTF-8 file must not turn it into a "binary" preview: drop the
+        // incomplete tail and keep the text. Genuinely invalid bytes still
+        // classify as binary.
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            let text = String::from_utf8(bytes).expect("prefix is valid UTF-8");
             let kind = if MARKDOWN_EXTENSIONS.contains(&extension_lower(&target).as_str()) {
                 FsContentKind::Markdown
             } else {
@@ -673,23 +694,61 @@ pub(crate) fn write_file(
 // Streaming
 // ---------------------------------------------------------------------------
 
-/// Reads a whole file for the loopback / companion streaming routes.
-pub(crate) fn read_bytes(root: &Path, relative: &str) -> Result<(Vec<u8>, String), FsError> {
+/// One validated file for a streaming route.
+///
+/// Size and content type are read once; the route then reads only the bytes a
+/// `Range` asks for instead of buffering the whole file per request (a video
+/// seek must not read 60 MB).
+pub(crate) struct StreamFile {
+    target: PathBuf,
+    size: u64,
+    content_type: &'static str,
+}
+
+impl StreamFile {
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) fn content_type(&self) -> &'static str {
+        self.content_type
+    }
+
+    /// Reads `len` bytes starting at `start`. Capped at
+    /// [`MAX_STREAM_BYTES`], like a full-file read.
+    pub(crate) fn read(&self, start: u64, len: u64) -> Result<Vec<u8>, FsError> {
+        if len > MAX_STREAM_BYTES {
+            return Err(FsError::too_large("file is too large to stream"));
+        }
+        let mut file = std_fs::File::open(&self.target).map_err(FsError::io)?;
+        if start > 0 {
+            file.seek(SeekFrom::Start(start)).map_err(FsError::io)?;
+        }
+        let mut bytes = Vec::with_capacity(len.min(1024 * 1024) as usize);
+        Read::by_ref(&mut file)
+            .take(len)
+            .read_to_end(&mut bytes)
+            .map_err(FsError::io)?;
+        Ok(bytes)
+    }
+}
+
+/// Resolves and validates a file for the loopback / companion streaming routes.
+pub(crate) fn open_stream(root: &Path, relative: &str) -> Result<StreamFile, FsError> {
     let canonical = canonical_root(root)?;
     let target = resolve_in_root(&canonical, relative)?;
     let metadata = std_fs::metadata(&target).map_err(FsError::io)?;
     if metadata.is_dir() {
         return Err(FsError::invalid("path is a directory"));
     }
-    if metadata.len() > MAX_STREAM_BYTES {
-        return Err(FsError::too_large("file is too large to stream"));
+    if !metadata.is_file() {
+        return Err(FsError::invalid("path is not a regular file"));
     }
-    let content_type = content_type_for(&target);
-    let bytes = std_fs::read(&target).map_err(FsError::io)?;
-    if bytes.len() as u64 > MAX_STREAM_BYTES {
-        return Err(FsError::too_large("file is too large to stream"));
-    }
-    Ok((bytes, content_type.to_string()))
+    Ok(StreamFile {
+        content_type: content_type_for(&target),
+        size: metadata.len(),
+        target,
+    })
 }
 
 /// Content-Type for the streaming routes. Unknown extensions stream as bytes.
@@ -1194,5 +1253,35 @@ mod tests {
         let error = write_file(Path::new("/"), "tmp/never-touched", "text", None, true)
             .expect_err("root write must be rejected");
         assert_eq!(error.kind, FsErrorKind::OutsideRoot);
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn a_stream_read_returns_only_the_requested_span() {
+        let base = std::env::temp_dir().join(format!(
+            "tapd-fs-stream-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std_fs::create_dir_all(&base).expect("temp dir");
+        std_fs::write(base.join("clip.mp4"), b"0123456789").expect("fixture");
+
+        let root = base.canonicalize().expect("canonical root");
+        let file = open_stream(&root, "clip.mp4").expect("open stream");
+
+        assert_eq!(file.size(), 10);
+        assert_eq!(file.content_type(), "video/mp4");
+        assert_eq!(file.read(2, 3).expect("span"), b"234");
+        assert_eq!(file.read(0, 10).expect("whole"), b"0123456789");
+        assert!(
+            file.read(0, MAX_STREAM_BYTES + 1).is_err(),
+            "an oversized span is rejected like an oversized body"
+        );
+
+        let _ = std_fs::remove_dir_all(&base);
     }
 }

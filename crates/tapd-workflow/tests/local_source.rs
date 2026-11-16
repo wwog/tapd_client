@@ -57,10 +57,7 @@ fn local_worktree_task_runs_the_full_lifecycle() {
 
     // A dirty reviewed change first runs a commit-only round on the same
     // worktree; no second worktree is created.
-    let effects = workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    let effects = approve(&mut workflow, "a");
     assert_eq!(status(&workflow, "a"), TaskStatus::Preparing);
     assert!(workflow.task(&id("a")).unwrap().commit_only);
     assert!(create_worktrees(&effects).is_empty());
@@ -128,10 +125,7 @@ fn local_serial_task_reviews_and_commits_without_a_worktree() {
     finish(&mut workflow, "a", true, false, &["src/a.rs"]);
     assert_eq!(status(&workflow, "a"), TaskStatus::AwaitingApproval);
 
-    workflow.apply(Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    approve(&mut workflow, "a");
     assert_eq!(status(&workflow, "a"), TaskStatus::Preparing);
     assert!(workflow.task(&id("a")).unwrap().commit_only);
 

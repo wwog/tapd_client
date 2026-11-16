@@ -13,13 +13,16 @@ import {
 } from "./defaults.ts";
 import {
   SASH_CORNER_TOLERANCE,
+  activeChildren,
   clampPair,
   dragPair,
   hasContent,
   intersectSashes,
   minSizesPx,
+  renderFractions,
   resolvePx,
   sashPositions,
+  storedFractions,
 } from "./geometry.ts";
 import { findGroup, makePanel } from "./types.ts";
 import type { GroupNode, SplitNode } from "./types.ts";
@@ -363,3 +366,40 @@ function findSplitById(
   }
   return null;
 }
+
+test("a sash drag follows the pointer when an empty dock is a sibling", () => {
+  // [primary, newGroup, secondary(empty)] with stored sizes that include the
+  // empty dock's share. The renderer drops the empty dock and renormalizes the
+  // first two over 0.66, so dragging stored fractions moved the divider the
+  // wrong way; dragging rendered fractions moves it with the pointer.
+  const snapshot = [0.436, 0.224, 0.34];
+  const mins = [100, 100, 0];
+  const total = 1000;
+  const primary = pageGroup();
+  const middle = makePanel({ type: "page", view: "agent" });
+  const bottom = createGroup("bottom", [middle]);
+  const secondary = createGroup("secondary");
+  const split: SplitNode = {
+    kind: "split",
+    id: "split-main",
+    direction: "row",
+    children: [primary, bottom, secondary],
+    sizes: snapshot,
+  };
+
+  const active = activeChildren(split, groupMinSize);
+  assert.deepEqual(active, [0, 1]);
+
+  const rendered = renderFractions(snapshot, active);
+  approxArray(rendered, [0.436 / 0.66, 0.224 / 0.66, 0]);
+
+  const dragged = dragPair(rendered, 0, 100, total, mins);
+  const stored = storedFractions(snapshot, dragged, active);
+  const moved = renderFractions(stored, active);
+
+  // +100px at 1000px width is exactly +0.1 in rendered space.
+  approx(moved[0]!, 0.436 / 0.66 + 0.1);
+  approx(moved[1]!, 0.224 / 0.66 - 0.1);
+  // The empty dock keeps its share of the container.
+  approx(stored[2]!, 0.34);
+});

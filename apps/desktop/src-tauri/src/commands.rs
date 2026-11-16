@@ -120,13 +120,26 @@ impl LoginQrState {
             phase = "loading".to_string();
         }
 
+        // The injected bridge reports a stable reason code; the wording lives
+        // in the catalog so the login screen stays bilingual. TAPD's own
+        // sentence (when it rendered one) is appended as the detail.
+        let detail = text("detail");
+        let message = match text("reason").as_deref() {
+            Some("denied") => Some(match &detail {
+                Some(detail) => tr_args("app.login.denied.detail", &[detail]),
+                None => tr("app.login.denied").to_string(),
+            }),
+            Some("stalled") => Some(tr("app.login.stalled").to_string()),
+            _ => text("message"),
+        };
+
         Self {
             phase,
             qr_url: text("qrUrl"),
             name: text("name"),
             avatar_url: text("avatarUrl"),
             corp: text("corp"),
-            message: text("message"),
+            message,
         }
     }
 }
@@ -1215,4 +1228,50 @@ pub fn clear_app_data(app: AppHandle, state: State<'_, SharedState>) -> Result<(
         app.restart();
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn denied_login_reason_is_actionable_without_page_detail() {
+        let state = LoginQrState::from_bridge(json!({
+            "phase": "error",
+            "reason": "denied",
+            "message": "raw page text",
+        }));
+        assert_eq!(state.phase, "error");
+        assert_eq!(state.message.as_deref(), Some(tr("app.login.denied")));
+    }
+
+    #[test]
+    fn denied_login_reason_appends_tapd_detail() {
+        let detail = "你暂未开通 TAPD";
+        let state = LoginQrState::from_bridge(json!({
+            "phase": "error",
+            "reason": "denied",
+            "detail": detail,
+        }));
+        let expected = tr_args("app.login.denied.detail", &[&detail]);
+        assert_eq!(state.message.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn stalled_login_reason_asks_for_a_refresh() {
+        let state = LoginQrState::from_bridge(json!({
+            "phase": "error",
+            "reason": "stalled",
+        }));
+        assert_eq!(state.message.as_deref(), Some(tr("app.login.stalled")));
+    }
+
+    #[test]
+    fn unknown_login_reason_keeps_the_bridge_message() {
+        let state = LoginQrState::from_bridge(json!({
+            "phase": "loading",
+            "message": "正在完成登录",
+        }));
+        assert_eq!(state.message.as_deref(), Some("正在完成登录"));
+    }
 }

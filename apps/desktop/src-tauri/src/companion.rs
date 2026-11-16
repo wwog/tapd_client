@@ -121,9 +121,23 @@ pub struct CompanionRuntime {
     pub(crate) cloudflared: Option<tunnel::CloudflaredInfo>,
     /// Device id → last heartbeat, for the "online" dot in the dialog.
     pub(crate) presence: HashMap<String, Presence>,
+    /// Bumped whenever a paired device loses access (unpair, server stop).
+    /// Live terminal sockets compare it on every ping and close themselves:
+    /// HTTP auth only happens before the upgrade.
+    pub(crate) revoked: Arc<tokio::sync::Notify>,
+    pub(crate) revoked_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl CompanionRuntime {
+    /// Wakes every live companion socket so it can re-check its authorization.
+    /// Callers hold the runtime lock, so a socket that reads the generation
+    /// after this call always observes the bump.
+    pub(super) fn revoke_live_sockets(&self) {
+        self.revoked_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.revoked.notify_waiters();
+    }
+
     /// Consumes a valid one-time pairing code. The pair route calls this under
     /// the runtime lock, so validation and invalidation share one critical
     /// section and a code can never be used twice, even by concurrent pairs.
@@ -196,6 +210,9 @@ pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
 pub fn stop(app: &AppHandle, state: &SharedState) {
     {
         let mut runtime = state.companion.lock().expect("companion lock");
+        // Upgraded WebSockets outlive the accept loop; wake them so a disabled
+        // server cannot leave a phone attached to a live shell.
+        runtime.revoke_live_sockets();
         if let Some(task) = runtime.task.take() {
             task.abort();
         }

@@ -235,7 +235,7 @@ export function BugTableToolbar(props: Props) {
   return (
     <div
       ref={toolbarRef}
-      className="flex items-center gap-2 border-b border-border bg-surface px-5 py-3"
+      className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-5 py-3"
     >
       <div ref={leadingRef} className="flex shrink-0 items-center gap-2">
         <Segmented

@@ -10,6 +10,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
 
 import { CATALOG, type MessageKey } from "./catalog";
 import type { Entry, Locale, LocaleMode, MsgVars } from "./types";
@@ -62,6 +63,20 @@ export function subscribeLocale(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/**
+ * Re-renders the calling component on a language switch.
+ *
+ * The root is re-rendered by `main.tsx`, but `memo` components with stable
+ * props bail out of that pass, so large memoized views (bug table, detail,
+ * history rows) would keep the previous language. Subscribing locally makes
+ * the update independent of `memo`.
+ */
+export function useLocale(): Locale {
+  const [locale, setLocale] = useState<Locale>(getLocale);
+  useEffect(() => subscribeLocale(() => setLocale(getLocale())), []);
+  return locale;
 }
 
 /**

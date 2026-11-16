@@ -430,18 +430,23 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
     else seenRoles.add(group.role);
   }
 
-  let primary = findRoleGroup(root, "primary");
-  if (!primary) {
-    const group = freshRoleGroup(root, "primary");
-    root = insertPrimary(root, group);
-    primary = group;
-  }
-
   const pages: Array<{ panel: PanelRef; group: GroupNode }> = [];
   for (const group of listGroups(root)) {
     for (const panel of group.panels) {
       if (panel.kind === "page") pages.push({ panel, group });
     }
+  }
+
+  let primary = findRoleGroup(root, "primary");
+  if (!primary) {
+    primary = freshRoleGroup(root, "primary");
+    // `freshRoleGroup` seeds `page:bugs`. When the tree already carries that
+    // page it is moved into the new primary below, so the seed would become a
+    // second copy of the same panel id.
+    if (pages.some((page) => page.panel.id === "page:bugs")) {
+      removePanelFromGroup(primary, "page:bugs");
+    }
+    root = insertPrimary(root, primary);
   }
 
   const globals = pages.filter((page) => !isProjectPage(page.panel));

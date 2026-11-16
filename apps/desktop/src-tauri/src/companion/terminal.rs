@@ -20,6 +20,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -110,7 +112,17 @@ pub(super) async fn ws_terminal(
             let _ = socket.send(Message::Close(None)).await;
         });
     };
-    ws.on_upgrade(move |socket| relay(socket, session))
+    // HTTP auth only happens before the upgrade. Keep the revocation counter
+    // so the socket can notice an unpair / server stop on its next tick.
+    let (revoked, generation, seen) = {
+        let runtime = ctx.state.companion.lock().expect("companion lock");
+        (
+            runtime.revoked.clone(),
+            runtime.revoked_generation.clone(),
+            runtime.revoked_generation.load(Ordering::SeqCst),
+        )
+    };
+    ws.on_upgrade(move |socket| relay(socket, session, revoked, generation, seen))
 }
 
 /// Resolves a credential to pass/reject. Burning the ticket and checking its
@@ -141,7 +153,13 @@ fn ticket_rejection() -> Response {
 
 /// Replays the tail, then forwards live output. Ends with an exit frame and a
 /// close; the session itself is untouched.
-async fn relay(mut socket: WebSocket, session: Arc<Session>) {
+async fn relay(
+    mut socket: WebSocket,
+    session: Arc<Session>,
+    revoked: Arc<tokio::sync::Notify>,
+    generation: Arc<AtomicU64>,
+    seen: u64,
+) {
     let (tail, _seq, mut output) = session.snapshot_and_subscribe();
     if send_json(&mut socket, json!({ "type": "replay", "data": tail }))
         .await
@@ -161,6 +179,8 @@ async fn relay(mut socket: WebSocket, session: Arc<Session>) {
     let mut ping = tokio::time::interval(PING_INTERVAL);
     // The first tick fires immediately; the socket was just established.
     ping.tick().await;
+
+    let revoked_since_seen = || generation.load(Ordering::SeqCst) != seen;
 
     loop {
         tokio::select! {
@@ -194,7 +214,38 @@ async fn relay(mut socket: WebSocket, session: Arc<Session>) {
                 let _ = flush_exit(&mut socket, &session, &mut output).await;
                 break;
             }
+            // Unpair / disable bump the generation: stop relaying at once.
+            _ = revoked.notified() => {
+                if revoked_since_seen() {
+                    let _ = send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "code": "unauthorized",
+                            "message": tr("terminal.ticketInvalid"),
+                        }),
+                    )
+                    .await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+            }
             _ = ping.tick() => {
+                // `notify_waiters` only wakes sockets already waiting, so the
+                // generation is also checked on every keepalive tick.
+                if revoked_since_seen() {
+                    let _ = send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "code": "unauthorized",
+                            "message": tr("terminal.ticketInvalid"),
+                        }),
+                    )
+                    .await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
                 if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }

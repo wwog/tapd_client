@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import clsx from "clsx";
+import rehypeSanitize from "rehype-sanitize";
 
 import { agentApi, type AgentConfig, type AgentRuntimeDescriptor } from "../lib/agent";
 import { useAgentScan } from "../lib/agentScan";
@@ -337,6 +338,14 @@ export function AgentComposeSheet(props: Props) {
               preview="live"
               visibleDragbar={false}
               commands={commands}
+              // The compose preview renders pasted Markdown, so it needs the
+              // same sanitizer as the chat pane: raw HTML runs inside the
+              // main WebView, which holds the Tauri IPC bridge.
+              previewOptions={{
+                rehypePlugins: [rehypeSanitize],
+                urlTransform: (url) =>
+                  url.startsWith("http://") || url.startsWith("https://") ? "" : url,
+              }}
               textareaProps={{
                 placeholder: t("chat.contextPlaceholder"),
                 onPaste: (event) => {

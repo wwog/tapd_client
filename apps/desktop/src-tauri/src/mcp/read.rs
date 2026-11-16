@@ -8,6 +8,7 @@ use tapd_core::tapd::{
     api::{bug_list_url, parse_bug_list, BugQuery},
     BugListPage,
 };
+use tapd_i18n::tr;
 use tauri::AppHandle;
 
 use crate::{agent, commands::auth::session_request_json, state::SharedState};
@@ -181,7 +182,11 @@ async fn query_bugs(
     };
     query.owners = match owner.as_deref() {
         Some("all") | Some("") | None => Vec::new(),
-        Some("me") => resolve_me(app, state).await?.into_iter().collect(),
+        // An unknown nickname must not degrade to "no owner filter": that
+        // would return every owner's bugs to a "my bugs" call.
+        Some("me") => vec![resolve_me(app, state)
+            .await?
+            .ok_or_else(|| tr("app.mcp.owner.unresolved").to_string())?],
         Some(nick) => vec![nick.to_string()],
     };
 

@@ -46,6 +46,7 @@ pub static MESSAGES: &[Message] = &[
     ("flow.review.approvalreadyfiles", "Agent 完成修改，涉及 {} 个文件，等待审核", "Agent finished editing {} files; awaiting review"),
     // -- workspace ---------------------------------------------------------
     ("workspace.repo.empty", "仓库路径为空", "The repository path is empty"),
+    ("workspace.path.escape", "文件路径超出工作目录：{}", "The file path escapes the working directory: {}"),
     ("workspace.workdir.missing", "工作目录不存在：{}", "The working directory does not exist: {}"),
     ("workspace.git.exec", "无法执行 git：{}", "Failed to run git: {}"),
     ("workspace.git.failed", "git {} 失败：{}", "git {} failed: {}"),

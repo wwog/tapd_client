@@ -21,7 +21,7 @@ import {
   type AgentInFlight,
 } from "../lib/agent";
 import { cacheApi, type Cached } from "../lib/cache";
-import { localeTag, t } from "../lib/i18n";
+import { localeTag, t, useLocale } from "../lib/i18n";
 import { SkeletonRows } from "./Skeleton";
 import { Button, EmptyState } from "./ui";
 import { BugListPager } from "./BugListPager";
@@ -76,6 +76,8 @@ type Props = {
 };
 
 function BugListViewImpl(props: Props) {
+  // `memo` would otherwise skip the root re-render on a language switch.
+  useLocale();
   const {
     workspace,
     me,

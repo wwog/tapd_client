@@ -21,7 +21,7 @@ import {
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
-import { t } from "../lib/i18n";
+import { t, useLocale } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { SkeletonBlock } from "./Skeleton";
 import {
@@ -80,6 +80,8 @@ type Props = {
 };
 
 function BugDetailDrawerImpl(props: Props) {
+  // `memo` would otherwise skip the root re-render on a language switch.
+  useLocale();
   const {
     open,
     detail,

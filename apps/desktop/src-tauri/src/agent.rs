@@ -1818,6 +1818,11 @@ pub struct TaskMerge {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Main-repository HEAD after the branch was merged. The core records it
+    /// once the merge is verified; dropping it here would lose the hash from
+    /// every view, persisted record and history entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// Result of `agent_merge_start`: either the merge runner was started
@@ -2387,9 +2392,23 @@ struct MergeVerification {
 
 /// Runs the verdict and the HEAD lookup in one blocking hop. It never decides
 /// anything: the workflow core receives the facts.
-async fn verify_branch_landed(repo_path: String, branch: String) -> MergeVerification {
+async fn verify_branch_landed(
+    repo_path: String,
+    branch: String,
+    baseline: Option<String>,
+) -> MergeVerification {
     let checked = tokio::task::spawn_blocking(move || {
-        let merged = branch_merged(&repo_path, &branch)?;
+        // A branch that never advanced past the baseline is trivially an
+        // ancestor of HEAD, so `merge-base --is-ancestor` alone would report
+        // "merged" for a run that produced no commit. Require a product commit.
+        let merged = if branch_merged(&repo_path, &branch)? {
+            match (baseline.as_deref(), git::git_rev(&repo_path, &branch)?) {
+                (Some(baseline), Some(tip)) => tip != baseline,
+                _ => true,
+            }
+        } else {
+            false
+        };
         let commit = if merged {
             task_changes::head_commit(&repo_path)?
         } else {
@@ -2584,12 +2603,17 @@ pub struct AgentCore {
     /// Terminal size the UI asked for. The console can be opened before the
     /// PTY exists, so the size is remembered and applied when it starts.
     sizes: Mutex<HashMap<String, (u16, u16)>>,
-    /// Serializes persistence writers so an older batch can never overwrite a
-    /// newer one.
+    /// Serializes "read the current views + enqueue the write" so the queue
+    /// order matches the order the states were observed in.
     persist_lock: Mutex<()>,
+    /// All SQLite writes run on one dedicated thread. Fsyncs must not block a
+    /// tokio worker, and one thread keeps the write order identical to the
+    /// enqueue order.
+    persist_tx: std::sync::mpsc::SyncSender<PersistJob>,
     /// Last SQLite failure. Surfaced in the Agent header so a broken store is
-    /// visible instead of looking like a queue that simply lost history.
-    storage_error: Mutex<Option<String>>,
+    /// visible instead of looking like a queue that simply lost history. Shared
+    /// with the writer thread.
+    storage_error: Arc<Mutex<Option<String>>>,
     /// 本机安装检测结果（`agent-scan.json`）；每日自动检测一次。
     scan: Mutex<Option<crate::agent_scan::AgentScanSnapshot>>,
     /// Serializes scans so the startup scan and an opening settings card cannot
@@ -2606,10 +2630,90 @@ pub struct AgentCore {
     /// Live change summary per task: refreshed from hook events, served to the
     /// change panel. See `crate::task_changes`.
     changes: crate::task_changes::ChangesTracker,
+    /// Set once shutdown starts. A PTY spawn that is already in flight must not
+    /// leave an orphaned agent editing code after the app quits, and its late
+    /// outcome must not turn the parked queue into canceled tasks.
+    shutting_down: AtomicBool,
+    /// Tasks whose approve/stop decision is in flight. The desktop and the
+    /// phone can both call these; the decision plus the git work it triggers
+    /// must not interleave.
+    review_ops: Mutex<HashSet<String>>,
+}
+
+/// One queued SQLite write. The writer thread owns the connection order.
+enum PersistJob {
+    Upsert {
+        views: Vec<AgentTask>,
+        paused: bool,
+    },
+    Delete {
+        paused: bool,
+        task_id: String,
+    },
+    Paused {
+        paused: bool,
+    },
+    /// Shutdown barrier: the writer answers once every earlier job is written.
+    Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+/// Drains persistence jobs in order. This is the only place agent tasks touch
+/// SQLite, so no async caller ever waits on a disk fsync.
+fn persist_writer(
+    state: SharedState,
+    storage_error: Arc<Mutex<Option<String>>>,
+    jobs: std::sync::mpsc::Receiver<PersistJob>,
+) {
+    for job in jobs {
+        let persisted = match job {
+            PersistJob::Upsert { views, paused } => state.cache.save_agent_tasks(&views, paused, &[]),
+            PersistJob::Delete { paused, task_id } => {
+                state.cache.save_agent_tasks(&[], paused, &[task_id])
+            }
+            PersistJob::Paused { paused } => state.cache.save_agent_tasks(&[], paused, &[]),
+            PersistJob::Flush(done) => {
+                let _ = done.send(());
+                continue;
+            }
+        };
+        if let Ok(mut slot) = storage_error.lock() {
+            *slot = if persisted {
+                None
+            } else {
+                tracing::error!("failed to persist agent tasks; the store is unavailable");
+                Some(tr("agent.persist.failed").to_string())
+            };
+        }
+    }
+}
+
+/// Releases a task's approve/stop claim when the operation ends, including on
+/// every early-return path.
+struct ReviewClaim<'a> {
+    inflight: &'a Mutex<HashSet<String>>,
+    task_id: String,
+}
+
+impl Drop for ReviewClaim<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self.inflight.lock() {
+            inflight.remove(&self.task_id);
+        }
+    }
 }
 
 impl AgentCore {
     fn new(app: AppHandle, state: SharedState) -> Self {
+        let storage_error = Arc::new(Mutex::new(None));
+        let (persist_tx, persist_rx) = std::sync::mpsc::sync_channel::<PersistJob>(1024);
+        let writer_state = state.clone();
+        let writer_error = storage_error.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("agent-persist".to_string())
+            .spawn(move || persist_writer(writer_state, writer_error, persist_rx))
+        {
+            tracing::error!(%error, "failed to start the agent persistence thread");
+        }
         Self {
             app,
             state,
@@ -2621,7 +2725,8 @@ impl AgentCore {
             worktree_lock: tokio::sync::Mutex::new(()),
             sizes: Mutex::new(HashMap::new()),
             persist_lock: Mutex::new(()),
-            storage_error: Mutex::new(None),
+            persist_tx,
+            storage_error,
             scan: Mutex::new(None),
             scan_lock: Mutex::new(()),
             hook_tokens: Mutex::new(HashMap::new()),
@@ -2629,7 +2734,27 @@ impl AgentCore {
             runtime_status: Mutex::new(HashMap::new()),
             transcript_cache: Mutex::new(HashMap::new()),
             changes: crate::task_changes::ChangesTracker::default(),
+            shutting_down: AtomicBool::new(false),
+            review_ops: Mutex::new(HashSet::new()),
         }
+    }
+
+    fn shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    /// Claims the task's review decision. The returned guard releases the claim
+    /// on every exit path; a second caller (desktop + phone) is rejected instead
+    /// of stashing changes out from under a re-queued task.
+    fn claim_review_op(&self, task_id: &str) -> Result<ReviewClaim<'_>, String> {
+        let mut inflight = self.review_ops.lock().expect("agent review ops lock");
+        if !inflight.insert(task_id.to_string()) {
+            return Err(tr("agent.review.busy").to_string());
+        }
+        Ok(ReviewClaim {
+            inflight: &self.review_ops,
+            task_id: task_id.to_string(),
+        })
     }
 
     fn config_path(&self) -> PathBuf {
@@ -2819,9 +2944,14 @@ impl AgentCore {
             }
             Effect::StateChanged => self.emit_state(),
             Effect::PersistChanged { tasks } => {
-                let views = self.views_for(&tasks);
+                // Dispatch can be spawned, so this effect may run after a newer
+                // input already applied. Persist the workflow's current view
+                // for these ids instead of the snapshot captured with the
+                // effect, otherwise an older `running` row can overwrite a
+                // finished one and the task re-runs after a restart.
+                let ids: Vec<String> = tasks.iter().map(|task| task.id.0.clone()).collect();
                 let paused = self.workflow_paused();
-                self.persist_views(&views, paused, &[]);
+                self.persist_task_views(&ids, paused);
                 self.emit_state();
             }
             Effect::PersistDeleted { task_id } => {
@@ -2997,6 +3127,16 @@ impl AgentCore {
                     None
                 }
             })
+            .collect()
+    }
+
+    /// Views of the given tasks as they are *now*, read under the workflow
+    /// lock at persist time. Used by effects that may be dispatched out of
+    /// order with the input that produced them.
+    fn current_views(&self, task_ids: &[String]) -> Vec<AgentTask> {
+        task_ids
+            .iter()
+            .filter_map(|task_id| self.workflow_view(task_id))
             .collect()
     }
 
@@ -3593,6 +3733,10 @@ impl AgentCore {
     /// running: the turn keeps going after the window is gone and keeps
     /// writing back to TAPD while the task already looks abandoned.
     fn shutdown(self: &Arc<Self>) {
+        // Set first: a PTY spawn already in flight checks this before creating
+        // the process and again after publishing it, so nothing outlives the
+        // app or edits code after the user quit.
+        self.shutting_down.store(true, Ordering::SeqCst);
         // Nothing was loaded before system entry, so writing a suspend
         // snapshot would overwrite the durable paused flag with its default.
         let entered = self
@@ -3616,16 +3760,16 @@ impl AgentCore {
             }
         };
         // Shutdown is the last chance to persist the parked queue, so the
-        // suspend effects run inline instead of through the async dispatcher.
+        // suspend effects are written before the process exits.
         for effect in effects {
             match effect {
                 Effect::PersistChanged { tasks } => {
-                    let views = self.views_for(&tasks);
+                    let ids: Vec<String> = tasks.iter().map(|task| task.id.0.clone()).collect();
                     let paused = self.workflow_paused();
-                    if !views.is_empty() {
-                        tracing::info!(tasks = views.len(), "agent tasks suspended for shutdown");
+                    if !ids.is_empty() {
+                        tracing::info!(tasks = ids.len(), "agent tasks suspended for shutdown");
                     }
-                    self.persist_views(&views, paused, &[]);
+                    self.persist_task_views(&ids, paused);
                 }
                 Effect::PersistPaused { paused } => {
                     self.persist_views(&[], paused, &[]);
@@ -3633,6 +3777,9 @@ impl AgentCore {
                 other => tracing::debug!(effect = ?other, "agent effect skipped during shutdown"),
             }
         }
+        // The writer thread owns the SQLite connection: wait for it to finish
+        // the parked queue instead of exiting with writes still queued.
+        self.flush_persist();
 
         let task_ids: Vec<String> = {
             let workflow = self.workflow.lock().expect("agent workflow lock");
@@ -3655,6 +3802,7 @@ impl AgentCore {
     /// has uncommitted files; a missing inspection runs inline so the command
     /// returns the final view.
     async fn approve_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let _claim = self.claim_review_op(task_id)?;
         let task = self
             .workflow_view(task_id)
             .ok_or_else(|| tr("agent.task.missing").to_string())?;
@@ -3703,6 +3851,7 @@ impl AgentCore {
     /// untracked files) so nothing is lost, the task is canceled and the queue
     /// stays paused until the user resumes it.
     async fn stop_review(self: &Arc<Self>, task_id: &str) -> Result<AgentTask, String> {
+        let _claim = self.claim_review_op(task_id)?;
         let task = self
             .workflow_view(task_id)
             .ok_or_else(|| tr("agent.task.missing").to_string())?;
@@ -3847,12 +3996,10 @@ impl AgentCore {
             .get(task_id)
             .cloned()
             .ok_or_else(|| tr("agent.task.not.running").to_string())?;
-        let mut runtime = runtime.lock().expect("agent runtime lock");
-        runtime
-            .writer
-            .write_all(data.as_bytes())
-            .and_then(|_| runtime.writer.flush())
-            .map_err(|error| error.to_string())
+        let runtime = runtime.lock().expect("agent runtime lock");
+        // Never write on the async caller's thread: a TUI that stops reading
+        // its input would block a tokio worker.
+        runtime.try_write(data.as_bytes())
     }
 
     /// 读取 transcript 中 provider 记录的错误。任务启动时克隆的 view 可能还没有
@@ -4609,6 +4756,13 @@ impl AgentCore {
         let descriptor = runtime_descriptor(&running.runtime_id)
             .unwrap_or_else(|| runtime_descriptor(DEFAULT_RUNTIME_ID).expect("default runtime"));
         let outcome = self.run_tui_task(&running, &config, &descriptor).await;
+        if self.shutting_down() {
+            // Shutdown already parked the queue (Suspend). Feeding RunFinished
+            // now would turn a queued-for-restart task into Canceled.
+            tracing::info!(task_id = %task_id, "agent run abandoned during shutdown");
+            self.teardown_task(task_id.as_str());
+            return;
+        }
         if let Some(warning) = outcome.warning.as_deref() {
             tracing::warn!(task_id = %task_id, warning, "agent finished with a warning");
         }
@@ -4779,7 +4933,10 @@ impl AgentCore {
         repo_path: String,
         branch: String,
     ) {
-        let check = verify_branch_landed(repo_path, branch).await;
+        let baseline = self
+            .workflow_view(&task_id.0)
+            .and_then(|task| task.baseline_head);
+        let check = verify_branch_landed(repo_path, branch, baseline).await;
         self.feed(Input::BranchMergeVerified {
             task_id,
             merged: check.merged,
@@ -4987,7 +5144,10 @@ impl AgentCore {
             .collect();
         effects.retain(|effect| !matches!(effect, Effect::VerifyBranchMerged { .. }));
         for (verify_id, repo_path, branch) in verifications {
-            let check = verify_branch_landed(repo_path, branch).await;
+            let baseline = self
+                .workflow_view(&verify_id.0)
+                .and_then(|task| task.baseline_head);
+            let check = verify_branch_landed(repo_path, branch, baseline).await;
             let receipts = self.apply_input(Input::BranchMergeVerified {
                 task_id: verify_id,
                 merged: check.merged,
@@ -6731,10 +6891,12 @@ mod tests {
             instructions: Some("手动合并步骤".to_string()),
             started_at: Some("2026-11-10T01:00:00Z".to_string()),
             finished_at: None,
+            commit: Some("9fce2b1".to_string()),
         });
         let value = serde_json::to_value(&task).unwrap();
         assert_eq!(value["merge"]["error"], "主仓库有未提交改动");
         assert_eq!(value["merge"]["instructions"], "手动合并步骤");
+        assert_eq!(value["merge"]["commit"], "9fce2b1");
         assert_eq!(value["merge"]["startedAt"], "2026-11-10T01:00:00Z");
         assert!(value["merge"].get("finishedAt").is_none());
 
@@ -7529,6 +7691,16 @@ mod tests {
         let effects = workflow.apply(Input::ApproveReview {
             task_id: TaskId::new("review"),
             now: NOW.to_string(),
+        });
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::InspectWorkspace { .. })),
+            "approving always re-inspects the workspace"
+        );
+        let effects = workflow.apply(Input::WorkspaceInspected {
+            task_id: TaskId::new("review"),
+            changes: tapd_workflow::ChangeSet::new(Vec::new(), false, true),
         });
         assert_eq!(
             status_of(&workflow, "review"),

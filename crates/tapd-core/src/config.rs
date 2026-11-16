@@ -255,20 +255,66 @@ impl ConfigStore {
     }
 
     pub fn load(&self) -> AppConfig {
-        match std::fs::read_to_string(&self.path) {
-            Ok(raw) => {
-                let mut config: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
-                // Configs written before revision tracking used `onboarded: true`
-                // for the first guide. Keep that as revision 1 so an upgrade to
-                // revision 2 still shows the new flow exactly once.
-                if config.onboarded_version == 0 && legacy_onboarded(&raw) {
-                    config.onboarded_version = 1;
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                // A missing file is a first run. Anything else is a real
+                // failure and must not look like "no config yet": report it,
+                // and leave the file untouched so the next save does not
+                // silently replace whatever is still there.
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!(
+                        "config: could not read {}: {error}; running on defaults without writing it",
+                        self.path.display()
+                    );
                 }
-                config.companion.migrate_device_permissions();
-                config
+                return AppConfig::default();
             }
-            Err(_) => AppConfig::default(),
+        };
+        let mut config: AppConfig = match serde_json::from_str(&raw) {
+            Ok(config) => config,
+            Err(error) => {
+                // Never discard the user's file on a parse failure: move it
+                // aside so it can be recovered, and make the reset visible.
+                let backup = self.corrupt_backup_path();
+                let kept = std::fs::rename(&self.path, &backup).is_ok();
+                eprintln!(
+                    "config: {} is not valid JSON ({error}); {}",
+                    self.path.display(),
+                    if kept {
+                        format!("moved aside to {}", backup.display())
+                    } else {
+                        "left in place".to_string()
+                    }
+                );
+                let mut fallback = AppConfig::default();
+                // A corrupt file must never widen permissions: the MCP policy
+                // falls back to read-only until the user fixes the settings.
+                fallback.mcp_policy.writes_enabled = false;
+                fallback
+            }
+        };
+        // Configs written before revision tracking used `onboarded: true`
+        // for the first guide. Keep that as revision 1 so an upgrade to
+        // revision 2 still shows the new flow exactly once.
+        if config.onboarded_version == 0 && legacy_onboarded(&raw) {
+            config.onboarded_version = 1;
         }
+        config.companion.migrate_device_permissions();
+        config
+    }
+
+    fn corrupt_backup_path(&self) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.json");
+        self.path.with_file_name(format!("{name}.corrupt-{stamp}"))
     }
 
     pub fn save(&self, config: &AppConfig) -> io::Result<()> {
@@ -413,5 +459,38 @@ mod onboarding_tests {
         assert!(!companion.devices[0].can_manage);
         assert!(!companion.devices[1].can_manage);
         let _ = std::fs::remove_file(store.path());
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::ConfigStore;
+
+    #[test]
+    fn corrupt_config_is_moved_aside_and_narrows_mcp_permissions() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("tapd-config-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ not json").expect("write corrupt config");
+
+        let config = ConfigStore::new(&path).load();
+        assert!(!config.mcp_policy.writes_enabled);
+        assert!(!path.exists(), "corrupt file must not stay at the live path");
+
+        let backup = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .expect("corrupt backup exists");
+        assert_eq!(
+            std::fs::read_to_string(backup.path()).expect("backup readable"),
+            "{ not json"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

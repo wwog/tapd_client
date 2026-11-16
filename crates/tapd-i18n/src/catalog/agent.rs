@@ -248,6 +248,8 @@ Requirements:
     ("agent.resource.dir.failed", "创建资源目录失败：{}", "Failed to create the resource directory: {}"),
     ("agent.resource.empty", "资源内容为空", "The resource content is empty"),
     ("agent.resource.write.failed", "写入资源失败：{}", "Failed to write the resource: {}"),
+    ("agent.pty.input.busy", "终端暂时无法接收输入，请稍候重试", "The terminal cannot accept input right now; try again shortly"),
+    ("agent.review.busy", "该任务正在审核中，请稍候", "This review is already being processed; try again shortly"),
     ("agent.review.diff.empty", "没有未提交的差异（可能已提交，或只有未跟踪文件）。", "No uncommitted diff (it may be committed already, or only untracked files remain)."),
     ("agent.review.diff.truncated", "{}\n\n… diff 共 {} 字符，已截断", "{}\n\n... diff is {} characters; truncated"),
     ("agent.review.notAwaiting", "任务不在待审核状态", "The task is not awaiting review"),

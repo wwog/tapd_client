@@ -69,10 +69,7 @@ fn non_worktree_review_blocks_the_single_queue() {
 
     // Approving queues the reviewed task as commit-only; it is still the only
     // runnable task and resumes the queue.
-    let approved = workflow.apply(tapd_workflow::Input::ApproveReview {
-        task_id: id("a"),
-        now: now(20),
-    });
+    let approved = approve(&mut workflow, "a");
     assert!(matches!(
         approved
             .iter()

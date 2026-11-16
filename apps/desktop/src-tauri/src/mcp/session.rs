@@ -115,6 +115,14 @@ pub(super) fn resolve_workspace(
                     &[&workspace_id],
                 ));
             }
+            // An explicit id must be one of the caller's projects. Without
+            // this, any string reaches the TAPD API and the export path.
+            if !workspaces
+                .iter()
+                .any(|workspace| workspace.id == workspace_id)
+            {
+                return Err(tr_args("app.mcp.project.unknown", &[&workspace_id]));
+            }
             return Ok(workspace_id);
         }
     }

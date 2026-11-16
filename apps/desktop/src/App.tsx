@@ -599,11 +599,12 @@ export default function App() {
   }, [layoutApi.groups, context, local.projects]);
 
   // A layout restored from disk can hold a generic page written before the
-  // project was known; adopt it once the selection arrives.
+  // project was known; adopt it once the selection arrives. Never while
+  // logged out: a restored tree must not adopt the ended session's workspace.
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || !info?.loggedIn) return;
     layoutRef.current.retargetPage("bugs", workspaceId);
-  }, [workspaceId, layoutApi.layout]);
+  }, [workspaceId, info?.loggedIn, layoutApi.layout]);
 
   useEffect(() => {
     if (local.loading || !local.selectedId) return;
@@ -1034,6 +1035,12 @@ export default function App() {
 
   /** Sign out after the unsaved-edit confirmation (if any). */
   const performLogout = () => {
+    // Clear the selection *before* closing panels: closing a project page
+    // re-renders App, and a still-set workspaceId would immediately retarget
+    // the fresh `page:bugs` back to the ended session's project (and persist
+    // that tab for the next account).
+    workspaceIdRef.current = "";
+    setWorkspaceId("");
     const panels = layoutRef.current.groups.flatMap((group) => group.panels);
     for (const panel of panels) {
       // Project pages belong to the ended session; the global navigation tab
@@ -1044,7 +1051,6 @@ export default function App() {
         layoutRef.current.closePanel(panel.id);
       }
     }
-    workspaceIdRef.current = "";
     layoutRef.current.openPage("bugs");
     handleLogout();
     setUnsavedExit(null);

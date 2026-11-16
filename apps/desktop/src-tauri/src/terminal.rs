@@ -15,7 +15,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
     },
@@ -267,6 +267,10 @@ pub(crate) struct Session {
     /// Set once the process is gone and `terminal://exit` has been emitted.
     closed: watch::Sender<bool>,
     exit_code: Mutex<Option<i32>>,
+    /// Set by the waiter the moment `wait()` returns. `exit_code` is only
+    /// written later, after the drain window, so `kill()` must not rely on it:
+    /// a pid that has already been reaped may belong to another process.
+    reaped: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -362,8 +366,9 @@ impl Session {
     /// `agent::pty::AgentRuntime::kill`.
     fn kill(&self) {
         // An already reaped pid may belong to another process by now; killing
-        // it would signal an innocent group.
-        if self.exit_code().is_some() {
+        // it would signal an innocent group. `reaped` is set by the waiter the
+        // instant `wait()` returns, which is earlier than `exit_code`.
+        if self.reaped.load(Ordering::SeqCst) || self.exit_code().is_some() {
             return;
         }
         if let Some(pid) = self.pid {
@@ -442,6 +447,7 @@ fn spawn_waiter(
     mut child: Box<dyn Child + Send + Sync>,
     messages: Sender<PtyMessage>,
     id: &str,
+    reaped: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name(format!("terminal-waiter-{id}"))
@@ -451,6 +457,9 @@ fn spawn_waiter(
                 Ok(_) => UNKNOWN_EXIT,
                 Err(_) => UNKNOWN_EXIT,
             };
+            // The pid is gone from here on; `kill()` must never signal it
+            // again, even before the writer thread records the exit code.
+            reaped.store(true, Ordering::SeqCst);
             let _ = messages.send(PtyMessage::Exited(code));
         })
         .map(|_| ())
@@ -594,10 +603,28 @@ fn flush(session: &Session, osc: &mut OscParser, pending: &mut Vec<u8>) {
         seq
     };
 
-    let _ = session.app.emit(
+    emit_to_app(
+        &session.app,
         OUTPUT_EVENT,
         json!({ "id": session.id, "data": text, "seq": seq }),
     );
+}
+
+/// Emits to app windows only. `AppHandle::emit` reaches every webview,
+/// including the hidden TAPD page, whose `core:event:default` permission lets
+/// any script there listen: terminal output routinely contains tokens.
+fn emit_to_app<S: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: S) {
+    use tauri::EventTarget;
+    let _ = app.emit_filter(event, payload, |target| {
+        let label = match target {
+            EventTarget::AnyLabel { label }
+            | EventTarget::Window { label }
+            | EventTarget::Webview { label }
+            | EventTarget::WebviewWindow { label } => label.as_str(),
+            _ => return true,
+        };
+        label != crate::session::SESSION_LABEL
+    });
 }
 
 /// Applies one completed OSC sequence. The session list is emitted only when a
@@ -640,9 +667,11 @@ fn finish(session: &Session, code: i32) {
         }
         *exit = Some(code);
     }
-    let _ = session
-        .app
-        .emit(EXIT_EVENT, json!({ "id": session.id, "code": code }));
+    emit_to_app(
+        &session.app,
+        EXIT_EVENT,
+        json!({ "id": session.id, "code": code }),
+    );
     emit_sessions(&session.app);
     // `send` refuses to store the value when no one is listening yet; a phone
     // attaching after the exit must still see the closed state.
@@ -653,7 +682,7 @@ fn finish(session: &Session, code: i32) {
 fn emit_sessions(app: &AppHandle) {
     if let Some(core) = app.try_state::<Arc<TerminalCore>>() {
         let sessions = core.list();
-        let _ = app.emit(SESSIONS_EVENT, json!({ "sessions": sessions }));
+        emit_to_app(app, SESSIONS_EVENT, json!({ "sessions": sessions }));
     }
 }
 
@@ -1084,6 +1113,7 @@ fn spawn_session(
     let (closed, _) = watch::channel(false);
     let (input, input_queue) = mpsc::channel::<String>();
     let input_budget = Arc::new(InputBudget::default());
+    let reaped = Arc::new(AtomicBool::new(false));
     let session = Arc::new(Session {
         identity: Mutex::new(Identity {
             cwd: cwd.display().to_string(),
@@ -1100,6 +1130,7 @@ fn spawn_session(
         output,
         closed,
         exit_code: Mutex::new(None),
+        reaped: reaped.clone(),
         id: id.clone(),
     });
 
@@ -1109,7 +1140,7 @@ fn spawn_session(
         session.kill();
         return Err(create_error(error));
     }
-    if let Err(error) = spawn_waiter(child, messages, &id) {
+    if let Err(error) = spawn_waiter(child, messages, &id, reaped) {
         session.kill();
         return Err(create_error(error));
     }

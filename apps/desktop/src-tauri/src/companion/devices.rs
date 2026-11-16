@@ -186,11 +186,12 @@ pub(super) async fn api_device_unpair(
     if !removed {
         return not_found();
     }
-    ctx.state
-        .companion
-        .lock()
-        .expect("companion lock")
-        .presence
-        .remove(&target);
+    {
+        let mut runtime = ctx.state.companion.lock().expect("companion lock");
+        runtime.presence.remove(&target);
+        // The device keeps working on any socket it already upgraded until it
+        // is told to close; wake them so a revoked phone cannot keep its shell.
+        runtime.revoke_live_sockets();
+    }
     ok_data(json!({}))
 }

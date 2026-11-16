@@ -74,6 +74,26 @@ pub(super) fn git_head(repo_path: &str) -> Result<Option<String>, String> {
     Ok((!sha.is_empty()).then_some(sha))
 }
 
+/// Resolves a ref to its commit id. `None` when the ref does not exist yet.
+pub(super) fn git_rev(repo_path: &str, reference: &str) -> Result<Option<String>, String> {
+    let repo_path = repo_path.trim();
+    let reference = reference.trim();
+    if repo_path.is_empty() || reference.is_empty() {
+        return Ok(None);
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .output()
+        .map_err(|error| tr_args("agent.git.revparse.exec.failed", &[&error]))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!sha.is_empty()).then_some(sha))
+}
+
 /// True when `branch` is already an ancestor of the repository's current HEAD,
 /// i.e. the merge actually landed.
 pub(super) fn branch_merged(repo_path: &str, branch: &str) -> Result<bool, String> {

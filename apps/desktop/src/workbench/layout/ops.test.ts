@@ -901,3 +901,36 @@ test("initialPrefs migrates the legacy terminal height into the bottom split", (
 
   writePref("terminal.panel.v1", undefined);
 });
+
+test("normalize keeps one bugs page when it has to create the primary dock", () => {
+  // A role-less group carrying the only page: normalize must create a primary
+  // and move that page in without duplicating the seeded `page:bugs`.
+  const bugs = {
+    id: "page:bugs",
+    kind: "page" as const,
+    resource: { type: "page" as const, view: "bugs" as const },
+    preview: false,
+  };
+  const layout: LayoutState = {
+    version: 1,
+    root: {
+      kind: "group",
+      id: "g1",
+      panels: [bugs],
+      activePanelId: bugs.id,
+    },
+    activeGroupId: "g1",
+    maximizedGroupId: null,
+  };
+
+  const next = normalize(layout);
+  const primary = findRoleGroup(next.root, "primary")!;
+  const ids = primary.panels.map((panel) => panel.id);
+  assert.equal(
+    ids.filter((id) => id === "page:bugs").length,
+    1,
+    "exactly one bugs tab",
+  );
+  assert.equal(new Set(ids).size, ids.length, "panel ids are unique");
+  assert.deepEqual(normalize(next).root, next.root, "normalize is a fixpoint");
+});

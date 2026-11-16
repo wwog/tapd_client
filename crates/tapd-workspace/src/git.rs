@@ -8,7 +8,7 @@
 //! - reference target: the worktree directory is gone, so git runs with
 //!   `-C repo_path` over `baseline..branch`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -125,7 +125,7 @@ impl TaskWorkspace {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            if excluded.contains(&self.normalize_path(&path, root)) {
+            if self.is_excluded(&excluded, &path, root) {
                 continue;
             }
             file_count += 1;
@@ -145,7 +145,7 @@ impl TaskWorkspace {
         }
         // A status entry missing from numstat still describes a real change.
         for (path, kind) in &statuses {
-            if seen.contains(path) || excluded.contains(&self.normalize_path(path, root)) {
+            if seen.contains(path) || self.is_excluded(&excluded, path, root) {
                 continue;
             }
             seen.insert(path.clone());
@@ -160,18 +160,24 @@ impl TaskWorkspace {
         }
 
         let untracked = git.stdout(&["ls-files", "--others", "--exclude-standard"])?;
-        let untracked: Vec<&str> = untracked.lines().filter(|line| !line.is_empty()).collect();
+        let untracked: Vec<&str> = untracked
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter(|path| !self.is_excluded(&excluded, path, root))
+            .collect();
         // Beyond the listing cap the per-file numstat calls would only produce
         // process noise; list the files with zero counts instead.
         let skip_untracked_stats = untracked.len() > MAX_LISTED_FILES;
+        let batched = if skip_untracked_stats {
+            None
+        } else {
+            untracked_stats(&git, &untracked)
+        };
         for path in untracked {
-            if excluded.contains(&self.normalize_path(path, root)) {
-                continue;
-            }
-            let stat = if skip_untracked_stats {
-                Stat::default()
-            } else {
-                untracked_stat(&git, path)?
+            let stat = match &batched {
+                Some(stats) => stats.get(path).copied().unwrap_or_default(),
+                None if skip_untracked_stats => Stat::default(),
+                None => untracked_stat(&git, path)?,
             };
             file_count += 1;
             additions += stat.additions;
@@ -298,7 +304,7 @@ impl TaskWorkspace {
         let text = match file {
             None => git.stdout(&["diff", "--no-color", "--no-renames", ish])?,
             Some(file) => {
-                let path = self.normalize_path(file, root);
+                let path = self.checked_file_path(file, root)?;
                 if git.is_tracked(&path)? {
                     git.stdout(&["diff", "--no-color", "--no-renames", ish, "--", &path])?
                 } else {
@@ -322,7 +328,7 @@ impl TaskWorkspace {
         let text = match file {
             None => git.stdout(&["diff", "--no-color", "--no-renames", &range])?,
             Some(file) => {
-                let path = self.normalize_path(file, Path::new(&self.repo_path));
+                let path = self.checked_file_path(file, Path::new(&self.repo_path))?;
                 git.stdout(&["diff", "--no-color", "--no-renames", &range, "--", &path])?
             }
         };
@@ -335,6 +341,29 @@ impl TaskWorkspace {
             .map(|path| self.normalize_path(path, root))
             .filter(|path| !path.is_empty())
             .collect()
+    }
+
+    /// True when the path, or any directory it lives in, is excluded.
+    ///
+    /// `git status --porcelain` reports a pre-existing untracked directory as
+    /// `dir/`, while `ls-files --others` lists `dir/a.txt`; an exact-path
+    /// comparison would hand the user's own files to the task as new work.
+    fn is_excluded(&self, excluded: &HashSet<String>, path: &str, root: &Path) -> bool {
+        let normalized = self.normalize_path(path, root);
+        if excluded.contains(&normalized) {
+            return true;
+        }
+        let mut prefix = String::new();
+        for part in normalized.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            if excluded.contains(&format!("{prefix}/")) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Turns a repo-relative or absolute path into a repo-relative path so the
@@ -359,6 +388,42 @@ impl TaskWorkspace {
             path = rest.to_string();
         }
         path
+    }
+
+    /// Validates a caller-supplied file path for a diff.
+    ///
+    /// `git diff --no-index` reads whatever path it is given, and this API is
+    /// reachable from a paired phone. Absolute paths, `..` and any other
+    /// non-normal component are rejected, and a symlink that resolves outside
+    /// the work tree is rejected as well.
+    fn checked_file_path(&self, raw: &str, root: &Path) -> Result<String, WorkspaceError> {
+        use std::path::Component;
+
+        let path = self.normalize_path(raw, root);
+        let candidate = Path::new(&path);
+        let escapes = path.is_empty()
+            || candidate.is_absolute()
+            || candidate
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir));
+        if escapes {
+            return Err(WorkspaceError::new(tr_args(
+                "workspace.path.escape",
+                &[&raw],
+            )));
+        }
+
+        let absolute = root.join(candidate);
+        if let (Ok(real_root), Ok(real_file)) = (fs::canonicalize(root), fs::canonicalize(&absolute))
+        {
+            if !real_file.starts_with(&real_root) {
+                return Err(WorkspaceError::new(tr_args(
+                    "workspace.path.escape",
+                    &[&raw],
+                )));
+            }
+        }
+        Ok(path)
     }
 
     fn path_variants(&self, root: &Path) -> Vec<PathBuf> {
@@ -398,11 +463,27 @@ impl Git {
     }
 
     fn run(&self, args: &[&str], allowed_exit: &[i32]) -> Result<Output, WorkspaceError> {
-        let output = Command::new("git")
+        self.run_with_index(None, args, allowed_exit)
+    }
+
+    /// Runs git against an explicit index file (`GIT_INDEX_FILE`). Used to count
+    /// untracked files without touching the user's index.
+    fn run_with_index(
+        &self,
+        index: Option<&str>,
+        args: &[&str],
+        allowed_exit: &[i32],
+    ) -> Result<Output, WorkspaceError> {
+        let mut command = Command::new("git");
+        command
             .arg("-c")
             .arg("core.quotepath=false")
             .args(args)
-            .current_dir(&self.cwd)
+            .current_dir(&self.cwd);
+        if let Some(index) = index {
+            command.env("GIT_INDEX_FILE", index);
+        }
+        let output = command
             .output()
             .map_err(|err| WorkspaceError::new(tr_args("workspace.git.exec", &[&err])))?;
         let accepted = output.status.success()
@@ -545,6 +626,66 @@ fn untracked_stat(git: &Git, path: &str) -> Result<Stat, WorkspaceError> {
         .next()
         .map(|(_, stat)| stat)
         .unwrap_or_default())
+}
+
+/// Line counts for the untracked files in **one** git pass.
+///
+/// `git diff --no-index` only compares two paths, so the naive implementation
+/// ran one process per file — up to 200 git spawns on every 800 ms refresh
+/// while an agent runs. A throwaway index plus `add -N` yields the same counts
+/// from a single `diff --numstat`; the user's real index is never touched.
+///
+/// Returns `None` when the shortcut is not applicable (the caller falls back to
+/// the per-file path).
+fn untracked_stats(git: &Git, files: &[&str]) -> Option<HashMap<String, Stat>> {
+    if files.is_empty() {
+        return Some(HashMap::new());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let index_path = std::env::temp_dir().join(format!(
+        "tapd-workspace-index-{}-{stamp}",
+        std::process::id()
+    ));
+    let index = index_path.to_string_lossy().to_string();
+
+    // Start from HEAD so tracked files stay identical between index and work
+    // tree; an unborn branch has no tree, so the empty index is correct there.
+    let seeded = git
+        .run_with_index(Some(&index), &["read-tree", "HEAD"], &[])
+        .is_ok()
+        || git
+            .run_with_index(Some(&index), &["read-tree", "--empty"], &[])
+            .is_ok();
+    if !seeded {
+        let _ = fs::remove_file(&index_path);
+        return None;
+    }
+
+    let mut add: Vec<&str> = vec!["add", "-N", "--"];
+    add.extend_from_slice(files);
+    let added = git
+        .run_with_index(Some(&index), &add, &[])
+        .map(|_| ())
+        .is_ok();
+    let stats = if added {
+        git.run_with_index(Some(&index), &["diff", "--numstat", "--no-renames"], &[])
+            .map(|output| parse_numstat(&String::from_utf8_lossy(&output.stdout)))
+            .ok()
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|(path, _)| files.contains(&path.as_str()))
+                    .collect::<HashMap<String, Stat>>()
+            })
+    } else {
+        None
+    };
+
+    let _ = fs::remove_file(&index_path);
+    stats
 }
 
 fn diff_view(text: String) -> DiffView {

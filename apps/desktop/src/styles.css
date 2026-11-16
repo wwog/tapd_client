@@ -504,7 +504,11 @@ select,
 }
 
 .modal-panel-out {
-  animation: modal-panel-out 110ms ease-in forwards;
+  animation: modal-panel-out 110ms ease-in;
+  /* A close the caller refuses (busy dialog) must not leave an invisible layer
+     swallowing every click: without `forwards` it becomes visible again, and
+     this keeps it non-blocking while the animation plays. */
+  pointer-events: none;
 }
 
 @keyframes modal-overlay-in {
@@ -530,7 +534,8 @@ select,
 }
 
 .modal-overlay-out {
-  animation: modal-overlay-out 110ms ease-in forwards;
+  animation: modal-overlay-out 110ms ease-in;
+  pointer-events: none;
 }
 
 @keyframes modal-sheet-out {
@@ -545,7 +550,8 @@ select,
 }
 
 .modal-sheet-out {
-  animation: modal-sheet-out 110ms ease-in forwards;
+  animation: modal-sheet-out 110ms ease-in;
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

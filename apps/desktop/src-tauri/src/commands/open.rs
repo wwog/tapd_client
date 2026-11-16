@@ -64,8 +64,13 @@ pub(crate) async fn download_media(
 ) -> Result<std::path::PathBuf, String> {
     let dir = media_cache::dir(paths);
 
-    if let Some(cached) = media_cache::get(&dir, url) {
-        return materialize(paths, url, &cached);
+    let cached = media_cache::get(&dir, url);
+    if let Some(cached) = cached {
+        let paths = paths.clone();
+        let url = url.to_string();
+        return tokio::task::spawn_blocking(move || materialize(&paths, &url, &cached))
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     let window = app
@@ -110,9 +115,18 @@ pub(crate) async fn download_media(
         return Err(tr_args("app.download.failed", &[&status]));
     }
 
-    let cached = media_cache::put(&dir, url, &content_type, &bytes)
-        .ok_or_else(|| tr_args("app.download.rejected", &[&content_type]))?;
-    materialize(paths, url, &cached)
+    // Cache write + trim + hard link all touch the disk (up to 300 MB); keep
+    // them off the async worker that serves the command.
+    let paths = paths.clone();
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let dir = media_cache::dir(&paths);
+        let cached = media_cache::put(&dir, &url, &content_type, &bytes)
+            .ok_or_else(|| tr_args("app.download.rejected", &[&content_type]))?;
+        materialize(&paths, &url, &cached)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// `open`/Finder pick the app from the file extension, which a blob named after

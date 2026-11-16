@@ -322,3 +322,74 @@ fn clean_working_tree_has_an_empty_diff() {
     assert!(diff.text.trim().is_empty());
     assert!(!diff.truncated);
 }
+
+#[test]
+fn diff_rejects_files_outside_the_work_tree() {
+    let temp = TempDir::new("escape");
+    let repo = init_repo(&temp.path);
+    write(&repo, "app.txt", b"a\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    // A secret next to the repository, not inside it.
+    write(&temp.path, "outside.txt", b"secret\n");
+
+    let workspace = workspace(&repo, &repo, None, Some(&baseline), Vec::new());
+
+    for path in ["../outside.txt", "/etc/passwd", "..\\outside.txt"] {
+        let error = workspace
+            .diff(Some(path))
+            .expect_err("a path outside the work tree must be rejected");
+        assert!(
+            error.message().contains(path),
+            "the error names the rejected path: {}",
+            error.message()
+        );
+    }
+}
+
+#[test]
+fn an_excluded_untracked_directory_hides_every_file_inside_it() {
+    let temp = TempDir::new("excluded-dir");
+    let repo = init_repo(&temp.path);
+    write(&repo, "base.txt", b"base\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    // Pre-existing user files: git status reports the directory as `newdir/`.
+    write(&repo, "newdir/keep.txt", b"user file\n");
+    write(&repo, "newdir/nested/keep.txt", b"user file\n");
+    let excluded = vec!["newdir/".to_string()];
+
+    let summary = workspace(&repo, &repo, None, Some(&baseline), excluded)
+        .summary()
+        .unwrap();
+
+    assert_eq!(summary.file_count, 0);
+    assert!(summary.files.is_empty());
+    assert!(!summary.dirty);
+}
+
+#[test]
+fn several_untracked_files_keep_their_own_line_counts() {
+    let temp = TempDir::new("untracked-batch");
+    let repo = init_repo(&temp.path);
+    write(&repo, "base.txt", b"base\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    write(&repo, "a.txt", b"one\ntwo\n");
+    write(&repo, "b.txt", b"one\ntwo\nthree\n");
+    write(&repo, "dir/c.txt", b"one\n");
+
+    let summary = workspace(&repo, &repo, None, Some(&baseline), Vec::new())
+        .summary()
+        .unwrap();
+
+    assert_eq!(summary.file_count, 3);
+    let counts: Vec<(String, usize, ChangeKind)> = summary
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.additions, file.status))
+        .collect();
+    assert!(counts.contains(&("a.txt".to_string(), 2, ChangeKind::Added)));
+    assert!(counts.contains(&("b.txt".to_string(), 3, ChangeKind::Added)));
+    assert!(counts.contains(&("dir/c.txt".to_string(), 1, ChangeKind::Added)));
+}

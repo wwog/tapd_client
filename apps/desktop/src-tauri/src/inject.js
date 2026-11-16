@@ -302,6 +302,15 @@
     lastRefresh: 0,
     sawScan: false,
     badLoginAt: 0,
+    // A scan/handoff that ends on anything but a workspace is a rejected
+    // login (for example an account without TAPD access). The failure is
+    // sticky until the QR is refreshed, otherwise the WeCom frame would keep
+    // republishing "scanned" and the screen would look stuck instead.
+    scannedAt: 0,
+    handoffAt: 0,
+    failure: null,
+    deadUrl: "",
+    deadSince: 0,
   };
 
   function compactText(node) {
@@ -346,6 +355,92 @@
     );
   }
 
+  // Mirrors the Rust `is_logged_in_url`: only these paths mean the scan
+  // actually opened a workspace.
+  function isWorkspacePath(raw) {
+    var lower = String(raw || "").toLowerCase();
+    if (lower.indexOf("tapd.cn") === -1 || isAuthPath(lower)) return false;
+    var rest = lower.split("tapd.cn")[1] || "";
+    var path = rest
+      .replace(/^\/+/, "")
+      .split("?")[0]
+      .split("#")[0];
+    if (!path) return false;
+    if (
+      path.indexOf("tapd_fe/") === 0 ||
+      path.indexOf("my_work") === 0 ||
+      path.indexOf("company/") === 0 ||
+      path.indexOf("dashboard") === 0
+    ) {
+      return true;
+    }
+    var first = path.split("/")[0];
+    return !!first && /^\d+$/.test(first);
+  }
+
+  // TAPD renders the reason on its own rejection page; surface that sentence
+  // instead of a generic guess.
+  function failureDetail() {
+    var hints = [
+      "未开通",
+      "没有权限",
+      "无权访问",
+      "未加入",
+      "没有加入",
+      "暂时无法",
+      "访问受限",
+      "无法访问",
+      "联系管理员",
+      "登录失败",
+      "授权失败",
+      "不存在",
+      "已被禁用",
+    ];
+    try {
+      var lines = String((document.body && document.body.innerText) || "").split(/\n+/);
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].replace(/\s+/g, " ").trim();
+        if (!line || line.length > 80) continue;
+        for (var j = 0; j < hints.length; j++) {
+          if (line.indexOf(hints[j]) !== -1) return line;
+        }
+      }
+      var title = String(document.title || "").trim();
+      if (title && title.toLowerCase() !== "tapd") return title.slice(0, 80);
+    } catch (_) {
+      /* page mid-navigation */
+    }
+    return "";
+  }
+
+  function publishLoginFailure(reason) {
+    var detail = failureDetail();
+    var state = {
+      phase: "error",
+      qrUrl: null,
+      name: null,
+      avatarUrl: null,
+      corp: null,
+      message: detail || null,
+      reason: reason,
+      detail: detail || null,
+      host: "tapd.cn",
+    };
+    loginBridge.failure = state;
+    publishLogin(state);
+  }
+
+  // Milliseconds since the scan started, or 0 when no scan is in flight.
+  function scanElapsed() {
+    var current = window.__TAPDCB_LOGIN__;
+    var since =
+      (current && current.handoffAt) ||
+      loginBridge.handoffAt ||
+      loginBridge.scannedAt;
+    if (!since) return 0;
+    return Date.now() - since;
+  }
+
   function publishLogin(state) {
     state = state || {};
     state.at = Date.now();
@@ -373,7 +468,33 @@
 
   function scanTopLoginPage() {
     if (!isTopFrame || !tapdHost) return;
-    if (!isAuthPath(window.location.href)) return;
+
+    var url = window.location.href;
+
+    // A scanned login either lands in a workspace or returns to the login
+    // flow. Any other TAPD page is a rejection (no TAPD access, disabled
+    // workspace, ...). Say so instead of leaving the screen on "scanned".
+    if (!isAuthPath(url)) {
+      if (isWorkspacePath(url)) {
+        loginBridge.deadUrl = "";
+        loginBridge.deadSince = 0;
+        loginBridge.failure = null;
+        loginBridge.scannedAt = 0;
+        return;
+      }
+      if (loginBridge.deadUrl !== url) {
+        loginBridge.deadUrl = url;
+        loginBridge.deadSince = Date.now();
+      }
+      var settled = Date.now() - loginBridge.deadSince;
+      if (loginBridge.scannedAt && Date.now() - loginBridge.scannedAt < 300000 && settled > 4000) {
+        publishLoginFailure("denied");
+      }
+      return;
+    }
+    loginBridge.deadUrl = "";
+    loginBridge.deadSince = 0;
+
     var tab = document.querySelector(".login-tab-qy");
     if (!tab) {
       var form = document.querySelector("#login_cn_form, .login-form");
@@ -398,7 +519,13 @@
         }
 
         // The WeCom/OAuth callback page is not the login form; a login is
-        // already in flight and will land on the workspace shortly.
+        // already in flight and will land on the workspace shortly. If it
+        // never does, the callback was rejected.
+        var elapsed = scanElapsed();
+        if (elapsed > 20000 && elapsed < 300000) {
+          publishLoginFailure("stalled");
+          return;
+        }
         publishLogin({
           phase: "loading",
           qrUrl: null,
@@ -445,6 +572,14 @@
           /* ignore */
         }
       }
+      return;
+    }
+
+    // Back on the QR panel after a scan: TAPD bounced the account, so the
+    // login cannot finish on its own. Keep the panel usable and explain why.
+    var backElapsed = scanElapsed();
+    if (backElapsed > 20000 && backElapsed < 300000) {
+      publishLoginFailure("denied");
       return;
     }
 
@@ -546,6 +681,7 @@
             Date.now() - loginBridge.lastLinkClick > 3500
           ) {
             loginBridge.lastLinkClick = Date.now();
+            loginBridge.handoffAt = Date.now();
             // Never hand off to the installed WeCom desktop app.
             window.setTimeout(function () {
               try {
@@ -562,6 +698,10 @@
         var refresh = document.querySelector(".wwLogin_qrcode_tips_cnt a");
         if (refresh && Date.now() - loginBridge.lastRefresh > 2500) {
           loginBridge.lastRefresh = Date.now();
+          // A refreshed QR needs a fresh scan: otherwise the next quick-login
+          // panel would auto-continue on the previous scan.
+          loginBridge.sawScan = false;
+          loginBridge.handoffAt = 0;
           try {
             refresh.click();
           } catch (_) {
@@ -573,11 +713,19 @@
       /* transient DOM state while Vue re-renders: report loading next tick */
     }
 
+    if (loginBridge.handoffAt) state.handoffAt = loginBridge.handoffAt;
     publishLogin(state);
   }
 
   function refreshLogin() {
     if (!isTopFrame || !tapdHost) return false;
+
+    // A refresh is the user's explicit retry: clear the sticky rejection.
+    loginBridge.failure = null;
+    loginBridge.scannedAt = 0;
+    loginBridge.handoffAt = 0;
+    loginBridge.deadUrl = "";
+    loginBridge.deadSince = 0;
 
     var container = document.querySelector("#ww-login-container");
     var frame = container ? container.querySelector("iframe") : null;
@@ -607,7 +755,18 @@
     window.addEventListener("message", function (event) {
       var data = event.data;
       if (data && data.__tapdcb === "login" && data.state) {
-        window.__TAPDCB_LOGIN__ = data.state;
+        var incoming = data.state;
+        if (incoming.phase === "scanned" && !loginBridge.scannedAt) {
+          loginBridge.scannedAt = Date.now();
+          loginBridge.deadUrl = "";
+          loginBridge.deadSince = 0;
+        }
+        // A new handoff is a retry: drop the previous rejection.
+        if (incoming.handoffAt && incoming.handoffAt !== loginBridge.handoffAt) {
+          loginBridge.handoffAt = incoming.handoffAt;
+          loginBridge.failure = null;
+        }
+        window.__TAPDCB_LOGIN__ = incoming;
       }
     });
     window.setInterval(scanTopLoginPage, 700);
@@ -617,6 +776,9 @@
     window.addEventListener("message", function (event) {
       var data = event.data;
       if (!data || data.__tapdcb !== "cmd" || data.cmd !== "refreshQr") return;
+      // A refreshed QR needs a fresh scan.
+      loginBridge.sawScan = false;
+      loginBridge.handoffAt = 0;
       var refresh = document.querySelector(".wwLogin_qrcode_tips_cnt a");
       if (refresh) {
         try {
@@ -673,6 +835,20 @@
     },
 
     loginState: function () {
+      // A rejection stays visible until the QR is refreshed, even while the
+      // WeCom frame keeps republishing "scanned".
+      if (loginBridge.failure && Date.now() - loginBridge.failure.at < 600000) {
+        return {
+          phase: "error",
+          qrUrl: null,
+          name: null,
+          avatarUrl: null,
+          corp: null,
+          message: loginBridge.failure.message || null,
+          reason: loginBridge.failure.reason || null,
+          detail: loginBridge.failure.detail || null,
+        };
+      }
       var state = window.__TAPDCB_LOGIN__ || loadingLoginState;
       return {
         phase: state.phase || "loading",
@@ -681,6 +857,8 @@
         avatarUrl: state.avatarUrl || null,
         corp: state.corp || null,
         message: state.message || null,
+        reason: state.reason || null,
+        detail: state.detail || null,
       };
     },
 

@@ -85,28 +85,41 @@ impl LocalStore {
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(sql_error)?;
         match version {
-            0 => {
-                conn.execute_batch(SCHEMA).map_err(sql_error)?;
-                // A v1 build could have created its tables before stamping the
-                // version. `CREATE TABLE IF NOT EXISTS` then leaves the table
-                // without `rule`, so finish that migration before stamping.
-                if !has_column(&conn, "local_projects", "rule")? {
-                    conn.execute_batch(MIGRATE_1_TO_2).map_err(sql_error)?;
+            0 | 1 => {
+                // Serialize the whole migration: two processes opening a v1
+                // file must not both run the ALTER (the loser would fail and
+                // keep its store disabled for the rest of the process).
+                conn.execute_batch("BEGIN IMMEDIATE").map_err(sql_error)?;
+                let migrated = (|| -> Result<(), String> {
+                    if version == 0 {
+                        conn.execute_batch(SCHEMA).map_err(sql_error)?;
+                    }
+                    // A v1 build could have created its tables before stamping
+                    // the version. `CREATE TABLE IF NOT EXISTS` then leaves the
+                    // table without `rule`, so finish that migration before
+                    // stamping. The column check also makes a crash between the
+                    // ALTER and the stamp recoverable.
+                    if !has_column(&conn, "local_projects", "rule")? {
+                        if let Err(error) = conn.execute_batch(MIGRATE_1_TO_2) {
+                            // Another process won a race we did not serialize.
+                            if !error.to_string().contains("duplicate column name") {
+                                return Err(sql_error(error));
+                            }
+                        }
+                    }
+                    // Stamp only after the schema exists: writing the version
+                    // first would make a failed creation look complete.
+                    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+                        .map_err(sql_error)?;
+                    Ok(())
+                })();
+                match migrated {
+                    Ok(()) => conn.execute_batch("COMMIT").map_err(sql_error)?,
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(error);
+                    }
                 }
-                // Stamp only after the schema exists: writing the version first
-                // would make a failed creation look like a complete database.
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                    .map_err(sql_error)?;
-            }
-            1 => {
-                // The ALTER and the version stamp are two statements. Checking
-                // the column first makes a crash between them recoverable
-                // instead of permanently disabling the store on the next open.
-                if !has_column(&conn, "local_projects", "rule")? {
-                    conn.execute_batch(MIGRATE_1_TO_2).map_err(sql_error)?;
-                }
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                    .map_err(sql_error)?;
             }
             _ => {}
         }
@@ -403,14 +416,14 @@ impl LocalStore {
         })
     }
 
-    /// Drops the link when a task record is deleted. An item left in progress
-    /// returns to pending; a done or pending item keeps its status.
+    /// Drops the link when a task record is deleted. The status is the user's
+    /// own field (see `WorkItem::clear_task`), so unlinking never moves an item
+    /// back to pending behind their back.
     pub fn forget_task(&self, task_id: &str, now: &str) -> Result<usize, String> {
         self.with_conn(|conn| {
             conn.execute(
-                "UPDATE local_work_items SET agent_task_id = NULL, \
-                 status = CASE WHEN status = 'in_progress' THEN 'pending' ELSE status END, \
-                 updated_at = ?2 WHERE agent_task_id = ?1",
+                "UPDATE local_work_items SET agent_task_id = NULL, updated_at = ?2 \
+                 WHERE agent_task_id = ?1",
                 params![task_id.trim(), now],
             )
             .map_err(sql_error)

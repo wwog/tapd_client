@@ -155,17 +155,6 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
     let port = port.ok_or_else(|| tr("companion.notrunning").to_string())?;
     let cloudflared = cached.unwrap_or_else(detect);
 
-    {
-        let mut runtime = state.companion.lock().expect("companion lock");
-        runtime.cloudflared = Some(cloudflared.clone());
-        if matches!(
-            runtime.tunnel.snapshot.state,
-            TunnelState::Starting | TunnelState::Running
-        ) {
-            return Ok(runtime.tunnel.snapshot.clone());
-        }
-    }
-
     if !cloudflared.installed {
         let snapshot = failed(
             state,
@@ -178,12 +167,35 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
             .unwrap_or_else(|| tr("companion.cloudflared.missing").to_string()));
     }
 
+    // Reserve the start under the lock: spawning outside it means two callers
+    // (boot effect + recheck) could both spawn, and the second would overwrite
+    // the first child without killing it.
+    let generation = {
+        let mut runtime = state.companion.lock().expect("companion lock");
+        runtime.cloudflared = Some(cloudflared.clone());
+        if matches!(
+            runtime.tunnel.snapshot.state,
+            TunnelState::Starting | TunnelState::Running
+        ) {
+            return Ok(runtime.tunnel.snapshot.clone());
+        }
+        let generation = runtime.tunnel.generation.wrapping_add(1);
+        runtime.tunnel.generation = generation;
+        runtime.tunnel.snapshot = TunnelSnapshot {
+            state: TunnelState::Starting,
+            url: None,
+            error: None,
+            started_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+        generation
+    };
+
     let binary = cloudflared
         .path
         .as_deref()
         .ok_or_else(|| tr("companion.cloudflared.path").to_string())?;
     let local_url = format!("http://127.0.0.1:{port}");
-    let mut child = Command::new(binary)
+    let spawned = Command::new(binary)
         .arg("tunnel")
         .arg("--url")
         .arg(&local_url)
@@ -194,26 +206,45 @@ pub(super) fn start(app: &AppHandle, state: &SharedState) -> Result<TunnelSnapsh
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| tr_args("companion.cloudflared.start", &[&error]))?;
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            let message = tr_args("companion.cloudflared.start", &[&error]);
+            let snapshot = failed(state, app, &message);
+            return Err(snapshot.error.unwrap_or(message));
+        }
+    };
 
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| tr("companion.cloudflared.output").to_string())?;
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let message = tr("companion.cloudflared.output").to_string();
+            let _ = failed(state, app, &message);
+            return Err(message);
+        }
+    };
 
-    let (generation, snapshot) = {
+    let snapshot = {
         let mut runtime = state.companion.lock().expect("companion lock");
-        let generation = runtime.tunnel.generation.wrapping_add(1);
-        runtime.tunnel.generation = generation;
+        if runtime.tunnel.generation != generation {
+            // A stop or a newer start superseded us while the process was
+            // starting: never install (or leak) an untracked tunnel.
+            drop(runtime);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(state
+                .companion
+                .lock()
+                .expect("companion lock")
+                .tunnel
+                .snapshot
+                .clone());
+        }
         runtime.tunnel.child = Some(child);
-        runtime.tunnel.snapshot = TunnelSnapshot {
-            state: TunnelState::Starting,
-            url: None,
-            error: None,
-            started_at: Some(chrono::Utc::now().to_rfc3339()),
-        };
-        (generation, runtime.tunnel.snapshot.clone())
+        runtime.tunnel.snapshot.clone()
     };
     emit(app, &snapshot);
 

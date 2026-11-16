@@ -136,6 +136,30 @@ pub fn finish(
     })
 }
 
+/// Approves a review the way the app does: the workflow always re-inspects the
+/// workspace before deciding, and the inspection receipt carries the decision.
+/// The test-supplied changes come from `finish`, so they are reused here.
+pub fn approve(workflow: &mut Workflow, task_id: &str) -> Vec<Effect> {
+    let effects = workflow.apply(Input::ApproveReview {
+        task_id: id(task_id),
+        now: now(20),
+    });
+    let pending = effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::InspectWorkspace { .. }));
+    if !pending {
+        return effects;
+    }
+    let changes = workflow
+        .task(&id(task_id))
+        .and_then(|task| task.changes.clone())
+        .unwrap_or_else(|| ChangeSet::new(Vec::new(), false, false));
+    workflow.apply(Input::WorkspaceInspected {
+        task_id: id(task_id),
+        changes,
+    })
+}
+
 pub fn finish_outcome(workflow: &mut Workflow, task_id: &str, outcome: RunOutcome) -> Vec<Effect> {
     workflow.apply(Input::RunFinished {
         task_id: id(task_id),

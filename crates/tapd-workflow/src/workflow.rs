@@ -46,8 +46,10 @@ pub struct Workflow {
     pending_merges: Vec<(TaskId, Timestamp)>,
     /// Agent merge error kept until `BranchMergeVerified` reports.
     pending_merge_errors: Vec<(TaskId, Option<String>)>,
-    /// Verification requests waiting for `BranchMergeVerified`.
-    pending_verifications: Vec<(TaskId, Timestamp)>,
+    /// Verification requests waiting for `BranchMergeVerified`. The status at
+    /// request time is part of the key: a receipt may only decide while the
+    /// task is still in that stage.
+    pending_verifications: Vec<(TaskId, Timestamp, TaskStatus)>,
 }
 
 impl Default for Workflow {
@@ -490,18 +492,18 @@ impl Workflow {
             effects.push(Effect::rejected(tr("flow.task.notawaitingapproval")));
             return;
         }
-        if task.changes.is_none() {
-            self.pending_inspections.retain(|(id, _)| id != &task_id);
-            self.pending_inspections.push((task_id.clone(), now));
-            let effect = self.effect_id();
-            effects.push(Effect::InspectWorkspace {
-                effect,
-                task_id,
-                path: task.work_dir().to_string(),
-            });
-            return;
-        }
-        self.decide_approval(task_id, now, effects);
+        // Always re-inspect before deciding. The review card offers "open
+        // worktree", so edits made after the run ended are not in the run-end
+        // snapshot; approving on that snapshot would merge the branch without
+        // them (or send a cleaned worktree straight to merge).
+        self.pending_inspections.retain(|(id, _)| id != &task_id);
+        self.pending_inspections.push((task_id.clone(), now));
+        let effect = self.effect_id();
+        effects.push(Effect::InspectWorkspace {
+            effect,
+            task_id,
+            path: task.work_dir().to_string(),
+        });
     }
 
     fn on_workspace_inspected(
@@ -659,6 +661,9 @@ impl Workflow {
 
         self.pending_merges.retain(|(id, _)| id != &task_id);
         self.pending_merges.push((task_id.clone(), now));
+        // A verification requested from AwaitingMerge cannot decide anything
+        // once the merge starts; drop it so its late receipt is ignored.
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
         let effect = self.effect_id();
         effects.push(Effect::CheckMergePreconditions {
             effect,
@@ -772,8 +777,9 @@ impl Workflow {
         self.pending_merge_errors.retain(|(id, _)| id != &task_id);
         self.pending_merge_errors
             .push((task_id.clone(), outcome.error.clone()));
-        self.pending_verifications.retain(|(id, _)| id != &task_id);
-        self.pending_verifications.push((task_id.clone(), now));
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
+        self.pending_verifications
+            .push((task_id.clone(), now, TaskStatus::Merging));
 
         let changed = self.tasks[index].clone();
         self.push_persist(effects, &changed);
@@ -801,8 +807,9 @@ impl Workflow {
             return;
         };
         let repo = task.spec.repo_path.clone();
-        self.pending_verifications.retain(|(id, _)| id != &task_id);
-        self.pending_verifications.push((task_id.clone(), now));
+        self.pending_verifications.retain(|(id, _, _)| id != &task_id);
+        self.pending_verifications
+            .push((task_id.clone(), now, TaskStatus::AwaitingMerge));
         let effect = self.effect_id();
         effects.push(Effect::VerifyBranchMerged {
             effect,
@@ -820,11 +827,14 @@ impl Workflow {
         commit: Option<String>,
         effects: &mut Vec<Effect>,
     ) {
-        let Some(verified_at) = self
+        let Some((verified_at, requested_status)) = self
             .pending_verifications
             .iter()
-            .position(|(id, _)| id == &task_id)
-            .map(|position| self.pending_verifications.remove(position).1)
+            .position(|(id, _, _)| id == &task_id)
+            .map(|position| {
+                let (_, at, status) = self.pending_verifications.remove(position);
+                (at, status)
+            })
         else {
             // No request is outstanding: a late or duplicate receipt must not
             // decide a merge.
@@ -839,10 +849,11 @@ impl Workflow {
         let Some(index) = self.task_index(&task_id) else {
             return;
         };
-        if !matches!(
-            self.tasks[index].status,
-            TaskStatus::Merging | TaskStatus::AwaitingMerge
-        ) {
+        // The receipt may only decide the stage that requested it. A verify
+        // requested from AwaitingMerge must not answer after StartMerge moved
+        // the task to Merging: that would roll Merging back and allow a second
+        // merge agent in the same repository.
+        if self.tasks[index].status != requested_status {
             return;
         }
 

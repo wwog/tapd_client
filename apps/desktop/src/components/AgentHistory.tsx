@@ -26,7 +26,7 @@ import {
 import { relativeTime } from "../lib/api";
 import { bugTitle } from "../lib/bug";
 import { openTaskExportDir } from "../lib/desktop";
-import { t } from "../lib/i18n";
+import { t, useLocale } from "../lib/i18n";
 import { useAgentChat } from "../hooks/useAgentChat";
 import { AgentChatPane } from "./AgentChatPane";
 import { AgentIcon } from "./AgentIcon";
@@ -626,6 +626,8 @@ const HistoryRow = memo(function HistoryRow(props: {
   onSelect: (id: string) => void;
   onMenu: (event: ReactMouseEvent<HTMLButtonElement>, task: AgentTask) => void;
 }) {
+  // Row props are stable, so `memo` needs its own locale subscription.
+  useLocale();
   const { task, selected, onSelect, onMenu } = props;
   return (
     <button
