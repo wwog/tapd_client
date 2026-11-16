@@ -51,7 +51,9 @@ type WorkbenchProps = {
   /** Domain services; `open` / `closePanel` / `pinPanel` are filled in here. */
   services: Omit<PanelServices, "open" | "closePanel" | "pinPanel">;
   page: PageHostServices;
-  /** Primary group tab-strip actions (side bar toggle, project-open button). */
+  /** Primary group strip actions: the side bar toggle, left of the tabs. */
+  primaryLeading?: ReactNode;
+  /** Primary group strip actions on the right (project-open button). */
   primaryActions?: ReactNode;
   /** One app-level strip above the layout area (recovery report). */
   banner?: ReactNode;
@@ -71,6 +73,7 @@ export function Workbench({
   layout: api,
   services: baseServices,
   page,
+  primaryLeading,
   primaryActions,
   banner,
 }: WorkbenchProps) {
@@ -367,13 +370,23 @@ export function Workbench({
         empty={placement.empty}
         hidden={state.hidden}
         maximized={state.maximized}
+        // Maximize hides the other groups; with nothing else filled it is a
+        // no-op, so the control only exists when there is something to hide.
+        canMaximize={
+          state.maximized ||
+          api.groups.some(
+            (item) =>
+              item.id !== placement.group.id && item.panels.length > 0,
+          )
+        }
+        primaryLeading={primaryLeading}
         primaryActions={primaryActions}
         onRegisterBody={registerBody}
         onSpawnTerminal={spawnTerminal}
         onTabPointerDown={startTabDrag}
       />
     ),
-    [api, primaryActions, registerBody, spawnTerminal, startTabDrag],
+    [api, primaryActions, primaryLeading, registerBody, spawnTerminal, startTabDrag],
   );
 
   return (

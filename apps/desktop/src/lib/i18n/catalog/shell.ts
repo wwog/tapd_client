@@ -47,10 +47,10 @@ export const shell = {
   "app.update.changelog": ["更新日志", "Changelog"],
   "app.update.openAccount": ["点击前往账户页更新", "Open the account page to update"],
 
-  // Project open button
+  // Open-with split button (project folder and file viewer)
   "app.open.with": ["用{app}打开 {path}", "Open {path} with {app}"],
   "app.open.defaultApp": ["默认应用", "Default app"],
-  "app.open.chooseApp": ["选择打开项目的应用", "Choose the app to open the project"],
+  "app.open.chooseAppFor": ["选择打开方式", "Choose how to open"],
   "app.open.withList": ["用以下应用打开", "Open with"],
   "app.open.noApps": ["没有可用的应用", "No apps available"],
 

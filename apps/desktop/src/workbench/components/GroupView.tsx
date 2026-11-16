@@ -30,7 +30,14 @@ type GroupViewProps = {
   empty: boolean;
   hidden: boolean;
   maximized: boolean;
-  /** Side bar toggle and project-open button, rendered in the primary strip. */
+  /**
+   * Maximizing needs another group to hide; a lone filled group fills the
+   * layout already, so the control is not rendered at all.
+   */
+  canMaximize: boolean;
+  /** Side bar toggle, rendered left of the primary group's tabs. */
+  primaryLeading?: ReactNode;
+  /** Project-open button, rendered on the right of the primary group strip. */
   primaryActions?: ReactNode;
   onRegisterBody: (groupId: string, element: HTMLElement | null) => void;
   onSpawnTerminal: () => void;
@@ -55,6 +62,8 @@ export function GroupView({
   empty,
   hidden,
   maximized,
+  canMaximize,
+  primaryLeading,
   primaryActions,
   onRegisterBody,
   onSpawnTerminal,
@@ -111,6 +120,7 @@ export function GroupView({
             data-tauri-drag-region
             onDoubleClick={handleStripDoubleClick}
           >
+            {group.role === "primary" ? primaryLeading : null}
             <div
               className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
               data-tauri-drag-region
@@ -142,12 +152,14 @@ export function GroupView({
                   <Plus size={14} />
                 </StripButton>
               ) : null}
-              <StripButton
-                label={isMaximized ? t("layout.restore") : t("layout.maximize")}
-                onClick={toggleMaximize}
-              >
-                {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-              </StripButton>
+              {canMaximize ? (
+                <StripButton
+                  label={isMaximized ? t("layout.restore") : t("layout.maximize")}
+                  onClick={toggleMaximize}
+                >
+                  {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                </StripButton>
+              ) : null}
             </div>
           </header>
 
@@ -165,6 +177,7 @@ export function GroupView({
           api={api}
           group={group}
           menu={menu}
+          canMaximize={canMaximize}
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -176,11 +189,13 @@ function TabMenuView({
   api,
   group,
   menu,
+  canMaximize,
   onClose,
 }: {
   api: WorkbenchLayoutApi;
   group: GroupNode;
   menu: TabMenu;
+  canMaximize: boolean;
   onClose: () => void;
 }) {
   const services = usePanelServices();
@@ -224,15 +239,19 @@ function TabMenuView({
               }}
             />
           ) : null}
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            icon={isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            label={isMaximized ? t("layout.restore") : t("layout.maximize")}
-            onClick={() => {
-              api.maximizeGroup(isMaximized ? null : group.id);
-              requestClose();
-            }}
-          />
+          {canMaximize ? (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                icon={isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                label={isMaximized ? t("layout.restore") : t("layout.maximize")}
+                onClick={() => {
+                  api.maximizeGroup(isMaximized ? null : group.id);
+                  requestClose();
+                }}
+              />
+            </>
+          ) : null}
         </>
       )}
     </ContextMenu>
@@ -291,7 +310,10 @@ function TabItem({
       }}
       onContextMenu={onContextMenu}
       className={clsx(
-        "group/tab flex h-7 max-w-56 shrink-0 cursor-default items-center gap-1 rounded-md pl-2 pr-0.5 transition select-none",
+        "group/tab flex h-7 max-w-56 shrink-0 cursor-default items-center gap-1 rounded-md transition select-none",
+        // A tab without a close button needs its own trailing inset; the
+        // close button normally provides it (and sits 2px from the edge).
+        definition.closable ? "pl-2 pr-0.5" : "px-2",
         active
           ? "bg-slate-100 text-slate-700"
           : "text-slate-500 hover:bg-overlay",

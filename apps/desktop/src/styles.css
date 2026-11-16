@@ -1156,9 +1156,11 @@ select,
 
 /* ---------------------------------------------------------------------------
    Workbench
-   Content fade-in only: new groups appear at their final size, never animate
-   width/height (nested splits jitter). Tab moves are DOM moves, so a panel
-   that keeps its identity does not re-run the animation.
+   Content fade-in. Dock expansion animates the split's rendered rects in
+   `SplitView` (the persisted fractions never change), so the neighbouring
+   groups resize smoothly instead of jumping; width/height never animate here.
+   Tab moves are DOM moves, so a panel that keeps its identity does not re-run
+   the animation.
 --------------------------------------------------------------------------- */
 @keyframes workbench-panel-fade {
   from {

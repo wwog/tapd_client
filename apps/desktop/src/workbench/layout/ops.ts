@@ -364,10 +364,23 @@ function insertPrimary(root: LayoutNode, group: GroupNode): LayoutNode {
   return root;
 }
 
+/** Removes one panel by id and repairs the group's active pointer. */
+function removePanelFromGroup(group: GroupNode, id: string): void {
+  const index = group.panels.findIndex((panel) => panel.id === id);
+  if (index === -1) return;
+  group.panels.splice(index, 1);
+  if (group.activePanelId === id) {
+    group.activePanelId =
+      group.panels[Math.min(index, group.panels.length - 1)]?.id ?? null;
+  }
+}
+
 /**
- * Ensures exactly one primary group exists and that it owns at least one page
- * tab. If `page:bugs` was moved elsewhere it is moved back rather than
- * duplicated (a panel id may only be mounted once).
+ * Ensures exactly one primary group exists and that the whole tree carries
+ * exactly one page tab: the main view is a single fixed navigation tab, so
+ * visiting another page changes that tab instead of appending one. The
+ * preferred survivor is the primary's active page, then its first page, then
+ * any page (a page dragged to another dock is moved back here).
  */
 function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode } {
   const seenRoles = new Set<GroupRole>();
@@ -384,22 +397,43 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
     primary = group;
   }
 
-  const hasPage = primary.panels.some((panel) => panel.kind === "page");
-  if (!hasPage) {
-    const hit = findPanel(root, panelId.page("bugs"));
-    if (hit) {
-      hit.group.panels.splice(hit.index, 1);
-      if (hit.group.activePanelId === hit.panel.id) {
-        hit.group.activePanelId =
-          hit.group.panels[Math.min(hit.index, hit.group.panels.length - 1)]?.id ?? null;
-      }
-      primary.panels.push(hit.panel);
-    } else {
-      primary.panels.push(makePanel({ type: "page", view: "bugs" }));
+  const pages: Array<{ panel: PanelRef; group: GroupNode }> = [];
+  for (const group of listGroups(root)) {
+    for (const panel of group.panels) {
+      if (panel.kind === "page") pages.push({ panel, group });
     }
+  }
+  const keep =
+    pages.find(
+      (page) =>
+        page.group.id === primary.id && page.panel.id === primary.activePanelId,
+    ) ??
+    pages.find((page) => page.group.id === primary.id) ??
+    pages[0] ??
+    null;
+
+  for (const page of pages) {
+    if (keep && page.panel.id === keep.panel.id) continue;
+    removePanelFromGroup(page.group, page.panel.id);
+  }
+
+  if (!keep) {
+    primary.panels.push(makePanel({ type: "page", view: "bugs" }));
     if (primary.activePanelId === null) {
       primary.activePanelId = primary.panels[0]?.id ?? null;
     }
+    return { root, primary };
+  }
+
+  if (keep.group.id !== primary.id) {
+    removePanelFromGroup(keep.group, keep.panel.id);
+    primary.panels.push(keep.panel);
+  }
+  if (
+    primary.activePanelId === null ||
+    !primary.panels.some((panel) => panel.id === primary.activePanelId)
+  ) {
+    primary.activePanelId = keep.panel.id;
   }
   return { root, primary };
 }
@@ -528,7 +562,11 @@ export function openPanel(
   return { layout: normalize(next), panelId: panel.id };
 }
 
-/** Ensures a page tab exists in the primary group and activates it. */
+/**
+ * Switches the primary group's single page tab to `view` and activates it.
+ * The page tab represents the whole main view, so the previous page panel is
+ * dropped by `normalize` instead of being left behind as another tab.
+ */
 export function openPage(layout: LayoutState, view: PageView): LayoutState {
   let base = layout;
   if (!findRoleGroup(base.root, "primary")) base = ensureRoleGroup(base, "primary");
@@ -537,37 +575,33 @@ export function openPage(layout: LayoutState, view: PageView): LayoutState {
 
   const id = panelId.page(view);
   const hit = findPanel(base.root, id);
-  if (hit) {
-    if (
-      hit.group.id === primary.id &&
-      hit.group.activePanelId === id &&
-      base.activeGroupId === primary.id
-    ) {
-      return base;
-    }
-    const next = cloneLayout(base);
-    const current = findPanel(next.root, id)!;
-    const nextPrimary = findRoleGroup(next.root, "primary")!;
-    if (current.group.id !== nextPrimary.id) {
-      current.group.panels.splice(current.index, 1);
-      if (current.group.activePanelId === current.panel.id) {
-        current.group.activePanelId =
-          current.group.panels[
-            Math.min(current.index, current.group.panels.length - 1)
-          ]?.id ?? null;
-      }
-      nextPrimary.panels.push(current.panel);
-    }
-    nextPrimary.activePanelId = id;
-    next.activeGroupId = nextPrimary.id;
-    return normalize(next);
+  const pageCount = listGroups(base.root).reduce(
+    (count, group) =>
+      count + group.panels.filter((panel) => panel.kind === "page").length,
+    0,
+  );
+  if (
+    hit &&
+    hit.group.id === primary.id &&
+    primary.activePanelId === id &&
+    base.activeGroupId === primary.id &&
+    pageCount <= 1
+  ) {
+    return base;
   }
 
   const next = cloneLayout(base);
   const nextPrimary = findRoleGroup(next.root, "primary")!;
-  const panel = makePanel({ type: "page", view });
-  nextPrimary.panels.push(panel);
-  nextPrimary.activePanelId = panel.id;
+  const current = findPanel(next.root, id);
+  if (current) {
+    if (current.group.id !== nextPrimary.id) {
+      removePanelFromGroup(current.group, id);
+      nextPrimary.panels.push(current.panel);
+    }
+  } else {
+    nextPrimary.panels.push(makePanel({ type: "page", view }));
+  }
+  nextPrimary.activePanelId = id;
   next.activeGroupId = nextPrimary.id;
   return normalize(next);
 }

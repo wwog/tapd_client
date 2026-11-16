@@ -31,9 +31,13 @@ pub(super) fn open_local(path: &std::path::Path, target: &str) -> Result<(), Str
         return run_open(&[path.as_str()]);
     }
 
-    let app =
+    // `browser` has no candidate app of its own: it is the installed browser.
+    let app = if target == open_with::BROWSER_TARGET {
+        open_with::browser_app()
+    } else {
         open_with::app_path_for(target)
-            .ok_or_else(|| tr_args("app.open.app", &[&target]))?;
+    }
+    .ok_or_else(|| tr_args("app.open.app", &[&target]))?;
     run_open(&["-a", &app.to_string_lossy(), path.as_str()])
 }
 

@@ -126,6 +126,11 @@ pub fn normalize_kind(kind: &str) -> &str {
     }
 }
 
+/// App path for the `browser` target: whichever browser is installed.
+pub fn browser_app() -> Option<PathBuf> {
+    browser_app_path().map(PathBuf::from)
+}
+
 /// App path for an executable target id; `None` for `system`/`browser`.
 pub fn app_path_for(id: &str) -> Option<PathBuf> {
     find_candidate(id)

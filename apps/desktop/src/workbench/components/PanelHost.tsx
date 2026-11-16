@@ -60,6 +60,17 @@ function PanelSurface({
     };
   }, [body, surface]);
 
+  /**
+   * Every surface is a full-bleed box, and the group body stacks them in tab
+   * order. Only the active surface may hit-test: otherwise the last tab's
+   * empty box sits on top and swallows clicks/scroll for the active one.
+   * The panel inside is already `pointer-events-none` when inactive, but that
+   * does not cover the box itself.
+   */
+  useLayoutEffect(() => {
+    surface.style.pointerEvents = active ? "" : "none";
+  }, [active, surface]);
+
   return createPortal(
     <div
       data-panel-id={panel.id}

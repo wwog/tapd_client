@@ -980,6 +980,33 @@ pub fn open_path(path: String) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Opens a local file with the saved "打开方式" choice for its kind.
+///
+/// `open_path` hands everything to the system default; this variant honours the
+/// per-kind choice (`config.open_with`) so a file viewer and an image viewer
+/// agree on which app takes `.png`. `kind` is `image` / `video` / `file`;
+/// `target` overrides the saved choice for one call.
+#[tauri::command]
+pub fn open_file(
+    state: State<'_, SharedState>,
+    path: String,
+    kind: Option<String>,
+    target: Option<String>,
+) -> Result<(), String> {
+    let file = tapd_core::paths::expand_home(path.trim());
+    if file.as_os_str().is_empty() {
+        return Err(tr("app.project.unbound").to_string());
+    }
+    if !file.is_file() {
+        return Err(tr_args("app.project.missing", &[&file.display()]));
+    }
+
+    let kind = open_with::normalize_kind(kind.as_deref().unwrap_or("file"));
+    let selected = selected_open_target(state.inner(), target, kind);
+
+    open_local(&file, &selected)
+}
+
 /// Opens a bound project folder in the saved editor (or `target` overrides it).
 ///
 /// The target set for `directory` is limited to code editors, so a TAPD project

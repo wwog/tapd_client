@@ -421,6 +421,13 @@ export const api = {
   exportCaptures: (targetDir?: string | null) =>
     invoke<string>("capture_export", { targetDir: targetDir ?? null }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  /** Opens a local file with the saved "打开方式" app for `kind`. */
+  openFile: (path: string, kind?: string, target?: string) =>
+    invoke<void>("open_file", {
+      path,
+      kind: kind ?? null,
+      target: target ?? null,
+    }),
   /** Opens a bound project folder in the saved editor (or `target`). */
   openDirectory: (path: string, target?: string) =>
     invoke<void>("open_directory", { path, target: target ?? null }),

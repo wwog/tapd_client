@@ -29,6 +29,11 @@ type SashProps = {
   sashIndex?: number;
   /** Main-axis size of the split container at measure time. */
   mainSize?: number;
+  /**
+   * Lit by the corner handle: `hover` while the pointer is on the intersection,
+   * `drag` while it is being dragged, so both lines stay visible.
+   */
+  highlight?: "hover" | "drag";
   onDragStart?: () => SashDragSession | null;
   onReset?: () => void;
   className?: string;
@@ -36,9 +41,11 @@ type SashProps = {
 };
 
 /**
- * Unified split handle: 1.5px visible line, 8px hit area. The same component
- * serves split nodes and the project side bar; the caller supplies what a drag
- * does (layout fractions vs. sidebar width).
+ * Unified split handle: no resting line over an 8px hit area; hovering reveals
+ * a 1.5px highlight and dragging paints it sky blue — the hit area itself never
+ * paints, so only the middle line shows. The same component serves split nodes
+ * and the project side bar; the caller supplies what a drag does (layout
+ * fractions vs. sidebar width).
  */
 export function Sash({
   axis,
@@ -46,6 +53,7 @@ export function Sash({
   splitId,
   sashIndex,
   mainSize,
+  highlight,
   onDragStart,
   onReset,
   className,
@@ -95,20 +103,23 @@ export function Sash({
       onDoubleClick={handleDoubleClick}
       style={style}
       className={clsx(
-        "group/sash absolute touch-none p-0",
+        "group/sash absolute touch-none bg-transparent p-0",
         axis === "x" ? "cursor-col-resize" : "cursor-row-resize",
-        dragging ? "bg-sky-400/50" : "bg-transparent hover:bg-overlay",
         className,
       )}
     >
       <span
         aria-hidden
         className={clsx(
-          "pointer-events-none absolute bg-border transition-colors",
+          "pointer-events-none absolute transition-colors",
           axis === "x"
             ? "left-1/2 top-0 h-full w-[1.5px] -translate-x-1/2"
             : "left-0 top-1/2 h-[1.5px] w-full -translate-y-1/2",
-          dragging ? "bg-sky-400/60" : "group-hover/sash:bg-sky-300/70",
+          dragging || highlight === "drag"
+            ? "bg-sky-400/60"
+            : highlight === "hover"
+              ? "bg-sky-300/70"
+              : "bg-transparent group-hover/sash:bg-sky-300/70",
         )}
       />
     </button>
@@ -132,19 +143,30 @@ type Corner = {
   horizontal: SashMeta;
 };
 
+/** What a corner handle reports: nothing, a hover, or an active drag. */
+export type CornerHighlight = { keys: string[]; dragging: boolean } | null;
+
 type SashLayerProps = {
   api: WorkbenchLayoutApi;
   containerRef: React.RefObject<HTMLDivElement | null>;
   /** Any value that changes when the tree (or the container) does. */
   revision: unknown;
+  /** Corner handle under the pointer; `null` once it is released. */
+  onCornerHighlight: (highlight: CornerHighlight) => void;
 };
 
 /**
  * Measures every rendered sash and paints a corner handle where a vertical and
  * a horizontal sash intersect (including T junctions). One drag adjusts both
- * split nodes through `beginCornerDrag`.
+ * split nodes through `beginCornerDrag`; the corner keeps both lines lit while
+ * it is hovered or dragged.
  */
-export function SashLayer({ api, containerRef, revision }: SashLayerProps) {
+export function SashLayer({
+  api,
+  containerRef,
+  revision,
+  onCornerHighlight,
+}: SashLayerProps) {
   const [corners, setCorners] = useState<Corner[]>([]);
 
   const measure = useCallback(() => {
@@ -217,14 +239,33 @@ export function SashLayer({ api, containerRef, revision }: SashLayerProps) {
   return (
     <>
       {corners.map((corner) => (
-        <CornerSash key={corner.id} api={api} corner={corner} />
+        <CornerSash
+          key={corner.id}
+          api={api}
+          corner={corner}
+          onHighlight={onCornerHighlight}
+        />
       ))}
     </>
   );
 }
 
-function CornerSash({ api, corner }: { api: WorkbenchLayoutApi; corner: Corner }) {
+function CornerSash({
+  api,
+  corner,
+  onHighlight,
+}: {
+  api: WorkbenchLayoutApi;
+  corner: Corner;
+  onHighlight: (highlight: CornerHighlight) => void;
+}) {
   const [dragging, setDragging] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const dragRef = useRef(false);
+  const keys = [corner.vertical.key, corner.horizontal.key];
+
+  /** The lines survive a re-measure, so only an unmount drops the highlight. */
+  useLayoutEffect(() => () => onHighlight(null), [onHighlight]);
 
   const onMouseDown = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -243,7 +284,9 @@ function CornerSash({ api, corner }: { api: WorkbenchLayoutApi; corner: Corner }
     );
     const startX = event.clientX;
     const startY = event.clientY;
+    dragRef.current = true;
     setDragging(true);
+    onHighlight({ keys, dragging: true });
 
     const onMove = (move: MouseEvent) => {
       session.move(move.clientX - startX, move.clientY - startY);
@@ -252,9 +295,20 @@ function CornerSash({ api, corner }: { api: WorkbenchLayoutApi; corner: Corner }
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-    const onUp = () => {
+    const onUp = (up: MouseEvent) => {
       detach();
+      dragRef.current = false;
       setDragging(false);
+      // The handle follows the pointer, so ask the current rect instead of
+      // trusting a mouseleave that may never arrive after the drop.
+      const rect = buttonRef.current?.getBoundingClientRect();
+      const over =
+        rect !== undefined &&
+        up.clientX >= rect.left &&
+        up.clientX <= rect.right &&
+        up.clientY >= rect.top &&
+        up.clientY <= rect.bottom;
+      onHighlight(over ? { keys, dragging: false } : null);
       session.end();
     };
     window.addEventListener("mousemove", onMove);
@@ -263,14 +317,20 @@ function CornerSash({ api, corner }: { api: WorkbenchLayoutApi; corner: Corner }
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       aria-label={t("layout.cornerSash")}
       title={t("layout.cornerSash")}
       data-workbench-region="corner-sash"
       onMouseDown={onMouseDown}
+      onMouseEnter={() => onHighlight({ keys, dragging: dragRef.current })}
+      onMouseLeave={() => {
+        // A drag keeps both lines lit even when the pointer runs ahead of it.
+        if (!dragRef.current) onHighlight(null);
+      }}
       className={clsx(
-        "absolute z-20 touch-none cursor-move rounded-sm p-0",
-        dragging ? "bg-sky-400/50" : "bg-transparent hover:bg-overlay",
+        "absolute z-20 touch-none rounded-sm p-0",
+        dragging ? "cursor-move bg-sky-400/50" : "cursor-move bg-transparent",
       )}
       style={{
         left: corner.x - CORNER_SIZE / 2,

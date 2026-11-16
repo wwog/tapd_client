@@ -322,7 +322,6 @@ export function BugTable(props: Props) {
                   </span>
                   <ScrollingName
                     text={bugTitle(bug.title)}
-                    maxDuration={6000}
                     className="min-w-0 flex-1 font-normal text-slate-800"
                   />
                 </div>

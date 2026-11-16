@@ -392,8 +392,7 @@ export function ProjectSettings(props: {
                 <div
                   key={project.id}
                   className={clsx(
-                    "rounded-xl border bg-surface p-3 transition",
-                    active ? "border-sky-200" : "border-slate-100",
+                    "rounded-xl border bg-surface p-3 transition border-slate-100",
                   )}
                 >
                   <div className="flex items-center gap-2">

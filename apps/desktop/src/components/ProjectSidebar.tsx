@@ -13,6 +13,7 @@ import {
 
 import type { Workspace, WorkspaceContext } from "../lib/api";
 import type { ProjectMenu } from "../hooks/useWorkspaceData";
+import { MIN_SIDEBAR_WIDTH } from "../hooks/useSidebarLayout";
 import { t } from "../lib/i18n";
 import type { LocalProject } from "../lib/local";
 import { AccountChip } from "./AccountChip";
@@ -20,6 +21,9 @@ import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { ScrollingName } from "./ScrollingName";
 import { SkeletonRows } from "./Skeleton";
 import type { View } from "./ActivityBar";
+
+/** `px-2` on both sides of the list column. */
+const SIDEBAR_CONTENT_PADDING = 16;
 
 type Props = {
   context: WorkspaceContext | null;
@@ -118,142 +122,164 @@ export function ProjectSidebar({
             ) : null}
           </div>
 
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto [scrollbar-gutter:stable]">
-            {contextError ? (
-              <div className="rounded-xl bg-rose-50 p-2.5 text-ui-sm leading-5 text-rose-700 border border-rose-100">
-                <div className="break-all">{contextError}</div>
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="mt-2 inline-flex items-center gap-1 rounded-md bg-surface px-2 py-1 text-ui-xs text-rose-700 border border-rose-200 transition hover:bg-rose-100"
-                >
-                  <RefreshCw size={10} />
-                  {t("common.retry")}
-                </button>
-              </div>
-            ) : null}
-
-            {!context && contextLoading ? (
-              <SkeletonRows
-                rows={7}
-                columns={["w-2/3", "w-6"]}
-                className="pt-1"
-                rowClassName="px-3 py-2.5"
-                label={t("settings.sidebar.reading")}
-              />
-            ) : null}
-
-            {context && visibleWorkspaces.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border px-2.5 py-3 text-ui-sm leading-5 text-slate-400">
-                {t("settings.sidebar.allHidden")}
-              </div>
-            ) : null}
-
-            {visibleWorkspaces.map((item) => {
-              // A selected local project owns the "active" state, so one row
-              // is highlighted at a time across both sections.
-              const active = item.id === workspaceId && localProjectId === null;
-              return (
-                <div key={item.id} className="group relative">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]">
+            {/* Rows keep the layout they have at the narrowest sidebar, so a
+                collapsing column clips them instead of re-truncating every
+                name on every frame. */}
+            <div
+              className="space-y-0.5"
+              style={{ minWidth: MIN_SIDEBAR_WIDTH - SIDEBAR_CONTENT_PADDING }}
+            >
+              {contextError ? (
+                <div className="rounded-xl bg-rose-50 p-2.5 text-ui-sm leading-5 text-rose-700 border border-rose-100">
+                  <div className="break-all">{contextError}</div>
                   <button
                     type="button"
-                    onClick={() => {
-                      // Clicking the already-selected project is the shortcut
-                      // to its explorer; the first click only selects it.
-                      if (active && onBrowseFiles) onBrowseFiles(item.id);
-                      else onSelectWorkspace(item.id);
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      onOpenProjectMenu({
-                        id: item.id,
-                        name: item.name,
-                        x: event.clientX,
-                        y: event.clientY,
-                      });
-                    }}
-                    className={clsx(
-                      "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
-                      active
-                        ? "bg-overlay font-normal text-slate-900"
-                        : "text-slate-600 hover:bg-overlay-soft",
-                    )}
+                    onClick={onRetry}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-surface px-2 py-1 text-ui-xs text-rose-700 border border-rose-200 transition hover:bg-rose-100"
                   >
-                    <span
-                      className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: item.logoColor || "#0ea5e9" }}
-                    />
-                    <ScrollingName text={item.name} className="flex-1" />
-                    {active ? (
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
-                    ) : null}
+                    <RefreshCw size={10} />
+                    {t("common.retry")}
                   </button>
-                  {onBrowseFiles ? (
+                </div>
+              ) : null}
+
+              {!context && contextLoading ? (
+                <SkeletonRows
+                  rows={7}
+                  columns={["w-2/3", "w-6"]}
+                  className="pt-1"
+                  rowClassName="px-3 py-2.5"
+                  label={t("settings.sidebar.reading")}
+                />
+              ) : null}
+
+              {context && visibleWorkspaces.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border px-2.5 py-3 text-ui-sm leading-5 text-slate-400">
+                  {t("settings.sidebar.allHidden")}
+                </div>
+              ) : null}
+
+              {visibleWorkspaces.map((item) => {
+                // A selected local project owns the "active" state, so one row
+                // is highlighted at a time across both sections.
+                const active = item.id === workspaceId && localProjectId === null;
+                return (
+                  <div key={item.id} className="group relative">
                     <button
                       type="button"
-                      aria-label={t("explorer.browse")}
-                      title={t("explorer.browseHint")}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onBrowseFiles(item.id);
+                      onClick={() => {
+                        // Clicking the already-selected project is the shortcut
+                        // to its explorer; the first click only selects it.
+                        if (active && onBrowseFiles) onBrowseFiles(item.id);
+                        else onSelectWorkspace(item.id);
                       }}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        onOpenProjectMenu({
+                          id: item.id,
+                          name: item.name,
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
+                      className={clsx(
+                        "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
+                        active
+                          ? "bg-overlay font-normal text-slate-900"
+                          : "text-slate-600 hover:bg-overlay-soft",
+                      )}
                     >
-                      <FolderTree size={12} />
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: item.logoColor || "#0ea5e9" }}
+                      />
+                      <ScrollingName text={item.name} className="flex-1" />
+                      {active ? (
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
+                      ) : null}
                     </button>
-                  ) : null}
-                </div>
-              );
-            })}
-
-            {localProjects.length > 0 ? (
-              <div className="mt-1 border-t border-border pt-1">
-                <div
-                  className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
-                  title={t("local.projects.hint")}
-                >
-                  <span>{t("local.projects.title")}</span>
-                  <span className="tabular-nums">{localProjects.length}</span>
-                </div>
-                {localProjects.map((project) => {
-                  const active = project.id === localProjectId;
-                  return (
-                    <div key={project.id} className="group relative">
+                    {onBrowseFiles ? (
                       <button
                         type="button"
-                        onClick={() => onSelectLocalProject(project.id)}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          setLocalMenu({
-                            project,
-                            x: event.clientX,
-                            y: event.clientY,
-                          });
+                        aria-label={t("explorer.browse")}
+                        title={t("explorer.browseHint")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onBrowseFiles(item.id);
                         }}
-                        className={clsx(
-                          "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left text-ui-base transition",
-                          active
-                            ? "bg-overlay font-normal text-slate-900"
-                            : "text-slate-600 hover:bg-overlay-soft",
-                        )}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
                       >
-                        <Folder
-                          size={13}
-                          className={clsx(
-                            "shrink-0",
-                            active ? "text-sky-600" : "text-slate-400",
-                          )}
-                        />
-                        <ScrollingName text={project.name} className="flex-1" />
-                        {active ? (
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                        ) : null}
+                        <FolderTree size={12} />
                       </button>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
+                    ) : null}
+                  </div>
+                );
+              })}
+
+              {localProjects.length > 0 ? (
+                <div className="mt-1 border-t border-border pt-1">
+                  <div
+                    className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
+                    title={t("local.projects.hint")}
+                  >
+                    <span>{t("local.projects.title")}</span>
+                    <span className="tabular-nums">{localProjects.length}</span>
+                  </div>
+                  {localProjects.map((project) => {
+                    const active = project.id === localProjectId;
+                    return (
+                      <div key={project.id} className="group relative">
+                        <button
+                          type="button"
+                          onClick={() => onSelectLocalProject(project.id)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setLocalMenu({
+                              project,
+                              x: event.clientX,
+                              y: event.clientY,
+                            });
+                          }}
+                          className={clsx(
+                            "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
+                            active
+                              ? "bg-overlay font-normal text-slate-900"
+                              : "text-slate-600 hover:bg-overlay-soft",
+                          )}
+                        >
+                          <Folder
+                            size={13}
+                            className={clsx(
+                              "shrink-0",
+                              active ? "text-sky-600" : "text-slate-400",
+                            )}
+                          />
+                          <ScrollingName text={project.name} className="flex-1" />
+                          {active ? (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
+                          ) : null}
+                        </button>
+                        {onBrowseFiles ? (
+                          <button
+                            type="button"
+                            aria-label={t("explorer.browse")}
+                            title={t("explorer.browseHint")}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onBrowseFiles(project.id);
+                            }}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
+                          >
+                            <FolderTree size={12} />
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -343,6 +369,16 @@ export function ProjectSidebar({
         >
           {(requestClose) => (
             <>
+              <ContextMenuItem
+                icon={<FolderTree size={13} />}
+                label={t("explorer.browse")}
+                title={t("explorer.browseHint")}
+                disabled={!onBrowseFiles}
+                onClick={() => {
+                  onBrowseFiles?.(localMenu.project.id);
+                  requestClose();
+                }}
+              />
               <ContextMenuItem
                 icon={<Pencil size={13} />}
                 label={t("local.projects.edit")}

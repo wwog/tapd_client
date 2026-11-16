@@ -12,7 +12,6 @@ import clsx from "clsx";
 import {
   AlertTriangle,
   Copy,
-  ExternalLink,
   Eye,
   FileAudio,
   FileCode2,
@@ -37,6 +36,7 @@ import {
   type CSSProperties,
 } from "react";
 
+import { OpenWithButton, type OpenKind } from "../../components/OpenWithButton";
 import { formatBytes, formatTimestamp } from "../../lib/format";
 import {
   basename,
@@ -195,6 +195,13 @@ export function FilePanel({ panel, active }: PanelProps) {
   }, [workspaceId, path]);
 
   const content = state.status === "ready" ? state.content : null;
+  /** "打开方式" kind: images and videos get their own app list. */
+  const openKind: OpenKind =
+    content?.kind === "image"
+      ? "image"
+      : content?.kind === "video"
+        ? "video"
+        : "file";
   const loadedText = content?.text ?? "";
   /** The editor value: unsaved buffer when present, otherwise the file body. */
   const value = draft ?? loadedText;
@@ -231,13 +238,16 @@ export function FilePanel({ panel, active }: PanelProps) {
     }
   }, [absolutePath, services]);
 
-  const openExternal = useCallback(async () => {
-    try {
-      services.openPath(await absolutePath());
-    } catch (error) {
-      services.toast("error", String(error));
-    }
-  }, [absolutePath, services]);
+  const openExternal = useCallback(
+    async (target?: string) => {
+      try {
+        await services.openFile(await absolutePath(), openKind, target);
+      } catch (error) {
+        services.toast("error", String(error));
+      }
+    },
+    [absolutePath, openKind, services],
+  );
 
   /** Drops the buffer and re-reads; used by refresh, discard and conflict. */
   const reload = useCallback(() => {
@@ -430,14 +440,14 @@ export function FilePanel({ panel, active }: PanelProps) {
             <p className="text-ui-xs text-slate-400">
               {formatBytes(state.content.size)}
             </p>
-            <button
-              type="button"
-              onClick={() => void openExternal()}
-              className="mt-1 inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-ui-xs text-slate-600 transition hover:bg-overlay"
-            >
-              <ExternalLink size={10} />
-              {t("file.openExternal")}
-            </button>
+            <div className="mt-1">
+              <OpenWithButton
+                kind={openKind}
+                path={path}
+                onOpen={openExternal}
+                onError={(message) => services.toast("error", message)}
+              />
+            </div>
           </div>
         );
     }
@@ -555,15 +565,12 @@ export function FilePanel({ panel, active }: PanelProps) {
         >
           <Copy size={12} />
         </button>
-        <button
-          type="button"
-          aria-label={t("file.openExternal")}
-          title={t("file.openExternal")}
-          onClick={() => void openExternal()}
-          className={actionClass}
-        >
-          <ExternalLink size={12} />
-        </button>
+        <OpenWithButton
+          kind={openKind}
+          path={path}
+          onOpen={openExternal}
+          onError={(message) => services.toast("error", message)}
+        />
         <button
           type="button"
           aria-label={t("explorer.refresh")}

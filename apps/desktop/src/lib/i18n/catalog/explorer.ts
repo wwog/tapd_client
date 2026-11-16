@@ -46,7 +46,6 @@ export const explorer = {
   "file.fit": ["适应窗口", "Fit to window"],
   "file.actualSize": ["原始尺寸", "Actual size"],
   "file.copyPath": ["复制路径", "Copy path"],
-  "file.openExternal": ["用系统应用打开", "Open in a system app"],
   "file.readOnly": ["只读", "Read-only"],
   "file.markdown": ["预览", "Preview"],
   "file.source": ["源码", "Source"],

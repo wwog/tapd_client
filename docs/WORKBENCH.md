@@ -42,7 +42,7 @@
 
 `row` = 子项左右排列（分割条竖直）；`column` = 子项上下排列（分割条水平）。默认组角色只是初始落点，不是固定 id：
 
-- `primary` 主组：缺陷列表与各页面标签，始终存在，标签不可关。
+- `primary` 主组：主视图，固定一个页面标签（左侧导航切换时替换内容），始终存在，标签不可关。
 - `secondary` 副组：右侧，缺陷详情 / 资源管理器 / 文件的默认落点。
 - `bottom` 底组：终端默认落点，横跨窗口下方。
 
@@ -62,7 +62,7 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 
 | 种类 | id 约定 | 内容 | 关闭 | 单例 |
 | --- | --- | --- | --- | --- |
-| `page` | `page:<view>` | 缺陷/项目/Agent/同事/MCP/设置/账号 | 否 | 按 id |
+| `page` | `page:<view>` | 缺陷/项目/Agent/同事/MCP/设置/账号 | 否 | 全局只有一个，主视图固定导航 |
 | `bug` | `bug:<ws>:<bugId>` | 缺陷详情 | 是 | 全局一个，再次打开改目标 |
 | `explorer` | `explorer:<ws>` | 资源管理器 | 是 | 按 id（每个项目一个） |
 | `file` | `file:<ws>:<path>` | 文本/Markdown/图片/音视频/二进制 | 是 | 按 id |
@@ -72,7 +72,7 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 
 1. `SplitNode.children.length >= 2`，`sizes.length === children.length`，非空子项的比例和为 1。
 2. `GroupNode.panels` 可以为空，**仅限带 `role` 的规范停靠组**；空组保留自己的比例，重新打开时恢复原尺寸。非 role 组一旦为空，`normalize` 会删除它并把空间还给兄弟。
-3. `primary` 组始终至少有一个 `page` 标签；没有时补 `page:bugs`。
+3. `primary` 组始终有且只有一个 `page` 标签：主视图是固定导航，切换页面替换这个标签而不是追加；没有时补 `page:bugs`，被拖走也会自动回到 primary。
 4. 组内 `activePanelId` 必须指向该组的面板；空组为 `null`。
 5. 面板 id 由资源决定（`panelId`），重启后稳定；标签移动不改变 id。
 6. 每个面板只挂载一次：`PanelHost` 用 portal 投到所属组，移动标签只换目标节点，内容不重挂载。
@@ -81,9 +81,10 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 
 - 尺寸以 fraction 存，渲染时按容器像素换算并套最小尺寸。组最小值 = 组内各面板 `PANEL_MIN_SIZE` 的最大值；split 最小值 = 子项最小值之和 + 分割条。空组贡献 0，因此只有有内容的子项参与分配。
 - 布局区测量不能只依赖 `ResizeObserver`：主窗口是隐藏创建、首帧后才显示，首次测量可能为 0。`SplitView` 会在为 0 时按动画帧重试，并在窗口 resize / `visibilitychange` 时补测。
-- 分割条统一：1.5px 视觉、8px 命中区、hover 高亮、拖动 `bg-sky-400/50`、双击复位。侧边栏复用同一组件与同一拖拽内核，只保留折叠/自动收起。
-- 交叉点：测量所有分割条矩形，正交相交处渲染 8×8 `CornerSash`；一次拖动同时更新两个 split。T 形（三块交汇）同样处理。
+- 分割条统一：静态不画线、8px 命中区、只有 hover 时才让中间的 1.5px 线高亮（命中区本身不着色）、拖动 `bg-sky-400/60`、双击复位。侧边栏复用同一组件与同一拖拽内核，只保留折叠/自动收起。
+- 交叉点：测量所有分割条矩形，正交相交处渲染 8×8 `CornerSash`；hover 时同时点亮两根线，拖动的全过程（包括指针跑出手柄）两根线保持 `bg-sky-400/60`，一次拖动同时更新两个 split。T 形（三块交汇）同样处理。
 - 拖动回报的是**相对拖动起点的总位移**；`beginSashDrag` 在开始时快照 sizes，所以重复调用不会累加误差。
+- 进入动效：右侧 / 底部停靠组从空变为有内容时，按存储比例从 0 展开到目标尺寸（200ms，只插值渲染 rect，不改持久化 fraction，旁边组同步平滑缩放）；页面内容另有 160ms 淡入。`prefers-reduced-motion` 下不展开。
 - 打开面板到副组时，如果窗口放不下布局最小宽度，沿用 `ensure_window_width` 向左侧扩窗。
 
 ## 5. 标签拖拽协议

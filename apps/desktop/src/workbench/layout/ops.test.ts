@@ -213,38 +213,35 @@ test("bug panels are singleton by kind and retarget in place", () => {
   assert.equal(findRoleGroup(layout.root, "secondary")!.activePanelId, "bug:ws:2");
 });
 
-test("page tabs are permanent and openPage brings a page back into primary", () => {
+test("the main view keeps one fixed page tab and openPage switches it", () => {
   const base = defaultLayout();
   assert.equal(closePanel(base, panelId.page("bugs")), base);
 
   let layout = openPage(base, "settings");
   let primary = findRoleGroup(layout.root, "primary")!;
-  assert.deepEqual(primary.panels.map((panel) => panel.id), [
-    "page:bugs",
-    "page:settings",
-  ]);
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:settings"]);
+  assert.equal(findPanel(layout.root, panelId.page("bugs")), null);
   assert.equal(layout.activeGroupId, GROUP_ID.primary);
   assert.equal(activeView(layout), "settings");
 
   // Opening the page again activates the existing tab without duplicating it.
   layout = openPage(layout, "settings");
   primary = findRoleGroup(layout.root, "primary")!;
-  assert.equal(primary.panels.length, 2);
+  assert.equal(primary.panels.length, 1);
 
-  // Even if moved away, openPage moves the page tab back into primary.
+  // Even if dragged away, the page tab comes back into the primary dock.
   layout = movePanel(layout, panelId.page("settings"), GROUP_ID.secondary, 0);
-  assert.equal(
-    findPanel(layout.root, panelId.page("settings"))!.group.id,
-    GROUP_ID.secondary,
-  );
-  layout = openPage(layout, "settings");
   primary = findRoleGroup(layout.root, "primary")!;
-  assert.deepEqual(primary.panels.map((panel) => panel.id), [
-    "page:bugs",
-    "page:settings",
-  ]);
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:settings"]);
+  assert.equal(findPanel(layout.root, panelId.page("settings"))!.group.id, GROUP_ID.primary);
+
+  // Visiting another view replaces the tab instead of appending one.
+  layout = openPage(layout, "projects");
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:projects"]);
+  assert.equal(findPanel(layout.root, panelId.page("settings")), null);
   assert.equal(layout.activeGroupId, GROUP_ID.primary);
-  assert.equal(activeView(layout), "settings");
+  assert.equal(activeView(layout), "projects");
 });
 
 test("activeView falls back from the active tab to primary's first page", () => {

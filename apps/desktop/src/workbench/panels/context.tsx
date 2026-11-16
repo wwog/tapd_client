@@ -62,7 +62,8 @@ export type PanelServices = {
   closePanel: (panelId: string) => void;
   pinPanel: (panelId: string) => void;
   copy: (text: string) => Promise<void>;
-  openPath: (path: string) => void;
+  /** Opens a local file with its remembered "打开方式" app (`target` wins). */
+  openFile: (path: string, kind?: string, target?: string) => Promise<void>;
   /** Display name of a project (tab labels, breadcrumbs). */
   workspaceName: (workspaceId: string) => string;
   /** Project currently selected in the side bar. */

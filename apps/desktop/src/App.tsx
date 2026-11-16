@@ -772,6 +772,18 @@ export default function App() {
     [showToast],
   );
 
+  const openFile = useCallback(
+    async (path: string, kind?: string, target?: string) => {
+      try {
+        // The app comes to the front on success; only failures need a toast.
+        await api.openFile(path, kind, target);
+      } catch (error) {
+        showToast("error", String(error));
+      }
+    },
+    [showToast],
+  );
+
   const openMedia = useCallback(
     async (url: string, mode: OpenMediaMode, kind?: string, target?: string) => {
       try {
@@ -838,38 +850,37 @@ export default function App() {
       ? primaryActivePanel.resource.view
       : null;
 
-  const primaryActions = (
-    <>
-      {!projectListHidden ? (
-        <button
-          type="button"
-          aria-label={
-            sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
-          }
-          title={
-            sidebar.autoCollapse
-              ? sidebar.peek
-                ? t("app.sidebar.collapse")
-                : t("app.sidebar.expandNarrow")
-              : sidebar.hidden
-                ? t("app.sidebar.expand")
-                : t("app.sidebar.collapse")
-          }
-          onClick={sidebar.toggle}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
-        >
-          {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        </button>
-      ) : null}
-      {primaryView === "bugs" && workspace ? (
-        <ProjectOpenButton
-          key={workspace.id}
-          workspaceId={workspace.id}
-          onError={(text) => showToast("error", text)}
-        />
-      ) : null}
-    </>
-  );
+  /** Leading strip action: the side bar toggle sits above the tabs. */
+  const primaryLeading = !projectListHidden ? (
+    <button
+      type="button"
+      aria-label={
+        sidebar.hidden ? t("app.sidebar.expand") : t("app.sidebar.collapse")
+      }
+      title={
+        sidebar.autoCollapse
+          ? sidebar.peek
+            ? t("app.sidebar.collapse")
+            : t("app.sidebar.expandNarrow")
+          : sidebar.hidden
+            ? t("app.sidebar.expand")
+            : t("app.sidebar.collapse")
+      }
+      onClick={sidebar.toggle}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+    >
+      {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+    </button>
+  ) : null;
+
+  const primaryActions =
+    primaryView === "bugs" && workspace ? (
+      <ProjectOpenButton
+        key={workspace.id}
+        workspaceId={workspace.id}
+        onError={(text) => showToast("error", text)}
+      />
+    ) : null;
 
   /** Sign out after the unsaved-edit confirmation (if any). */
   const performLogout = () => {
@@ -952,7 +963,7 @@ export default function App() {
   const services = {
     toast: showToast,
     copy,
-    openPath,
+    openFile,
     workspaceName: (targetWorkspaceId: string) =>
       context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
       targetWorkspaceId,
@@ -1002,6 +1013,7 @@ export default function App() {
   const openExplorer = (targetWorkspaceId: string) => {
     const name =
       context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+      local.projects.find((item) => item.id === targetWorkspaceId)?.name ??
       targetWorkspaceId;
     if (layoutRef.current.layout.maximizedGroupId) {
       layoutRef.current.maximizeGroup(null);
@@ -1086,6 +1098,7 @@ export default function App() {
             layout={layoutApi}
             services={services}
             page={page}
+            primaryLeading={primaryLeading}
             primaryActions={primaryActions}
             banner={banner}
           />
