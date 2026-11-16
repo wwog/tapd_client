@@ -48,7 +48,8 @@
       "binaries/tapd-mcp"
     ],
     "resources": {
-      "../../../assets/coworker": "coworker"
+      "../../../assets/coworker": "coworker",
+      "resources/dsh": "dsh"
     },
     "icon": [
       "icons/32x32.png",

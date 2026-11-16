@@ -33,6 +33,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 semver = "1"
 sha2 = "0.10"
 toml_edit = "0.22"
+dsh-host = { path = "../../../crates/dsh-host" }
 tapd-core = { path = "../../../crates/tapd-core" }
 tapd-local = { path = "../../../crates/tapd-local" }
 tapd-workspace = { path = "../../../crates/tapd-workspace" }
