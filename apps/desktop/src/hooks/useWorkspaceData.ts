@@ -30,6 +30,8 @@ export type WorkspacePaneBridge = {
 export type WorkspaceDataOptions = {
   view: View;
   setView: (view: View) => void;
+  /** Opens a TAPD project's page tab (notification jumps carry their own id). */
+  openWorkspacePage: (workspaceId: string) => void;
   showToast: ToastFn;
   pane: RefObject<WorkspacePaneBridge>;
 };
@@ -42,6 +44,7 @@ export type WorkspaceDataOptions = {
 export function useWorkspaceData({
   view,
   setView,
+  openWorkspacePage,
   showToast,
   pane,
 }: WorkspaceDataOptions) {
@@ -177,7 +180,9 @@ export function useWorkspaceData({
     "notification://open-bug",
     (payload) => {
       const { workspaceId: targetWorkspaceId, bugId } = payload;
-      setView("bugs");
+      // The notification owns the target project: open its tab directly (a
+      // `setView("bugs")` would still see the previous selection).
+      openWorkspacePage(targetWorkspaceId);
       setWorkspaceId(targetWorkspaceId);
       void api.setLastWorkspace(targetWorkspaceId);
       pane.current.loadBugDetail(targetWorkspaceId, bugId);
@@ -256,6 +261,8 @@ export function useWorkspaceData({
       if (replacement) {
         pane.current.closeDetail();
         setWorkspaceId(replacement.id);
+        // The hidden project's tab must not stay in front: show the survivor.
+        openWorkspacePage(replacement.id);
         void api.setLastWorkspace(replacement.id);
       }
     }

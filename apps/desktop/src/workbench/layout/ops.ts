@@ -78,7 +78,12 @@ function isPanelResource(value: unknown): value is PanelResource {
   if (!isRecord(value)) return false;
   switch (value.type) {
     case "page":
-      return typeof value.view === "string" && PAGE_VIEW_SET.has(value.view);
+      return (
+        typeof value.view === "string" &&
+        PAGE_VIEW_SET.has(value.view) &&
+        (value.projectId === undefined ||
+          (typeof value.projectId === "string" && value.projectId.length > 0))
+      );
     case "bug":
       return (
         typeof value.workspaceId === "string" &&
@@ -375,12 +380,23 @@ function removePanelFromGroup(group: GroupNode, id: string): void {
   }
 }
 
+/** A page whose resource names a project (`bugs` / `local`). */
+function isProjectPage(panel: PanelRef): boolean {
+  return (
+    panel.kind === "page" &&
+    panel.resource.type === "page" &&
+    Boolean(panel.resource.projectId)
+  );
+}
+
 /**
- * Ensures exactly one primary group exists and that the whole tree carries
- * exactly one page tab: the main view is a single fixed navigation tab, so
- * visiting another page changes that tab instead of appending one. The
- * preferred survivor is the primary's active page, then its first page, then
- * any page (a page dragged to another dock is moved back here).
+ * Ensures exactly one primary group exists and that every page tab lives there.
+ *
+ * Project pages (`bugs` / `local` carrying a project id) are one tab per
+ * project and stay open until closed. Global pages (`settings`, `agent`, …)
+ * share a single navigation tab: extra globals collapse into the preferred one
+ * (the primary's active global, else its first global, else the first global),
+ * so handing a stale layout to `normalize` cannot leave two 设置 tabs.
  */
 function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode } {
   const seenRoles = new Set<GroupRole>();
@@ -403,21 +419,33 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
       if (panel.kind === "page") pages.push({ panel, group });
     }
   }
-  const keep =
-    pages.find(
-      (page) =>
-        page.group.id === primary.id && page.panel.id === primary.activePanelId,
+
+  const globals = pages.filter((page) => !isProjectPage(page.panel));
+  const keepGlobal =
+    globals.find(
+      (page) => page.group.id === primary.id && page.panel.id === primary.activePanelId,
     ) ??
-    pages.find((page) => page.group.id === primary.id) ??
-    pages[0] ??
+    globals.find((page) => page.group.id === primary.id) ??
+    globals[0] ??
     null;
+  const dropped = new Set(
+    globals
+      .filter((page) => page.panel.id !== keepGlobal?.panel.id)
+      .map((page) => page.panel.id),
+  );
 
   for (const page of pages) {
-    if (keep && page.panel.id === keep.panel.id) continue;
-    removePanelFromGroup(page.group, page.panel.id);
+    if (dropped.has(page.panel.id)) {
+      removePanelFromGroup(page.group, page.panel.id);
+      continue;
+    }
+    if (page.group.id !== primary.id) {
+      removePanelFromGroup(page.group, page.panel.id);
+      primary.panels.push(page.panel);
+    }
   }
 
-  if (!keep) {
+  if (pages.length === dropped.size) {
     primary.panels.push(makePanel({ type: "page", view: "bugs" }));
     if (primary.activePanelId === null) {
       primary.activePanelId = primary.panels[0]?.id ?? null;
@@ -425,15 +453,12 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
     return { root, primary };
   }
 
-  if (keep.group.id !== primary.id) {
-    removePanelFromGroup(keep.group, keep.panel.id);
-    primary.panels.push(keep.panel);
-  }
   if (
     primary.activePanelId === null ||
     !primary.panels.some((panel) => panel.id === primary.activePanelId)
   ) {
-    primary.activePanelId = keep.panel.id;
+    primary.activePanelId =
+      keepGlobal?.panel.id ?? primary.panels[0]?.id ?? null;
   }
   return { root, primary };
 }
@@ -563,43 +588,98 @@ export function openPanel(
 }
 
 /**
- * Switches the primary group's single page tab to `view` and activates it.
- * The page tab represents the whole main view, so the previous page panel is
- * dropped by `normalize` instead of being left behind as another tab.
+ * Opens or focuses a page tab in the primary group.
+ *
+ * - With `projectId` the tab is project-scoped (`bugs` / `local`): one per
+ *   project, appended next to the other project tabs and focused.
+ * - Without it the single global navigation tab is retargeted to `view`, so
+ *   clicking the activity bar never accumulates 设置 / Agent tabs.
  */
-export function openPage(layout: LayoutState, view: PageView): LayoutState {
+export function openPage(
+  layout: LayoutState,
+  view: PageView,
+  projectId?: string,
+  label?: string,
+): LayoutState {
   let base = layout;
   if (!findRoleGroup(base.root, "primary")) base = ensureRoleGroup(base, "primary");
   const primary = findRoleGroup(base.root, "primary");
   if (!primary) return normalize(base);
 
-  const id = panelId.page(view);
+  const id = panelId.page(view, projectId);
   const hit = findPanel(base.root, id);
-  const pageCount = listGroups(base.root).reduce(
-    (count, group) =>
-      count + group.panels.filter((panel) => panel.kind === "page").length,
-    0,
-  );
   if (
     hit &&
     hit.group.id === primary.id &&
     primary.activePanelId === id &&
-    base.activeGroupId === primary.id &&
-    pageCount <= 1
+    base.activeGroupId === primary.id
   ) {
-    return base;
+    return label && hit.panel.label !== label ? setPanelLabel(base, id, label) : base;
   }
 
   const next = cloneLayout(base);
   const nextPrimary = findRoleGroup(next.root, "primary")!;
-  const current = findPanel(next.root, id);
-  if (current) {
-    if (current.group.id !== nextPrimary.id) {
-      removePanelFromGroup(current.group, id);
-      nextPrimary.panels.push(current.panel);
+
+  if (projectId) {
+    const current = findPanel(next.root, id);
+    if (current) {
+      if (current.group.id !== nextPrimary.id) {
+        removePanelFromGroup(current.group, id);
+        nextPrimary.panels.push(current.panel);
+      }
+      if (label) current.panel.label = label;
+    } else {
+      nextPrimary.panels.push(
+        makePanel(
+          { type: "page", view, projectId },
+          label ? { label } : {},
+        ),
+      );
+    }
+    nextPrimary.activePanelId = id;
+    next.activeGroupId = nextPrimary.id;
+    return normalize(next);
+  }
+
+  // Global page: keep exactly one navigation tab, retargeted in place.
+  const globals: Array<{ panel: PanelRef; group: GroupNode }> = [];
+  for (const group of listGroups(next.root)) {
+    for (const panel of group.panels) {
+      if (
+        panel.kind === "page" &&
+        panel.resource.type === "page" &&
+        !panel.resource.projectId
+      ) {
+        globals.push({ panel, group });
+      }
+    }
+  }
+  const target =
+    globals.find(
+      (entry) =>
+        entry.group.id === nextPrimary.id &&
+        entry.panel.id === nextPrimary.activePanelId,
+    ) ??
+    globals.find((entry) => entry.group.id === nextPrimary.id) ??
+    globals[0] ??
+    null;
+
+  if (target) {
+    const { panel, group } = target;
+    const index = group.panels.findIndex((item) => item.id === panel.id);
+    // A global page's old label (usually a project name) must not follow the
+    // tab to another view.
+    const nextPanel = makePanel({ type: "page", view }, label ? { label } : {});
+    if (group.id === nextPrimary.id) {
+      group.panels.splice(index, 1, nextPanel);
+    } else {
+      removePanelFromGroup(group, panel.id);
+      nextPrimary.panels.push(nextPanel);
     }
   } else {
-    nextPrimary.panels.push(makePanel({ type: "page", view }));
+    nextPrimary.panels.push(
+      makePanel({ type: "page", view }, label ? { label } : {}),
+    );
   }
   nextPrimary.activePanelId = id;
   next.activeGroupId = nextPrimary.id;
@@ -607,13 +687,64 @@ export function openPage(layout: LayoutState, view: PageView): LayoutState {
 }
 
 /**
- * Closes a closable tab. Page tabs are permanent. The neighbor to the right
- * (else the left) becomes active; when the group empties, focus falls back to
- * the primary dock and non-role groups are removed by `normalize`.
+ * Adopts a persisted generic page into the project's page tab.
+ *
+ * The layout is written to disk before the TAPD / local project is known, so
+ * the first launch after upgrade restores `page:bugs` (and possibly
+ * `page:local`) with no project attached. Once the selection arrives, this
+ * renames that tab instead of leaving a duplicate next to the project tab. A
+ * project tab that already exists wins; the generic one is dropped.
+ */
+export function retargetPage(
+  layout: LayoutState,
+  view: PageView,
+  projectId: string,
+): LayoutState {
+  const genericId = panelId.page(view);
+  const hit = findPanel(layout.root, genericId);
+  if (!hit) return layout;
+
+  const scopedId = panelId.page(view, projectId);
+  const next = cloneLayout(layout);
+  const generic = findPanel(next.root, genericId)!;
+
+  if (findPanel(next.root, scopedId)) {
+    removePanelFromGroup(generic.group, genericId);
+  } else {
+    const { group } = generic;
+    const index = group.panels.findIndex((panel) => panel.id === genericId);
+    group.panels[index] = makePanel(
+      { type: "page", view, projectId },
+      generic.panel.label ? { label: generic.panel.label } : {},
+    );
+    group.activePanelId = scopedId;
+    next.activeGroupId = group.id;
+  }
+
+  const primary = findRoleGroup(next.root, "primary");
+  const scoped = findPanel(next.root, scopedId);
+  if (primary && scoped) {
+    primary.activePanelId = scopedId;
+    next.activeGroupId = primary.id;
+  }
+  return normalize(next);
+}
+
+/**
+ * Closes a closable tab. Project page tabs can close; the global navigation
+ * tab is permanent. The neighbor to the right (else the left) becomes active;
+ * when the group empties, focus falls back to the primary dock and non-role
+ * groups are removed by `normalize`.
  */
 export function closePanel(layout: LayoutState, panelIdToClose: string): LayoutState {
   const hit = findPanel(layout.root, panelIdToClose);
-  if (!hit || hit.panel.kind === "page") return layout;
+  if (!hit) return layout;
+  if (
+    hit.panel.kind === "page" &&
+    (hit.panel.resource.type !== "page" || !hit.panel.resource.projectId)
+  ) {
+    return layout;
+  }
 
   const next = cloneLayout(layout);
   const current = findPanel(next.root, panelIdToClose);
@@ -1050,19 +1181,35 @@ export function syncTerminalPanels(
 // Derived state
 // ---------------------------------------------------------------------------
 
-/** Active page view; falls back to the primary dock's first page, else "bugs". */
-export function activeView(layout: LayoutState): PageView {
+export type ActivePage = { view: PageView; projectId?: string };
+
+/**
+ * The page the user is looking at: the active tab when it is a page, else the
+ * primary dock's active page, else its first page. Falls back to the generic
+ * bugs page when the layout has no page at all.
+ */
+export function activePage(layout: LayoutState): ActivePage {
   const activeGroup = findGroup(layout.root, layout.activeGroupId);
   const activePanel = activeGroup?.panels.find(
     (panel) => panel.id === activeGroup.activePanelId,
   );
-  if (activePanel?.kind === "page" && activePanel.resource.type === "page") {
-    return activePanel.resource.view;
-  }
   const primary = findRoleGroup(layout.root, "primary");
-  const primaryPage = primary?.panels.find(
-    (panel) => panel.kind === "page" && panel.resource.type === "page",
-  );
-  if (primaryPage?.resource.type === "page") return primaryPage.resource.view;
-  return "bugs";
+  const candidates = [
+    activePanel,
+    primary?.panels.find((panel) => panel.id === primary.activePanelId),
+    primary?.panels.find((panel) => panel.kind === "page"),
+  ];
+  for (const panel of candidates) {
+    if (!panel || panel.kind !== "page" || panel.resource.type !== "page") continue;
+    return {
+      view: panel.resource.view,
+      ...(panel.resource.projectId ? { projectId: panel.resource.projectId } : {}),
+    };
+  }
+  return { view: "bugs" };
+}
+
+/** Active page view; falls back to the primary dock's first page, else "bugs". */
+export function activeView(layout: LayoutState): PageView {
+  return activePage(layout).view;
 }

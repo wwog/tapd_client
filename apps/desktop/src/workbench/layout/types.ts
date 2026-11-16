@@ -26,9 +26,14 @@ export type PanelKind = "page" | "bug" | "explorer" | "file" | "terminal";
 /**
  * What a panel points at. `workspaceId` already identifies the project, so the
  * panel id stays deterministic across restarts (stable persistence keys).
+ *
+ * A page is either global (`settings`, `agent`, …) or project-scoped: `bugs`
+ * carries a TAPD workspace id, `local` a local project id. Project pages are
+ * one per project and can be closed; global pages share a single navigation
+ * tab (see `openPage`).
  */
 export type PanelResource =
-  | { type: "page"; view: PageView }
+  | { type: "page"; view: PageView; projectId?: string }
   | { type: "bug"; workspaceId: string; bugId: string }
   | { type: "explorer"; workspaceId: string }
   | { type: "file"; workspaceId: string; path: string }
@@ -126,8 +131,17 @@ export type WorkbenchLayoutApi = {
   activePanelId: string | null;
   /** Opens or focuses a panel; returns its id. */
   open: (spec: PanelOpenSpec) => string;
-  /** Ensures the page tab exists in the primary group and activates it. */
-  openPage: (view: PageView) => void;
+  /**
+   * Opens or focuses a page tab in the primary group. With `projectId` the tab
+   * belongs to that project (one per project); without it the single global
+   * page tab is retargeted to `view`, like the old navigation behaviour.
+   */
+  openPage: (view: PageView, projectId?: string, label?: string) => void;
+  /**
+   * Turns a persisted generic page (opened before the project was known) into
+   * the project's page tab. No-op when no generic page exists for `view`.
+   */
+  retargetPage: (view: PageView, projectId: string) => void;
   activatePanel: (panelId: string) => void;
   activateGroup: (groupId: string) => void;
   closePanel: (panelId: string) => void;
@@ -164,7 +178,9 @@ export type WorkbenchLayoutApi = {
 // ---------------------------------------------------------------------------
 
 export const panelId = {
-  page: (view: PageView): string => `page:${view}`,
+  /** `projectId` scopes the page to one project; omit it for a global page. */
+  page: (view: PageView, projectId?: string): string =>
+    projectId ? `page:${view}:${projectId}` : `page:${view}`,
   bug: (workspaceId: string, bugId: string): string => `bug:${workspaceId}:${bugId}`,
   explorer: (workspaceId: string): string => `explorer:${workspaceId}`,
   file: (workspaceId: string, path: string): string => `file:${workspaceId}:${path}`,
@@ -178,7 +194,7 @@ export function makePanel(
 ): PanelRef {
   const id =
     resource.type === "page"
-      ? panelId.page(resource.view)
+      ? panelId.page(resource.view, resource.projectId)
       : resource.type === "bug"
         ? panelId.bug(resource.workspaceId, resource.bugId)
         : resource.type === "explorer"

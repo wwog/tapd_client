@@ -51,6 +51,22 @@ type GroupViewProps = {
 type TabMenu = { panel: PanelRef; x: number; y: number };
 
 /**
+ * Closable check with one layout-wide exception: the last page tab must stay.
+ * `normalize` recreates a page for the main view when every page is closed, so
+ * offering a close button there would look like it does nothing.
+ */
+function canClosePanel(api: WorkbenchLayoutApi, panel: PanelRef): boolean {
+  if (!PANEL_DEFINITIONS[panel.kind].closable(panel)) return false;
+  if (panel.kind !== "page") return true;
+  const pages = api.groups.reduce(
+    (count, group) =>
+      count + group.panels.filter((item) => item.kind === "page").length,
+    0,
+  );
+  return pages > 1;
+}
+
+/**
  * One group: an absolutely placed cell, the card chrome, the tab strip and the
  * body the panel portals land in. Empty canonical docks keep their cell (so a
  * drag can find them) but render no chrome and take 0px.
@@ -141,6 +157,7 @@ export function GroupView({
                     setMenu({ panel, x: event.clientX, y: event.clientY });
                   }}
                   onPin={() => services.pinPanel(panel.id)}
+                  closable={canClosePanel(api, panel)}
                 />
               ))}
             </div>
@@ -200,8 +217,7 @@ function TabMenuView({
 }) {
   const services = usePanelServices();
   const closableOthers = group.panels.filter(
-    (panel) =>
-      panel.id !== menu.panel.id && PANEL_DEFINITIONS[panel.kind].closable,
+    (panel) => panel.id !== menu.panel.id && canClosePanel(api, panel),
   );
   const isMaximized = api.layout.maximizedGroupId === group.id;
   const title = PANEL_DEFINITIONS[menu.panel.kind].title(menu.panel);
@@ -210,7 +226,7 @@ function TabMenuView({
     <ContextMenu x={menu.x} y={menu.y} label={title} onClose={onClose}>
       {(requestClose) => (
         <>
-          {PANEL_DEFINITIONS[menu.panel.kind].closable ? (
+          {canClosePanel(api, menu.panel) ? (
             <ContextMenuItem
               icon={<X size={13} />}
               label={t("layout.closeTab")}
@@ -266,6 +282,7 @@ function TabItem({
   onPointerDown,
   onContextMenu,
   onPin,
+  closable,
 }: {
   panel: PanelRef;
   active: boolean;
@@ -274,6 +291,8 @@ function TabItem({
   onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
   onPin: () => void;
+  /** False for the global navigation tab and for the layout's last page tab. */
+  closable: boolean;
 }) {
   const definition = PANEL_DEFINITIONS[panel.kind];
   const label = definition.title(panel);
@@ -313,7 +332,7 @@ function TabItem({
         "group/tab flex h-7 max-w-56 shrink-0 cursor-default items-center gap-1 rounded-md transition select-none",
         // A tab without a close button needs its own trailing inset; the
         // close button normally provides it (and sits 2px from the edge).
-        definition.closable ? "pl-2 pr-0.5" : "px-2",
+        closable ? "pl-2 pr-0.5" : "px-2",
         active
           ? "bg-slate-100 text-slate-700"
           : "text-slate-500 hover:bg-overlay",
@@ -335,7 +354,7 @@ function TabItem({
           data-tab-dirty="true"
         />
       ) : null}
-      {definition.closable ? (
+      {closable ? (
         <button
           type="button"
           aria-label={t("layout.closeTab")}

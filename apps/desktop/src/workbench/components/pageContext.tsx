@@ -26,8 +26,11 @@ export type PageHostServices = {
   workspaceId: string;
   scope: BugScope;
   setScope: (scope: BugScope) => void;
-  /** Bug detail currently loaded by the workbench, for the list highlight. */
-  activeBugId: string | null;
+  /**
+   * Bug detail currently loaded by the workbench, for the list highlight.
+   * Each project page compares its own workspace against this target.
+   */
+  activeBug: { workspaceId: string; bugId: string } | null;
   /** Local (non-TAPD) projects and the one selected in the side bar. */
   localProjects: LocalProject[];
   localProject: LocalProject | null;

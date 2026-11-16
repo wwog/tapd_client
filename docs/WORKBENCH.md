@@ -42,7 +42,7 @@
 
 `row` = 子项左右排列（分割条竖直）；`column` = 子项上下排列（分割条水平）。默认组角色只是初始落点，不是固定 id：
 
-- `primary` 主组：主视图，固定一个页面标签（左侧导航切换时替换内容），始终存在，标签不可关。
+- `primary` 主组：主视图，承载页面标签，始终存在。项目页（`bugs` / `local`，带 `projectId`）每个项目一个、可关闭；全局页（设置 / Agent / 同事 / MCP / 项目 / 账号）共用**一个**导航标签，左侧导航切换时替换内容而不是追加。
 - `secondary` 副组：右侧，缺陷详情 / 资源管理器 / 文件的默认落点。
 - `bottom` 底组：终端默认落点，横跨窗口下方。
 
@@ -62,7 +62,8 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 
 | 种类 | id 约定 | 内容 | 关闭 | 单例 |
 | --- | --- | --- | --- | --- |
-| `page` | `page:<view>` | 缺陷/项目/Agent/同事/MCP/设置/账号 | 否 | 全局只有一个，主视图固定导航 |
+| `page`（全局） | `page:<view>` | 项目/Agent/同事/MCP/设置/账号 | 否 | 全局只有一个导航标签 |
+| `page`（项目） | `page:<view>:<projectId>` | 缺陷列表（`bugs`）/ 事项列表（`local`） | 是 | 每个项目一个 |
 | `bug` | `bug:<ws>:<bugId>` | 缺陷详情 | 是 | 全局一个，再次打开改目标 |
 | `explorer` | `explorer:<ws>` | 资源管理器 | 是 | 按 id（每个项目一个） |
 | `file` | `file:<ws>:<path>` | 文本/Markdown/图片/音视频/二进制 | 是 | 按 id |
@@ -72,7 +73,7 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 
 1. `SplitNode.children.length >= 2`，`sizes.length === children.length`，非空子项的比例和为 1。
 2. `GroupNode.panels` 可以为空，**仅限带 `role` 的规范停靠组**；空组保留自己的比例，重新打开时恢复原尺寸。非 role 组一旦为空，`normalize` 会删除它并把空间还给兄弟。
-3. `primary` 组始终有且只有一个 `page` 标签：主视图是固定导航，切换页面替换这个标签而不是追加；没有时补 `page:bugs`，被拖走也会自动回到 primary。
+3. 所有 `page` 标签都在 `primary` 组（被拖走会移回来）。项目页每个项目一个；全局页最多一个，多余的全局页在 `normalize` 时收敛成一个。完全没有页面时补 `page:bugs`。布局先于登录 / 项目选择写盘，所以恢复出来的 `page:bugs` / `page:local` 可能在选择到达后由 `retargetPage` 认领成对应项目的标签。
 4. 组内 `activePanelId` 必须指向该组的面板；空组为 `null`。
 5. 面板 id 由资源决定（`panelId`），重启后稳定；标签移动不改变 id。
 6. 每个面板只挂载一次：`PanelHost` 用 portal 投到所属组，移动标签只换目标节点，内容不重挂载。

@@ -63,8 +63,11 @@ export type PanelDefinition = {
   title: (panel: PanelRef) => string;
   icon: (panel: PanelRef) => ReactNode;
   minSize: PanelSize;
-  /** Page tabs always stay; every other kind can be closed. */
-  closable: boolean;
+  /**
+   * Global page tabs are permanent; project pages (`bugs` / `local` with a
+   * project id) and every other kind can be closed.
+   */
+  closable: (panel: PanelRef) => boolean;
   /**
    * `id`: one tab per resource (files, terminals, pages).
    * `kind`: at most one tab of this kind in the whole layout (bug detail).
@@ -82,7 +85,8 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     icon: (panel) =>
       panel.resource.type === "page" ? PAGE_ICONS[panel.resource.view] : PAGE_ICONS.bugs,
     minSize: PANEL_MIN_SIZE.page,
-    closable: false,
+    closable: (panel) =>
+      panel.resource.type === "page" && Boolean(panel.resource.projectId),
     singleton: "id",
     render: (props) => <PagePanel {...props} />,
   },
@@ -93,7 +97,7 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
       (panel.resource.type === "bug" ? `#${panel.resource.bugId}` : t("layout.tab.bug")),
     icon: () => <Bug size={13} />,
     minSize: PANEL_MIN_SIZE.bug,
-    closable: true,
+    closable: () => true,
     singleton: "kind",
     render: (props) => <BugPanel {...props} />,
   },
@@ -102,7 +106,7 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     title: (panel) => panel.label ?? t("explorer.title"),
     icon: () => <FolderTree size={13} />,
     minSize: PANEL_MIN_SIZE.explorer,
-    closable: true,
+    closable: () => true,
     singleton: "id",
     render: (props) => <ExplorerPanel {...props} />,
   },
@@ -113,7 +117,7 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
       (panel.resource.type === "file" ? basename(panel.resource.path) : t("explorer.fileFallback")),
     icon: () => <FileCode2 size={13} />,
     minSize: PANEL_MIN_SIZE.file,
-    closable: true,
+    closable: () => true,
     singleton: "id",
     render: (props) => <FilePanel {...props} />,
   },
@@ -122,7 +126,7 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     title: (panel) => panel.label ?? t("layout.tab.terminal"),
     icon: () => <SquareTerminal size={13} />,
     minSize: PANEL_MIN_SIZE.terminal,
-    closable: true,
+    closable: () => true,
     singleton: "id",
     render: (props) => <TerminalPanel {...props} />,
   },

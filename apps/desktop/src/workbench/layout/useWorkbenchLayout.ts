@@ -24,6 +24,7 @@ import {
   movePanel as movePanelOp,
   openPage as openPageOp,
   openPanel as openPanelOp,
+  retargetPage as retargetPageOp,
   pinPanel as pinPanelOp,
   resetSizes as resetSizesOp,
   setPanelLabel as setPanelLabelOp,
@@ -128,8 +129,15 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
   );
 
   const openPage = useCallback(
-    (view: PageView) => {
-      commit((layout) => openPageOp(layout, view));
+    (view: PageView, projectId?: string, label?: string) => {
+      commit((layout) => openPageOp(layout, view, projectId, label));
+    },
+    [commit],
+  );
+
+  const retargetPage = useCallback(
+    (view: PageView, projectId: string) => {
+      commit((layout) => retargetPageOp(layout, view, projectId));
     },
     [commit],
   );
@@ -340,6 +348,7 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       activePanelId,
       open,
       openPage,
+      retargetPage,
       activatePanel,
       activateGroup,
       closePanel,
@@ -365,6 +374,7 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       activePanelId,
       open,
       openPage,
+      retargetPage,
       activatePanel,
       activateGroup,
       closePanel,

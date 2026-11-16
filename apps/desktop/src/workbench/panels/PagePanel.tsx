@@ -21,19 +21,25 @@ import { usePageHost } from "../components/pageContext";
  */
 export function PagePanel({ panel }: PanelProps) {
   const host = usePageHost();
-  const view: PageView =
-    panel.resource.type === "page" ? panel.resource.view : "bugs";
+  const resource = panel.resource.type === "page" ? panel.resource : null;
+  const view: PageView = resource?.view ?? "bugs";
+  /** Project tab identity; a global page falls back to the active selection. */
+  const projectId = resource?.projectId ?? null;
 
   switch (view) {
     // Local projects are never gated by the TAPD context: the page renders as
     // soon as a local project exists, with its own loading/error states.
-    case "local":
+    case "local": {
+      const project =
+        (projectId
+          ? host.localProjects.find((item) => item.id === projectId)
+          : host.localProject) ?? null;
       return (
         <div className="flex h-full min-h-0 flex-col">
-          {host.localProject ? (
+          {project ? (
             <LocalItemsPage
-              key={host.localProject.id}
-              project={host.localProject}
+              key={project.id}
+              project={project}
               refreshToken={host.localItemsToken}
               toast={host.toast}
               onComposeAgent={host.onComposeLocalItem}
@@ -53,8 +59,19 @@ export function PagePanel({ panel }: PanelProps) {
           )}
         </div>
       );
+    }
 
-    case "bugs":
+    case "bugs": {
+      // A project tab renders its own workspace; a global page (first launch,
+      // before the selection is known) follows the active workspace.
+      const workspace =
+        (projectId
+          ? host.context?.workspaces.find((item) => item.id === projectId)
+          : host.workspace) ?? null;
+      const activeBugId =
+        workspace && host.activeBug?.workspaceId === workspace.id
+          ? host.activeBug.bugId
+          : null;
       return (
         <div className="flex h-full min-h-0 flex-col">
           {host.contextError ? (
@@ -72,15 +89,15 @@ export function PagePanel({ panel }: PanelProps) {
                 </Button>
               </div>
             </div>
-          ) : host.workspace ? (
+          ) : workspace ? (
             <BugListView
-              key={host.workspace.id}
-              workspace={host.workspace}
+              key={workspace.id}
+              workspace={workspace}
               me={host.context?.user.nick ?? host.info.me}
               scope={host.scope}
               onScopeChange={host.setScope}
               onOpenBug={host.onOpenBug}
-              activeBugId={host.activeBugId}
+              activeBugId={activeBugId}
               onOpenWeb={host.onOpenWeb}
               onCopy={host.onCopy}
               onAgentFix={host.onAgentFix}
@@ -102,6 +119,7 @@ export function PagePanel({ panel }: PanelProps) {
           )}
         </div>
       );
+    }
 
     case "projects":
       return (

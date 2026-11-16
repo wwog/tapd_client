@@ -19,6 +19,7 @@ import { dragPair, minSizesPx } from "./geometry.ts";
 import {
   activateGroup,
   activatePanel,
+  activePage,
   activeView,
   closePanel,
   ensureRoleGroup,
@@ -30,6 +31,7 @@ import {
   openPage,
   openPanel,
   pinPanel,
+  retargetPage,
   resetSizes,
   setPanelLabel,
   setSizes,
@@ -242,6 +244,93 @@ test("the main view keeps one fixed page tab and openPage switches it", () => {
   assert.equal(findPanel(layout.root, panelId.page("settings")), null);
   assert.equal(layout.activeGroupId, GROUP_ID.primary);
   assert.equal(activeView(layout), "projects");
+});
+
+test("project pages open as tabs beside each other; global pages share one", () => {
+  let layout = defaultLayout();
+  layout = retargetPage(layout, "bugs", "ws-1");
+  let primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
+
+  layout = openPage(layout, "local", "local-1", "Local One");
+  layout = openPage(layout, "bugs", "ws-2", "Project Two");
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(
+    primary.panels.map((panel) => panel.id),
+    ["page:bugs:ws-1", "page:local:local-1", "page:bugs:ws-2"],
+  );
+  assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-2" });
+
+  // Focusing an existing project tab does not duplicate it.
+  layout = openPage(layout, "bugs", "ws-1");
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.equal(primary.panels.length, 3);
+  assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-1" });
+
+  // Global navigation only ever owns one tab.
+  layout = openPage(layout, "settings");
+  layout = openPage(layout, "agent");
+  primary = findRoleGroup(layout.root, "primary")!;
+  const globals = primary.panels.filter(
+    (panel) => panel.resource.type === "page" && !panel.resource.projectId,
+  );
+  assert.deepEqual(globals.map((panel) => panel.id), ["page:agent"]);
+
+  // Project tabs are closable; the global navigation tab is not.
+  layout = closePanel(layout, panelId.page("bugs", "ws-2"));
+  assert.equal(findPanel(layout.root, panelId.page("bugs", "ws-2")), null);
+  assert.equal(closePanel(layout, panelId.page("agent")), layout);
+});
+
+test("retargetPage adopts a generic page and drops a duplicate", () => {
+  // No project tab yet: the generic tab is renamed in place.
+  let layout = retargetPage(defaultLayout(), "bugs", "ws-9");
+  let primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-9"]);
+  assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-9" });
+
+  // A project tab already exists: the generic leftover is dropped and the
+  // project tab wins the focus.
+  layout = openPage(defaultLayout(), "bugs", "ws-1");
+  layout = retargetPage(layout, "bugs", "ws-1");
+  primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
+  assert.equal(findPanel(layout.root, panelId.page("bugs")), null);
+});
+
+test("normalize keeps every project page in primary and one global page", () => {
+  const projectA = makePanel({ type: "page", view: "bugs", projectId: "ws-1" });
+  const settings = makePanel({ type: "page", view: "settings" });
+  const projectB = makePanel({ type: "page", view: "local", projectId: "local-1" });
+  const agent = makePanel({ type: "page", view: "agent" });
+
+  const layout: LayoutState = {
+    version: 1,
+    root: {
+      kind: "split",
+      id: "root",
+      direction: "row",
+      children: [
+        createGroup("primary"),
+        createGroup("secondary", [projectA, settings, projectB, agent]),
+      ],
+      sizes: [0.66, 0.34],
+    },
+    activeGroupId: GROUP_ID.secondary,
+    maximizedGroupId: null,
+  };
+
+  const next = normalize(layout);
+  const primary = findRoleGroup(next.root, "primary")!;
+  const secondary = findRoleGroup(next.root, "secondary")!;
+  assert.deepEqual(
+    primary.panels.map((panel) => panel.id).sort(),
+    ["page:bugs:ws-1", "page:local:local-1", "page:settings"].sort(),
+  );
+  assert.equal(secondary.panels.length, 0);
+  assert.ok(
+    primary.panels.some((panel) => panel.id === primary.activePanelId),
+  );
 });
 
 test("activeView falls back from the active tab to primary's first page", () => {

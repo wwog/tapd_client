@@ -4,7 +4,6 @@ import {
   Bot,
   Bug,
   FolderGit2,
-  ListChecks,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -41,7 +40,8 @@ const RAIL_ANIM: Record<string, string> = {
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
-  { id: "local", label: "app.nav.local", icon: <ListChecks size={15} /> },
+  // 事项 has no rail entry: local projects open their own tab from the project
+  // column (and the projects page), like TAPD projects do.
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },

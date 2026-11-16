@@ -58,13 +58,12 @@ import {
   PANEL_MIN_SIZE,
   groupMinSize,
 } from "./workbench/layout/defaults";
-import {
-  panelId,
-  type PageView,
-  type PanelRef,
-  type WorkbenchLayoutApi,
+import type {
+  PageView,
+  PanelRef,
+  WorkbenchLayoutApi,
 } from "./workbench/layout/types";
-import { activeView } from "./workbench/layout/ops";
+import { activePage } from "./workbench/layout/ops";
 import { useWorkbenchLayout } from "./workbench/layout/useWorkbenchLayout";
 import { Workbench } from "./workbench/Workbench";
 import { Sash } from "./workbench/components/Sash";
@@ -130,12 +129,25 @@ function layoutContentMinWidth(layout: WorkbenchLayoutApi): number {
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
   const layoutApi = useWorkbenchLayout();
-  const view = activeView(layoutApi.layout);
+  /** Latest layout API for stable callbacks defined before the domain hooks. */
+  const layoutRef = useRef(layoutApi);
+  layoutRef.current = layoutApi;
+  /** Latest TAPD selection, readable from stable callbacks. */
+  const workspaceIdRef = useRef("");
+  const active = activePage(layoutApi.layout);
+  const view = active.view;
+  const activeProjectId = active.projectId ?? null;
   const setView = useCallback(
     (next: View) => {
       // Switching pages must reveal the primary dock even if another group was
       // maximized (notification jumps, activity-bar clicks).
       if (layoutApi.layout.maximizedGroupId) layoutApi.maximizeGroup(null);
+      // 缺陷 is a project page now: the rail entry opens the current project's
+      // tab instead of a generic one.
+      if (next === "bugs" && workspaceIdRef.current) {
+        layoutApi.openPage("bugs", workspaceIdRef.current);
+        return;
+      }
       layoutApi.openPage(next);
     },
     [layoutApi.maximizeGroup, layoutApi.openPage, layoutApi.layout.maximizedGroupId],
@@ -227,6 +239,14 @@ export default function App() {
     closeDetail: () => undefined,
   });
 
+  /** Opens a TAPD project's page tab (notifications jump across projects). */
+  const openWorkspacePage = useCallback((targetWorkspaceId: string) => {
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.openPage("bugs", targetWorkspaceId);
+  }, []);
+
   const {
     info,
     context,
@@ -248,7 +268,16 @@ export default function App() {
     setWorkspaceVisible,
     hideWorkspace,
     handleLogout,
-  } = useWorkspaceData({ view, setView, showToast, pane: paneBridgeRef });
+  } = useWorkspaceData({
+    view,
+    setView,
+    showToast,
+    pane: paneBridgeRef,
+    openWorkspacePage,
+  });
+
+  // Stable callbacks above (rail clicks, ⌘J) read the selection from here.
+  workspaceIdRef.current = workspaceId;
 
   /**
    * The column hides only for a single TAPD project with no local projects:
@@ -256,12 +285,16 @@ export default function App() {
    */
   const projectListHidden = workspaceListHidden && local.projects.length === 0;
 
+  /** TAPD project the visible page belongs to (project tabs carry their own). */
+  const pageWorkspaceId =
+    view === "bugs" ? (activeProjectId ?? workspaceId) : workspaceId;
+
   // Members belong to the page's TAPD workspace. A local selection is only
   // relevant while the local page is active, so it must not suppress members
   // when the user switches back to the bug list.
   useMembersDirectory(
     info?.loggedIn ?? false,
-    view === "local" ? "" : workspaceId,
+    view === "local" ? "" : pageWorkspaceId,
   );
 
   // The workflow may only be initialized after login + onboarding; the backend
@@ -302,14 +335,10 @@ export default function App() {
   // 处理中 exists only while an agent works on this project; when the last one
   // finishes (or the user switches project) fall back to 我负责的 so the lis
   // can never sit on a scope whose segment is gone.
-  const processingCount = agentActiveBugIds(workspaceId, agentInFlight).length;
+  const processingCount = agentActiveBugIds(pageWorkspaceId, agentInFlight).length;
   useEffect(() => {
     if (scope === "processing" && processingCount === 0) setScope("mine");
   }, [scope, processingCount]);
-
-  /** Latest layout API for stable callbacks and effects. */
-  const layoutRef = useRef(layoutApi);
-  layoutRef.current = layoutApi;
 
   /** Opens/focuses the singleton bug panel in the secondary dock. */
   const openBugPanel = (
@@ -464,29 +493,64 @@ export default function App() {
     closeDetail: detailPane.closeDetail,
   };
 
-  // The bugs page tab is the workspace name; update it when the project
-  // switches (the tab label is persisted with the panel).
-  const bugsPagePanel = layoutApi.groups
-    .flatMap((group) => group.panels)
-    .find((panel) => panel.id === panelId.page("bugs"));
+  // Project tabs are named after their project; a rename must follow through.
   useEffect(() => {
-    if (!bugsPagePanel) return;
-    const label = workspace?.name ?? t("common.bugs");
-    if (bugsPagePanel.label === label) return;
-    layoutRef.current.setPanelLabel(bugsPagePanel.id, label);
-  }, [bugsPagePanel?.id, bugsPagePanel?.label, workspace?.name]);
+    for (const group of layoutApi.groups) {
+      for (const panel of group.panels) {
+        if (panel.resource.type !== "page" || !panel.resource.projectId) continue;
+        const { view: pageView, projectId } = panel.resource;
+        const label =
+          pageView === "bugs"
+            ? context?.workspaces.find((item) => item.id === projectId)?.name
+            : local.projects.find((item) => item.id === projectId)?.name;
+        if (label && panel.label !== label) {
+          layoutRef.current.setPanelLabel(panel.id, label);
+        }
+      }
+    }
+  }, [layoutApi.groups, context, local.projects]);
 
-  // The items page tab follows the selected local project, falling back to the
-  // generic page name when nothing is selected.
-  const localPagePanel = layoutApi.groups
-    .flatMap((group) => group.panels)
-    .find((panel) => panel.id === panelId.page("local"));
+  // A layout restored from disk can hold a generic page written before the
+  // project was known; adopt it once the selection arrives.
   useEffect(() => {
-    if (!localPagePanel) return;
-    const label = localProject?.name ?? t("app.nav.local");
-    if (localPagePanel.label === label) return;
-    layoutRef.current.setPanelLabel(localPagePanel.id, label);
-  }, [localPagePanel?.id, localPagePanel?.label, localProject?.name]);
+    if (!workspaceId) return;
+    layoutRef.current.retargetPage("bugs", workspaceId);
+  }, [workspaceId, layoutApi.layout]);
+
+  useEffect(() => {
+    if (local.loading || !local.selectedId) return;
+    layoutRef.current.retargetPage("local", local.selectedId);
+  }, [local.loading, local.selectedId, layoutApi.layout]);
+
+  // A deleted local project takes its tab with it.
+  useEffect(() => {
+    if (local.loading || local.error) return;
+    const known = new Set(local.projects.map((project) => project.id));
+    for (const group of layoutApi.groups) {
+      for (const panel of group.panels) {
+        if (
+          panel.resource.type === "page" &&
+          panel.resource.view === "local" &&
+          panel.resource.projectId &&
+          !known.has(panel.resource.projectId)
+        ) {
+          layoutRef.current.closePanel(panel.id);
+        }
+      }
+    }
+  }, [local.loading, local.error, local.projects, layoutApi.groups]);
+
+  // Activating a tab is a project switch: keep the side bar highlight and the
+  // pages' shared selection in step with the visible tab.
+  useEffect(() => {
+    if (!activeProjectId) return;
+    if (view === "bugs" && activeProjectId !== workspaceIdRef.current) {
+      setWorkspaceId(activeProjectId);
+      void api.setLastWorkspace(activeProjectId);
+    } else if (view === "local" && activeProjectId !== local.selectedId) {
+      local.select(activeProjectId);
+    }
+  }, [view, activeProjectId, setWorkspaceId, local.select, local.selectedId]);
 
   /** Switch views and replay the destination's rail icon animation. */
   const activateView = useCallback((id: View) => {
@@ -538,12 +602,11 @@ export default function App() {
     [showToast],
   );
 
+  /** Project rows are the entry point: each one opens its own page tab. */
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
-    // Keep the local page's last project as a separate context: the sidebar
-    // highlights whichever page is active, and the row is still there when
-    // the user comes back to 事项.
-    setView("bugs");
+    workspaceIdRef.current = id;
+    openWorkspacePage(id);
     // Detail belongs to the previous project: drop both the panel and its data.
     detailPane.closeDetail();
     void api.setLastWorkspace(id);
@@ -551,9 +614,10 @@ export default function App() {
 
   const selectLocalProject = (id: string) => {
     local.select(id);
+    const name = local.projects.find((project) => project.id === id)?.name;
+    layoutRef.current.openPage("local", id, name);
     // The bug detail belongs to TAPD; the local page has no such panel.
     detailPane.closeDetail();
-    setView("local");
   };
 
   const openBug = useCallback(
@@ -834,21 +898,19 @@ export default function App() {
     );
   }
 
-  const activeBugId =
-    detailPane.target && detailPane.target.workspaceId === workspace?.id
-      ? detailPane.target.bugId
-      : null;
-
   const primaryGroup =
     layoutApi.groups.find((group) => group.role === "primary") ??
     layoutApi.groups[0];
   const primaryActivePanel = primaryGroup?.panels.find(
     (panel) => panel.id === primaryGroup.activePanelId,
   );
-  const primaryView: PageView | null =
+  const primaryResource =
     primaryActivePanel?.resource.type === "page"
-      ? primaryActivePanel.resource.view
+      ? primaryActivePanel.resource
       : null;
+  const primaryView: PageView | null = primaryResource?.view ?? null;
+  /** Project of the primary tab (its own id, else the active selection). */
+  const primaryProjectId = primaryResource?.projectId ?? workspace?.id ?? null;
 
   /** Leading strip action: the side bar toggle sits above the tabs. */
   const primaryLeading = !projectListHidden ? (
@@ -874,10 +936,10 @@ export default function App() {
   ) : null;
 
   const primaryActions =
-    primaryView === "bugs" && workspace ? (
+    primaryView === "bugs" && primaryProjectId ? (
       <ProjectOpenButton
-        key={workspace.id}
-        workspaceId={workspace.id}
+        key={primaryProjectId}
+        workspaceId={primaryProjectId}
         onError={(text) => showToast("error", text)}
       />
     ) : null;
@@ -886,8 +948,15 @@ export default function App() {
   const performLogout = () => {
     const panels = layoutRef.current.groups.flatMap((group) => group.panels);
     for (const panel of panels) {
-      if (panel.kind !== "page") layoutRef.current.closePanel(panel.id);
+      // Project pages belong to the ended session; the global navigation tab
+      // stays and turns back into the pre-login bugs page.
+      const projectPage =
+        panel.resource.type === "page" && Boolean(panel.resource.projectId);
+      if (panel.kind !== "page" || projectPage) {
+        layoutRef.current.closePanel(panel.id);
+      }
     }
+    workspaceIdRef.current = "";
     layoutRef.current.openPage("bugs");
     handleLogout();
     setUnsavedExit(null);
@@ -911,7 +980,7 @@ export default function App() {
     workspaceId,
     scope,
     setScope,
-    activeBugId,
+    activeBug: detailPane.target,
     localProjects: local.projects,
     localProject,
     localItemsToken,
@@ -1061,9 +1130,9 @@ export default function App() {
           contextError={contextError}
           contextLoading={contextLoading}
           visibleWorkspaces={visibleWorkspaces}
-          workspaceId={workspaceId}
+          workspaceId={pageWorkspaceId}
           localProjects={local.projects}
-          localProjectId={view === "local" ? local.selectedId : null}
+          localProjectId={view === "local" ? activeProjectId : null}
           view={view}
           account={{
             meAvatar: info.meAvatar,
@@ -1230,7 +1299,7 @@ export default function App() {
             });
             // The new project is the one the user wants to work in.
             local.select(project.id);
-            setView("local");
+            layoutRef.current.openPage("local", project.id, project.name);
           }}
         />
       ) : null}
