@@ -26,6 +26,37 @@
   校验主次版本，失败给明确错误页（安装命令 + 重新检测），**不静默降级、不打包 node**。
 - 打包的是 JS 依赖树：`resources/dsh/{node_modules,plugins,profiles}`。
 
+### 2.1 已实测（2026-11-16，`/tmp/dsh-probe`）
+
+| 验证 | 结果 |
+| --- | --- |
+| `npm i @deepseek-ai/dsh@0.2.2-rc.3` | 成功；`bin.dsh = lib/bin.js`，91 个直接依赖 |
+| `node lib/bin.js --profile sdk --dump-config` | 自动初始化 `$DSH_HOME/profiles/sdk`，630+ 行 config |
+| 自定义 profile `tapd`（bundles = base + sdk-app） | 启动成功 |
+| profile patch 用**绝对路径**挂插件 | 生效，dump 里规范化为 `file:///…` |
+| `llm-pi-ai.providers.<id>` 自定义 provider | 路由解析通过（冒烟用 `openai-completions`） |
+| `initialize` | 返回 `{serverInfo:{name:'deepseek-harness-sdk-runtime',version:'0.0.1'}}` |
+| `session/query` | 返回 `{kind:'prompt',messageId}` |
+| 响应并发 | 请求可乱序返回（id 2 先于 id 1），客户端必须按 id 派发 |
+
+实验性插件（auto-review、CUA、插件市场、CoT 翻译、徽章技能、会话标题、个性化推荐、
+tool-worktree、inspector 等）本来就随 `@deepseek-ai/dsh` 的依赖树发布，不需要单独安装。
+
+### 2.2 依赖树体积（实测，arm64 macOS）
+
+| 状态 | 大小 | 说明 |
+| --- | --- | --- |
+| `npm i @deepseek-ai/dsh@0.2.2-rc.3` 原样 | 1.3 GB | 含 web 前端、Office、CUA、webworker 等全部 bundle |
+| 删除未挂载的重型家族后 | 816 MB | LibreOffice(-311M)、`dsh-web-frontend`、`dsh-client-ui-*`、`dsh-experimental-*`、`dsh-cua*`；**仍能启动并 initialize** |
+| 再删 `.ts` / `.d.ts` / `.map` / `docs` | 预计 ~300 MB | 34k 个 `.ts` 源文件共 239 MB，`.map` 56 MB |
+
+原生依赖（都是 N-API，ABI 稳定，不需要按 Node 小版本重新编译）：
+`node-addon-require-builtin`（napi-v9）、`node-pty`（多平台 prebuilds）、
+`sharp`/libvips（图片）、`sherpa-onnx`（语音输入，实验插件用）。
+后两者与语音 / 图片预览相关，未挂载对应插件时可以按平台裁剪。
+
+P2b 的构建脚本按「必需集合 + 平台裁剪」生成 payload，并跑契约冒烟确认裁剪没有破坏启动。
+
 ## 3. 三条通道
 
 | 通道 | 方向 | 用途 | 稳定性 |
@@ -80,6 +111,8 @@ type AssistantStreamFrame =
 ### 4.3 会话与历史
 
 - `ctx.sessions.get(id)` / `list()`；`session.snapshotEvents(...)`、`eventAt(seq)`、`deriveMessages()`。
+- `session/query` 的 `sessionId` 是**幂等键**：已存在的会话再 query 会返回
+  `session "…" already exists`。新建会话用新 id，续接已有会话用 `session/resume`。
 - 桥插件连上后先推 `snapshot`（header + 全量事件 + 游标 + 投影基线），再推增量；
   形制对齐上游 `SessionFollowFrame`（`snapshot | SessionEventEntry | assistant-stream`），
   这样「刷新后恢复历史」不依赖 SDK（SDK 没有 history 读接口）。
@@ -136,12 +169,24 @@ type AssistantStreamFrame =
 ### 4.7 组合与插件安装
 
 - profile 是 `$DSH_HOME/profiles/<name>/`：`package.json`（`dsh.profile.bundles` + `dependencies`）
-  + 用户 patch + lockfile。
+  + 用户 patch `cordis.patch.yml` + `pnpm-workspace.yaml`。实测形状：
+
+  ```json
+  {
+    "name": "dsh-profile-tapd",
+    "private": true,
+    "dependencies": {},
+    "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-sdk-app"] } }
+  }
+  ```
+
 - patch 支持 `- id: <row> config: {...}` 覆盖、`- id: <row> disabled: true`、`- insert: [...]` 新增。
   例：`packages/bundle/sdk-app/cordis.patch.yml`、`apps/cli/config/examples/team-mode.yml`。
-- `dependencies` 接受 **`file:` / `link:` 本地路径**（`packages/boot/plugin-manager/README.md`），
-  所以内置插件可以随 App 打包、以 `file:` 引用，**运行时不跑 pnpm**。
+- **内置插件不需要 pnpm**：patch 的 `insert` 可以直接把 `name` 写成插件目录的绝对路径，
+  启动时会被规范化为 `file:///…` 并由 Node 的 ESM 解析器加载（实测通过）。
+  所以 `dsh/plugins/*` 随 App 打包、原样引用即可，profile 的 `dependencies` 保持为空。
 - `plugin_manager` 工具默认关闭（它会调 pnpm）；插件开关由我们自己的 UI 改 patch 后重启运行时生效。
+
 
 ## 5. 自研桥协议（dsh → Rust，NDJSON over `127.0.0.1`）
 
