@@ -75,8 +75,8 @@ opencode mcp list     # ✓ tapd connected
 - 通知状态：`<数据目录>/cache.sqlite3` 的 `notification_*` 表
 - MCP 审计：`<数据目录>/cache.sqlite3` 的 `mcp_audit` 表（最近 500 条，可导出到 `exports/`）
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
-- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `agent_tasks` / `agent_queue_state` + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
-- Agent 配置 / 任务：`agent.json`、`cache.sqlite3` 的 `agent_tasks` / `agent_queue_state`（终端输出不落盘；旧版本遗留的 `agent-logs/`、`agent-events/` 在启动时删除）
+- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `notification_*` / `mcp_audit`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
+- Agent 配置：`<数据目录>/agent.json`（项目仓库与规则、提示词模板、Worktree 与同事选择）；内置 Agent 的会话与运行数据由 dsh 运行时自己保存
 - 本地项目 / 事项：`<数据目录>/local.sqlite3` 的 `local_projects` / `local_work_items`（纯本机数据，与 TAPD 登录无关；schema v2，项目含 `rule`；本地事项交给 Agent 时导出 `quest.json`）
 - Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<ascii(workspace_id)>/<taskId>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`

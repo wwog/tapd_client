@@ -10,16 +10,12 @@
 //! - [`migrate`]: connection schema versioning (`PRAGMA user_version`).
 //! - [`snapshots`]: generic + typed snapshot read/write helpers.
 //! - [`bugs`]: indexed bug rows and the offline query fallback.
-//! - [`agent_tasks`]: durable agent queue/history.
-//! - [`chat`]: durable free-chat sessions and message history (with FTS).
 //! - [`dispatch`]: the read-only `cache_*` feature commands.
 //!
 //! All access goes through one `Mutex<Option<Connection>>`; a failed open
 //! leaves the cache disabled and every read degrades to a miss.
 
-mod agent_tasks;
 mod bugs;
-mod chat;
 mod dispatch;
 mod migrate;
 mod snapshots;
@@ -31,7 +27,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 pub use dispatch::command;
-pub(crate) use chat::{ChatSearchQuery, ChatSessionQuery};
 
 /// SQLite-backed cache. A failed open leaves the cache disabled instead of
 /// aborting application startup; every method then behaves like a miss.
@@ -204,77 +199,6 @@ mod tests {
     }
 
     #[test]
-    fn persists_and_loads_agent_tasks() {
-        let cache = temp_cache();
-        let task = crate::agent::AgentTask {
-            id: "task-1".to_string(),
-            workspace_id: "ws".to_string(),
-            workspace_name: "WS".to_string(),
-            bug_id: "bug-1".to_string(),
-            title: "bug title".to_string(),
-            severity: "严重".to_string(),
-            priority: "高".to_string(),
-            json_path: "/tmp/bug.json".to_string(),
-            repo_path: "/tmp/repo".to_string(),
-            worktree_path: None,
-            worktree_branch: None,
-            status: crate::agent::TaskStatus::Succeeded,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            started_at: None,
-            finished_at: None,
-            exit_code: Some(0),
-            error: None,
-            prompt: "prompt".to_string(),
-            source: "manual".to_string(),
-            source_kind: tapd_workflow::TaskSource::TapdBug,
-            runtime_id: "opencode".to_string(),
-            model: String::new(),
-            permission_mode: String::new(),
-            project_rule: String::new(),
-            agent_session_id: None,
-            approval: None,
-            merge: None,
-            commit_only: false,
-            extra_prompt: String::new(),
-            attachments: Vec::new(),
-            baseline_dirty: Vec::new(),
-            baseline_head: None,
-            attempt: 0,
-            interrupted: false,
-            changes: None,
-        };
-        assert!(cache.save_agent_tasks(std::slice::from_ref(&task), true, &[]));
-
-        let (tasks, paused) = cache.load_agent_tasks().expect("sqlite");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "task-1");
-        assert_eq!(tasks[0].prompt, "prompt");
-        assert_eq!(tasks[0].severity, "严重");
-        assert_eq!(tasks[0].status, crate::agent::TaskStatus::Succeeded);
-        assert!(paused);
-
-        {
-            let guard = cache.conn.lock().expect("cache lock");
-            let conn = guard.as_ref().expect("cache connection");
-            let payload: String = conn
-                .query_row(
-                    "SELECT payload FROM agent_tasks WHERE id = 'task-1'",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("persisted row");
-            assert!(payload.contains("\"prompt\":\"prompt\""));
-            assert!(!payload.contains("\"sessionId\""));
-        }
-
-        // Removed ids are deleted and the queue flag is updated.
-        assert!(cache.save_agent_tasks(&[], false, &["task-1".to_string()]));
-        let (tasks, paused) = cache.load_agent_tasks().expect("sqlite");
-        assert!(tasks.is_empty());
-        assert!(!paused);
-    }
-
-    #[test]
     fn pre_release_cache_is_rebuilt() {
         let path = std::env::temp_dir().join(format!(
             "tapd-cache-v1-{}.sqlite3",
@@ -286,8 +210,6 @@ mod tests {
                 "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
                  INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1);
                  CREATE TABLE bugs (workspace_id TEXT NOT NULL, bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', modified TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, bug_id));
-                 CREATE TABLE agent_tasks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, bug_id TEXT NOT NULL, status TEXT NOT NULL, updated_at INTEGER NOT NULL);
-                 INSERT INTO agent_tasks VALUES ('old-task', 'ws', 'bug', 'succeeded', 1);
                  PRAGMA user_version = 1;",
             )
             .expect("v1 schema");
@@ -299,18 +221,15 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         for table in [
-            "agent_tasks",
+            "snapshots",
+            "bugs",
             "notification_settings",
             "notification_items",
             "notification_seen",
             "notification_cursors",
             "mcp_audit",
-            "agent_queue_state",
-            "chat_sessions",
-            "chat_messages",
-            "chat_messages_fts",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -325,13 +244,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
             .expect("snapshots");
         assert_eq!(snapshots, 0, "pre-1.0 snapshots are disposable");
-        let tasks: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_tasks", [], |row| row.get(0))
-            .expect("tasks");
-        assert_eq!(
-            tasks, 0,
-            "pre-1.0 task rows have no payload and are dropped"
-        );
     }
 
     #[test]
@@ -340,12 +252,11 @@ mod tests {
             "tapd-cache-v5-{}.sqlite3",
             uuid::Uuid::new_v4().simple()
         ));
-        let payload = "{\"id\":\"task-1\",\"workspaceId\":\"ws\",\"bugId\":\"b\"}";
         {
             let conn = Connection::open(&path).expect("v5 db");
-            conn.execute_batch(&format!(
+            conn.execute_batch(
                 "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
-                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{{}}', 1);
+                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1);
                  CREATE TABLE agent_tasks (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, workspace_name TEXT NOT NULL DEFAULT '',
                     bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
@@ -357,25 +268,9 @@ mod tests {
                     priority TEXT NOT NULL DEFAULT '', runtime_id TEXT NOT NULL DEFAULT '',
                     transport TEXT NOT NULL DEFAULT ''
                  );
-                 INSERT INTO agent_tasks (id, workspace_id, bug_id, status, updated_at, payload)
-                    VALUES ('task-1', 'ws', 'b', 'succeeded', 7, '{payload}');
                  CREATE TABLE agent_queue_state (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL DEFAULT 0);
-                 CREATE TABLE notification_settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, scope TEXT NOT NULL,
-                    include_new INTEGER NOT NULL, include_transferred INTEGER NOT NULL,
-                    include_reopened INTEGER NOT NULL, poll_interval_secs INTEGER NOT NULL,
-                    quiet_enabled INTEGER NOT NULL, quiet_start TEXT NOT NULL, quiet_end TEXT NOT NULL,
-                    max_visible INTEGER NOT NULL, settings_version INTEGER NOT NULL,
-                    ai_enabled INTEGER NOT NULL
-                 );
-                 CREATE TABLE notification_items (id TEXT PRIMARY KEY);
-                 CREATE TABLE notification_seen (bug_key TEXT PRIMARY KEY);
-                 CREATE TABLE notification_ignored (bug_key TEXT PRIMARY KEY);
-                 CREATE TABLE notification_cursors (workspace_id TEXT PRIMARY KEY, cursor TEXT NOT NULL);
-                 CREATE TABLE notification_baseline (workspace_id TEXT PRIMARY KEY, done_at TEXT NOT NULL);
-                 CREATE TABLE mcp_audit (id TEXT PRIMARY KEY);
-                 PRAGMA user_version = 5;"
-            ))
+                 PRAGMA user_version = 5;",
+            )
             .expect("v5 schema");
         }
 
@@ -385,75 +280,19 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 7);
-        let payload: String = conn
-            .query_row(
-                "SELECT payload FROM agent_tasks WHERE id = 'task-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("task payload survives");
-        assert!(payload.contains("task-1"));
+        assert_eq!(version, 8);
         let snapshots: i64 = conn
             .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
             .expect("snapshots");
         assert_eq!(snapshots, 1, "v5 snapshots survive the upgrade");
-        let baseline_table: i64 = conn
+        let agent_table: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'table' AND name = 'notification_baseline'",
+                  WHERE type = 'table' AND name = 'agent_tasks'",
                 [],
                 |row| row.get(0),
             )
-            .expect("baseline table");
-        assert_eq!(baseline_table, 0, "baseline table is no longer needed");
-    }
-
-    #[test]
-    fn v6_cache_gains_chat_tables_without_rebuild() {
-        let path = std::env::temp_dir().join(format!(
-            "tapd-cache-v6-{}.sqlite3",
-            uuid::Uuid::new_v4().simple()
-        ));
-        {
-            let cache = Cache::open(path.clone());
-            let guard = cache.conn.lock().expect("cache lock");
-            let conn = guard.as_ref().expect("cache connection");
-            conn.execute(
-                "INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1)",
-                [],
-            )
-            .expect("snapshot row");
-            // 模拟 v6：没有对话表，版本号回退。
-            conn.execute_batch(
-                "DROP TABLE IF EXISTS chat_messages_fts;
-                 DROP TABLE IF EXISTS chat_messages;
-                 DROP TABLE IF EXISTS chat_sessions;
-                 PRAGMA user_version = 6;",
-            )
-            .expect("downgrade to v6");
-        }
-
-        let cache = Cache::open(path);
-        let guard = cache.conn.lock().expect("cache lock");
-        let conn = guard.as_ref().expect("cache connection");
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("version");
-        assert_eq!(version, 7, "v6 upgrades to v7");
-        let snapshots: i64 = conn
-            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
-            .expect("snapshots");
-        assert_eq!(snapshots, 1, "v6 data must survive the upgrade");
-        for table in ["chat_sessions", "chat_messages", "chat_messages_fts"] {
-            let exists: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
-                    [table],
-                    |row| row.get(0),
-                )
-                .expect("table lookup");
-            assert_eq!(exists, 1, "{table} must be added");
-        }
+            .expect("agent table");
+        assert_eq!(agent_table, 0, "external-agent tables are gone");
     }
 }

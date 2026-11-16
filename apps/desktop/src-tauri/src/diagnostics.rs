@@ -63,7 +63,7 @@ fn export_bundle(
         &crate::notification::settings_for_diagnostics(state),
     )?;
     write_json(
-        &folder.join("agent.summary.json"),
+        &folder.join("agent.settings.json"),
         &agent_summary(&paths.data_dir),
     )?;
 
@@ -80,7 +80,7 @@ fn export_bundle(
         folder.join("README.txt"),
         "TAPD Client 诊断包\n\
          \n\
-         包含：版本/系统信息、脱敏配置、通知设置、Agent 摘要、MCP 审计日志和最近的应用日志。\n\
+         包含：版本/系统信息、脱敏配置、通知设置、MCP 审计日志和最近的应用日志。\n\
          不包含：TAPD Cookie、本地 API token、请求/响应正文、评论正文、导出资源。\n\
          日志中可能包含 TAPD 页面 URL、项目 ID 与缺陷 ID；提交前请自行确认。\n",
     )
@@ -146,58 +146,26 @@ fn sanitized_config(state: &SharedState) -> Value {
     })
 }
 
+/// Agent settings summary: only the facts that still exist after the built-in
+/// runtime replaced the external CLI flow (project repo paths and worktree).
 fn agent_summary(data_dir: &Path) -> Value {
-    let raw = fs::read_to_string(data_dir.join("agent.json")).ok();
-    let Some(raw) = raw else {
-        return Value::Null;
-    };
-    let Some(value) = serde_json::from_str::<Value>(&raw).ok() else {
-        return Value::Null;
-    };
-    let config = serde_json::from_str::<crate::agent::AgentConfig>(&raw).ok();
-
-    let projects = value
-        .get("projects")
-        .and_then(Value::as_object)
-        .map(|projects| {
-            projects
-                .iter()
-                .map(|(workspace, entry)| {
-                    json!({
-                        "workspaceId": workspace,
-                        "repoPath": entry.get("repoPath"),
-                        "hasRule": entry
-                            .get("rule")
-                            .and_then(Value::as_str)
-                            .map(|rule| !rule.trim().is_empty())
-                            .unwrap_or(false),
-                    })
-                })
-                .collect::<Vec<_>>()
+    let config = crate::agent_settings::load(data_dir);
+    let projects = config
+        .projects
+        .iter()
+        .map(|(workspace, entry)| {
+            json!({
+                "workspaceId": workspace,
+                "repoPath": entry.repo_path,
+                "hasRule": !entry.rule.trim().is_empty(),
+            })
         })
-        .unwrap_or_default();
-
-    let worktree_enabled = config
-        .as_ref()
-        .map(|config| config.worktree_enabled)
-        .unwrap_or(false);
-    let execution_units = config
-        .as_ref()
-        .map(|config| config.execution_units)
-        .unwrap_or(2);
-    let queue_concurrency = config
-        .as_ref()
-        .map(|config| config.effective_execution_units())
-        .unwrap_or(1);
+        .collect::<Vec<_>>();
 
     json!({
-        "binaryPath": value.get("binaryPath"),
-        "readyQuietMs": value.get("readyQuietMs"),
-        "readyTimeoutMs": value.get("readyTimeoutMs"),
-        "worktreeEnabled": worktree_enabled,
-        "executionUnits": execution_units,
+        "worktreeEnabled": config.worktree_enabled,
+        "executionUnits": config.execution_units,
         "projects": projects,
-        "queueConcurrency": queue_concurrency,
     })
 }
 

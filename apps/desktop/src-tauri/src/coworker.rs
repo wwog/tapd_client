@@ -11,7 +11,7 @@
 //! The folder name is the only id source. A broken package or skill is skipped
 //! and reported as a warning so one contribution cannot hide the others.
 //! Selected coworkers are stored in `agent.json` and rendered into the prompt by
-//! [`prompt_section`] / `agent::render_prompt`.
+//! [`prompt_section`] / [`crate::agent_settings::render_prompt`].
 
 use std::{
     collections::BTreeMap,
@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use tapd_i18n::{tr, tr_args};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 
-use crate::{agent::AgentCore, state::SharedState};
+use crate::{agent_settings, state::SharedState};
 
 const REGISTRY_DIR: &str = "coworker";
 const MANIFEST_FILE: &str = "coworker.json";
@@ -263,6 +263,8 @@ pub fn load(app: &AppHandle) -> Registry {
 
 /// Prompt block for `ids`, using the current bundled registry. Empty when
 /// nothing valid is selected.
+/// Rendered into the task prompt once the built-in agent flow lands (P4).
+#[allow(dead_code)]
 pub fn prompt_section(app: &AppHandle, ids: &[String]) -> String {
     if ids.is_empty() {
         // Every task calls this; do not scan the bundle when nobody is enabled.
@@ -592,10 +594,6 @@ pub async fn command(
     name: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    let core = app
-        .try_state::<std::sync::Arc<AgentCore>>()
-        .ok_or_else(|| tr("app.coworker.agent").to_string())?;
-
     match name {
         "coworker_list" => {
             let registry = load(app);
@@ -606,8 +604,8 @@ pub async fn command(
                 .map(|coworker| CoworkerView::from_coworker(coworker, &mut warnings))
                 .collect();
             // A package removed by an upgrade must not stay visible as selected.
-            let selected_ids: Vec<String> = core
-                .selected_coworker_ids()
+            let selected_ids: Vec<String> = agent_settings::config_for(app)
+                .coworker_ids
                 .into_iter()
                 .filter(|id| registry.get(id).is_some())
                 .collect();
@@ -630,7 +628,9 @@ pub async fn command(
                 .filter(|id| !id.is_empty())
                 .filter(|id| registry.get(id).is_some())
                 .collect();
-            let config = core.set_coworker_ids(selected)?;
+            let mut config = agent_settings::config_for(app);
+            config.coworker_ids = selected;
+            let config = agent_settings::save_for(app, &config)?;
             let prompt_section = registry.prompt_section(&config.coworker_ids);
             Ok(json!({
                 "selectedIds": config.coworker_ids,

@@ -5,9 +5,6 @@ export type Route =
   | { name: "bugs" }
   | { name: "local"; projectId: string | null }
   | { name: "bug"; id: string; workspaceId: string | null }
-  | { name: "agent" }
-  | { name: "agent-history" }
-  | { name: "agent-task"; id: string }
   | { name: "coworkers" }
   | { name: "files"; workspaceId: string | null; path: string }
   | { name: "file"; workspaceId: string | null; path: string }
@@ -32,10 +29,6 @@ const parse = (hash: string): Route => {
       return parts[1]
         ? { name: "bug", id: parts[1], workspaceId: query.get("w") }
         : { name: "bugs" };
-    case "agent":
-      if (parts[1] === "history") return { name: "agent-history" };
-      if (parts[1] === "task" && parts[2]) return { name: "agent-task", id: parts[2] };
-      return { name: "agent" };
     case "coworkers":
       return { name: "coworkers" };
     case "files":

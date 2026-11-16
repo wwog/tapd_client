@@ -295,7 +295,7 @@ export function SelectPicker(props: Props) {
 
                   {shown.length === 0 && !custom ? (
                     <div className="px-2 py-3 text-center text-ui-xs text-slate-400">
-                      {t("agent.picker.noMatch")}
+                      {t("common.noMatch")}
                     </div>
                   ) : null}
                 </div>

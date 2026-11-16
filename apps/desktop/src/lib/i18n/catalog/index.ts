@@ -2,9 +2,7 @@
  * Every message group, merged into one catalogue. Spread order does not matter
  * because keys are globally unique; the checker fails on duplicates.
  */
-import { agent } from "./agent";
 import { bugs } from "./bugs";
-import { chat } from "./chat";
 import { common } from "./common";
 import { explorer } from "./explorer";
 import { layout } from "./layout";
@@ -20,8 +18,6 @@ export const CATALOG = {
   ...shell,
   ...settings,
   ...bugs,
-  ...agent,
-  ...chat,
   ...workbench,
   ...terminal,
   ...layout,

@@ -4,7 +4,6 @@ members = [
     "apps/desktop/src-tauri",
     "crates/tapd-core",
     "crates/tapd-mcp",
-    "crates/tapd-workflow",
     "crates/tapd-i18n",
     "crates/tapd-workspace",
     "crates/tapd-local",

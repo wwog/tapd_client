@@ -15,8 +15,6 @@ export type PageView =
   | "bugs"
   | "local"
   | "projects"
-  | "chat"
-  | "agent"
   | "coworker"
   | "mcp"
   | "settings"

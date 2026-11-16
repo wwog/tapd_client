@@ -1,10 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-
-import { exportDirFor, type AgentTask } from "./agent";
-import { api } from "./api";
-import type { ToastFn } from "./feature";
-import { t } from "./i18n";
-
 /**
  * Copies text with the async clipboard API and falls back to a hidden
  * textarea + `execCommand("copy")` when the webview denies/does not expose it.
@@ -34,25 +27,3 @@ export async function copyText(text: string): Promise<boolean> {
     area.remove();
   }
 }
-
-/** Opens the folder that holds a task's exported bug.json, if it has one. */
-export const openTaskExportDir = (task: AgentTask, toast: ToastFn): void => {
-  const dir = exportDirFor(task.jsonPath);
-  if (!dir) {
-    toast("error", t("app.export.noDir"));
-    return;
-  }
-  void invoke("open_path", { path: dir }).catch((error) =>
-    toast("error", String(error)),
-  );
-};
-
-/**
- * Opens the task's worktree like a project folder: the same
- * `open_directory` command and saved editor choice as 「打开项目」.
- */
-export const openTaskWorktree = (task: AgentTask, toast: ToastFn): void => {
-  const path = task.worktreePath;
-  if (!path) return;
-  void api.openDirectory(path).catch((error) => toast("error", String(error)));
-};

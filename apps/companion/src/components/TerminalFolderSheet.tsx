@@ -44,7 +44,7 @@ export function TerminalFolderSheet(props: {
     setPending(null);
     void Promise.allSettled([
       api.workspaces(),
-      api.agentConfig(),
+      api.agentSettings(),
       api.localProjects(),
     ]).then(([workspaceResult, configResult, localResult]) => {
       if (cancelled) return;

@@ -1,15 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Fingerprint, FlaskConical, Hash, Hourglass, Play, Trash2, Type } from "lucide-react";
+import { ExternalLink, Fingerprint, Hash, Type } from "lucide-react";
 
 import type { BugSummary } from "../lib/api";
 import { bugRef } from "../lib/bug";
-import { DEV_SIM, clearDevSim, setDevSim, type DevSimKind } from "../lib/devSim";
 import { t } from "../lib/i18n";
 import {
   ContextMenu,
   ContextMenuItem,
-  ContextMenuLabel,
-  ContextMenuSeparator,
 } from "./ContextMenu";
 
 /** Anchor + target for the row's right-click menu. */
@@ -84,46 +81,9 @@ export function BugRowContextMenu(props: Props) {
                 }}
               />
             ) : null}
-            {DEV_SIM ? (
-              <DevSimSection bug={menu.bug} requestClose={requestClose} />
-            ) : null}
           </>
         );
       }}
     </ContextMenu>
-  );
-}
-
-/** Development-only state injector for the activity row / cancel button. */
-function DevSimSection(props: { bug: BugSummary; requestClose: () => void }) {
-  const { bug, requestClose } = props;
-  const apply = (kind: DevSimKind | null) => {
-    if (kind) setDevSim(bug.workspaceId, bug.id, kind);
-    else clearDevSim(bug.workspaceId, bug.id);
-    requestClose();
-  };
-
-  return (
-    <>
-      <ContextMenuSeparator />
-      <ContextMenuLabel icon={<FlaskConical size={11} />}>
-        {t("bugs.devTest")}
-      </ContextMenuLabel>
-      <ContextMenuItem
-        icon={<Hourglass size={13} />}
-        label={t("bugs.simQueued")}
-        onClick={() => apply("agent-queued")}
-      />
-      <ContextMenuItem
-        icon={<Play size={13} />}
-        label={t("bugs.simRunning")}
-        onClick={() => apply("agent-running")}
-      />
-      <ContextMenuItem
-        icon={<Trash2 size={13} />}
-        label={t("bugs.simClear")}
-        onClick={() => apply(null)}
-      />
-    </>
   );
 }

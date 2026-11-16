@@ -9,7 +9,6 @@
 import { createContext, useContext } from "react";
 
 import type { BugDetail, ExportResult, OpenMediaMode, WorkspaceMember } from "../../lib/api";
-import type { AgentInFlight } from "../../lib/agent";
 import type { ToastFn } from "../../lib/feature";
 import type { TerminalMeta } from "../../lib/terminal";
 import type { PanelOpenSpec, PanelRef } from "../layout/types";
@@ -24,13 +23,9 @@ export type BugPanelServices = {
   me: string | null;
   members: WorkspaceMember[];
   membersLoading: boolean;
-  agentInFlight: Map<string, AgentInFlight>;
   onOpenWeb: (url: string) => void;
   onCopy: (text: string) => void;
   onExport: (detail: BugDetail) => void;
-  onAgentFix: (detail: BugDetail) => void;
-  onAgentCompose: (detail: BugDetail) => void;
-  onOpenAgentTask: (taskId: string) => void;
   onOpenPath: (path: string) => void;
   onOpenMedia: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
   onRefreshMembers: () => void;

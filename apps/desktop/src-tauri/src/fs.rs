@@ -147,7 +147,7 @@ pub(crate) fn root_for(app: &AppHandle, workspace_id: &str) -> Result<PathBuf, F
     if workspace_id.is_empty() {
         return Err(FsError::no_folder());
     }
-    let config = crate::agent::mcp_agent_config(app);
+    let config = crate::agent_settings::mcp_agent_config(app);
     let repo_path = config
         .projects
         .get(workspace_id)

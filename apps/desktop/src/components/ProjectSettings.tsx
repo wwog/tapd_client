@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Check, ChevronDown, ChevronUp, Eye, EyeOff, Folder, FolderGit2, FolderOpen, Pencil, Plus, ScrollText, Trash2 } from "lucide-react";
 import clsx from "clsx";
 
-import { agentApi, type ProjectAgentConfig } from "../lib/agent";
+import { agentSettingsApi, type ProjectAgentConfig } from "../lib/agentSettings";
 import { api, type Workspace, type WorkspaceContext } from "../lib/api";
 import { copyText } from "../lib/desktop";
 import type { SettingsSectionProps } from "../lib/feature";
@@ -63,9 +63,9 @@ export function ProjectSettings(props: {
   }, [projects]);
 
   useEffect(() => {
-    void agentApi
-      .configGet()
-      .then(({ config }) => setProjects(config.projects ?? {}))
+    void agentSettingsApi
+      .get()
+      .then((config) => setProjects(config.projects ?? {}))
       .catch((error) => toast("error", String(error)));
   }, [toast]);
 
@@ -73,7 +73,8 @@ export function ProjectSettings(props: {
     async (next: Record<string, ProjectAgentConfig>) => {
       setProjects(next);
       try {
-        const { config: updated } = await agentApi.configSet({ projects: next });
+        const current = await agentSettingsApi.get();
+        const updated = await agentSettingsApi.set({ ...current, projects: next });
         setProjects(updated.projects ?? {});
       } catch (error) {
         toast("error", String(error));

@@ -215,7 +215,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
   useEffect(() => {
     let cancelled = false;
     void api
-      .agentConfig()
+      .agentSettings()
       .then((config) => {
         // No `projects` map at all means "unknown", not "nothing configured".
         if (!cancelled) setTapdRepoPaths(config.projects ?? null);

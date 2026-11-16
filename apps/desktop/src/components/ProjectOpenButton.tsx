@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { agentApi } from "../lib/agent";
+import { agentSettingsApi } from "../lib/agentSettings";
 import { api } from "../lib/api";
 import { OpenWithButton } from "./OpenWithButton";
 
@@ -17,16 +17,16 @@ type Props = {
 export function ProjectOpenButton({ workspaceId, onError }: Props) {
   const [repoPath, setRepoPath] = useState("");
 
-  // The folder lives in the agent config, so re-read it whenever the project
+  // The folder lives in the agent settings, so re-read it whenever the project
   // changes. Switching views remounts this button, which picks up edits made
   // in 项目管理.
   useEffect(() => {
     let cancelled = false;
     setRepoPath("");
 
-    void agentApi
-      .configGet()
-      .then(({ config }) => {
+    void agentSettingsApi
+      .get()
+      .then((config) => {
         if (cancelled) return;
         setRepoPath((config.projects?.[workspaceId]?.repoPath ?? "").trim());
       })

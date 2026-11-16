@@ -95,8 +95,6 @@ export const PAGE_VIEWS: readonly PageView[] = [
   "bugs",
   "local",
   "projects",
-  "chat",
-  "agent",
   "coworker",
   "mcp",
   "settings",

@@ -391,16 +391,6 @@ async fn handle_notification(
 
     service.set_state(id, NotificationState::Handled)?;
 
-    let _ = app.emit(
-        "agent://enqueue",
-        json!({
-            "workspaceId": item.workspace_id,
-            "bugId": item.bug_id,
-            "title": item.title,
-            "workspaceName": item.workspace_name,
-            "source": "notification"
-        }),
-    );
     let _ = app.emit("data://refresh", ());
     service.refresh_window();
 

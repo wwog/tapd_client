@@ -13,10 +13,9 @@ use tauri::AppHandle;
 
 use crate::state::SharedState;
 
-use super::store::now_rfc3339;
 
 pub async fn dispatch(
-    app: &AppHandle,
+    _app: &AppHandle,
     state: &SharedState,
     name: &str,
     payload: Value,
@@ -30,7 +29,6 @@ pub async fn dispatch(
         "local_item_create" => item_create(state, &payload).await,
         "local_item_update" => item_update(state, &payload).await,
         "local_item_delete" => item_delete(state, &payload).await,
-        "local_item_enqueue" => item_enqueue(app, state, &payload).await,
         "local_browse_dirs" => browse_dirs(state, &payload).await,
         other => Err(format!("unknown local command: {other}")),
     }
@@ -131,60 +129,6 @@ async fn item_delete(state: &SharedState, payload: &Value) -> Result<Value, Stri
     let store = state.local.clone();
     blocking(move || store.delete_item(&id)).await?;
     Ok(json!({ "deleted": true }))
-}
-
-/// Enqueues an agent task for one item.
-///
-/// The task is created first; the item is only linked after `enqueue_local`
-/// succeeds. A rejected enqueue therefore leaves the item exactly as it was.
-async fn item_enqueue(
-    app: &AppHandle,
-    state: &SharedState,
-    payload: &Value,
-) -> Result<Value, String> {
-    let id = required_str(payload, "id")?;
-    let extra_prompt = optional_str(payload, "extraPrompt");
-    let runtime_id = optional_str(payload, "runtimeId");
-    let model = optional_str(payload, "model");
-    let permission_mode = optional_str(payload, "permissionMode");
-    let attachments = payload
-        .get("attachments")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        });
-
-    let store = state.local.clone();
-    let (item, project) = blocking(move || store.item_with_project(&id)).await?;
-
-    let request = crate::agent::LocalEnqueueRequest {
-        project_id: project.id.clone(),
-        project_name: project.name.clone(),
-        work_item_id: item.id.clone(),
-        title: item.title.clone(),
-        description: item.description.clone(),
-        repo_path: project.repo_path.clone(),
-        project_rule: project.rule.clone(),
-        created_at: item.created_at.clone(),
-        extra_prompt,
-        attachments,
-        runtime_id,
-        model,
-        permission_mode,
-        source: Some("local".to_string()),
-    };
-    let task = crate::agent::enqueue_local(app, state, request).await?;
-
-    let now = now_rfc3339();
-    let store = state.local.clone();
-    let item_id = item.id.clone();
-    let task_id = task.id.clone();
-    let item = blocking(move || store.attach_task(&item_id, &task_id, &now)).await?;
-    Ok(json!({ "task": task, "item": item }))
 }
 
 // ---------------------------------------------------------------------------

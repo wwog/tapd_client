@@ -97,6 +97,7 @@ export const common = {
   "common.today": ["今天", "Today"],
   "common.yesterday": ["昨天", "Yesterday"],
   "common.justNow": ["刚刚", "Just now"],
+  "common.noMatch": ["没有匹配项", "No matches"],
   "common.language": ["语言", "Language"],
   "common.system": ["跟随系统", "System"],
   "common.light": ["浅色", "Light"],

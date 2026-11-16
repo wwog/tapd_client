@@ -19,7 +19,6 @@ import {
   type WorkspaceMember,
 } from "../lib/api";
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
-import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
 import { t, useLocale } from "../lib/i18n";
 import { showToast } from "../lib/toast";
@@ -49,13 +48,6 @@ type Props = {
   onOpenWeb: (url: string) => void;
   onCopy: (text: string) => void;
   onExport: (detail: BugDetail) => void;
-  onAgentFix: (detail: BugDetail) => void;
-  /** Launch with a prompt/resources from the compose sheet. */
-  onAgentCompose: (detail: BugDetail) => void;
-  /** In-flight agent tasks keyed by workspace + bug. */
-  agentInFlight?: Map<string, AgentInFlight>;
-  /** Jump to an already queued/running task instead of enqueuing again. */
-  onOpenAgentTask?: (taskId: string) => void;
   onOpenPath: (path: string) => void;
   onOpenMedia: (
     url: string,
@@ -92,10 +84,6 @@ function BugDetailDrawerImpl(props: Props) {
     onOpenWeb,
     onCopy,
     onExport,
-    onAgentFix,
-    onAgentCompose,
-    agentInFlight,
-    onOpenAgentTask,
     onOpenPath,
     onOpenMedia,
     me,
@@ -111,11 +99,6 @@ function BugDetailDrawerImpl(props: Props) {
   const [, bumpMedia] = useState(0);
   /** Lets the resource preview own its index without the drawer closing too. */
   const previewOpenRef = useRef(false);
-
-  /** Live agent task for this bug: re-clicking must focus it, not enqueue. */
-  const agentInfo = detail
-    ? agentInFlight?.get(agentBugKey(detail.workspaceId, detail.id)) ?? null
-    : null;
 
   /** The single write action currently in flight (claim/comment/field/status). */
   const [busy, setBusy] = useState<string | null>(null);
@@ -458,15 +441,10 @@ function BugDetailDrawerImpl(props: Props) {
             mine={mine}
             busy={busy}
             exporting={exporting}
-            loading={loading}
             lastExport={lastExport}
-            agentInfo={agentInfo}
             onOpenPath={onOpenPath}
             onCopy={onCopy}
             onClaim={() => void runClaim()}
-            onAgentFix={onAgentFix}
-            onAgentCompose={onAgentCompose}
-            onOpenAgentTask={onOpenAgentTask}
             onExport={onExport}
           />
         ) : null}

@@ -3,9 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { t } from "../../lib/i18n";
 import type { PageView } from "../layout/types";
 import { AccountPage } from "../../components/AccountPage";
-import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
-import { ChatPage } from "../../components/ChatPage";
 import { CoworkerPage } from "../../components/CoworkerPage";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
 import { McpPage } from "../../components/McpPage";
@@ -41,10 +39,7 @@ export function PagePanel({ panel }: PanelProps) {
             <LocalItemsPage
               key={project.id}
               project={project}
-              refreshToken={host.localItemsToken}
               toast={host.toast}
-              onComposeAgent={host.onComposeLocalItem}
-              onOpenAgentTask={host.onOpenAgentTask}
             />
           ) : host.localLoading ? (
             // The project list is still arriving; claiming "nothing selected"
@@ -101,11 +96,6 @@ export function PagePanel({ panel }: PanelProps) {
               activeBugId={activeBugId}
               onOpenWeb={host.onOpenWeb}
               onCopy={host.onCopy}
-              onAgentFix={host.onAgentFix}
-              onAgentCompose={host.onAgentCompose}
-              agentInFlight={host.agentInFlight}
-              onOpenAgentTask={host.onOpenAgentTask}
-              onCancelTask={host.onCancelTask}
               onClaim={host.onClaim}
               refreshToken={host.refreshToken}
             />
@@ -142,27 +132,6 @@ export function PagePanel({ panel }: PanelProps) {
             />
           </div>
         </div>
-      );
-
-    case "chat":
-      return (
-        <ChatPage
-          defaultWorkspaceId={host.workspaceId}
-          workspaces={host.context?.workspaces ?? []}
-          toast={host.toast}
-          onOpenProjects={() => host.onOpenProjects()}
-        />
-      );
-
-    case "agent":
-      return (
-        <AgentPage
-          focusTaskId={host.agentFocusTaskId}
-          focusReviewToken={host.agentReviewFocus}
-          onOpenBug={host.onOpenBugById}
-          toast={host.toast}
-          onFocusConsumed={host.onClearAgentFocus}
-        />
       );
 
     case "coworker":

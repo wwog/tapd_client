@@ -1,5 +1,4 @@
-mod agent;
-mod agent_scan;
+mod agent_settings;
 mod bug_write;
 mod cache;
 mod commands;
@@ -20,12 +19,12 @@ mod media_cache;
 mod notification;
 mod notification_db;
 mod open_with;
+mod pty_util;
 mod reset;
 mod server;
 mod session;
 mod shell_path;
 mod state;
-mod task_changes;
 mod terminal;
 mod update;
 mod window_state;
@@ -99,6 +98,8 @@ pub fn run() {
             commands::reset_onboarding,
             commands::mcp_policy_get,
             commands::mcp_policy_set,
+            agent_settings::agent_settings_get,
+            agent_settings::agent_settings_set,
             commands::mcp_audit_list,
             commands::mcp_audit_clear,
             commands::mcp_audit_export,
@@ -189,7 +190,6 @@ pub fn run() {
             window_state::install(&handle, &state);
 
             notification::init(&handle, state.clone());
-            agent::init(&handle, state.clone());
             terminal::init(&handle);
             // Check GitHub Releases shortly after launch, then every two hours.
             update::init(&handle, state.clone());
@@ -201,10 +201,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::Exit => {
-                // The agent TUI/serve run in their own sessions, so they must be
-                // stopped explicitly or they keep working after the app is gone.
-                agent::shutdown(app);
-                // Terminal shells are in their own sessions too.
+                // Terminal shells live in their own sessions too.
                 terminal::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     // Persist the final geometry before the config file goes away.

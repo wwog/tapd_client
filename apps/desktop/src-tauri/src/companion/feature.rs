@@ -46,25 +46,9 @@ use super::{
 /// `feature_router::dispatch`; anything else answers 403 `forbidden` before
 /// the desktop command layer is ever reached.
 const ALLOWED_FEATURES: &[&str] = &[
-    // Agent 任务：查看 / 历史 / 入队
-    "agent_tasks_list",
-    "agent_tasks_history",
-    "agent_enqueue_bug",
-    // Agent 审核 / 合并
-    "agent_review_approve",
-    "agent_review_stop",
-    "agent_task_changes",
-    "agent_task_diff",
-    "agent_merge_start",
-    "agent_merge_verify",
-    // Agent 任务控制
-    "agent_task_cancel",
-    "agent_task_retry",
-    // Agent 配置与检测
-    "agent_config_get",
-    "agent_config_set",
-    "agent_runtimes",
-    "agent_scan",
+    // Agent 配置（Worktree 隔离与执行单元；提示词仍只在桌面端编辑）
+    "settings_agent_get",
+    "settings_agent_set",
     // 通知设置
     "notification_settings_get",
     "notification_settings_set",
@@ -86,7 +70,6 @@ const ALLOWED_FEATURES: &[&str] = &[
     "local_item_create",
     "local_item_update",
     "local_item_delete",
-    "local_item_enqueue",
     "local_browse_dirs",
 ];
 
@@ -184,40 +167,26 @@ mod tests {
     /// The feature surface mobile v2 documents. The allowlist must cover every
     /// documented name (each one is also an arm of `feature_router::dispatch`).
     const DOCUMENTED_FEATURES: &[&str] = &[
-        "agent_tasks_list",
-        "agent_tasks_history",
-        "agent_enqueue_bug",
-        "agent_review_approve",
-        "agent_review_stop",
-        "agent_task_changes",
-        "agent_task_diff",
-        "agent_merge_start",
-        "agent_merge_verify",
-        "agent_task_cancel",
-        "agent_task_retry",
-        "agent_config_get",
-        "agent_config_set",
-        "agent_runtimes",
-        "agent_scan",
-        "notification_settings_get",
-        "notification_settings_set",
-        "coworker_list",
-        "coworker_select",
-        "terminal_list",
-        "terminal_create",
-        "terminal_close",
-        "terminal_ticket",
-        "local_projects_list",
-        "local_project_create",
-        "local_project_update",
-        "local_project_delete",
-        "local_items_list",
-        "local_item_create",
-        "local_item_update",
-        "local_item_delete",
-        "local_item_enqueue",
-        "local_browse_dirs",
-    ];
+    "settings_agent_get",
+    "settings_agent_set",
+    "notification_settings_get",
+    "notification_settings_set",
+    "coworker_list",
+    "coworker_select",
+    "terminal_list",
+    "terminal_create",
+    "terminal_close",
+    "terminal_ticket",
+    "local_projects_list",
+    "local_project_create",
+    "local_project_update",
+    "local_project_delete",
+    "local_items_list",
+    "local_item_create",
+    "local_item_update",
+    "local_item_delete",
+    "local_browse_dirs",
+];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {
         let (parts, body) = response.into_parts();
@@ -242,8 +211,8 @@ mod tests {
 
     #[test]
     fn whitelisted_names_pass_the_gate() {
-        assert!(whitelist_rejection("agent_review_approve").is_none());
-        assert!(whitelist_rejection("agent_enqueue_bug").is_none());
+        assert!(whitelist_rejection("settings_agent_get").is_none());
+        assert!(whitelist_rejection("settings_agent_set").is_none());
         assert!(whitelist_rejection("coworker_list").is_none());
     }
 

@@ -2,13 +2,17 @@
 //!
 //! The schema is versioned with `PRAGMA user_version`: fresh/pre-release
 //! databases are rebuilt, while the shipped v5 shape is upgraded in place.
+//!
+//! v8 removes the external-agent queue/chat tables. The cache is disposable and
+//! the built-in agent keeps its sessions in the dsh store, so those tables are
+//! dropped instead of migrated.
 
 use rusqlite::Connection;
 
 /// Schema version. Bumped only when the stored shape changes; fresh and
 /// pre-release databases are rebuilt from scratch, while shipped shapes are
 /// upgraded in place.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -27,7 +31,7 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
             upgrade_v5(conn)?;
         } else {
             // Fresh install or a pre-1.0 development database: this data is
-            // disposable (snapshots / task history), so rebuild instead of
+            // disposable (snapshots / notifications), so rebuild instead of
             // carrying five incremental migrations for shapes nobody ships.
             conn.execute_batch(
                 r#"
@@ -51,9 +55,6 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
         }
 
         create_schema(conn)?;
-        if version >= 5 {
-            restore_v5_agent_tasks(conn)?;
-        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -90,19 +91,6 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             raw TEXT NOT NULL,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (workspace_id, bug_id)
-        );
-
-        -- AgentTask is serialized into `payload`; `AgentTask` is the single
-        -- schema and history paging happens in memory.
-        CREATE TABLE IF NOT EXISTS agent_tasks (
-            id TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_queue_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            paused INTEGER NOT NULL DEFAULT 0
         );
 
         -- The audit entry is serialized into `payload`; only the retention
@@ -162,89 +150,22 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             workspace_id TEXT PRIMARY KEY,
             cursor TEXT NOT NULL
         );
-
-        -- 自由对话：会话元数据仍以 ChatSession JSON 写入 payload，索引列只
-        -- 用于按项目 / 运行时 / 模型 / 状态过滤与按时间排序。
-        CREATE TABLE IF NOT EXISTS chat_sessions (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            workspace_name TEXT NOT NULL DEFAULT '',
-            runtime_id TEXT NOT NULL,
-            model TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL,
-            title TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            payload TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS chat_sessions_updated_idx
-            ON chat_sessions(updated_at DESC);
-        CREATE INDEX IF NOT EXISTS chat_sessions_workspace_idx
-            ON chat_sessions(workspace_id);
-        CREATE INDEX IF NOT EXISTS chat_sessions_runtime_idx
-            ON chat_sessions(runtime_id);
-        CREATE INDEX IF NOT EXISTS chat_sessions_model_idx
-            ON chat_sessions(model);
-
-        -- 消息历史：rowid 保持首次写入顺序，UNIQUE 用于同一消息的 upsert
-        -- （工具结果回填会更新已有行，rowid 不变）。
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            at TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL DEFAULT '',
-            payload TEXT NOT NULL,
-            updated_at INTEGER NOT NULL,
-            UNIQUE(chat_id, message_id)
-        );
-        CREATE INDEX IF NOT EXISTS chat_messages_chat_idx
-            ON chat_messages(chat_id, id);
-
-        -- 关键字搜索：trigram 支持中文子串（>=3 字）；短词由查询层回退 LIKE。
-        CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
-            text,
-            content='chat_messages',
-            content_rowid='id',
-            tokenize='trigram'
-        );
-        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai
-        AFTER INSERT ON chat_messages BEGIN
-            INSERT INTO chat_messages_fts(rowid, text) VALUES (new.id, new.text);
-        END;
-        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad
-        AFTER DELETE ON chat_messages BEGIN
-            INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text)
-                VALUES ('delete', old.id, old.text);
-        END;
-        CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au
-        AFTER UPDATE ON chat_messages BEGIN
-            INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text)
-                VALUES ('delete', old.id, old.text);
-            INSERT INTO chat_messages_fts(rowid, text) VALUES (new.id, new.text);
-        END;
         "#,
     )
     .map_err(|error| error.to_string())
 }
 
-/// v5 (the shipped 1.0 schema) → v6: keep user-visible rows, collapse the
-/// task table to its JSON payload, and drop tables/columns no code reads.
-///
-/// The old table is renamed (not copied into a TEMP table), so the preserved
-/// rows survive a crash and the restore step runs in the same transaction.
+/// v5 (the shipped 1.0 schema) → current: keep user-visible rows and drop the
+/// tables/columns no code reads any more.
 fn upgrade_v5(conn: &Connection) -> Result<(), String> {
-    if table_exists(conn, "agent_tasks")? {
-        conn.execute_batch("DROP TABLE IF EXISTS legacy_agent_tasks")
-            .map_err(|error| error.to_string())?;
-        conn.execute_batch("ALTER TABLE agent_tasks RENAME TO legacy_agent_tasks")
-            .map_err(|error| error.to_string())?;
-    }
     conn.execute_batch(
         r#"
+        DROP TABLE IF EXISTS legacy_agent_tasks;
+        DROP TABLE IF EXISTS agent_tasks;
         DROP TABLE IF EXISTS agent_queue_state;
+        DROP TABLE IF EXISTS chat_messages_fts;
+        DROP TABLE IF EXISTS chat_messages;
+        DROP TABLE IF EXISTS chat_sessions;
         DROP TABLE IF EXISTS mcp_audit;
         DROP TABLE IF EXISTS notification_baseline;
         "#,
@@ -256,33 +177,6 @@ fn upgrade_v5(conn: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-fn restore_v5_agent_tasks(conn: &Connection) -> Result<(), String> {
-    if !table_exists(conn, "legacy_agent_tasks")? {
-        // A previous attempt already consumed the old table.
-        return Ok(());
-    }
-    conn.execute_batch(
-        r#"
-        INSERT OR REPLACE INTO agent_tasks (id, payload, updated_at)
-            SELECT id, payload, updated_at FROM legacy_agent_tasks WHERE payload <> '';
-        DROP TABLE legacy_agent_tasks;
-        "#,
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
-    use rusqlite::OptionalExtension;
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [table],
-        |_| Ok(()),
-    )
-    .optional()
-    .map(|row| row.is_some())
-    .map_err(|error| error.to_string())
 }
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
@@ -314,6 +208,7 @@ mod tests {
                 updated_at INTEGER NOT NULL
             );
             INSERT INTO agent_tasks VALUES ('t1', '{"id":"t1"}', 1);
+            CREATE TABLE chat_sessions (id TEXT PRIMARY KEY);
             CREATE TABLE notification_settings (
                 id INTEGER PRIMARY KEY,
                 settings_version INTEGER
@@ -333,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn v5_upgrade_keeps_task_payloads_and_stamps_the_version() {
+    fn v5_upgrade_drops_agent_tables_and_stamps_the_version() {
         let conn = v5_connection();
         run(&conn).expect("migrate");
 
@@ -341,19 +236,21 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
         assert_eq!(version, SCHEMA_VERSION);
-        let payload: String = conn
-            .query_row("SELECT payload FROM agent_tasks WHERE id = 't1'", [], |row| {
-                row.get(0)
-            })
-            .expect("task payload survives");
-        assert_eq!(payload, r#"{"id":"t1"}"#);
+        for table in ["agent_tasks", "chat_sessions"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("table lookup");
+            assert_eq!(exists, 0, "{table} must be dropped");
+        }
         assert!(!column_exists(&conn, "notification_settings", "settings_version").expect("columns"));
     }
 
     #[test]
-    fn v5_upgrade_survives_a_database_left_without_its_task_table() {
-        // The old TEMP-table migration could drop `agent_tasks` and exit
-        // before stamping the version. The next start must still migrate.
+    fn v5_upgrade_survives_a_database_without_its_task_table() {
         let conn = v5_connection();
         conn.execute_batch("DROP TABLE agent_tasks").expect("simulate partial");
 
@@ -363,9 +260,5 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
         assert_eq!(version, SCHEMA_VERSION);
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_tasks", [], |row| row.get(0))
-            .expect("agent_tasks exists");
-        assert_eq!(count, 0);
     }
 }

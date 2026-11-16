@@ -11,7 +11,7 @@ use tapd_core::tapd::{
 use tapd_i18n::tr;
 use tauri::AppHandle;
 
-use crate::{agent, commands::auth::session_request_json, state::SharedState};
+use crate::{agent_settings, commands::auth::session_request_json, state::SharedState};
 
 use super::{
     args::{root_hint, string_arg, string_array},
@@ -34,7 +34,7 @@ pub(super) async fn whoami(
     let allowed = allowed_workspaces(&policy, workspaces);
     let default_workspace = default_workspace_id(state, &allowed, &policy);
 
-    let agent_config = agent::mcp_agent_config(app);
+    let agent_config = agent_settings::mcp_agent_config(app);
     let local_projects: Vec<Value> = agent_config
         .projects
         .iter()
@@ -114,7 +114,7 @@ pub(super) async fn get_bug(
     // The detail is needed for both the export and the prompt, so it is fetched
     // once and handed to the export instead of letting it fetch again.
     let detail = crate::commands::bugs::fetch_bug_detail(app, &workspace_id, &bug_id).await?;
-    let agent_config = agent::mcp_agent_config(app);
+    let agent_config = agent_settings::mcp_agent_config(app);
     let skills = crate::coworker::skill_map(app, &agent_config.coworker_ids);
     let rule = agent_config
         .projects

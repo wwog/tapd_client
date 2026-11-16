@@ -24,7 +24,7 @@ use tauri::AppHandle;
 use crate::state::SharedState;
 
 use audit::AuditCall;
-use policy::{is_write_tool, policy_violation};
+use policy::policy_violation;
 
 pub async fn handle(
     app: &AppHandle,
@@ -40,15 +40,6 @@ pub async fn handle(
         audit.record(state, &policy, "denied", false, Some(message.clone()));
         tracing::info!(tool, client, ok = false, error = %message, "mcp tool denied by policy");
         return Err(message);
-    }
-
-    // The local agent must commit before it comments or changes TAPD state.
-    if is_write_tool(tool) {
-        if let Some(message) = crate::agent::tapd_write_block_reason(app, arguments).await {
-            audit.record(state, &policy, "denied", false, Some(message.clone()));
-            tracing::info!(tool, client, ok = false, error = %message, "mcp write blocked until commit");
-            return Err(message);
-        }
     }
 
     let result = dispatch(app, state, tool, arguments, client).await;

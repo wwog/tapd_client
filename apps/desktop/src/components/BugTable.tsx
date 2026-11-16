@@ -1,14 +1,10 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
   ArrowUpNarrowWide,
-  Bot,
-  ChevronDown,
   Loader2,
-  Sparkles,
   UserPlus,
-  X,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -18,12 +14,6 @@ import {
 } from "../lib/api";
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
 import { t } from "../lib/i18n";
-import { useCurrentAgent } from "../lib/useCurrentAgent";
-import {
-  agentBugKey,
-  type AgentInFlight,
-} from "../lib/agent";
-import { AgentActivityLine } from "./AgentActivityLine";
 import { ScrollingName } from "./ScrollingName";
 import { TableFilter } from "./TableFilter";
 import { Badge, PRIORITY_TONES, SEVERITY_TONES, STATUS_TONES } from "./ui";
@@ -65,7 +55,6 @@ type Props = {
   activeBugId?: string | null;
   columns: ColumnPref[];
   hideOwner: boolean;
-  agentInFlight?: Map<string, AgentInFlight>;
   claimingId: string | null;
   sort: BugSort | null;
   statusFilter: string[];
@@ -85,12 +74,7 @@ type Props = {
     event: ReactMouseEvent<HTMLTableRowElement>,
     bug: BugSummary,
   ) => void;
-  onAgentFix?: (bug: BugSummary) => void;
-  onAgentCompose?: (bug: BugSummary) => void;
-  onOpenAgentTask?: (taskId: string) => void;
   onClaim: (bug: BugSummary) => void;
-  /** Cancel a local task (queued = remove, running = interrupt). */
-  onCancelTask?: (taskId: string) => Promise<void> | void;
 };
 
 /** The bug table, its filter/sort headers and the row context menu. */
@@ -102,7 +86,6 @@ export function BugTable(props: Props) {
     activeBugId,
     columns,
     hideOwner,
-    agentInFlight,
     claimingId,
     sort,
     statusFilter,
@@ -119,28 +102,8 @@ export function BugTable(props: Props) {
     onCreatorChange,
     onOpenBug,
     onRowContextMenu,
-    onAgentFix,
-    onAgentCompose,
-    onOpenAgentTask,
     onClaim,
-    onCancelTask,
   } = props;
-
-  /** Row whose 取消 request is in flight. */
-  const [cancelingId, setCancelingId] = useState<string | null>(null);
-  /** Runtime the row action will launch, from 设置 →「默认 Agent」. */
-  const currentAgent = useCurrentAgent();
-
-  const cancelActivity = async (agent?: AgentInFlight) => {
-    const id = agent?.task.id;
-    if (!id || cancelingId) return;
-    setCancelingId(id);
-    try {
-      await onCancelTask?.(agent.task.id);
-    } finally {
-      setCancelingId(null);
-    }
-  };
 
   const visibleColumns = columns.filter(
     (column) => column.visible && !(hideOwner && column.key === "owner"),
@@ -298,8 +261,6 @@ export function BugTable(props: Props) {
           )}
         >
           {page.bugs.map((bug) => {
-            const key = agentBugKey(bug.workspaceId, bug.id);
-            const agent = agentInFlight?.get(key);
             const active = activeBugId === bug.id;
             return (
             <tr
@@ -339,9 +300,6 @@ export function BugTable(props: Props) {
                   ) : null}
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
-                {agent ? (
-                  <AgentActivityLine task={agent} />
-                ) : null}
               </td>
               {visibleColumns.map((column) => (
                 <BugColumnCell key={column.key} column={column.key} bug={bug} />
@@ -355,54 +313,7 @@ export function BugTable(props: Props) {
                 )}
                 onClick={(event) => event.stopPropagation()}
               >
-                {agent ? (
-                  // Active rows only keep jump-to-task and 取消: the bug is
-                  // already owned by the local queue, so it must not be
-                  // enqueued, edited or claimed twice. Row click still opens
-                  // the detail.
-                  <div className="flex items-center justify-end gap-1">
-                    {onOpenAgentTask ? (
-                      <button
-                        type="button"
-                        title={t("bugs.viewAgentTask")}
-                        aria-label={t("bugs.viewAgentTask")}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onOpenAgentTask(agent.task.id);
-                        }}
-                        className="grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
-                      >
-                        <Bot size={13} />
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={cancelingId === agent.task.id}
-                      title={
-                        agent.task.status === "queued"
-                          ? t("bugs.removeFromQueue")
-                          : t("bugs.interruptAgentTask")
-                      }
-                      aria-label={t("bugs.cancelAgentTask")}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void cancelActivity(agent);
-                      }}
-                      className={clsx(
-                        "grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition",
-                        cancelingId === agent.task.id
-                          ? "cursor-not-allowed opacity-60"
-                          : "hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700",
-                      )}
-                    >
-                      {cancelingId === agent.task.id ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <X size={13} />
-                      )}
-                    </button>
-                  </div>
-                ) : !isMyBug(bug.owner, me) ? (
+                {!isMyBug(bug.owner, me) ? (
                   <div className="flex items-center justify-center">
                     <button
                       type="button"
@@ -424,15 +335,7 @@ export function BugTable(props: Props) {
                       {claimingId === bug.id ? t("bugs.claiming") : t("bugs.claim")}
                     </button>
                   </div>
-                ) : (
-                  <AgentRowAction
-                    agentName={currentAgent?.name}
-                    onFix={() => onAgentFix?.(bug)}
-                    onCompose={
-                      onAgentCompose ? () => onAgentCompose(bug) : undefined
-                    }
-                  />
-                )}
+                ) : null}
               </td>
             </tr>
             );
@@ -442,53 +345,6 @@ export function BugTable(props: Props) {
     </>
   );
 }
-
-/**
- * Compact split action: the label launches the default prompt, the caret opens
- * the compose sheet for extra instructions or resources.
- */
-function AgentRowAction(props: {
-  agentName?: string;
-  onFix: () => void;
-  onCompose?: () => void;
-}) {
-  const label = props.agentName
-    ? t("bugs.fixWith", { agent: props.agentName })
-    : t("bugs.fixWithAgent");
-  return (
-    <div className="flex items-center justify-end whitespace-nowrap">
-      <div className="inline-flex shrink-0 overflow-hidden rounded-lg border border-border bg-surface">
-        <button
-          type="button"
-          title={label}
-          aria-label={label}
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onFix();
-          }}
-          className="grid h-7 w-9 place-items-center text-slate-500 transition hover:bg-sky-50 hover:text-sky-700"
-        >
-          <Sparkles size={13} />
-        </button>
-        {props.onCompose ? (
-          <button
-            type="button"
-            title={t("bugs.startWithNote")}
-            aria-label={t("bugs.startWithNote")}
-            onClick={(event) => {
-              event.stopPropagation();
-              props.onCompose?.();
-            }}
-            className="grid h-7 w-7 place-items-center border-l border-border text-slate-400 transition hover:bg-sky-50 hover:text-sky-700"
-          >
-            <ChevronDown size={13} />
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function BugColumnCell(props: { column: ColumnKey; bug: BugSummary }) {
   const { column, bug } = props;
   switch (column) {

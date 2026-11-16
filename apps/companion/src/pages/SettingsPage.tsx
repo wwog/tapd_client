@@ -4,13 +4,11 @@ import { Check, ChevronLeft, Copy, Minus, Plus, Star } from "lucide-react";
 import {
   api,
   asApiError,
-  type AgentConfig,
-  type AgentRuntimeDescriptor,
+  type AgentSettings,
   type CompanionDeviceInfo,
   type CompanionDevices,
   type NotificationSettings,
 } from "../lib/api";
-import { useAgentTasks } from "../lib/agentTasks";
 import { Badge } from "../components/Badge";
 import { copyText } from "../lib/clipboard";
 import { relativeTime } from "../lib/format";
@@ -191,13 +189,9 @@ const UNITS_MAX = 8;
 const POLL_MIN = 20;
 const POLL_MAX = 600;
 
-/** 不再占据队列的任务状态（Worktree 开关的锁依据，与桌面一致）。 */
-const TERMINAL_STATUSES = ["succeeded", "failed", "canceled"];
-
 type SettingsCache = {
-  agentConfig: AgentConfig | null;
+  agentConfig: AgentSettings | null;
   notif: NotificationSettings | null;
-  runtimes: AgentRuntimeDescriptor[];
 };
 
 /** Last values from the previous Settings visit. Re-entering renders these
@@ -212,10 +206,6 @@ const rememberSettings = (patch: Partial<SettingsCache>): void => {
         : (settingsCache?.agentConfig ?? null),
     notif:
       patch.notif !== undefined ? patch.notif : (settingsCache?.notif ?? null),
-    runtimes:
-      patch.runtimes !== undefined
-        ? patch.runtimes
-        : (settingsCache?.runtimes ?? []),
   };
 };
 
@@ -225,16 +215,11 @@ const rememberSettings = (patch: Partial<SettingsCache>): void => {
 export function SettingsPage() {
   const prefs = usePrefs();
   const presence = useDesktopPresence();
-  const { state: agentTasksState } = useAgentTasks();
-
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(
+  const [agentConfig, setAgentConfig] = useState<AgentSettings | null>(
     () => settingsCache?.agentConfig ?? null,
   );
   const [notif, setNotif] = useState<NotificationSettings | null>(
     () => settingsCache?.notif ?? null,
-  );
-  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>(
-    () => settingsCache?.runtimes ?? [],
   );
   const [pendingLoads, setPendingLoads] = useState(() => (settingsCache ? 0 : 3));
   const [deskError, setDeskError] = useState<string | null>(null);
@@ -270,7 +255,7 @@ export function SettingsPage() {
     void (async () => {
       let failure: string | null = null;
       try {
-        const config = await api.agentConfig();
+        const config = await api.agentSettings();
         if (!cancelled) {
           setAgentConfig(config);
           rememberSettings({ agentConfig: config });
@@ -283,15 +268,6 @@ export function SettingsPage() {
         if (!cancelled) {
           setNotif(settings);
           rememberSettings({ notif: settings });
-        }
-      } catch (err) {
-        failure = failure ?? asApiError(err).message;
-      }
-      try {
-        const catalog = await api.agentRuntimes();
-        if (!cancelled) {
-          setRuntimes(catalog);
-          rememberSettings({ runtimes: catalog });
         }
       } catch (err) {
         failure = failure ?? asApiError(err).message;
@@ -332,14 +308,14 @@ export function SettingsPage() {
   }, [presence.canManage, presence.lastSync, deviceBusy, loadDevices]);
 
   // Agent 配置：乐观更新，失败回滚并保留错误（无 toast，错误留在页面）。
-  const patchConfig = async (patch: Partial<AgentConfig>) => {
+  const patchConfig = async (patch: Partial<AgentSettings>) => {
     if (!agentConfig) return;
     const previous = agentConfig;
     const optimistic = { ...agentConfig, ...patch };
     setAgentConfig(optimistic);
     rememberSettings({ agentConfig: optimistic });
     try {
-      const saved = await api.agentConfigSet(patch);
+      const saved = await api.agentSettingsSet(patch);
       setAgentConfig(saved);
       rememberSettings({ agentConfig: saved });
       setDeskError(null);
@@ -479,12 +455,7 @@ export function SettingsPage() {
     window.setTimeout(() => setLinkCopied(false), 1500);
   };
 
-  // 队列里有未结束任务时，桌面端会拒绝切换 Worktree；开关直接锁住。
-  const queueBusy = (agentTasksState?.tasks ?? []).some(
-    (task) => !TERMINAL_STATUSES.includes(task.status),
-  );
   const worktreeEnabled = agentConfig?.worktreeEnabled ?? false;
-  const availableRuntimes = runtimes.filter((runtime) => runtime.available);
 
   return (
     <div className="pb-6">
@@ -724,13 +695,9 @@ export function SettingsPage() {
         <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.agentExecution")}</h3>
         <SwitchRow
           label={t("mobile.settings.worktreeIsolation")}
-          title={
-            queueBusy
-              ? t("mobile.settings.worktreeBusyHint")
-              : t("mobile.settings.worktreeHint")
-          }
+          title={t("mobile.settings.worktreeHint")}
           checked={worktreeEnabled}
-          disabled={!agentConfig || queueBusy}
+          disabled={!agentConfig}
           onChange={(value) => void patchConfig({ worktreeEnabled: value })}
         />
         <SettingRow label={t("mobile.settings.executionUnits")}>
@@ -743,37 +710,6 @@ export function SettingsPage() {
             onChange={(value) => void patchConfig({ executionUnits: value })}
           />
         </SettingRow>
-        <SwitchRow
-          label={t("mobile.settings.restoreQueued")}
-          title={t("mobile.settings.restoreQueuedHint")}
-          checked={agentConfig?.restoreQueuedTasks ?? false}
-          disabled={!agentConfig}
-          onChange={(value) => void patchConfig({ restoreQueuedTasks: value })}
-        />
-        <SettingRow label={t("mobile.settings.defaultRuntime")}>
-          <select
-            aria-label={t("mobile.settings.defaultRuntime")}
-            title={t("mobile.settings.runtimeListHint")}
-            value={agentConfig?.runtimeId ?? ""}
-            disabled={!agentConfig}
-            onChange={(event) => void patchConfig({ runtimeId: event.target.value })}
-            className="max-w-[60%] rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
-          >
-            {availableRuntimes.length === 0 ? (
-              <option value={agentConfig?.runtimeId ?? ""}>{agentConfig?.runtimeId || "—"}</option>
-            ) : null}
-            {availableRuntimes.map((runtime) => (
-              <option key={runtime.id} value={runtime.id}>
-                {runtime.name}
-              </option>
-            ))}
-          </select>
-        </SettingRow>
-        {queueBusy ? (
-          <p className="py-2 text-ui-xs leading-4 text-slate-500" title={t("mobile.settings.worktreeLockHint")}>
-            {t("mobile.settings.worktreeQueueBusy")}
-          </p>
-        ) : null}
       </section>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">

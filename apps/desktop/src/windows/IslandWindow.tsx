@@ -18,15 +18,7 @@ import {
   X,
 } from "lucide-react";
 
-import {
-  agentApi,
-  isBugAgentTask,
-  type AgentPromptOption,
-  type AgentSummary,
-} from "../lib/agent";
-import { formatElapsed } from "../lib/agentChat";
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
-import { AgentIcon } from "../components/AgentIcon";
 import { formatBytes } from "../lib/format";
 import { bugTitle } from "../lib/bug";
 import {
@@ -85,7 +77,6 @@ export function IslandWindow() {
   const [layout, setLayout] = useState<IslandLayout>(PILL_LAYOUT);
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
-  const [agentSummary, setAgentSummary] = useState<AgentSummary | null>(null);
   /** Pointer on the capsule: reported by AppKit (`island://hover`), because the
    *  window never becomes key and WebKit only tracks hover for that one. */
   const [nativeHover, setNativeHover] = useState(false);
@@ -132,15 +123,6 @@ export function IslandWindow() {
     }
   }, []);
 
-  /** Refreshes the Agent snapshot. */
-  const refreshAgentSummary = useCallback(async () => {
-    try {
-      setAgentSummary(await agentApi.summary());
-    } catch {
-      // Keep the last snapshot; the next tick or event will retry.
-    }
-  }, []);
-
   useTauriSubscription(
     () =>
       onNotificationShow(({ items: next }) => {
@@ -157,25 +139,20 @@ export function IslandWindow() {
   // the capsule follows light/dark without a reload.
   useTauriEvent<Appearance>("appearance://changed", applyExternalAppearance);
 
-  useTauriEvent<AgentSummary>("agent://summary", setAgentSummary);
-
   useEffect(() => {
     void refreshStatus();
-    void refreshAgentSummary();
 
     // Keep the capsule honest even between polls; also self-heals if the
     // initial `island://layout` was emitted before the webview loaded.
-    // Agent state arrives through `agent://summary`.
     const timer = window.setInterval(() => {
       void refreshStatus();
-      void refreshAgentSummary();
     }, 30_000);
 
     return () => {
       window.clearInterval(timer);
       if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
     };
-  }, [refreshStatus, refreshAgentSummary]);
+  }, [refreshStatus]);
 
   const run = async (item: NotificationItem, action: "handle" | "view" | "ignore") => {
     if (busy) return;
@@ -220,32 +197,6 @@ export function IslandWindow() {
     }
   };
 
-  // Only treat the agent as clickable when there is actually something to show.
-  const agentTaskId =
-    agentSummary &&
-    ((agentSummary.awaitingApproval ?? 0) > 0 ||
-      (agentSummary.awaitingMerge ?? 0) > 0 ||
-      agentSummary.running)
-      ? agentSummary.activeTaskId
-      : null;
-  const agentAwaiting = agentSummary?.awaitingApproval ?? 0;
-  const agentMerging = agentSummary?.awaitingMerge ?? 0;
-  /** Name of the runtime doing the work; falls back to the generic label. */
-  const agentRuntimeLabel = agentSummary?.runtimeName?.trim() || "Agent";
-  /** 权限 / 提问优先于通用运行中文案，胶囊与 peek 共用。 */
-  const agentPromptLabel = agentSummary?.prompt
-    ? agentSummary.prompt.kind === "approval"
-      ? t("app.island.waitingPermission")
-      : t("app.island.waitingAnswer")
-    : null;
-  /** Capsule wording: review first, then merge, then running. */
-  const agentStatusLabel =
-    agentAwaiting > 0
-      ? t("app.island.awaitingReview")
-      : agentMerging > 0
-        ? t("app.island.awaitingMerge")
-        : (agentPromptLabel ?? t("app.island.fixing", { runtime: agentRuntimeLabel }));
-
   // The label is translated copy, so the memo must re-run after a language
   // switch; `locale` is only here for that dependency.
   const locale = getLocale();
@@ -256,26 +207,6 @@ export function IslandWindow() {
         tone: "alert" as const,
       };
     }
-    if ((agentSummary?.awaitingApproval ?? 0) > 0) {
-      return { label: t("app.island.awaitingReview"), tone: "review" as const };
-    }
-    if ((agentSummary?.awaitingMerge ?? 0) > 0) {
-      return { label: t("app.island.awaitingMerge"), tone: "review" as const };
-    }
-    if (agentSummary?.prompt) {
-      return {
-        label: agentPromptLabel ?? t("app.island.waitingConfirm"),
-        tone: "agent" as const,
-      };
-    }
-    if (agentSummary?.running) {
-      return {
-        label: t("app.island.fixing", {
-          runtime: agentSummary.runtimeName?.trim() || "Agent",
-        }),
-        tone: "agent" as const,
-      };
-    }
     if (!snapshot) return { label: t("app.island.connecting"), tone: "idle" as const };
     if (!snapshot.running)
       return { label: t("app.island.notificationsPaused"), tone: "paused" as const };
@@ -284,20 +215,11 @@ export function IslandWindow() {
     if (items.length > 0) return { label: t("app.island.pending"), tone: "alert" as const };
     return { label: t("app.island.standby"), tone: "ok" as const };
   }, [
-    agentSummary,
-    agentPromptLabel,
     items.length,
     locale,
     snapshot,
     updateState?.available,
   ]);
-
-  /** The capsule only offers the peek while it is actually reporting Agent
-   *  work; an update notice or pending cards take precedence. */
-  const agentActive =
-    (agentSummary?.awaitingApproval ?? 0) > 0 ||
-    (agentSummary?.awaitingMerge ?? 0) > 0 ||
-    Boolean(agentSummary?.running);
 
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
@@ -313,13 +235,6 @@ export function IslandWindow() {
       lastVisible.current = null;
     });
   }, [idle, resident, updateActive]);
-
-  // The peek only makes sense on the collapsed capsule while the Agent has
-  // something in flight; notification cards, an update panel and a finished
-  // Agent all close it.
-  useEffect(() => {
-    setPeeking(hovered && agentActive && !layout.expanded && !updateActive);
-  }, [hovered, agentActive, layout.expanded, updateActive]);
 
   // Rust owns the window size, so each peek change round-trips once.
   const peekSynced = useRef(false);
@@ -369,9 +284,7 @@ export function IslandWindow() {
               clickTimer.current = window.setTimeout(() => {
                 clickTimer.current = null;
                 setPeeking(false);
-                if (agentTaskId) {
-                  void agentApi.openTask(agentTaskId).catch(() => undefined);
-                } else if (items.length > 0) {
+                if (items.length > 0) {
                   void notificationApi.expandIsland(true).catch(() => undefined);
                 } else {
                   void notificationApi.openMain();
@@ -391,13 +304,9 @@ export function IslandWindow() {
               // repeat it (and cover it).
               peeking
                 ? undefined
-                : agentTaskId
-                  ? t("app.island.tipTask", {
-                      status: agentStatusLabel,
-                    })
-                  : items.length > 0
-                    ? t("app.island.tipNotifications")
-                    : t("app.island.tipOpen")
+                : items.length > 0
+                  ? t("app.island.tipNotifications")
+                  : t("app.island.tipOpen")
             }
             className={clsx(
               "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
@@ -418,19 +327,6 @@ export function IslandWindow() {
             ) : null}
           </button>
         </div>
-        {peeking && agentActive && agentSummary ? (
-          <AgentPeekCard
-            summary={agentSummary}
-            onOpenDetail={() => {
-              const { workspaceId, bugId } = agentSummary;
-              if (!workspaceId || !bugId) return;
-              setPeeking(false);
-              void notificationApi
-                .openBug(workspaceId, bugId)
-                .catch(() => undefined);
-            }}
-          />
-        ) : null}
       </div>
     );
   }
@@ -794,173 +690,6 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
     </div>
   );
 }
-
-/**
- * Hover summary under the collapsed capsule: which bug the current Agent task
- * belongs to, the fields worth seeing before opening it, and any blocking
- * permission / question. Its height/gap must match the Rust
- * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
- */
-function AgentPeekCard({
-  summary,
-  onOpenDetail,
-}: {
-  summary: AgentSummary;
-  onOpenDetail: () => void;
-}) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [, tick] = useState(0);
-  const title = summary.title
-    ? isBugAgentTask(summary)
-      ? bugTitle(summary.title)
-      : summary.title
-    : "";
-  const review = summary.awaitingApproval ?? 0;
-  const merge = summary.awaitingMerge ?? 0;
-  const prompt = summary.prompt ?? null;
-  // Local work items have no bug to open; the capsule only shows the task.
-  const canOpen =
-    Boolean(summary.workspaceId && summary.bugId) && isBugAgentTask(summary);
-
-  // 已用时长每秒刷新；摘要本身由 `agent://summary` 推送。
-  useEffect(() => {
-    if (!summary.running) return;
-    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [summary.running]);
-
-  // Both counts fit side by side only while they are small; keep one kind of
-  // label per state so 300px stays readable.
-  const status = prompt
-    ? prompt.kind === "approval"
-      ? t("app.peek.permission")
-      : t("app.peek.answer")
-    : review > 0 && merge > 0
-      ? t("app.peek.reviewAndMerge", { n: review, m: merge })
-      : review > 0
-        ? review > 1
-          ? t("app.peek.reviewCount", { n: review })
-          : t("app.peek.review")
-        : merge > 0
-          ? merge > 1
-            ? t("app.peek.mergeCount", { n: merge })
-            : t("app.peek.merge")
-          : t("app.peek.fixing");
-  const elapsed = formatElapsed(summary.startedAt ?? undefined, Date.now());
-  // peek 高度固定 112px，最多放 3 个按钮，其余引导回任务页处理。
-  const options = (prompt?.options ?? []).slice(0, 3);
-
-  const answer = async (option: AgentPromptOption) => {
-    if (!prompt || !summary.activeTaskId || busy) return;
-    setBusy(option.id);
-    try {
-      await agentApi.promptAnswer(summary.activeTaskId, prompt.promptId, option.id);
-    } catch {
-      // 失败时保持卡片不动；用户可以展开主窗口在终端处理。
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <div className="mt-1.5 flex h-[112px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
-      <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
-        <AgentIcon
-          runtimeId={summary.runtimeId}
-          name={summary.runtimeName}
-          size={14}
-        />
-        <span className="truncate text-island-ink">
-          {summary.runtimeName || "Agent"}
-        </span>
-        <span
-          className={clsx(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            prompt || review + merge > 0 ? "bg-amber-500" : "bg-sky-500",
-          )}
-        />
-        <span className="truncate">{status}</span>
-        {elapsed ? (
-          <span className="ml-auto shrink-0 tabular-nums">{elapsed}</span>
-        ) : null}
-      </div>
-
-      <p className="mt-1 line-clamp-1 text-ui-sm" title={title || undefined}>
-        {title || t("app.peek.preparing")}
-      </p>
-
-      {prompt ? (
-        <div className="mt-0.5">
-          <p
-            className="line-clamp-1 text-ui-xs text-island-muted"
-            title={prompt.question ?? prompt.summary ?? undefined}
-          >
-            {prompt.question ?? prompt.summary ?? t("app.peek.awaitingConfirm")}
-          </p>
-          {prompt.canAnswer && options.length > 0 ? (
-            <div className="mt-1 flex items-center gap-1">
-              {options.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void answer(option);
-                  }}
-                  className={clsx(
-                    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-ui-2xs transition disabled:opacity-50",
-                    option.id === "reject"
-                      ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                      : "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100",
-                  )}
-                >
-                  {busy === option.id ? (
-                    <Loader2 size={9} className="animate-spin" />
-                  ) : null}
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-1 truncate text-ui-2xs text-amber-700">
-              {t("app.peek.answerInTerminal")}
-            </p>
-          )}
-        </div>
-      ) : (
-        <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
-          {!isBugAgentTask(summary) && summary.workspaceName ? (
-            <span className="min-w-0 truncate text-island-muted">
-              {summary.workspaceName}
-            </span>
-          ) : null}
-          {summary.severity ? (
-            <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
-              {summary.severity}
-            </span>
-          ) : null}
-          {summary.priority ? (
-            <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-              {t("app.island.priority", { priority: summary.priority })}
-            </span>
-          ) : null}
-          {canOpen ? (
-            <button
-              type="button"
-              onClick={onOpenDetail}
-              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
-            >
-              <Eye size={11} />
-              {t("app.peek.openDetail")}
-            </button>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
 
 function StatusDot({
   tone,

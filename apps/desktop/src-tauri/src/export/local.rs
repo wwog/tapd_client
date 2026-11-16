@@ -2,6 +2,10 @@
 //!
 //! Local projects have no TAPD counterpart, so there is no bug fetch and no
 //! media download — only the item fields the user typed in the client.
+//!
+//! The built-in agent flow reuses this when local items are handed to a session
+//! (P4); until then nothing calls into the module.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 

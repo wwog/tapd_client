@@ -12,9 +12,8 @@ import type {
   Workspace,
   WorkspaceContext,
 } from "../../lib/api";
-import type { AgentInFlight } from "../../lib/agent";
 import type { ToastFn } from "../../lib/feature";
-import type { LocalProject, WorkItem } from "../../lib/local";
+import type { LocalProject } from "../../lib/local";
 import type { BugScope } from "../../components/bugListPrefs";
 
 export type PageHostServices = {
@@ -36,13 +35,8 @@ export type PageHostServices = {
   localProject: LocalProject | null;
   localLoading: boolean;
   localError: string | null;
-  /** Bumped after an enqueue so the items page refetches its task links. */
-  localItemsToken: number;
   projectsKnown: boolean;
   hiddenWorkspaceIds: string[];
-  agentInFlight: Map<string, AgentInFlight>;
-  agentFocusTaskId: string | null;
-  agentReviewFocus: number;
   refreshToken: number;
   toast: ToastFn;
   onOpenBug: (bug: BugSummary) => void;
@@ -53,18 +47,11 @@ export type PageHostServices = {
   onOpenPath: (path: string) => void;
   onCopy: (text: string) => Promise<void>;
   onClaim: (bug: BugSummary) => Promise<void>;
-  onAgentFix: (bug: BugSummary) => void;
-  onAgentCompose: (bug: BugSummary) => void;
-  onOpenAgentTask: (taskId: string) => void;
-  onCancelTask: (taskId: string) => Promise<void> | void;
-  onClearAgentFocus: () => void;
   onSetWorkspaceVisible: (workspaceId: string, visible: boolean) => void;
   onSelectLocalProject: (id: string) => void;
   onCreateLocalProject: () => void;
   onEditLocalProject: (project: LocalProject) => void;
   onDeleteLocalProject: (project: LocalProject) => void;
-  /** Opens the compose sheet for a work item, prefilled with its description. */
-  onComposeLocalItem: (project: LocalProject, item: WorkItem) => void;
   onOpenMedia: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
   /** Opens the project settings page from a page that needs a repository. */
   onOpenProjects: () => void;

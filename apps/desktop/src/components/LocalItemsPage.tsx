@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -10,22 +9,13 @@ import clsx from "clsx";
 import {
   ArrowRight,
   Check,
-  Eye,
   Pencil,
   Plus,
   RefreshCw,
-  Sparkles,
   Trash2,
   Undo2,
 } from "lucide-react";
 
-import {
-  AGENT_STATUS_LABELS,
-  AGENT_STATUS_TONES,
-  isAgentTerminalStatus,
-  type AgentTask,
-} from "../lib/agent";
-import { useAgentTasksStore } from "../lib/agentStore";
 import { t } from "../lib/i18n";
 import {
   localApi,
@@ -39,32 +29,19 @@ import { LocalItemDialog } from "./LocalItemDialog";
 import { ScrollingName } from "./ScrollingName";
 import { Segmented } from "./Segmented";
 import { SkeletonRows } from "./Skeleton";
-import { Badge, Button } from "./ui";
+import { Button } from "./ui";
 
 type Props = {
   project: LocalProject;
-  /** Bumped by App after an enqueue so the linked task id is refetched. */
-  refreshToken: number;
   toast: ToastFn;
-  onComposeAgent: (project: LocalProject, item: WorkItem) => void;
-  onOpenAgentTask: (taskId: string) => void;
 };
 
-/** Delay before a task-finished reload, so a status burst reloads once. */
-const TASK_REFRESH_DELAY_MS = 350;
-
 /**
- * Three-state work item list for one local project. Items are local-only; the
- * only Agent link is the task id the backend stores when an item is handed
- * over. Task state is read from the shared queue snapshot, not refetched.
+ * Three-state work item list for one local project. Items are local-only: no
+ * TAPD workspace, no export package, and no task link until the built-in agent
+ * flow hands them over (P4).
  */
-export function LocalItemsPage({
-  project,
-  refreshToken,
-  toast,
-  onComposeAgent,
-  onOpenAgentTask,
-}: Props) {
+export function LocalItemsPage({ project, toast }: Props) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,13 +50,6 @@ export function LocalItemsPage({
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
-
-  const agentState = useAgentTasksStore();
-  const tasks = useMemo(() => {
-    const map = new Map<string, AgentTask>();
-    for (const task of agentState?.tasks ?? []) map.set(task.id, task);
-    return map;
-  }, [agentState]);
 
   // The toast callback is not a dependency of `load`: App may hand a new
   // identity each render, which would restart the fetch on every render.
@@ -114,35 +84,7 @@ export function LocalItemsPage({
 
   useEffect(() => {
     void load();
-  }, [load, refreshToken]);
-
-  /**
-   * The backend marks a linked item done when its task succeeds, without a
-   * push for the item itself. A signature of live tasks changes on that
-   * transition; the reload is deferred so a burst of runtime updates does not
-   * fetch the list repeatedly.
-   */
-  const liveTaskSignature = useMemo(() => {
-    const live: string[] = [];
-    for (const task of agentState?.tasks ?? []) {
-      if (!isAgentTerminalStatus(task.status)) {
-        live.push(`${task.id}:${task.status}`);
-      }
-    }
-    live.sort();
-    return live.join("|");
-  }, [agentState]);
-
-  const lastSignature = useRef<string | null>(null);
-  useEffect(() => {
-    if (lastSignature.current === null || lastSignature.current === liveTaskSignature) {
-      lastSignature.current = liveTaskSignature;
-      return;
-    }
-    lastSignature.current = liveTaskSignature;
-    const timer = setTimeout(() => void load(true), TASK_REFRESH_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [liveTaskSignature, load]);
+  }, [load]);
 
   const pending = items.filter((item) => item.status === "pending");
   const inProgress = items.filter((item) => item.status === "in_progress");
@@ -273,13 +215,10 @@ export function LocalItemsPage({
               <ItemRow
                 key={item.id}
                 item={item}
-                task={item.agentTaskId ? tasks.get(item.agentTaskId) ?? null : null}
                 busy={actionBusy === item.id}
-                onCompose={() => onComposeAgent(project, item)}
                 onSetStatus={(status) => void setStatus(item, status)}
                 onEdit={() => setDialog({ item })}
                 onDelete={() => setDeleteTarget(item)}
-                onOpenTask={(taskId) => onOpenAgentTask(taskId)}
               />
             ))}
           </ul>
@@ -311,16 +250,12 @@ export function LocalItemsPage({
 
 function ItemRow(props: {
   item: WorkItem;
-  task: AgentTask | null;
   busy: boolean;
-  onCompose: () => void;
   onSetStatus: (status: WorkItemStatus) => void;
   onEdit: () => void;
   onDelete: () => void;
-  onOpenTask: (taskId: string) => void;
 }) {
-  const { item, task, busy, onCompose, onSetStatus, onEdit, onDelete, onOpenTask } =
-    props;
+  const { item, busy, onSetStatus, onEdit, onDelete } = props;
 
   return (
     <li>
@@ -338,29 +273,7 @@ function ItemRow(props: {
           ) : null}
         </div>
 
-        {task ? (
-          <Badge tone={AGENT_STATUS_TONES[task.status]} className="mt-0.5">
-            {t(AGENT_STATUS_LABELS[task.status])}
-          </Badge>
-        ) : null}
-
         <div className="flex shrink-0 items-center gap-0.5">
-          {item.status !== "pending" && item.agentTaskId ? (
-            <RowAction
-              label={t("local.items.viewTask")}
-              icon={<Eye size={13} />}
-              onClick={() => onOpenTask(item.agentTaskId!)}
-            />
-          ) : null}
-
-          {item.status !== "done" ? (
-            <RowAction
-              label={t("local.items.toAgent")}
-              icon={<Sparkles size={13} />}
-              onClick={onCompose}
-            />
-          ) : null}
-
           {item.status === "pending" ? (
             <RowAction
               label={t("local.items.moveToProgress")}

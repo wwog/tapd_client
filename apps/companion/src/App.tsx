@@ -1,12 +1,7 @@
 import { useEffect } from "react";
-import { Bot, Bug, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
+import { Bug, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
-import {
-  refreshAgentTasks,
-  setAgentPollMode,
-  useAgentTasks,
-} from "./lib/agentTasks";
 import { startHeartbeat } from "./lib/heartbeat";
 import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
@@ -15,9 +10,6 @@ import { NotificationBanner } from "./components/NotificationBanner";
 import { PairPage } from "./pages/PairPage";
 import { BugsPage } from "./pages/BugsPage";
 import { BugDetailPage } from "./pages/BugDetailPage";
-import { AgentPage } from "./pages/AgentPage";
-import { AgentHistoryPage } from "./pages/AgentHistoryPage";
-import { AgentTaskPage } from "./pages/AgentTaskPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -47,13 +39,12 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "local" | "agent" | "files" | "terminal" | "settings";
+type TabKey = "bugs" | "local" | "files" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
   { key: "local", label: "mobile.local.title", hash: "#/local" },
-  { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
   { key: "files", label: "mobile.files.title", hash: "#/files" },
   { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
   { key: "settings", label: "common.settings", hash: "#/settings" },
@@ -67,11 +58,8 @@ const tabOf = (route: Route): TabKey => {
       return "bugs";
     case "local":
       return "local";
-    case "agent":
-    case "agent-history":
-    case "agent-task":
     case "coworkers":
-      return "agent";
+      return "settings";
     case "files":
     case "file":
       return "files";
@@ -85,7 +73,7 @@ const tabOf = (route: Route): TabKey => {
   }
 };
 
-function TabBar(props: { active: TabKey; badge: number }) {
+function TabBar(props: { active: TabKey }) {
   return (
     <nav
       aria-label={t("mobile.nav.main")}
@@ -107,18 +95,9 @@ function TabBar(props: { active: TabKey; badge: number }) {
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
                 {tab.key === "local" ? <ListChecks size={18} /> : null}
-                {tab.key === "agent" ? <Bot size={18} /> : null}
                 {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
-                {tab.key === "agent" && props.badge > 0 ? (
-                  <span
-                    aria-label={t("mobile.nav.pendingTasks", { n: props.badge })}
-                    className="absolute -top-1.5 -right-2.5 min-w-4 rounded-full bg-rose-500 px-1 py-px text-center text-ui-2xs leading-3.5 text-white"
-                  >
-                    {props.badge > 99 ? "99+" : props.badge}
-                  </span>
-                ) : null}
               </span>
               <span className="text-ui-2xs">{t(tab.label)}</span>
             </button>
@@ -133,24 +112,10 @@ export default function App() {
   const route = useRoute();
   const connection = useConnection();
   const session = getSession();
-  const { state: agentState } = useAgentTasks();
-
-  // Agent feed cadence follows the visible tab: 8s on Agent pages (live
-  // phases), 30s elsewhere where only the badge consumes the feed.
-  useEffect(() => {
-    setAgentPollMode(tabOf(route) === "agent" ? "active" : "idle");
-  }, [route]);
-
   // Presence handshake: the desktop marks this device online while beats
   // arrive, and the settings page renders the same state locally.
   useEffect(() => {
     if (session) startHeartbeat();
-  }, [session]);
-
-  // The agent feed is mounted before pairing but skips requests without a
-  // session; fetch immediately once the pair handshake succeeds.
-  useEffect(() => {
-    if (session) void refreshAgentTasks();
   }, [session]);
 
   // Pairing is the only entry. Never rewrite the URL while there is no
@@ -195,15 +160,6 @@ export default function App() {
     );
   }
 
-  // awaiting_approval wins over queued for the Agent tab badge.
-  const awaiting = agentState
-    ? agentState.awaitingApprovalCount ??
-      agentState.tasks.filter((task) => task.status === "awaiting_approval").length
-    : 0;
-  const queued = agentState
-    ? agentState.queuedCount ?? agentState.tasks.filter((task) => task.status === "queued").length
-    : 0;
-  const badge = awaiting > 0 ? awaiting : queued;
   // Terminal sessions take the whole screen: the key bar replaces the tab bar.
   const fullBleed = route.name === "terminal-session";
 
@@ -225,9 +181,6 @@ export default function App() {
         {route.name === "bug" ? (
           <BugDetailPage id={route.id} workspaceId={route.workspaceId} />
         ) : null}
-        {route.name === "agent" ? <AgentPage /> : null}
-        {route.name === "agent-history" ? <AgentHistoryPage /> : null}
-        {route.name === "agent-task" ? <AgentTaskPage id={route.id} /> : null}
         {route.name === "coworkers" ? <CoworkersPage /> : null}
         {route.name === "files" ? (
           <FilesPage workspaceId={route.workspaceId} path={route.path} />
@@ -249,7 +202,7 @@ export default function App() {
         {route.name === "settings" ? <SettingsPage /> : null}
       </main>
       {route.name !== "pair" && !fullBleed ? (
-        <TabBar active={tabOf(route)} badge={badge} />
+        <TabBar active={tabOf(route)} />
       ) : null}
     </div>
   );

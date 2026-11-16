@@ -4,15 +4,8 @@ import { AlertTriangle, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-re
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
-import {
-  agentActiveBugIds,
-  agentApi,
-  agentBugKey,
-  type RecoveryReport,
-} from "./lib/agent";
-import { clearDevSimForTask, DEV_SIM } from "./lib/devSim";
 import { t } from "./lib/i18n";
-import { localApi, type LocalProject, type WorkItem } from "./lib/local";
+import type { LocalProject } from "./lib/local";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -24,25 +17,18 @@ import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
-import {
-  AgentComposeSheet,
-  type AgentComposePayload,
-} from "./components/AgentComposeSheet";
 import { CompanionDialog } from "./components/CompanionDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
-import { FolderPicker } from "./components/FolderPicker";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
 import { LocalProjectDialog } from "./components/LocalProjectDialog";
 import { LoginGate } from "./components/LoginGate";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
 import { ProjectSidebar } from "./components/ProjectSidebar";
-import { RecoveryBanner } from "./components/RecoveryBanner";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
-import { useAgentQueue } from "./hooks/useAgentQueue";
 import { useLocalProjects } from "./hooks/useLocalProjects";
 import { usePoll } from "./hooks/usePoll";
 import { useDetailPane } from "./hooks/useDetailPane";
@@ -74,39 +60,6 @@ import { Workbench } from "./workbench/Workbench";
 import { Sash } from "./workbench/components/Sash";
 import { clearDirtyPanels, hasDirtyPanels } from "./workbench/panels/dirty";
 import type { PageHostServices } from "./workbench/components/pageContext";
-
-/** Minimal bug shape needed to enqueue an Agent task. */
-type BugAgentTarget = {
-  kind: "bug";
-  workspaceId: string;
-  id: string;
-  title: string;
-  severityLabel: string;
-  priorityLabel: string;
-  workspaceName?: string;
-};
-
-/** A local work item handed to an Agent; never has a bug or TAPD workspace. */
-type LocalAgentTarget = {
-  kind: "local";
-  projectId: string;
-  itemId: string;
-  title: string;
-};
-
-type AgentTarget = BugAgentTarget | LocalAgentTarget;
-
-const bugTarget = (
-  bug: BugSummary & { workspaceName?: string },
-): BugAgentTarget => ({
-  kind: "bug",
-  workspaceId: bug.workspaceId,
-  id: bug.id,
-  title: bug.title,
-  severityLabel: bug.severityLabel,
-  priorityLabel: bug.priorityLabel,
-  workspaceName: bug.workspaceName,
-});
 
 /** The singleton bug detail panel, if the layout has one. */
 function findBugPanel(layout: WorkbenchLayoutApi): PanelRef | null {
@@ -159,18 +112,6 @@ export default function App() {
   );
   const [railAnim, setRailAnim] = useState<{ id: string; token: number } | null>(null);
   const railAnimTimer = useRef<number | null>(null);
-  /** Set when the user asks for an Agent fix without a configured folder. */
-  const [pendingAgent, setPendingAgent] = useState<{
-    target: BugAgentTarget;
-    payload: AgentComposePayload | null;
-  } | null>(null);
-  /** Bug whose compose sheet (prompt + resources) is open. */
-  const [composeAgent, setComposeAgent] = useState<AgentTarget | null>(null);
-  const [composeSubmitting, setComposeSubmitting] = useState(false);
-  /** Task the island capsule asked us to focus in the Agent tab. */
-  const [agentFocusTaskId, setAgentFocusTaskId] = useState<string | null>(null);
-  /** Incremented by the title-bar badge to open the approval queue. */
-  const [agentReviewFocus, setAgentReviewFocus] = useState(0);
   /** Mobile companion QR dialog; the rail entry exists only while enabled. */
   const [companionOpen, setCompanionOpen] = useState(false);
   /** Unsaved edits block logout / window close until the user decides. */
@@ -191,16 +132,6 @@ export default function App() {
     null,
   );
   const [localProjectDeleting, setLocalProjectDeleting] = useState(false);
-  /** Bumped after an enqueue so the items page refetches its Agent task links. */
-  const [localItemsToken, setLocalItemsToken] = useState(0);
-
-  /** Tasks the backend restored when this system entry began. */
-  const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
-  /** Report ids the user already dismissed; a re-login must not re-show them. */
-  const acknowledgedRecoveryIds = useRef<Set<number>>(new Set());
-  /** One request per system entry; failures clear it so the next entry retries. */
-  const recoveryRequestedRef = useRef(false);
-
   useEffect(() => {
     startUpdateStore();
     void refreshCompanionStatus();
@@ -233,10 +164,6 @@ export default function App() {
   );
   useTauriEvent("companion://paired", () => markCompanionOnline());
   useTauriEvent("companion://presence", () => markCompanionOnline());
-
-  // Pending commit reviews are surfaced in the title bar so they cannot be
-  // forgotten behind the Agent tab.
-  const { pendingReviews, agentInFlight } = useAgentQueue();
 
   /** Detail actions read by workspace events without a hook-order cycle. */
   const paneBridgeRef = useRef<WorkspacePaneBridge>({
@@ -303,49 +230,6 @@ export default function App() {
     info?.loggedIn ?? false,
     view === "local" ? "" : pageWorkspaceId,
   );
-
-  // The workflow may only be initialized after login + onboarding; the backend
-  // rejects an earlier call. One request per system entry, and a failure clears
-  // the guard so the next entry can retry.
-  const sessionReady = info?.loggedIn === true && info?.onboarded === true;
-  useEffect(() => {
-    if (!sessionReady) {
-      // Logout / onboarding reset re-arms the request for the next entry.
-      recoveryRequestedRef.current = false;
-      return;
-    }
-    if (recoveryRequestedRef.current) return;
-    recoveryRequestedRef.current = true;
-
-    void agentApi
-      .enterSystem()
-      .then(({ report }) => {
-        if (!report) return;
-        if (acknowledgedRecoveryIds.current.has(report.id)) return;
-        setRecoveryReport((current) => (current?.id === report.id ? current : report));
-      })
-      .catch((error) => {
-        // Older backends lack this command; the main UI must stay usable.
-        recoveryRequestedRef.current = false;
-        showToast("error", String(error));
-      });
-  }, [sessionReady, showToast]);
-
-  /** Remember the dismissal so the same report never reappears after re-login. */
-  const dismissRecoveryReport = useCallback(() => {
-    setRecoveryReport((report) => {
-      if (report) acknowledgedRecoveryIds.current.add(report.id);
-      return null;
-    });
-  }, []);
-
-  // 处理中 exists only while an agent works on this project; when the last one
-  // finishes (or the user switches project) fall back to 我负责的 so the lis
-  // can never sit on a scope whose segment is gone.
-  const processingCount = agentActiveBugIds(pageWorkspaceId, agentInFlight).length;
-  useEffect(() => {
-    if (scope === "processing" && processingCount === 0) setScope("mine");
-  }, [scope, processingCount]);
 
   /** Opens/focuses the singleton bug panel in the secondary dock. */
   const openBugPanel = (
@@ -661,37 +545,6 @@ export default function App() {
     [],
   );
 
-  // The island capsule can jump straight to a task.
-  useTauriEvent<{ taskId: string }>("agent://focus", (payload) => {
-    setView("agent");
-    setAgentFocusTaskId(payload.taskId);
-  });
-
-  /** Jump to a live agent task instead of enqueuing the same bug twice. */
-  const openAgentTask = useCallback((taskId: string) => {
-    setAgentFocusTaskId(taskId);
-    setView("agent");
-  }, [setView]);
-
-  /** The focus request is one-shot: the Agent page clears it after applying. */
-  const clearAgentFocus = useCallback(() => {
-    setAgentFocusTaskId(null);
-    setAgentReviewFocus(0);
-  }, []);
-
-  /** Row 取消 for a local task: queued is removed, running is interrupted. */
-  const cancelAgentTask = useCallback(
-    async (taskId: string) => {
-      if (DEV_SIM && clearDevSimForTask(taskId)) return;
-      try {
-        await agentApi.cancel(taskId);
-      } catch (error) {
-        showToast("error", String(error));
-      }
-    },
-    [showToast],
-  );
-
   /** Project rows are the entry point: each one opens its own page tab. */
   const selectWorkspace = (id: string) => {
     setWorkspaceId(id);
@@ -725,171 +578,6 @@ export default function App() {
     [detailPane.openDetail],
   );
 
-  const doEnqueueAgent = useCallback(
-    async (target: AgentTarget, payload: AgentComposePayload | null) => {
-      try {
-        // Local work items read the folder from the project itself, so the
-        // missing-folder prompt below does not apply to them.
-        if (target.kind === "local") {
-          // The item description already travels in quest.json; the compose
-          // prompt is only the user's additional instructions for this run.
-          const prompt = payload?.prompt.trim() ?? "";
-          const { task } = await localApi.enqueueItem(target.itemId, {
-            extraPrompt: prompt.length > 0 ? prompt : null,
-            attachments: payload?.attachments.length
-              ? payload.attachments
-              : undefined,
-            runtimeId: payload?.runtimeId ?? null,
-            model: payload?.model ?? null,
-            permissionMode: payload?.permissionMode ?? null,
-          });
-          setAgentFocusTaskId(task.id);
-          // The item now carries the new task id; refetch the item list.
-          setLocalItemsToken((token) => token + 1);
-          setView("agent");
-          return true;
-        }
-
-        const workspaceName =
-          target.workspaceName ||
-          context?.workspaces.find((item) => item.id === target.workspaceId)?.name ||
-          null;
-
-        const { task } = await agentApi.enqueueBug({
-          workspaceId: target.workspaceId,
-          bugId: target.id,
-          workspaceName,
-          title: target.title,
-          severity: target.severityLabel,
-          priority: target.priorityLabel,
-          extraPrompt: payload?.prompt.trim() ? payload.prompt : null,
-          attachments: payload?.attachments.length ? payload.attachments : undefined,
-          // 提交面板可以为本次任务单独选 Agent；为空时后端用默认运行时。
-          runtimeId: payload?.runtimeId ?? null,
-          model: payload?.model ?? null,
-          permissionMode: payload?.permissionMode ?? null,
-        });
-        // The view switches to the Agent tab and focuses this task; a toas
-        // on top of that is just noise.
-        setAgentFocusTaskId(task.id);
-        setView("agent");
-        return true;
-      } catch (error) {
-        showToast("error", String(error));
-        return false;
-      }
-    },
-    [context, setView, showToast],
-  );
-
-  /**
-   * Asks for the project folder first when none is configured, then enqueues.
-   * Returns "queued" when the task exists (or is focused instead of duplicated)
-   * and "needs_folder" when the picker took over.
-   */
-  const enqueueAgent = useCallback(
-    async (
-      target: AgentTarget,
-      payload: AgentComposePayload | null = null,
-    ): Promise<"queued" | "needs_folder" | "error"> => {
-      if (target.kind === "local") {
-        return (await doEnqueueAgent(target, payload)) ? "queued" : "error";
-      }
-
-      // The bug is already queued/running: focus that task instead of creating
-      // a duplicate. The list and drawer also disable the action, this covers
-      // stale snapshots and notification-triggered flows.
-      const existing = agentInFlight.get(agentBugKey(target.workspaceId, target.id));
-      if (existing) {
-        openAgentTask(existing.task.id);
-        return "queued";
-      }
-
-      try {
-        const { config } = await agentApi.configGet();
-        const repoPath = (config.projects?.[target.workspaceId]?.repoPath ?? "").trim();
-        if (!repoPath) {
-          setPendingAgent({ target, payload });
-          return "needs_folder";
-        }
-      } catch (error) {
-        showToast("error", String(error));
-        return "error";
-      }
-      return (await doEnqueueAgent(target, payload)) ? "queued" : "error";
-    },
-    [agentInFlight, doEnqueueAgent, openAgentTask, showToast],
-  );
-
-  const applyAgentFolder = useCallback(
-    async (
-      pending: { target: BugAgentTarget; payload: AgentComposePayload | null },
-      path: string,
-    ) => {
-      setPendingAgent(null);
-      try {
-        const { config } = await agentApi.configGet();
-        const projects = {
-          ...(config.projects ?? {}),
-          [pending.target.workspaceId]: {
-            ...(config.projects?.[pending.target.workspaceId] ?? {
-              repoPath: "",
-              rule: "",
-            }),
-            repoPath: path,
-          },
-        };
-        await agentApi.configSet({ projects });
-      } catch (error) {
-        showToast("error", String(error));
-        return;
-      }
-      if (await doEnqueueAgent(pending.target, pending.payload)) {
-        setComposeAgent(null);
-      }
-    },
-    [doEnqueueAgent, showToast],
-  );
-
-  const handleAgentFix = useCallback(
-    (bug: BugSummary & { workspaceName?: string }) =>
-      void enqueueAgent(bugTarget(bug)),
-    [enqueueAgent],
-  );
-
-  /** Open the compose sheet, or jump to the existing task for this bug. */
-  const openAgentCompose = useCallback(
-    (target: AgentTarget) => {
-      if (target.kind === "local") {
-        setComposeAgent(target);
-        return;
-      }
-      const existing = agentInFlight.get(agentBugKey(target.workspaceId, target.id));
-      if (existing) {
-        openAgentTask(existing.task.id);
-        return;
-      }
-      setComposeAgent(target);
-    },
-    [agentInFlight, openAgentTask],
-  );
-
-  /** Compose entry for a bug row / detail drawer (wraps it in a bug target). */
-  const composeBugAgent = useCallback(
-    (bug: BugSummary & { workspaceName?: string }) => openAgentCompose(bugTarget(bug)),
-    [openAgentCompose],
-  );
-
-  /** Compose entry for one local work item; the description stays in quest.json. */
-  const composeLocalItem = useCallback((project: LocalProject, item: WorkItem) => {
-    setComposeAgent({
-      kind: "local",
-      projectId: project.id,
-      itemId: item.id,
-      title: item.title,
-    });
-  }, []);
-
   const deleteLocalProject = async () => {
     if (!localProjectDelete || localProjectDeleting) return;
     setLocalProjectDeleting(true);
@@ -902,22 +590,6 @@ export default function App() {
       setLocalProjectDeleting(false);
     }
   };
-
-  const submitAgentCompose = useCallback(
-    async (payload: AgentComposePayload) => {
-      if (!composeAgent || composeSubmitting) return;
-      setComposeSubmitting(true);
-      try {
-        const result = await enqueueAgent(composeAgent, payload);
-        // A missing repo keeps the sheet open behind the folder picker, so the
-        // typed instructions survive a cancel.
-        if (result === "queued") setComposeAgent(null);
-      } finally {
-        setComposeSubmitting(false);
-      }
-    },
-    [composeAgent, composeSubmitting, enqueueAgent],
-  );
 
   const openPath = useCallback(
     (path: string) => {
@@ -1078,14 +750,10 @@ export default function App() {
     activeBug: detailPane.target,
     localProjects: local.projects,
     localProject,
-    localItemsToken,
     localLoading: local.loading,
     localError: local.error,
     projectsKnown,
     hiddenWorkspaceIds,
-    agentInFlight,
-    agentFocusTaskId,
-    agentReviewFocus,
     refreshToken,
     toast: showToast,
     onOpenBug: openBug,
@@ -1094,17 +762,11 @@ export default function App() {
     onOpenPath: openPath,
     onCopy: copy,
     onClaim: detailPane.claimFromList,
-    onAgentFix: handleAgentFix,
-    onAgentCompose: composeBugAgent,
-    onOpenAgentTask: openAgentTask,
-    onCancelTask: cancelAgentTask,
-    onClearAgentFocus: clearAgentFocus,
     onSetWorkspaceVisible: setWorkspaceVisible,
     onSelectLocalProject: selectLocalProject,
     onCreateLocalProject: () => setLocalProjectDialog({ project: null }),
     onEditLocalProject: (project) => setLocalProjectDialog({ project }),
     onDeleteLocalProject: (project) => setLocalProjectDelete(project),
-    onComposeLocalItem: composeLocalItem,
     onOpenMedia: openMedia,
     onOpenProjects: () => layoutRef.current.openPage("projects"),
     loadContext,
@@ -1142,13 +804,9 @@ export default function App() {
       me: context?.user.nick ?? info.me,
       members: detailPane.members,
       membersLoading: detailPane.membersLoading,
-      agentInFlight,
       onOpenWeb: openPath,
       onCopy: copy,
       onExport: detailPane.exportDetail,
-      onAgentFix: handleAgentFix,
-      onAgentCompose: composeBugAgent,
-      onOpenAgentTask: openAgentTask,
       onOpenPath: openPath,
       onOpenMedia: openMedia,
       onRefreshMembers: detailPane.refreshMembers,
@@ -1165,14 +823,6 @@ export default function App() {
       restart: terminal.restart,
     },
   };
-
-  const banner = recoveryReport ? (
-    <RecoveryBanner
-      report={recoveryReport}
-      onOpenTasks={() => activateView("agent")}
-      onDismiss={dismissRecoveryReport}
-    />
-  ) : null;
 
   /** Project menu entry: the read-only explorer opens in the secondary dock. */
   const openExplorer = (targetWorkspaceId: string) => {
@@ -1197,14 +847,7 @@ export default function App() {
         sidebar.resizing && "select-none",
       )}
     >
-      <TitleBar
-        pendingReviews={pendingReviews}
-        onOpenReviews={() => {
-          activateView("agent");
-          setAgentReviewFocus((token) => token + 1);
-        }}
-        onOpenAccount={() => activateView("account")}
-      />
+      <TitleBar onOpenAccount={() => activateView("account")} />
 
       <div className="flex min-h-0 flex-1">
         <ActivityBar
@@ -1263,7 +906,6 @@ export default function App() {
             page={page}
             primaryLeading={primaryLeading}
             primaryActions={primaryActions}
-            banner={banner}
           />
 
           {!sidebar.hidden && !projectListHidden ? (
@@ -1286,39 +928,6 @@ export default function App() {
           ) : null}
         </div>
       </div>
-
-      <AgentComposeSheet
-        key={
-          composeAgent
-            ? composeAgent.kind === "local"
-              ? `local:${composeAgent.projectId}:${composeAgent.itemId}`
-              : `${composeAgent.workspaceId}:${composeAgent.id}`
-            : "agent-compose"
-        }
-        open={composeAgent !== null}
-        title={composeAgent?.title ?? ""}
-        plainTitle={composeAgent?.kind === "local"}
-        heading={
-          composeAgent?.kind === "local" ? t("local.items.toAgent") : undefined
-        }
-        submitting={composeSubmitting}
-        onClose={() => setComposeAgent(null)}
-        onSubmit={(payload) => void submitAgentCompose(payload)}
-        toast={showToast}
-      />
-
-      {pendingAgent ? (
-        <FolderPicker
-          open
-          title={t("app.agent.noFolder")}
-          description={t("app.agent.noFolderHint", {
-            name: pendingAgent.target.workspaceName || pendingAgent.target.workspaceId,
-          })}
-          confirmLabel={t("app.agent.useAndContinue")}
-          onCancel={() => setPendingAgent(null)}
-          onSelect={(path) => void applyAgentFolder(pendingAgent, path)}
-        />
-      ) : null}
 
       {!info.onboarded ? (
         <Onboarding info={info} onDone={() => void refreshBase()} />

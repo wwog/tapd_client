@@ -48,7 +48,6 @@ const RUST_ROOTS = [
   path.join(root, "apps/desktop/src-tauri/src"),
   path.join(root, "crates/tapd-core/src"),
   path.join(root, "crates/tapd-mcp/src"),
-  path.join(root, "crates/tapd-workflow/src"),
 ];
 const RUST_CATALOG = path.join(root, "crates/tapd-i18n/src/catalog");
 

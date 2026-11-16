@@ -1,13 +1,8 @@
-import { Bot, ChevronDown, Download, Loader2, UserPlus } from "lucide-react";
+import { Download, UserPlus } from "lucide-react";
 
-import {
-  agentInFlightLabel,
-  type AgentInFlight,
-} from "../lib/agent";
 import type { BugDetail, ExportResult } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { t } from "../lib/i18n";
-import { useCurrentAgent } from "../lib/useCurrentAgent";
 import { Button } from "./ui";
 
 type Props = {
@@ -16,38 +11,26 @@ type Props = {
   /** The single write action currently in flight (claim/comment/field/status). */
   busy: string | null;
   exporting: boolean;
-  loading: boolean;
   lastExport: ExportResult | null;
-  agentInfo: AgentInFlight | null;
   onOpenPath: (path: string) => void;
   onCopy: (text: string) => void;
   onClaim: () => void;
-  onAgentFix: (detail: BugDetail) => void;
-  onAgentCompose: (detail: BugDetail) => void;
-  onOpenAgentTask?: (taskId: string) => void;
   onExport: (detail: BugDetail) => void;
 };
 
-/** Sticky action footer: last export, claim, Agent and bug.json export. */
+/** Sticky action footer: last export, claim and bug.json export. */
 export function BugDrawerFooter(props: Props) {
   const {
     detail,
     mine,
     busy,
     exporting,
-    loading,
     lastExport,
-    agentInfo,
     onOpenPath,
     onCopy,
     onClaim,
-    onAgentFix,
-    onAgentCompose,
-    onOpenAgentTask,
     onExport,
   } = props;
-  /** Runtime the 修复 button will launch, from 设置 →「默认 Agent」. */
-  const currentAgent = useCurrentAgent();
 
   return (
     <div className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
@@ -105,61 +88,6 @@ export function BugDrawerFooter(props: Props) {
           >
             {t("bugs.claim")}
           </Button>
-        ) : null}
-        {mine ? (
-          agentInfo ? (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={
-                agentInfo.task.status === "preparing" ||
-                agentInfo.task.status === "running" ||
-                agentInfo.task.status === "merging" ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Bot size={13} />
-                )
-              }
-              title={t("bugs.agentQueued")}
-              onClick={() => onOpenAgentTask?.(agentInfo.task.id)}
-            >
-              {t("bugs.viewTaskLabel", { label: agentInFlightLabel(agentInfo) })}
-            </Button>
-          ) : (
-            <div className="inline-flex">
-              <Button
-                size="sm"
-                variant="primary"
-                className="rounded-r-none"
-                icon={<Bot size={13} />}
-                title={
-                  currentAgent
-                    ? t("bugs.currentAgent", {
-                        name: currentAgent.name,
-                        binary: currentAgent.binary,
-                      })
-                    : t("bugs.loadingAgent")
-                }
-                disabled={exporting || loading}
-                onClick={() => onAgentFix(detail)}
-              >
-                {t("bugs.fixWith", {
-                  agent: currentAgent?.name ?? "Agent",
-                })}
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                className="rounded-l-none border-l border-primary-foreground/20 px-2"
-                title={t("bugs.startWithNote")}
-                aria-label={t("bugs.startWithNote")}
-                disabled={exporting || loading}
-                onClick={() => onAgentCompose(detail)}
-              >
-                <ChevronDown size={13} />
-              </Button>
-            </div>
-          )
         ) : null}
         <Button
           size="sm"

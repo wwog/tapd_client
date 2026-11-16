@@ -8,7 +8,7 @@
  */
 import { useSyncExternalStore } from "react";
 
-import { t, type MessageKey } from "./i18n";
+import { t } from "./i18n";
 import { navigate } from "./router";
 import { clearSession, getMediaToken, getSession } from "./session";
 
@@ -333,277 +333,22 @@ export type CompanionNotification = {
 };
 
 /* -------------------------------------------------------------------------
-   Agent workflow types, copied from `apps/desktop/src/lib/agent.ts` (the
-   serde contract lives there). Fields the companion never renders are made
-   optional defensively, so a new desktop field can never break this app.
+   Agent settings, copied from the desktop `agent_settings` module. The phone
+   may only read/write the worktree switch and the execution units; the prompt
+   template and project rules stay on the desktop.
    ------------------------------------------------------------------------- */
-
-export type AgentTaskStatus =
-  | "queued"
-  | "preparing"
-  | "running"
-  | "awaiting_approval"
-  | "awaiting_merge"
-  | "merging"
-  | "succeeded"
-  | "failed"
-  | "canceled";
-
-export type AgentApproval = {
-  summary: string;
-  files: string[];
-  risk?: string;
-  requestedAt: string;
-  approvedAt?: string;
-  /** Stash reference recorded when the user stops instead of approving. */
-  stash?: string;
-};
-
-/** Per-file change status reported by `agent_task_changes`. */
-export type AgentChangeKind = "added" | "modified" | "deleted";
-
-/** One file in the change list; paths are repo-relative. */
-export type AgentChangedFile = {
-  path: string;
-  status: AgentChangeKind;
-  additions: number;
-  deletions: number;
-  binary: boolean;
-};
-
-/** `agent_task_changes` response: capped at 200 files, `fileCount` is the truth. */
-export type AgentChangeSummary = {
-  files: AgentChangedFile[];
-  fileCount: number;
-  additions: number;
-  deletions: number;
-  dirty: boolean;
-  committed: boolean;
-  commit?: string | null;
-};
-
-/** `agent_task_diff` response for one file, or the whole task when omitted. */
-export type AgentDiffView = {
-  text: string;
-  truncated: boolean;
-  empty: boolean;
-};
-
-/** Compact stats stored on the task itself (no per-file detail). */
-export type AgentTaskChanges = {
-  files: string[];
-  dirty: boolean;
-  committed: boolean;
-  additions: number;
-  deletions: number;
-  commit?: string | null;
-};
-
-export type AgentMerge = {
-  error?: string | null;
-  instructions?: string | null;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-  /** Commit created by the merge, shown in the merge card and history. */
-  commit?: string | null;
-};
-
-export type AgentRuntimePhase =
-  | "idle"
-  | "working"
-  | "waiting_permission"
-  | "waiting_question"
-  | "error";
-
-export type AgentRuntimeStatus = {
-  phase: AgentRuntimePhase;
-  /** 后端生成的中文摘要，例如「等待权限确认」。 */
-  label: string;
-  /** 当前工具名，例如 Bash / Edit。 */
-  tool?: string;
-  detail?: string;
-  message?: string;
-  model?: string;
-  sessionId?: string;
-  subagents?: number;
-  updatedAt: string;
-};
-
-export type AgentTask = {
-  id: string;
-  workspaceId: string;
-  workspaceName: string;
-  bugId: string;
-  title: string;
-  severity?: string;
-  priority?: string;
-  jsonPath?: string;
-  repoPath?: string;
-  worktreePath?: string;
-  worktreeBranch?: string;
-  status: AgentTaskStatus;
-  createdAt: string;
-  startedAt?: string;
-  finishedAt?: string;
-  exitCode?: number;
-  error?: string;
-  prompt?: string;
-  source?: string;
-  /** Where the task came from; a local work item has no TAPD bug behind it. */
-  sourceKind?: "tapd_bug" | "local_work_item";
-  runtimeId?: string;
-  agentSessionId?: string | null;
-  approval?: AgentApproval | null;
-  /** Diff stats of this task, refreshed by the desktop as the agent works. */
-  changes?: AgentTaskChanges | null;
-  merge?: AgentMerge | null;
-  commitOnly?: boolean;
-  extraPrompt?: string;
-  /** Project rule copied onto the task when it was queued. */
-  projectRule?: string;
-  attachments?: string[];
-};
-
-export type AgentTasksState = {
-  tasks: AgentTask[];
-  activeTaskId?: string | null;
-  queuedCount?: number;
-  awaitingApprovalCount?: number;
-  awaitingMergeCount?: number;
-  queuePaused?: boolean;
-  storageError?: string | null;
-  /** 运行中 Agent 的状态，key 是 task id。 */
-  runtimeStatus?: Record<string, AgentRuntimeStatus>;
-};
-
-/** Paginated terminal-task history (`agent_tasks_history`). */
-export type HistoryPage = {
-  tasks: AgentTask[];
-  total: number;
-  hasMore: boolean;
-};
-
-export type AgentHistoryQuery = {
-  workspaceId?: string;
-  status?: AgentTaskStatus;
-  keyword?: string;
-  taskId?: string;
-  offset?: number;
-  limit?: number;
-};
 
 export type ProjectAgentConfig = {
   repoPath: string;
   rule: string;
 };
 
-export type AgentConfig = {
-  /** Selected runtime id from the catalog. */
-  runtimeId: string;
-  binaryPath?: string;
-  repoMappings?: Record<string, string>;
-  projects?: Record<string, ProjectAgentConfig>;
-  promptTemplate?: string;
-  coworkerIds?: string[];
-  readyQuietMs?: number;
-  readyTimeoutMs?: number;
-  idleCompleteMs?: number;
-  /** 每个任务在独立 git worktree 中运行。 */
+export type AgentSettings = {
+  /** TAPD workspace id -> configured local repository folder. */
+  projects: Record<string, ProjectAgentConfig>;
   worktreeEnabled: boolean;
-  /** 开启 worktree 后的并行任务数；关闭时固定为 1。 */
   executionUnits: number;
-  /** 客户端重启后，之前排队（Queued）的任务自动继续。 */
-  restoreQueuedTasks: boolean;
 };
-
-export type AgentRuntimeCapabilities = {
-  interactiveTerminal?: boolean;
-  permissionPrompt?: boolean;
-  externalDecision?: boolean;
-  commitReview?: boolean;
-};
-
-export type AgentRuntimeDescriptor = {
-  id: string;
-  name: string;
-  vendor?: string;
-  description?: string;
-  binary?: string;
-  aliases?: string[];
-  args?: string[];
-  promptInjection?: string;
-  promptFlag?: string | null;
-  argvSeparator?: string | null;
-  sessionHook?: boolean;
-  available: boolean;
-  capabilities?: AgentRuntimeCapabilities;
-  limitations?: string[];
-  fallback?: string;
-};
-
-/** Result of starting a merge: the agent took over, or the user must merge. */
-export type AgentMergeStart = {
-  mode: "agent" | "manual";
-  task: AgentTask;
-  /** Manual steps; also written to `task.merge.instructions`. */
-  instructions?: string | null;
-};
-
-export type AgentEnqueueRequest = {
-  workspaceId: string;
-  bugId: string;
-  workspaceName?: string | null;
-  title?: string | null;
-  severity?: string | null;
-  priority?: string | null;
-  /** Markdown instructions typed in the compose sheet. */
-  extraPrompt?: string | null;
-  runtimeId?: string | null;
-  /** Marks the task as raised from the phone. */
-  source?: string;
-};
-
-/** Status keys; callers resolve them with `t()` at render time. */
-export const AGENT_STATUS_LABELS: Record<AgentTaskStatus, MessageKey> = {
-  queued: "mobile.status.queued",
-  preparing: "mobile.status.preparing",
-  running: "mobile.status.running",
-  awaiting_approval: "mobile.status.awaitingApproval",
-  awaiting_merge: "mobile.status.awaitingMerge",
-  merging: "mobile.status.merging",
-  succeeded: "mobile.status.succeeded",
-  failed: "mobile.status.failed",
-  canceled: "mobile.status.canceled",
-};
-
-export const AGENT_STATUS_TONES: Record<AgentTaskStatus, "neutral" | "blue" | "green" | "amber" | "red" | "cyan"> = {
-  queued: "neutral",
-  preparing: "blue",
-  running: "amber",
-  awaiting_approval: "amber",
-  awaiting_merge: "cyan",
-  merging: "blue",
-  succeeded: "green",
-  failed: "red",
-  canceled: "neutral",
-};
-
-/** Statuses that still own the bug inside the agent pipeline. */
-const IN_FLIGHT_STATUSES: AgentTaskStatus[] = [
-  "queued",
-  "preparing",
-  "running",
-  "awaiting_approval",
-  "awaiting_merge",
-  "merging",
-];
-
-export const isAgentInFlight = (task: AgentTask): boolean =>
-  IN_FLIGHT_STATUSES.includes(task.status);
-
-/** Bug links and bug ids only apply to tasks raised from a TAPD bug. */
-export const isTapdTask = (task: AgentTask): boolean =>
-  (task.sourceKind ?? "tapd_bug") === "tapd_bug";
 
 /* -------------------------------------------------------------------------
    Notification settings, copied from `apps/desktop/src/lib/notification.ts`.
@@ -925,19 +670,6 @@ export const api = {
   deleteLocalItem: (id: string) =>
     feature<{ deleted: boolean }>("local_item_delete", { id }),
 
-  /**
-   * Hands an item to the Agent. The desktop also flips the item to
-   * `in_progress`, so the returned item is the fresh state to render.
-   */
-  enqueueLocalItem: (req: {
-    id: string;
-    extraPrompt?: string | null;
-    runtimeId?: string | null;
-    model?: string | null;
-    permissionMode?: string | null;
-    attachments?: string[] | null;
-  }) => feature<{ task: AgentTask; item: WorkItem }>("local_item_enqueue", { ...req }),
-
   /** One directory level under $HOME (or a configured local project). */
   browseDirs: (path?: string | null) =>
     feature<DirListing>("local_browse_dirs", { path: path ?? null }),
@@ -982,64 +714,20 @@ export const api = {
 
   feature,
 
-  /* -- Agent tasks ------------------------------------------------------- */
-
-  agentTasks: () => feature<AgentTasksState>("agent_tasks_list"),
-
-  agentHistory: (query: AgentHistoryQuery = {}) =>
-    feature<HistoryPage>("agent_tasks_history", { ...query }),
-
-  agentApprove: (taskId: string) =>
-    feature<{ task?: AgentTask }>("agent_review_approve", { taskId }),
-
-  /** 停止审核：stash 改动、取消任务并暂停队列（恢复在桌面端进行）。 */
-  agentStop: (taskId: string) =>
-    feature<{ task?: AgentTask }>("agent_review_stop", { taskId }),
-
-  /** Per-file change stats for the task's worktree / repo. */
-  agentTaskChanges: (taskId: string) =>
-    feature<AgentChangeSummary>("agent_task_changes", { taskId }),
-
-  /** Unified diff for one changed file, or the whole task when omitted. */
-  agentTaskDiff: (taskId: string, file?: string): Promise<AgentDiffView> =>
-    feature<AgentDiffView>("agent_task_diff", { taskId, file: file ?? null }),
-
-  agentMergeStart: (taskId: string) =>
-    feature<AgentMergeStart>("agent_merge_start", { taskId }),
-
-  agentCancel: (taskId: string) =>
-    feature<{ task?: AgentTask }>("agent_task_cancel", { taskId }),
-
-  agentRetry: async (taskId: string): Promise<AgentTask | null> => {
-    const data = await feature<unknown>("agent_task_retry", { taskId });
-    if (data && typeof data === "object" && "task" in data) {
-      return ((data as { task?: AgentTask | null }).task ?? null);
-    }
-    return (data as AgentTask) ?? null;
-  },
-
-  /** Enqueue a fix task for one bug, raised from the phone. */
-  agentEnqueueBug: (req: AgentEnqueueRequest) =>
-    feature<{ task?: AgentTask }>("agent_enqueue_bug", { ...req }),
-
   /* -- Agent / notification / coworker settings --------------------------- */
 
-  agentConfig: async (): Promise<AgentConfig> => {
-    const data = await feature<unknown>("agent_config_get", {});
-    const inner = (data as { config?: AgentConfig } | null)?.config;
-    return inner ?? (data as AgentConfig);
+  agentSettings: async (): Promise<AgentSettings> => {
+    const data = await feature<unknown>("settings_agent_get", {});
+    const inner = (data as { config?: AgentSettings } | null)?.config;
+    return inner ?? (data as AgentSettings);
   },
 
-  agentConfigSet: async (patch: Partial<AgentConfig>): Promise<AgentConfig> => {
-    const data = await feature<unknown>("agent_config_set", { ...patch });
-    const inner = (data as { config?: AgentConfig } | null)?.config;
-    return inner ?? (data as AgentConfig);
-  },
-
-  agentRuntimes: async (): Promise<AgentRuntimeDescriptor[]> => {
-    const data = await feature<unknown>("agent_runtimes", {});
-    if (Array.isArray(data)) return data as AgentRuntimeDescriptor[];
-    return (data as { runtimes?: AgentRuntimeDescriptor[] } | null)?.runtimes ?? [];
+  agentSettingsSet: async (
+    patch: Partial<AgentSettings>,
+  ): Promise<AgentSettings> => {
+    const data = await feature<unknown>("settings_agent_set", { ...patch });
+    const inner = (data as { config?: AgentSettings } | null)?.config;
+    return inner ?? (data as AgentSettings);
   },
 
   notificationSettings: () =>

@@ -20,10 +20,6 @@ export function BugPanel({ active }: PanelProps) {
         onOpenWeb={bug.onOpenWeb}
         onCopy={bug.onCopy}
         onExport={bug.onExport}
-        onAgentFix={bug.onAgentFix}
-        onAgentCompose={bug.onAgentCompose}
-        agentInFlight={bug.agentInFlight}
-        onOpenAgentTask={bug.onOpenAgentTask}
         onOpenPath={bug.onOpenPath}
         onOpenMedia={bug.onOpenMedia}
         me={bug.me}

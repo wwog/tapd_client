@@ -5,13 +5,11 @@
  */
 import type { ReactNode } from "react";
 import {
-  Bot,
   Bug,
   FileCode2,
   FolderGit2,
   FolderTree,
   ListChecks,
-  MessagesSquare,
   Plug,
   Settings as SettingsIcon,
   SquareTerminal,
@@ -38,8 +36,6 @@ const PAGE_TITLES: Record<PageView, MessageKey> = {
   bugs: "common.bugs",
   local: "app.nav.local",
   projects: "common.projects",
-  chat: "app.nav.chat",
-  agent: "app.nav.agent",
   coworker: "app.nav.coworker",
   mcp: "app.nav.mcp",
   settings: "common.settings",
@@ -50,8 +46,6 @@ const PAGE_ICONS: Record<PageView, ReactNode> = {
   bugs: <Bug size={13} />,
   local: <ListChecks size={13} />,
   projects: <FolderGit2 size={13} />,
-  chat: <MessagesSquare size={13} />,
-  agent: <Bot size={13} />,
   coworker: <Users size={13} />,
   mcp: <Plug size={13} />,
   settings: <SettingsIcon size={13} />,

@@ -1,22 +1,19 @@
 import { useSyncExternalStore } from "react";
-import { ArrowUpCircle, ShieldAlert } from "lucide-react";
+import { ArrowUpCircle } from "lucide-react";
 
 import { getUpdateSnapshot, subscribeUpdate } from "../lib/update";
 import { t } from "../lib/i18n";
 
 type Props = {
-  /** Tasks waiting for a review or merge decision; opens the 待处理 queue. */
-  pendingReviews: number;
-  onOpenReviews: () => void;
   onOpenAccount: () => void;
 };
 
 /**
- * Top drag strip: window dragging plus the pending review badge and the
- * "new version" entry point. List refreshes report progress in the table
- * footer instead, so the title bar stays quiet.
+ * Top drag strip: window dragging plus the "new version" entry point. List
+ * refreshes report progress in the table footer instead, so the title bar stays
+ * quiet.
  */
-export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props) {
+export function TitleBar({ onOpenAccount }: Props) {
   /** Background update state (checked every two hours by the Rust side). */
   const updateState = useSyncExternalStore(
     subscribeUpdate,
@@ -30,23 +27,6 @@ export function TitleBar({ pendingReviews, onOpenReviews, onOpenAccount }: Props
       data-tauri-drag-region
     >
       <span className="ml-[62px] h-full flex-1" data-tauri-drag-region />
-
-      {/* Pending reviews and merges stay visible until the user decides them. */}
-      {pendingReviews > 0 ? (
-        <button
-          type="button"
-          onClick={onOpenReviews}
-          title={t("app.titleBar.pending", { n: pendingReviews })}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-amber-600 transition hover:bg-amber-50"
-        >
-          <span className="relative">
-            <ShieldAlert size={16} />
-            <span className="absolute -right-1.5 -top-1.5 min-w-[14px] rounded-full bg-amber-500 px-1 text-center text-ui-2xs font-normal leading-[14px] tabular-nums text-white">
-              {pendingReviews}
-            </span>
-          </span>
-        </button>
-      ) : null}
 
       {/* The update icon only exists while a newer release is known. */}
       {updateState?.available ? (

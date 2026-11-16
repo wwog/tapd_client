@@ -4189,7 +4189,6 @@ dependencies = [
  "tapd-core",
  "tapd-i18n",
  "tapd-local",
- "tapd-workflow",
  "tapd-workspace",
  "tauri",
  "tauri-build",
@@ -4237,15 +4236,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "tapd-workflow"
-version = "1.4.0"
-dependencies = [
- "serde",
- "serde_json",
- "tapd-i18n",
 ]
 
 [[package]]
