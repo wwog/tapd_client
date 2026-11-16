@@ -1106,6 +1106,7 @@ export default function App() {
     onDeleteLocalProject: (project) => setLocalProjectDelete(project),
     onComposeLocalItem: composeLocalItem,
     onOpenMedia: openMedia,
+    onOpenProjects: () => layoutRef.current.openPage("projects"),
     loadContext,
     refreshBase,
     onShowLogin: () => {

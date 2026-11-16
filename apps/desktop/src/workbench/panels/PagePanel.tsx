@@ -5,6 +5,7 @@ import type { PageView } from "../layout/types";
 import { AccountPage } from "../../components/AccountPage";
 import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
+import { ChatPage } from "../../components/ChatPage";
 import { CoworkerPage } from "../../components/CoworkerPage";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
 import { McpPage } from "../../components/McpPage";
@@ -141,6 +142,16 @@ export function PagePanel({ panel }: PanelProps) {
             />
           </div>
         </div>
+      );
+
+    case "chat":
+      return (
+        <ChatPage
+          defaultWorkspaceId={host.workspaceId}
+          workspaces={host.context?.workspaces ?? []}
+          toast={host.toast}
+          onOpenProjects={() => host.onOpenProjects()}
+        />
       );
 
     case "agent":

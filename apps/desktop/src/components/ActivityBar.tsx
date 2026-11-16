@@ -4,6 +4,7 @@ import {
   Bot,
   Bug,
   FolderGit2,
+  MessagesSquare,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -18,6 +19,7 @@ export type View =
   | "bugs"
   | "local"
   | "projects"
+  | "chat"
   | "agent"
   | "coworker"
   | "mcp"
@@ -27,6 +29,7 @@ export type View =
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
   projects: "rail-folder-bounce",
+  chat: "rail-chat-pop",
   agent: "rail-bot-shake",
   coworker: "rail-users-wave",
   mcp: "rail-plug-rise",
@@ -43,6 +46,7 @@ const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   // 事项 has no rail entry: local projects open their own tab from the project
   // column (and the projects page), like TAPD projects do.
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
+  { id: "chat", label: "app.nav.chat", icon: <MessagesSquare size={15} /> },
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },

@@ -111,6 +111,8 @@ pub static MESSAGES: &[Message] = &[
     ("agent.permission.writeAuto.desc", "自动批准写文件等操作，危险命令仍会询问。", "Approve file writes and similar actions automatically; dangerous commands still prompt."),
     ("agent.persist.failed", "任务状态保存失败，重启后可能丢失", "Failed to save the task state; it may be lost after a restart"),
     ("agent.prompt.allow.once", "允许一次", "Allow once"),
+    ("agent.prompt.allow.always", "总是允许", "Always allow"),
+    ("agent.prompt.allow.always.desc", "之后同类请求不再询问（会话内有效）", "Stop asking for the same request in this session"),
     ("agent.prompt.answer.terminal", "在 Agent 终端中回答", "Answer in the agent terminal"),
     ("agent.prompt.attachment.line", "- {}：{}", "- {}: {}"),
     ("agent.prompt.attachments.header", "\n\n用户附加资源（本地路径，请直接读取）：\n", "\n\nUser attachments (local paths, read them directly):\n"),

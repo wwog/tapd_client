@@ -11,6 +11,7 @@
 //! - [`snapshots`]: generic + typed snapshot read/write helpers.
 //! - [`bugs`]: indexed bug rows and the offline query fallback.
 //! - [`agent_tasks`]: durable agent queue/history.
+//! - [`chat`]: durable free-chat sessions and message history (with FTS).
 //! - [`dispatch`]: the read-only `cache_*` feature commands.
 //!
 //! All access goes through one `Mutex<Option<Connection>>`; a failed open
@@ -18,6 +19,7 @@
 
 mod agent_tasks;
 mod bugs;
+mod chat;
 mod dispatch;
 mod migrate;
 mod snapshots;
@@ -29,6 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 pub use dispatch::command;
+pub(crate) use chat::{ChatSearchQuery, ChatSessionQuery};
 
 /// SQLite-backed cache. A failed open leaves the cache disabled instead of
 /// aborting application startup; every method then behaves like a miss.
@@ -296,7 +299,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         for table in [
             "agent_tasks",
             "notification_settings",
@@ -305,6 +308,9 @@ mod tests {
             "notification_cursors",
             "mcp_audit",
             "agent_queue_state",
+            "chat_sessions",
+            "chat_messages",
+            "chat_messages_fts",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -379,7 +385,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         let payload: String = conn
             .query_row(
                 "SELECT payload FROM agent_tasks WHERE id = 'task-1'",
@@ -401,5 +407,53 @@ mod tests {
             )
             .expect("baseline table");
         assert_eq!(baseline_table, 0, "baseline table is no longer needed");
+    }
+
+    #[test]
+    fn v6_cache_gains_chat_tables_without_rebuild() {
+        let path = std::env::temp_dir().join(format!(
+            "tapd-cache-v6-{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        {
+            let cache = Cache::open(path.clone());
+            let guard = cache.conn.lock().expect("cache lock");
+            let conn = guard.as_ref().expect("cache connection");
+            conn.execute(
+                "INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1)",
+                [],
+            )
+            .expect("snapshot row");
+            // 模拟 v6：没有对话表，版本号回退。
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS chat_messages_fts;
+                 DROP TABLE IF EXISTS chat_messages;
+                 DROP TABLE IF EXISTS chat_sessions;
+                 PRAGMA user_version = 6;",
+            )
+            .expect("downgrade to v6");
+        }
+
+        let cache = Cache::open(path);
+        let guard = cache.conn.lock().expect("cache lock");
+        let conn = guard.as_ref().expect("cache connection");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 7, "v6 upgrades to v7");
+        let snapshots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
+            .expect("snapshots");
+        assert_eq!(snapshots, 1, "v6 data must survive the upgrade");
+        for table in ["chat_sessions", "chat_messages", "chat_messages_fts"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("table lookup");
+            assert_eq!(exists, 1, "{table} must be added");
+        }
     }
 }

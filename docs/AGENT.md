@@ -8,7 +8,7 @@
 
 | 运行时 | 启动命令 | 提示词投递 | MCP 自动注入 |
 | --- | --- | --- | --- |
-| OpenCode | `opencode` | 启动后写入终端 | 是 |
+| OpenCode | `opencode` | 随 flag `--prompt` 传入（旧版启动后写入终端） | 是 |
 | Claude Code | `claude` | 随 argv 传入 | 是 |
 | Codex | `codex` | 随 argv 传入 | 是 |
 | Cursor Agent | `cursor-agent` | 随 argv 传入 | 是 |

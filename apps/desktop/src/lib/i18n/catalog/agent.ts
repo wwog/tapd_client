@@ -141,7 +141,17 @@ export const agent = {
     "留空使用运行时的默认模型",
     "Leave empty for the runtime default",
   ],
+  "agent.config.modelHint": [
+    "默认模型；留空使用运行时的默认模型",
+    "Default model; leave empty for the runtime default",
+  ],
   "agent.config.permission": ["访问权限", "Access level"],
+  "agent.config.permissionPlaceholder": ["默认权限", "Default access level"],
+  "agent.models.loading": ["正在读取模型列表…", "Loading models…"],
+  "agent.models.error": [
+    "无法读取模型列表，可直接输入模型名",
+    "Could not load models; enter a model name manually",
+  ],
   "agent.config.lifecycle": ["生命周期", "Lifecycle"],
   "agent.config.needsHuman": ["需人工", "Needs a human"],
   "agent.config.terminalStage": ["终态", "Terminal"],

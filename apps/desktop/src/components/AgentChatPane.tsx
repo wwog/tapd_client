@@ -47,6 +47,8 @@ type Props = {
   loading: boolean;
   /** PTY 仍活着：可以发送消息。 */
   live: boolean;
+  /** 自由对话：没有消息时提示「发消息开始」，而不是任务式的等待输出。 */
+  chatMode?: boolean;
   onSwitchToTerminal: () => void;
   toast: (kind: "ok" | "error", text: string) => void;
 };
@@ -88,6 +90,7 @@ export function AgentChatPane({
   chatError,
   loading,
   live,
+  chatMode,
   onSwitchToTerminal,
   toast,
 }: Props) {
@@ -205,6 +208,7 @@ export function AgentChatPane({
           <EmptyState
             loading={loading}
             live={live}
+            chatMode={chatMode}
             error={error}
             onSwitchToTerminal={onSwitchToTerminal}
           />
@@ -268,11 +272,13 @@ export function AgentChatPane({
 function EmptyState({
   loading,
   live,
+  chatMode,
   error,
   onSwitchToTerminal,
 }: {
   loading: boolean;
   live: boolean;
+  chatMode?: boolean;
   error: string | null;
   onSwitchToTerminal: () => void;
 }) {
@@ -284,16 +290,22 @@ function EmptyState({
       </div>
     );
   }
+  // 自由对话在首条消息前没有 transcript（OpenCode 也还没有会话 id），
+  // 这时是正常就绪状态，提示直接开始输入，而不是等一个不会来的输出。
+  const hint =
+    error ??
+    (live
+      ? chatMode
+        ? t("chat.readyToChat")
+        : t("chat.waitingOutput")
+      : t("chat.emptyConversation"));
   return (
     <div className="grid min-h-[180px] place-items-center px-4 text-center">
       <div className="max-w-sm">
         <div className="mx-auto grid h-10 w-10 place-items-center rounded-2xl bg-slate-100 text-slate-400">
           {error ? <AlertCircle size={18} /> : <Bot size={18} />}
         </div>
-        <p className="mt-2 text-ui-caption text-slate-600">
-          {error ??
-            (live ? t("chat.waitingOutput") : t("chat.emptyConversation"))}
-        </p>
+        <p className="mt-2 text-ui-caption text-slate-600">{hint}</p>
         {error ? (
           <p className="mt-1 text-ui-2xs text-slate-400">
             {t("chat.terminalAvailable")}

@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   // Bot,
   Check,
   CircleSlash,
+  Cpu,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   TriangleAlert,
   Workflow,
 } from "lucide-react";
@@ -16,6 +18,12 @@ import {
   type AgentRuntimeDescriptor,
   type AgentRuntimeOptions,
 } from "../lib/agent";
+import {
+  buildModelOptions,
+  pushRecentModel,
+  readRecentModels,
+  useRuntimeModels,
+} from "../lib/agentModels";
 import { useAgentScan } from "../lib/agentScan";
 import { formatDateTime } from "../lib/format";
 import type { SettingsSectionProps } from "../lib/feature";
@@ -23,6 +31,7 @@ import { t } from "../lib/i18n";
 import { AgentExecutionCard } from "./AgentExecutionCard";
 import { AgentPicker } from "./AgentPicker";
 import { AgentSettings } from "./AgentSettings";
+import { SelectPicker } from "./SelectPicker";
 import { Badge, Button, Spinner, cardClass } from "./ui";
 
 type Props = {
@@ -58,8 +67,6 @@ export function AgentConfigPane({ toast }: Props) {
   const selectedScan = selectedRuntime
     ? byRuntime.get(selectedRuntime.id)
     : undefined;
-  /** 模型输入是草稿，失焦 / 回车才落盘，避免每敲一个字符都写配置。 */
-  const [modelDraft, setModelDraft] = useState("");
 
   const optionsFor = (runtimeId: string | undefined): AgentRuntimeOptions => {
     const saved = runtimeId ? config?.runtimeOptions?.[runtimeId] : undefined;
@@ -69,12 +76,22 @@ export function AgentConfigPane({ toast }: Props) {
       permissionMode: saved?.permissionMode || fallback || "default",
     };
   };
+  const savedModel = optionsFor(selectedRuntime?.id).model;
 
-  useEffect(() => {
-    setModelDraft(optionsFor(selectedRuntime?.id).model);
-    // 切换运行时时同步草稿；配置变化（保存成功）时也以保存值为准。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRuntime?.id, config?.runtimeOptions]);
+  // 模型列表与对话页 / 任务启动面板共用同一个读取 hook 和选项拼装。
+  const { models: discoveredModels, loading: modelsLoading } = useRuntimeModels(
+    selectedRuntime?.id ?? "",
+  );
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        discoveredModels,
+        selectedRuntime?.models,
+        savedModel,
+        readRecentModels(selectedRuntime?.id ?? ""),
+      ),
+    [discoveredModels, savedModel, selectedRuntime?.id, selectedRuntime?.models],
+  );
 
   const patchConfig = (patch: Partial<AgentConfig>) => {
     setConfig((current) => (current ? { ...current, ...patch } : current));
@@ -133,14 +150,6 @@ export function AgentConfigPane({ toast }: Props) {
     };
     patchConfig({ runtimeOptions });
     await commit({ runtimeOptions });
-  };
-
-  const commitModel = () => {
-    if (!selectedRuntime) return;
-    const next = modelDraft.trim();
-    if (next === optionsFor(selectedRuntime.id).model) return;
-    setModelDraft(next);
-    void storeRuntimeOptions({ model: next });
   };
 
   return (
@@ -220,50 +229,53 @@ export function AgentConfigPane({ toast }: Props) {
               {t("agent.config.runtimeOptionsHint")}
             </p>
             <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="min-w-[240px] flex-1">
+              <div className="min-w-[240px] flex-1">
                 <span className="mb-1 block text-ui-xs text-slate-500">
                   {t("agent.config.model")}
                 </span>
-                <input
-                  value={modelDraft}
-                  list={`settings-agent-model-${selectedRuntime.id}`}
-                  onChange={(event) => setModelDraft(event.target.value)}
-                  onBlur={commitModel}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      event.currentTarget.blur();
-                    }
+                <SelectPicker
+                  compact
+                  searchable
+                  allowCustom
+                  value={savedModel}
+                  options={modelOptions}
+                  onChange={(next) => {
+                    // 配置默认值单独保存；这里只顺带记入「最近使用」。
+                    if (selectedRuntime) pushRecentModel(selectedRuntime.id, next);
+                    void storeRuntimeOptions({ model: next });
                   }}
-                  placeholder={t("agent.config.modelPlaceholder")}
-                  spellCheck={false}
-                  className="h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+                  leadingIcon={<Cpu size={13} />}
+                  placeholder={t("agent.config.model")}
+                  title={t("agent.config.modelHint")}
+                  menuHint={
+                    modelsLoading
+                      ? t("agent.models.loading")
+                      : discoveredModels?.error
+                        ? t("agent.models.error")
+                        : undefined
+                  }
                 />
-                <datalist id={`settings-agent-model-${selectedRuntime.id}`}>
-                  {selectedRuntime.models.map((item) => (
-                    <option key={item} value={item} />
-                  ))}
-                </datalist>
-              </label>
-              {selectedRuntime.permissions.length > 1 ? (
-                <label className="min-w-[190px]">
+              </div>
+              {selectedRuntime.permissions.length > 0 ? (
+                <div className="min-w-[190px]">
                   <span className="mb-1 block text-ui-xs text-slate-500">
                     {t("agent.config.permission")}
                   </span>
-                  <select
+                  <SelectPicker
+                    compact
                     value={optionsFor(selectedRuntime.id).permissionMode}
-                    onChange={(event) =>
-                      void storeRuntimeOptions({ permissionMode: event.target.value })
+                    options={selectedRuntime.permissions.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                      description: option.description,
+                    }))}
+                    onChange={(next) =>
+                      void storeRuntimeOptions({ permissionMode: next })
                     }
-                    className="h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
-                  >
-                    {selectedRuntime.permissions.map((option) => (
-                      <option key={option.id} value={option.id} title={option.description}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    leadingIcon={<ShieldCheck size={13} />}
+                    placeholder={t("agent.config.permissionPlaceholder")}
+                  />
+                </div>
               ) : null}
             </div>
             {selectedRuntime.permissions.length > 1 ? (

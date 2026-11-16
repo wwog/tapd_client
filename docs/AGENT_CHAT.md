@@ -823,3 +823,34 @@ pub transcript_path: Option<String>,   // JSONL 路径或 opencode.db#sessionId
   2000 条消息。
 - 历史任务没有独立的左右分栏 Chat，使用弹窗只读查看；发送、权限卡片只在运行中可用。
 - 多问题 / 多选 / 带 preview 的提问仍回退终端（与设计一致）；OMP 的权限按键未开放。
+
+---
+
+## 17. 自由对话页（与缺陷任务无关）
+
+「对话」页在 Agent 队列之外提供一条自由会话路径：选项目 + 选运行时后直接
+在项目仓库目录长驻一个 PTY，不导出 bug.json、不创建 worktree、不走审核/合并。
+
+- 后端：`agent/chat.rs` 维护 `ChatSession` / `ChatStore`，会话元数据落到
+  `cache.sqlite3` 的 `chat_sessions`（项目 / 运行时 / 模型 / 状态均为索引列）；
+  消息历史镜像到 `chat_messages` + `chat_messages_fts`（trigram，支持中文子串
+  搜索）。旧版 `data_dir/chat-sessions.json` 首次启动时逐条导入并改名为
+  `chat-sessions.json.imported`。命令为 `chat_sessions`（支持 project /
+  runtime / model / status / keyword 过滤与分页）、`chat_search`（消息内容
+  关键字搜索）、`chat_start` / `chat_stop` / `chat_resume` / `chat_delete`。
+- 复用：PTY 仍插入 `AgentCore.runtimes`（按会话 id），因此 `agent_input` /
+  `agent_resize` / `AgentTerminal` 直接可用；transcript 走 `agent_chat`，
+  `chat_payload` 在没有 workflow 任务时回退到会话元数据；`agent_send_message`
+  与权限回答同样按 id 回退。
+- 历史镜像：`chat_payload` 每次成功解析 transcript 后把消息 upsert 到
+  `chat_messages`；CLI 存储被清理或解析失败时，用本地保存的历史兜底展示。
+- Hook：`prepare_hook_for` 让任务与对话共用 token / loopback；对话的
+  `agent_end` 只更新运行状态，不进入 workflow。会话 id 落库后可用于「继续会话」。
+- 前端：`ChatPage` 左侧为会话列表，右侧为新建面板或会话详情；对话/终端切换、
+  Markdown、工具卡片、权限卡片与 Agent 页共用组件。`chat://state` 推送整表，
+  `agent://runtime` 更新当前运行状态。
+- 模型列表：`agent/models.rs` 按运行时探测——OpenCode `models`、Claude
+  `list_models`（stream-json control_request）、Codex app-server `model/list`、
+  OMP `models --json`；成功缓存 10 分钟，失败回退目录静态建议并缓存 60 秒。
+- 首版限制：同一仓库的多个会话没有隔离；不注入 TAPD MCP；只展示本应用创建的
+  会话，不扫描各 CLI 的本地历史；终端重挂载后不重放旧屏幕。

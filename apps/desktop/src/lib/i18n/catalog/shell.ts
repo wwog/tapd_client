@@ -25,6 +25,7 @@ export const shell = {
 
   // Navigation rail
   "app.nav.agent": ["Agent", "Agent"],
+  "app.nav.chat": ["对话", "Chat"],
   "app.nav.mcp": ["MCP", "MCP"],
   "app.nav.coworker": ["同事", "Coworkers"],
   "app.nav.companion": ["移动端伴侣", "Mobile companion"],

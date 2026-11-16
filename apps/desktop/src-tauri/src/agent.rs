@@ -24,8 +24,10 @@
 //!   the lightweight `agent://summary`. Terminal output is batched and sent via
 //!   `agent://output`.
 
+mod chat;
 mod git;
 mod hooks;
+mod models;
 mod persist;
 mod prompt;
 mod pty;
@@ -41,7 +43,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::RecvTimeoutError,
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
@@ -67,6 +69,10 @@ pub(crate) use pty::take_utf8_prefix;
 // Same signal path for both PTY families: a shell tree is killed exactly like
 // an agent TUI tree.
 pub(crate) use pty::kill_process_group;
+
+// 供 SQLite 持久化层（`cache::chat`）复用的会话 / 消息类型。
+pub(crate) use chat::ChatSession;
+pub(crate) use transcript::ChatMessage;
 
 pub const MAIN_LABEL: &str = "main";
 
@@ -185,16 +191,21 @@ export default function tapdSessionMonitor(pi) {
     }
   };
   // 重试耗尽 / 网络中断时 assistant 消息带 errorMessage；用户中断是 aborted。
+  // 只看最近一条 assistant 消息：更早的错误可能已被自动重试恢复，继续往前
+  // 扫描会把已经成功的回合误判成失败。
   const assistantError = (messages) => {
     if (!Array.isArray(messages)) return "";
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (!message || message.role !== "assistant") continue;
+      // retryRecovery.status=recovered 表示该次请求已重试成功，失败已被恢复。
+      if (message.retryRecovery?.status === "recovered") return "";
       if (message.errorMessage) return clip(message.errorMessage, 400);
       const reason = message.stopReason;
       if (reason && !["stop", "toolUse", "length", "aborted", "end_turn"].includes(reason)) {
         return clip(`Agent 结束：${reason}`, 200); // i18n-exempt: hook script body
       }
+      return "";
     }
     return "";
   };
@@ -524,6 +535,8 @@ pub enum PromptInjection {
     /// 作为位置参数随启动命令传入，TUI 启动即开始执行。
     Argv,
     /// 通过固定 flag 随启动命令传入。
+    /// 当前支持的运行时都用 Argv/Stdin，保留该模式供后续恢复的 Agent 使用。
+    #[allow(dead_code)]
     Flag,
     /// 启动后等待 TUI 就绪，再写入终端。
     Stdin,
@@ -759,11 +772,8 @@ fn tui_runtime_with(
     }
 }
 
-/// Single source of truth for the runtime list. Adding an agent means adding one
-/// descriptor here, not branching the queue or the UI.
-///
-/// The list mirrors orca's TUI agent table, minus its private `claude-teams`
-/// wrapper (that one launches Orca's own CLI, not a standalone agent).
+/// 支持的运行时清单：只保留 OpenCode、Claude Code、Codex、OMP。
+/// 新增或恢复其他 Agent 时，在这里追加一条描述即可，队列和 UI 不需要分支。
 pub fn runtime_catalog() -> Vec<AgentRuntimeDescriptor> {
     vec![
         tui_runtime_with(
@@ -2025,6 +2035,23 @@ struct ScanRequest {
     force: bool,
 }
 
+/// `agent_models`: 读取某个运行时当前可用的模型列表。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ModelsRequest {
+    runtime_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelsPayload {
+    runtime_id: String,
+    /// CLI 读取失败时回退到目录里的静态建议。
+    models: Vec<models::AgentModelOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct SaveResourceRequest {
@@ -2088,6 +2115,17 @@ struct ChatCache {
 
 /// transcript 缓存的任务数量上限；超出后整体清空，避免长期运行无限增长。
 const CHAT_CACHE_LIMIT: usize = 32;
+
+/// 模型列表缓存：探测要起一次 CLI 进程，没必要每次开表单都重新跑。
+const MODELS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+/// 失败结果只短暂缓存，避免每次打开表单都卡在同一个超时上。
+const MODELS_FAILURE_TTL: Duration = Duration::from_secs(60);
+
+struct CachedModels {
+    at: Instant,
+    models: Vec<models::AgentModelOption>,
+    error: Option<String>,
+}
 
 /// 空 Chat 响应：`error` 给用户可读原因，终端始终可用。
 fn chat_empty(
@@ -2627,6 +2665,10 @@ pub struct AgentCore {
     runtime_status: Mutex<HashMap<String, AgentRuntimeStatus>>,
     /// 按任务缓存的 transcript 解析结果，key 是 task id。
     transcript_cache: Mutex<HashMap<String, ChatCache>>,
+    /// 自由对话会话；与缺陷任务队列完全独立。
+    chats: Mutex<chat::ChatStore>,
+    /// 运行时模型列表缓存。
+    models_cache: Mutex<HashMap<String, CachedModels>>,
     /// Live change summary per task: refreshed from hook events, served to the
     /// change panel. See `crate::task_changes`.
     changes: crate::task_changes::ChangesTracker,
@@ -2733,6 +2775,8 @@ impl AgentCore {
             hook_events: Mutex::new(HashMap::new()),
             runtime_status: Mutex::new(HashMap::new()),
             transcript_cache: Mutex::new(HashMap::new()),
+            chats: Mutex::new(chat::ChatStore::default()),
+            models_cache: Mutex::new(HashMap::new()),
             changes: crate::task_changes::ChangesTracker::default(),
             shutting_down: AtomicBool::new(false),
             review_ops: Mutex::new(HashSet::new()),
@@ -2782,6 +2826,12 @@ impl AgentCore {
         // background daily scan started in `init`.
         *self.scan.lock().expect("agent scan lock") =
             crate::agent_scan::load(&self.state.paths.data_dir);
+
+        // 对话会话与登录无关，启动即恢复；上次残留的运行中状态归一为已停止。
+        self.load_chats();
+
+        // 旧版本写入的 OpenCode 插件可能不兼容 v2；启动时顺手修复。
+        hooks::repair_opencode_plugin();
 
         // Tasks are loaded from SQLite on system entry, not here: the login /
         // onboarding screens must not resurrect or start a queue.
@@ -2887,6 +2937,106 @@ impl AgentCore {
 
     pub(crate) fn config_snapshot(&self) -> AgentConfig {
         self.config.lock().expect("agent config lock").clone()
+    }
+
+    /// 某个运行时当前可用的模型：能机器读取的跑 CLI 探测，其余用运行时
+    /// 目录里的静态建议。成功结果缓存 10 分钟。
+    async fn runtime_models(&self, runtime_id: &str) -> Result<AgentModelsPayload, String> {
+        let Some(descriptor) = runtime_descriptor(runtime_id) else {
+            return Err(format!("未知的 Agent 运行时：{runtime_id}"));
+        };
+        let static_models: Vec<models::AgentModelOption> = descriptor
+            .models
+            .iter()
+            .map(|model| models::AgentModelOption {
+                id: (*model).to_string(),
+                label: models::model_label(model),
+                description: None,
+            })
+            .collect();
+        if !models::supported(runtime_id) {
+            return Ok(AgentModelsPayload {
+                runtime_id: runtime_id.to_string(),
+                models: static_models,
+                error: None,
+            });
+        }
+
+        if let Some((cached, error)) = self.cached_runtime_models(runtime_id) {
+            return Ok(AgentModelsPayload {
+                runtime_id: runtime_id.to_string(),
+                models: cached,
+                error,
+            });
+        }
+
+        let config = self.config_snapshot();
+        let binary = binary_for_task(&config, runtime_id, self.scan_snapshot().as_ref());
+        let binary = tokio::task::spawn_blocking(move || validate_binary(&binary))
+            .await
+            .map_err(|error| format!("检查 Agent 命令失败：{error}"))??;
+        let runtime_for_probe = runtime_id.to_string();
+        let read =
+            tokio::task::spawn_blocking(move || models::discover(&runtime_for_probe, &binary))
+                .await
+                .map_err(|error| format!("读取模型列表失败：{error}"))?;
+        match read {
+            Ok(listed) => {
+                self.store_models_cache(runtime_id, listed.clone(), None);
+                Ok(AgentModelsPayload {
+                    runtime_id: runtime_id.to_string(),
+                    models: listed,
+                    error: None,
+                })
+            }
+            Err(error) => {
+                self.store_models_cache(runtime_id, static_models.clone(), Some(error.clone()));
+                Ok(AgentModelsPayload {
+                    runtime_id: runtime_id.to_string(),
+                    models: static_models,
+                    error: Some(error),
+                })
+            }
+        }
+    }
+
+    fn store_models_cache(
+        &self,
+        runtime_id: &str,
+        models: Vec<models::AgentModelOption>,
+        error: Option<String>,
+    ) {
+        if let Ok(mut cache) = self.models_cache.lock() {
+            if cache.len() >= 16 {
+                cache.clear();
+            }
+            cache.insert(
+                runtime_id.to_string(),
+                CachedModels {
+                    at: Instant::now(),
+                    models,
+                    error,
+                },
+            );
+        }
+    }
+
+    fn cached_runtime_models(
+        &self,
+        runtime_id: &str,
+    ) -> Option<(Vec<models::AgentModelOption>, Option<String>)> {
+        let mut cache = self.models_cache.lock().ok()?;
+        let entry = cache.get(runtime_id)?;
+        let ttl = if entry.error.is_some() {
+            MODELS_FAILURE_TTL
+        } else {
+            MODELS_CACHE_TTL
+        };
+        if entry.at.elapsed() < ttl {
+            return Some((entry.models.clone(), entry.error.clone()));
+        }
+        cache.remove(runtime_id);
+        None
     }
 
     // -- workflow protocol ---------------------------------------------------
@@ -3195,10 +3345,21 @@ impl AgentCore {
         task: &AgentTask,
         kind: SessionHookKind,
     ) -> Option<hooks::HookLaunch> {
+        self.prepare_hook_for(&task.id, &task.runtime_id, kind)
+    }
+
+    /// 通用 hook 准备：任务与自由对话共用同一套 token / loopback 端点，
+    /// 区别只在调用方如何消费上报的事件。
+    pub(super) fn prepare_hook_for(
+        &self,
+        id: &str,
+        runtime_id: &str,
+        kind: SessionHookKind,
+    ) -> Option<hooks::HookLaunch> {
         let runtime = match self.state.runtime_info() {
             Some(runtime) => runtime,
             None => {
-                tracing::warn!(task_id = %task.id, "loopback API is not ready; session hook skipped");
+                tracing::warn!(task_id = %id, "loopback API is not ready; session hook skipped");
                 return None;
             }
         };
@@ -3206,7 +3367,7 @@ impl AgentCore {
         let args = match hooks::prepare(&self.state.paths.data_dir, kind) {
             Ok(args) => args,
             Err(error) => {
-                tracing::warn!(task_id = %task.id, %error, "failed to prepare the agent session hook");
+                tracing::warn!(task_id = %id, %error, "failed to prepare the agent session hook");
                 return None;
             }
         };
@@ -3216,16 +3377,16 @@ impl AgentCore {
             let mut tokens = match self.hook_tokens.lock() {
                 Ok(tokens) => tokens,
                 Err(_) => {
-                    tracing::warn!(task_id = %task.id, "hook token lock poisoned");
+                    tracing::warn!(task_id = %id, "hook token lock poisoned");
                     return None;
                 }
             };
             // 同一任务重试时旧 token 立刻失效。
-            tokens.retain(|_, task_id| task_id != &task.id);
-            tokens.insert(token.clone(), task.id.clone());
+            tokens.retain(|_, task_id| task_id != id);
+            tokens.insert(token.clone(), id.to_string());
         }
         if let Ok(mut events) = self.hook_events.lock() {
-            events.remove(&task.id);
+            events.remove(id);
         }
 
         Some(hooks::HookLaunch {
@@ -3236,8 +3397,8 @@ impl AgentCore {
                     format!("http://127.0.0.1:{}/agent/hook", runtime.port),
                 ),
                 ("TAPD_AGENT_HOOK_TOKEN".to_string(), token),
-                ("TAPD_AGENT_TASK_ID".to_string(), task.id.clone()),
-                ("TAPD_AGENT_RUNTIME".to_string(), task.runtime_id.clone()),
+                ("TAPD_AGENT_TASK_ID".to_string(), id.to_string()),
+                ("TAPD_AGENT_RUNTIME".to_string(), runtime_id.to_string()),
             ],
         })
     }
@@ -3262,6 +3423,17 @@ impl AgentCore {
             .cloned();
         if token_task.as_deref() != Some(task_id.as_str()) {
             return Err(HookError::Unauthorized);
+        }
+        // 自由对话不是 workflow 任务：只更新会话的 session id / 运行状态。
+        if self.is_chat_session(task_id) {
+            return self.record_chat_hook(
+                task_id,
+                event,
+                session_id.as_deref(),
+                payload.as_ref(),
+                *will_continue,
+                *awaiting_async_work,
+            );
         }
         match self.workflow_status(task_id) {
             Some(WorkflowStatus::Preparing | WorkflowStatus::Running | WorkflowStatus::Merging) => {
@@ -3314,8 +3486,12 @@ impl AgentCore {
         if let Some(mut next) = activity.status {
             if let Some(prompt) = next.prompt.as_mut() {
                 // prompt id 绑定任务与本次 hook 事件：旧卡片不会误操作新请求。
+                // 事件沿用上一张卡片时（`status::normalize` 会把它带过来）保持
+                // 原 id，否则后续每个工具事件都会让界面上的按钮失效。
                 let runtime_id = self.stored_runtime_id(task_id).unwrap_or_default();
-                prompt.prompt_id = format!("{task_id}:{at}");
+                if prompt.prompt_id == at {
+                    prompt.prompt_id = format!("{task_id}:{at}");
+                }
                 prompt.can_answer = prompt::can_answer(&runtime_id, prompt);
                 prompt.answer_hint = prompt::answer_hint(&runtime_id, prompt);
             }
@@ -3598,14 +3774,16 @@ impl AgentCore {
             .and_then(|task| task.agent_session_id.clone())
     }
 
-    /// 任务入队时快照的运行时 id；权限按键映射需要它。
+    /// 任务入队时快照的运行时 id；权限按键映射需要它。自由对话没有 workflow
+    /// 记录，回退到会话自己的运行时。
     fn stored_runtime_id(&self, task_id: &str) -> Option<String> {
         let id = TaskId::new(task_id);
-        self.workflow
+        let from_workflow = self
+            .workflow
             .lock()
-            .ok()?
-            .task(&id)
-            .map(|task| task.spec.runtime_id.clone())
+            .ok()
+            .and_then(|workflow| workflow.task(&id).map(|task| task.spec.runtime_id.clone()));
+        from_workflow.or_else(|| self.chat_runtime_id(task_id))
     }
 
     async fn update_config(
@@ -3737,6 +3915,9 @@ impl AgentCore {
         // the process and again after publishing it, so nothing outlives the
         // app or edits code after the user quit.
         self.shutting_down.store(true, Ordering::SeqCst);
+        // 对话会话不依赖登录态；先停掉，避免客户端退出后 TUI 继续占用仓库。
+        self.stop_chats_for_shutdown();
+
         // Nothing was loaded before system entry, so writing a suspend
         // snapshot would overwrite the durable paused flag with its default.
         let entered = self
@@ -4017,11 +4198,27 @@ impl AgentCore {
 
     /// 读取 transcript 并按任务缓存。文件未变化时不重复解析。
     fn chat_payload(&self, task_id: &str, known_fingerprint: Option<&str>) -> AgentChatPayload {
-        let Some(task) = self.workflow_view(task_id) else {
-            return chat_empty(task_id, "", "", Some(tr("agent.task.missing").to_string()));
+        // 缺陷任务与自由对话共用同一份 transcript 读取逻辑；会话没有 workflow
+        // 记录时回退到 chat store。
+        let (runtime_id, session_id, work_dir, is_chat) = match self.workflow_view(task_id) {
+            Some(task) => (
+                task.runtime_id.clone(),
+                task.agent_session_id.clone().unwrap_or_default(),
+                task.work_dir().to_string(),
+                false,
+            ),
+            None => match self.chat_transcript_context(task_id) {
+                Some(context) => (context.runtime_id, context.session_id, context.work_dir, true),
+                None => {
+                    return chat_empty(
+                        task_id,
+                        "",
+                        "",
+                        Some(tr("agent.task.missing").to_string()),
+                    )
+                }
+            },
         };
-        let runtime_id = task.runtime_id.clone();
-        let session_id = task.agent_session_id.clone().unwrap_or_default();
         let Some(agent) = transcript::TranscriptAgent::from_runtime_id(&runtime_id) else {
             return chat_empty(
                 task_id,
@@ -4031,11 +4228,18 @@ impl AgentCore {
             );
         };
         if session_id.trim().is_empty() {
+            // 自由对话：OpenCode 2.x 在用户发出第一条消息前不会创建会话，也就
+            // 没有 session id。这是正常的就绪状态，不能当成错误，否则界面会
+            // 一直停在「等待会话 id」。
             return chat_empty(
                 task_id,
                 &runtime_id,
                 &session_id,
-                Some(tr("agent.chat.awaiting.session").to_string()),
+                if is_chat {
+                    None
+                } else {
+                    Some(tr("agent.chat.awaiting.session").to_string())
+                },
             );
         }
 
@@ -4058,10 +4262,17 @@ impl AgentCore {
                     session_id: session_id.clone(),
                 }
             }
-            _ => match transcript::resolve_source(&runtime_id, &session_id, task.work_dir()) {
+            _ => match transcript::resolve_source(&runtime_id, &session_id, &work_dir) {
                 Ok(source) => source,
                 Err(error) => {
-                    return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()))
+                    if is_chat {
+                        if let Some(payload) =
+                            self.chat_history_payload(task_id, &runtime_id, &session_id)
+                        {
+                            return payload;
+                        }
+                    }
+                    return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()));
                 }
             },
         };
@@ -4069,28 +4280,42 @@ impl AgentCore {
             Ok(fingerprint) => fingerprint,
             Err(first_error) => {
                 // 缓存的文件可能被轮转 / 删除；重新定位一次再判断。
-                match transcript::resolve_source(&runtime_id, &session_id, task.work_dir()) {
+                match transcript::resolve_source(&runtime_id, &session_id, &work_dir) {
                     Ok(next) => match transcript::fingerprint(&next) {
                         Ok(fingerprint) => {
                             source = next;
                             fingerprint
                         }
                         Err(_) => {
+                            if is_chat {
+                                if let Some(payload) =
+                                    self.chat_history_payload(task_id, &runtime_id, &session_id)
+                                {
+                                    return payload;
+                                }
+                            }
                             return chat_empty(
                                 task_id,
                                 &runtime_id,
                                 &session_id,
                                 Some(first_error.message()),
-                            )
+                            );
                         }
                     },
                     Err(_) => {
+                        if is_chat {
+                            if let Some(payload) =
+                                self.chat_history_payload(task_id, &runtime_id, &session_id)
+                            {
+                                return payload;
+                            }
+                        }
                         return chat_empty(
                             task_id,
                             &runtime_id,
                             &session_id,
                             Some(first_error.message()),
-                        )
+                        );
                     }
                 }
             }
@@ -4122,9 +4347,23 @@ impl AgentCore {
         let read = match transcript::read(&source) {
             Ok(read) => read,
             Err(error) => {
-                return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()))
+                if is_chat {
+                    if let Some(payload) =
+                        self.chat_history_payload(task_id, &runtime_id, &session_id)
+                    {
+                        return payload;
+                    }
+                }
+                return chat_empty(task_id, &runtime_id, &session_id, Some(error.message()));
             }
         };
+        if is_chat {
+            // 每次成功解析都把消息镜像到 SQLite，作为搜索与 CLI 存储丢失时的
+            // 本地历史；解析失败不影响已经保存的内容。
+            self.state
+                .cache
+                .upsert_chat_messages(task_id, &read.messages);
+        }
         // 解析时重新算出的指纹与探测结果一致；以解析结果为准写缓存。
         let fingerprint = read.fingerprint.clone();
         let model = read.model.clone();
@@ -4158,16 +4397,45 @@ impl AgentCore {
         payload
     }
 
+    /// CLI 的会话存储不可用（被清理 / 格式变化）时，用本地镜像的历史兜底，
+    /// 避免对话页在已有历史的情况下变成空页。
+    fn chat_history_payload(
+        &self,
+        task_id: &str,
+        runtime_id: &str,
+        session_id: &str,
+    ) -> Option<AgentChatPayload> {
+        let messages = self.state.cache.load_chat_messages(task_id)?;
+        let last = messages.last()?;
+        // 本地历史不会再增长（CLI 已不可读），条数 + 最后一条 id 足够做指纹。
+        let fingerprint = format!("local:{}:{}:{}", task_id, messages.len(), last.id);
+        Some(AgentChatPayload {
+            task_id: task_id.to_string(),
+            runtime_id: runtime_id.to_string(),
+            session_id: session_id.to_string(),
+            messages,
+            truncated: false,
+            source: "local-history".to_string(),
+            fingerprint,
+            model: None,
+            unchanged: false,
+            error: None,
+        })
+    }
+
     /// 从 Chat 发送一条消息：写入当前 PTY，由各 CLI 自己排队/打断。
     fn send_message(&self, task_id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err(tr("agent.chat.message.empty").to_string());
         }
-        let task = self
-            .workflow_view(task_id)
-            .ok_or_else(|| tr("agent.task.missing").to_string())?;
-        if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
-            return Err(tr("agent.task.not.running").to_string());
+        // 缺陷任务必须先确认仍在运行；自由对话没有 workflow 记录，按会话状态校验。
+        if self.chat_session(task_id).is_none() {
+            let task = self
+                .workflow_view(task_id)
+                .ok_or_else(|| tr("agent.task.missing").to_string())?;
+            if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
+                return Err(tr("agent.task.not.running").to_string());
+            }
         }
         let waiting = self
             .runtime_status
@@ -4176,6 +4444,31 @@ impl AgentCore {
             .and_then(|status| status.get(task_id).cloned())
             .and_then(|status| status.prompt)
             .is_some_and(|prompt| prompt.can_answer);
+
+        // 自由对话：TUI 产生输出后才允许写入，避免消息被启动过程吞掉。
+        if let Some(chat) = self.chat_session(task_id) {
+            if chat.status != chat::ChatStatus::Running {
+                return Err("会话未在运行".to_string());
+            }
+            if !chat.ready {
+                return Err("会话正在启动，请稍候".to_string());
+            }
+            if waiting {
+                return Err("请先处理当前的权限确认或提问".to_string());
+            }
+            // bracketed paste 保证多行文本不会在第一个换行处提交。
+            let payload = format!("\x1b[200~{text}\x1b[201~\r");
+            self.write_input(task_id, &payload)?;
+            self.touch_chat(task_id, text);
+            return Ok(());
+        }
+
+        let task = self
+            .workflow_view(task_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        if !matches!(task.status, TaskStatus::Running | TaskStatus::Merging) {
+            return Err("任务未在运行".to_string());
+        }
         if waiting {
             return Err(tr("agent.chat.prompt.pending").to_string());
         }
@@ -4952,6 +5245,10 @@ impl AgentCore {
         descriptor: &AgentRuntimeDescriptor,
     ) -> PtyOutcome {
         let mut args: Vec<String> = descriptor.args.iter().map(|arg| arg.to_string()).collect();
+        // OpenCode 2.x 的后台服务收不到本次会话的 hook 环境变量，改用私有服务。
+        if matches!(task.runtime_id.as_str(), "opencode" | "opencode2") {
+            args.extend(opencode_standalone_args(&config.binary_path));
+        }
         args.extend(runtime_launch_options(
             &task.runtime_id,
             &task.model,
@@ -4973,32 +5270,47 @@ impl AgentCore {
             }
         }
 
-        let inject_prompt = match descriptor.prompt_injection {
-            PromptInjection::Argv => {
-                // `--` 终止参数解析，避免提示词以 `--foo` / 子命令开头时被 CLI 吃掉。
-                if let Some(separator) = descriptor.argv_separator {
-                    args.push(separator.to_string());
-                }
+        // OpenCode 的 TUI 首帧之后还会静默一段时间才绘制输入框，这段窗口里
+        // 写进 stdin 的提示词会被丢弃；能拿到原生 `--prompt` 就随启动参数提交。
+        let native_prompt_flag = if matches!(task.runtime_id.as_str(), "opencode" | "opencode2") {
+            opencode_prompt_flag(&config.binary_path)
+        } else {
+            None
+        };
+
+        let inject_prompt = match native_prompt_flag {
+            Some(flag) => {
+                args.push(flag.to_string());
                 args.push(task.prompt.clone());
                 false
             }
-            PromptInjection::Flag => match descriptor.prompt_flag {
-                Some(flag) => {
-                    args.push(flag.to_string());
+            None => match descriptor.prompt_injection {
+                PromptInjection::Argv => {
+                    // `--` 终止参数解析，避免提示词以 `--foo` / 子命令开头时被 CLI 吃掉。
+                    if let Some(separator) = descriptor.argv_separator {
+                        args.push(separator.to_string());
+                    }
                     args.push(task.prompt.clone());
                     false
                 }
-                None => {
-                    // Descriptor bug: fall back to typing the prompt instead of
-                    // launching an agent that never receives it.
-                    tracing::warn!(
-                        task_id = %task.id,
-                        "runtime declares no prompt flag, falling back to stdin"
-                    );
-                    true
-                }
+                PromptInjection::Flag => match descriptor.prompt_flag {
+                    Some(flag) => {
+                        args.push(flag.to_string());
+                        args.push(task.prompt.clone());
+                        false
+                    }
+                    None => {
+                        // Descriptor bug: fall back to typing the prompt instead of
+                        // launching an agent that never receives it.
+                        tracing::warn!(
+                            task_id = %task.id,
+                            "runtime declares no prompt flag, falling back to stdin"
+                        );
+                        true
+                    }
+                },
+                PromptInjection::Stdin => true,
             },
-            PromptInjection::Stdin => true,
         };
 
         tracing::info!(
@@ -5006,10 +5318,14 @@ impl AgentCore {
             runtime = descriptor.name,
             binary = %config.binary_path,
             args = %descriptor.args.join(" "),
-            injection = match descriptor.prompt_injection {
-                PromptInjection::Argv => "argv",
-                PromptInjection::Flag => "flag",
-                PromptInjection::Stdin => "stdin",
+            injection = if native_prompt_flag.is_some() {
+                "flag"
+            } else {
+                match descriptor.prompt_injection {
+                    PromptInjection::Argv => "argv",
+                    PromptInjection::Flag => "flag",
+                    PromptInjection::Stdin => "stdin",
+                }
             },
             "starting agent tui"
         );
@@ -5442,6 +5758,61 @@ fn runtime_launch_options(runtime_id: &str, model: &str, permission: &str) -> Ve
     args
 }
 
+/// 读取并缓存 `binary --help` 的输出：参数能力探测（`--standalone` /
+/// `--prompt`）共用一次调用，进程内按二进制路径缓存，避免每次启动都 fork。
+fn cli_help_text(binary: &str) -> Arc<String> {
+    static HELP: OnceLock<Mutex<HashMap<String, Arc<String>>>> = OnceLock::new();
+    let cache = HELP.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some(help) = cache.get(binary) {
+            return help.clone();
+        }
+    }
+
+    // 与 PTY 使用同一份 PATH，裸命令名在 Finder 启动的应用里也能找到。
+    let help = std::process::Command::new(binary)
+        .arg("--help")
+        .env("PATH", shell_path::user_path())
+        .output()
+        .map(|output| {
+            format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .unwrap_or_default();
+    let help = Arc::new(help);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(binary.to_string(), help.clone());
+    }
+    help
+}
+
+/// OpenCode 2.x 把插件放在后台服务进程里运行，而服务进程不会继承本次会话的
+/// hook 环境变量（`TAPD_AGENT_HOOK_URL` 等），导致会话 id 与回合事件全部丢失。
+/// `--standalone` 让 TUI 自带私有服务，环境变量才能传到插件。
+///
+/// 1.x 没有这个参数，传了会直接启动失败，所以先探测一次并缓存结果。
+fn opencode_standalone_args(binary: &str) -> Vec<String> {
+    if cli_help_text(binary).contains("--standalone") {
+        vec!["--standalone".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// OpenCode 1.15+ 支持 `--prompt`：提示词随启动参数提交，TUI 起来后立即开会话。
+///
+/// 走 stdin 注入时要等 TUI 输出静默一段时间，但 1.15.x 首帧输出后还会静默
+/// 1~2 秒才绘制输入框，这段窗口里写入的内容会被丢弃——表现就是「只打开了
+/// opencode，没有提示词也没有会话」。旧版本没有该参数，探测不到时仍退回 stdin。
+fn opencode_prompt_flag(binary: &str) -> Option<&'static str> {
+    cli_help_text(binary)
+        .contains("--prompt")
+        .then_some("--prompt")
+}
+
 /// The command a task runs with: the configured path while it points at the
 /// task's runtime, otherwise the detected path for that runtime, and finally
 /// its default binary. Queued tasks keep the runtime they were enqueued with,
@@ -5601,6 +5972,16 @@ pub fn init(app: &AppHandle, state: SharedState) {
             }
         }
     });
+}
+
+/// 自由对话命令入口；`chat_` 前缀由 feature router 单独分发。
+pub async fn chat_command(
+    app: &AppHandle,
+    _state: &SharedState,
+    name: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    chat::command(app, name, payload).await
 }
 
 /// Stops every agent process on app exit. Called from `RunEvent::Exit`, which
@@ -5869,6 +6250,16 @@ pub async fn command(
 
     match name {
         "agent_runtimes" => Ok(json!({ "runtimes": runtime_catalog() })),
+        "agent_models" => {
+            let request: ModelsRequest = serde_json::from_value(payload)
+                .map_err(|error| format!("无效的模型参数：{error}"))?;
+            let runtime_id = request.runtime_id.trim();
+            if runtime_id.is_empty() {
+                return Err("缺少 runtimeId".to_string());
+            }
+            let result = core.runtime_models(runtime_id).await?;
+            Ok(json!(result))
+        }
         "agent_config_get" => {
             let config = core.config_snapshot();
             Ok(json!({ "config": config }))
@@ -6373,7 +6764,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_ids_are_unique_and_include_the_extended_agents() {
+    fn catalog_ids_are_unique_and_include_supported_agents() {
         let catalog = runtime_catalog();
         let mut ids = HashSet::new();
         for runtime in &catalog {
@@ -6388,18 +6779,7 @@ mod tests {
                 runtime.id
             );
         }
-        for expected in [
-            "opencode2",
-            "grok",
-            "hermes",
-            "kiro",
-            "qoder",
-            "qoder-cn",
-            "rovo",
-            "droid",
-            "jcode",
-            "custom",
-        ] {
+        for expected in ["opencode", "claude", "codex", "omp"] {
             assert!(ids.contains(expected), "missing runtime {expected}");
         }
     }
@@ -6475,6 +6855,47 @@ mod tests {
         // 未知运行时 / 权限不追加参数，交给 CLI 默认值。
         assert!(runtime_launch_options("unknown", "m", "full_access").is_empty());
         assert!(runtime_launch_options("claude", "", "default").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_standalone_is_added_only_when_supported() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tapd-opencode-standalone-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let supported = dir.join("opencode-new");
+        std::fs::write(
+            &supported,
+            "#!/bin/sh\necho '  --standalone  Run with a private server'\necho '      --prompt       prompt to use'\n",
+        )
+        .expect("write supported stub");
+        let legacy = dir.join("opencode-old");
+        std::fs::write(&legacy, "#!/bin/sh\necho 'opencode serve'\n").expect("write legacy stub");
+        for path in [&supported, &legacy] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("make stub executable");
+        }
+
+        assert_eq!(
+            opencode_standalone_args(&supported.to_string_lossy()),
+            vec!["--standalone"]
+        );
+        assert!(opencode_standalone_args(&legacy.to_string_lossy()).is_empty());
+        // `--prompt` 同样按 `--help` 探测：新版随启动参数提交提示词，旧版退回 stdin。
+        assert_eq!(
+            opencode_prompt_flag(&supported.to_string_lossy()),
+            Some("--prompt")
+        );
+        assert_eq!(opencode_prompt_flag(&legacy.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

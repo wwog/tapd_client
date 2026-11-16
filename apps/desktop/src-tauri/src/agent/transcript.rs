@@ -19,7 +19,7 @@ use std::{
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tapd_i18n::{tr, tr_args};
 
@@ -63,9 +63,9 @@ impl TranscriptAgent {
 }
 
 /// 一条扁平消息；provider 的一个记录可能拆成多条。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ChatMessage {
+pub(crate) struct ChatMessage {
     /// 稳定 id：provider 记录 id + block 序号。
     pub id: String,
     /// user | assistant | tool | system
@@ -74,25 +74,25 @@ pub(super) struct ChatMessage {
     pub kind: String,
     /// RFC3339；provider 缺少时间时为空。
     pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<ChatTool>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ChatTool {
+pub(crate) struct ChatTool {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     /// running | done | failed
     pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
 }
 
@@ -1279,10 +1279,17 @@ fn parse_omp(path: &Path, builder: &mut Builder) -> Result<(), TranscriptError> 
                     builder.set_model(model);
                 }
                 // 重试耗尽 / 网络错误以 stopReason=error + errorMessage 落盘；
-                // aborted 是用户主动中断，交给取消流程。
-                let error = (message.get("stopReason").and_then(Value::as_str) == Some("error"))
-                    .then(|| message.get("errorMessage").and_then(Value::as_str))
-                    .flatten();
+                // aborted 是用户主动中断，交给取消流程。retryRecovery 标记
+                // recovered 时 OMP 已重试成功，这次错误不算本轮失败。
+                let recovered = message
+                    .get("retryRecovery")
+                    .and_then(|recovery| recovery.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("recovered");
+                let error = (!recovered
+                    && message.get("stopReason").and_then(Value::as_str) == Some("error"))
+                .then(|| message.get("errorMessage").and_then(Value::as_str))
+                .flatten();
                 parse_omp_assistant(message, id, &at, builder);
                 if let Some(error) = error {
                     builder.set_error(error);
@@ -1406,6 +1413,31 @@ fn has_table(connection: &Connection, table: &str) -> bool {
         .is_ok()
 }
 
+/// 某个会话在指定表里的行数与最后更新时间；表不存在时返回 `None`。
+///
+/// 同一个数据库里可能同时存在 v1（`message` / `part`）和 v2
+/// （`session_message`）两套表：升级前创建的会话在 v1，升级后的新会话在 v2。
+fn opencode_rows(connection: &Connection, table: &str, session_id: &str) -> Option<(i64, i64)> {
+    if !has_table(connection, table) {
+        return None;
+    }
+    // 表名 / 列名是固定常量，不来自用户输入，不会引入注入风险。
+    let query = |column: &str| {
+        connection
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(MAX({column}), 0)
+                     FROM {table} WHERE session_id = ?1"
+                ),
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()
+    };
+    // 极旧的库可能还没有 time_updated：退回 time_created，至少能正常读取。
+    query("time_updated").or_else(|| query("time_created"))
+}
+
 fn opencode_fingerprint(path: &Path, session_id: &str) -> Result<String, TranscriptError> {
     if !path.is_file() {
         // JSON storage 兜底：目录新增文件会更新 mtime，count 变化也能兜底。
@@ -1425,36 +1457,19 @@ fn opencode_fingerprint(path: &Path, session_id: &str) -> Result<String, Transcr
         return Ok(format!("json:{}:{count}:{modified}", dir.display()));
     }
     let connection = open_connection(path)?;
-    if has_table(&connection, "session_message") {
-        let row: Option<(i64, i64)> = connection
-            .query_row(
-                "SELECT COUNT(*), COALESCE(MAX(time_created), 0)
-                 FROM session_message WHERE session_id = ?1",
-                [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
+    // 时间必须用 time_updated：assistant 的文本是流式写入 part / message 的，
+    // 行本身插入后 time_created 不再变化，只看 time_created 会让缓存停在
+    // 「只有用户消息」甚至空结果上。
+    let v2 = opencode_rows(&connection, "session_message", session_id);
+    let message = opencode_rows(&connection, "message", session_id);
+    let part = opencode_rows(&connection, "part", session_id);
+    if v2.is_some() || message.is_some() || part.is_some() {
+        let (v2_count, v2_at) = v2.unwrap_or((0, 0));
+        let (message_count, message_at) = message.unwrap_or((0, 0));
+        let (part_count, part_at) = part.unwrap_or((0, 0));
         return Ok(format!(
-            "v2:{}:{}:{}",
-            path.display(),
-            row.map(|(count, _)| count).unwrap_or(0),
-            row.map(|(_, at)| at).unwrap_or(0)
-        ));
-    }
-    if has_table(&connection, "message") {
-        let row: Option<(i64, i64)> = connection
-            .query_row(
-                "SELECT COUNT(*), COALESCE(MAX(time_created), 0)
-                 FROM message WHERE session_id = ?1",
-                [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
-        return Ok(format!(
-            "v1:{}:{}:{}",
-            path.display(),
-            row.map(|(count, _)| count).unwrap_or(0),
-            row.map(|(_, at)| at).unwrap_or(0)
+            "db:{}:{v2_count}:{v2_at}:{message_count}:{message_at}:{part_count}:{part_at}",
+            path.display()
         ));
     }
     Ok(format!("json:{}", path.display()))
@@ -1468,9 +1483,17 @@ fn read_opencode(source: &TranscriptSource) -> Result<TranscriptRead, Transcript
         return Ok(builder.finish(source.agent, format!("{fingerprint}:{}", source.session_id)));
     }
     let connection = open_connection(&source.path)?;
-    if has_table(&connection, "session_message") {
+    // 按“该会话实际写在哪张表”选择解析器，而不是按表是否存在：
+    // 2.x 升级后 `session_message` 和旧表会同时存在，但旧会话只有 v1 数据。
+    let has_v2 = opencode_rows(&connection, "session_message", &source.session_id)
+        .is_some_and(|(count, _)| count > 0);
+    if has_v2 {
         parse_opencode_v2(&connection, &source.session_id, &mut builder)?;
-    } else if has_table(&connection, "message") && has_table(&connection, "part") {
+    } else if has_table(&connection, "message")
+        && has_table(&connection, "part")
+        && opencode_rows(&connection, "message", &source.session_id)
+            .is_some_and(|(count, _)| count > 0)
+    {
         parse_opencode_v1(&connection, &source.session_id, &mut builder)?;
     } else {
         parse_opencode_json(&source.path, &source.session_id, &mut builder)?;
@@ -2268,6 +2291,135 @@ mod tests {
     }
 
     #[test]
+    fn opencode_picks_the_table_the_session_actually_uses() {
+        // 升级后两套表会并存：旧会话只有 message/part，新会话只有
+        // session_message。读取时必须按会话选解析器，不能只看表是否存在。
+        let path = std::env::temp_dir().join(format!(
+            "tapd-transcript-oc-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        {
+            let connection = Connection::open(&path).expect("sqlite");
+            connection
+                .execute_batch(
+                    "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                     CREATE TABLE part (message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                     CREATE TABLE session_message (
+                         id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                         time_created INTEGER, time_updated INTEGER, data TEXT
+                     );",
+                )
+                .expect("schema");
+            connection
+                .execute(
+                    "INSERT INTO message VALUES ('old-u','old',1000,1000,?1)",
+                    [json!({ "role": "user" }).to_string()],
+                )
+                .expect("old user");
+            connection
+                .execute(
+                    "INSERT INTO message VALUES ('old-a','old',2000,2000,?1)",
+                    [json!({ "role": "assistant" }).to_string()],
+                )
+                .expect("old assistant");
+            connection
+                .execute(
+                    "INSERT INTO part VALUES ('old-u','old',1000,1000,?1)",
+                    [json!({ "type": "text", "text": "旧问题" }).to_string()],
+                )
+                .expect("old user part");
+            connection
+                .execute(
+                    "INSERT INTO part VALUES ('old-a','old',2000,2000,?1)",
+                    [json!({ "type": "text", "text": "旧回答" }).to_string()],
+                )
+                .expect("old assistant part");
+            connection
+                .execute(
+                    "INSERT INTO session_message VALUES ('new-1','new','user',1,1000,1000,?1)",
+                    [json!({ "time": { "created": 1000 }, "text": "新问题" }).to_string()],
+                )
+                .expect("new user");
+        }
+
+        let read = |session_id: &str| {
+            read_opencode(&TranscriptSource {
+                agent: TranscriptAgent::OpenCode,
+                path: path.clone(),
+                session_id: session_id.to_string(),
+            })
+            .expect("read transcript")
+        };
+
+        let old = read("old");
+        assert_eq!(old.messages.len(), 2, "legacy session reads message/part");
+        assert_eq!(old.messages[1].text.as_deref(), Some("旧回答"));
+
+        let new = read("new");
+        assert_eq!(new.messages.len(), 1, "new session reads session_message");
+        assert_eq!(new.messages[0].text.as_deref(), Some("新问题"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opencode_fingerprint_tracks_streaming_parts() {
+        // assistant 文本是后写入 part 的：message 行的 time_created 不变，
+        // 指纹必须跟着 time_updated 变化，否则 UI 会一直停在旧内容。
+        let path = std::env::temp_dir().join(format!(
+            "tapd-transcript-fp-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        {
+            let connection = Connection::open(&path).expect("sqlite");
+            connection
+                .execute_batch(
+                    "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                     CREATE TABLE part (message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                     CREATE TABLE session_message (
+                         id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                         time_created INTEGER, time_updated INTEGER, data TEXT
+                     );",
+                )
+                .expect("schema");
+            connection
+                .execute(
+                    "INSERT INTO message VALUES ('m1','s1',1000,1000,?1)",
+                    [json!({ "role": "assistant" }).to_string()],
+                )
+                .expect("message");
+            connection
+                .execute(
+                    "INSERT INTO part VALUES ('m1','s1',1000,1000,?1)",
+                    [json!({ "type": "text", "text": "h" }).to_string()],
+                )
+                .expect("part");
+        }
+        let first = opencode_fingerprint(&path, "s1").expect("first fingerprint");
+        {
+            let connection = Connection::open(&path).expect("sqlite");
+            connection
+                .execute(
+                    "UPDATE part SET time_updated = 2000, data = ?1 WHERE message_id = 'm1'",
+                    [json!({ "type": "text", "text": "hello" }).to_string()],
+                )
+                .expect("stream update");
+        }
+        let second = opencode_fingerprint(&path, "s1").expect("second fingerprint");
+        assert_ne!(first, second, "streaming part update must change fingerprint");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn claude_path_encoding_replaces_each_separator() {
         assert_eq!(encode_claude_path("/Users/omi/a_b"), "-Users-omi-a-b");
     }
@@ -2405,6 +2557,41 @@ mod tests {
         parse_omp(&omp, &mut builder).expect("omp parses");
         assert_eq!(builder.error.as_deref(), Some("ECONNRESET: socket closed"));
         assert_eq!(builder.model.as_deref(), Some("deepseek-v4.1-flash"));
+
+        // OMP：错误已被自动重试恢复，后续成功的 assistant 消息不能算失败。
+        let omp_recovered = root.join("omp-recovered.jsonl");
+        fs::write(
+            &omp_recovered,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "message",
+                    "id": "m1",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "message": {
+                        "role": "assistant",
+                        "stopReason": "error",
+                        "errorMessage": "ECONNRESET: socket closed",
+                        "retryRecovery": { "status": "recovered", "attempt": 1 },
+                        "content": []
+                    }
+                }),
+                json!({
+                    "type": "message",
+                    "id": "m2",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "message": {
+                        "role": "assistant",
+                        "stopReason": "stop",
+                        "content": [{ "type": "text", "text": "已完成" }]
+                    }
+                })
+            ),
+        )
+        .expect("write");
+        let mut builder = Builder::default();
+        parse_omp(&omp_recovered, &mut builder).expect("omp parses");
+        assert_eq!(builder.error, None);
 
         let _ = fs::remove_dir_all(&root);
     }

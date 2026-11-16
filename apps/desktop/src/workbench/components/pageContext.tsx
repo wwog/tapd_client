@@ -66,6 +66,8 @@ export type PageHostServices = {
   /** Opens the compose sheet for a work item, prefilled with its description. */
   onComposeLocalItem: (project: LocalProject, item: WorkItem) => void;
   onOpenMedia: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
+  /** Opens the project settings page from a page that needs a repository. */
+  onOpenProjects: () => void;
   loadContext: () => Promise<void> | void;
   refreshBase: () => Promise<void> | void;
   onShowLogin: () => void;

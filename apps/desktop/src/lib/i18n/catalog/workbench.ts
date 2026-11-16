@@ -29,6 +29,10 @@ export const workbench = {
   ],
   "chat.reading": ["正在读取会话…", "Reading conversation…"],
   "chat.waitingOutput": ["等待 Agent 输出…", "Waiting for agent output…"],
+  "chat.readyToChat": [
+    "会话已就绪，发送一条消息开始对话",
+    "Session ready - send a message to start the conversation",
+  ],
   "chat.emptyConversation": ["没有可展示的会话记录", "No conversation to show"],
   "chat.terminalAvailable": [
     "终端仍然可用，可以在终端里继续查看和操作。",

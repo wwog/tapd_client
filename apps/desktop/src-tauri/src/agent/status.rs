@@ -150,7 +150,12 @@ pub(super) fn normalize(
             status.tool = tool.clone();
             status.detail = detail.clone();
             status.message = message.clone();
-            status.prompt = Some(prompt::approval(tool, detail.or(message), now));
+            status.prompt = Some(prompt::approval(
+                tool,
+                detail.or(message),
+                now,
+                allow_always(payload),
+            ));
             activity.status = Some(status);
         }
         "questionasked" | "notification" => {
@@ -178,7 +183,7 @@ pub(super) fn normalize(
             // 只有真正的提问事件才占用输入区；普通 Notification（例如
             // “等待输入”）不能把 Composer 藏起来。
             status.prompt = if waiting_permission {
-                Some(prompt::approval(tool, message, now))
+                Some(prompt::approval(tool, message, now, allow_always(payload)))
             } else if key == "questionasked" {
                 prompt::question(payload, tool, now).or_else(|| {
                     message.map(|text| AgentPendingPrompt {
@@ -361,6 +366,38 @@ pub(super) fn normalize(
         _ => {}
     }
 
+    // 同一轮里的并发权限请求会排队弹出：回复第一个后，客户端会继续跑已放行
+    // 的工具并持续上报事件，这些事件不能把仍在等待的卡片清掉，否则第二张
+    // 卡片还没被回答就从桌面端消失，只能回终端确认。只有「真的被回答」或
+    // 「回合结束 / 新的用户提示词」才允许清空。
+    if let Some(status) = activity.status.as_mut() {
+        let answered = matches!(
+            key.as_str(),
+            "permissionreplied"
+                | "permissionresolved"
+                | "questionreplied"
+                | "questionrejected"
+                | "questionresolved"
+        );
+        let turn_boundary = activity.complete
+            || matches!(
+                key.as_str(),
+                "stopfailure"
+                    | "sessionerror"
+                    | "error"
+                    | "sessionend"
+                    | "interrupt"
+                    | "userpromptsubmit"
+                    | "promptadmitted"
+                    | "sessionnextpromptadmitted"
+                    | "sessionstart"
+                    | "sessioncreated"
+            );
+        if status.prompt.is_none() && !answered && !turn_boundary {
+            status.prompt = previous.and_then(|status| status.prompt.clone());
+        }
+    }
+
     activity
 }
 
@@ -399,6 +436,16 @@ fn tool_label(tool: Option<&str>) -> &'static str {
         Some(_) => tr("agent.status.tool.running"),
         None => tr("agent.status.working"),
     }
+}
+
+/// 权限请求是否支持「总是允许」。由客户端插件上报（opencode 的
+/// `permission.asked.always` 非空时才有可记住的 pattern）；没有该字段的
+/// 运行时保持只给「允许一次」，避免按键落到别的选项上。
+fn allow_always(payload: Option<&Value>) -> bool {
+    payload
+        .and_then(|value| value.get("allow_always"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn tool_name(payload: Option<&Value>) -> Option<String> {
@@ -524,6 +571,63 @@ mod tests {
             false,
             false,
         )
+    }
+
+    #[test]
+    fn permission_card_survives_unrelated_events_until_answered() {
+        let asked = normalize(
+            None,
+            "PermissionRequest",
+            Some(&json!({
+                "tool_name": "external_directory",
+                "message": "等待权限确认"
+            })),
+            Some("s-1"),
+            "2026-01-01T00:00:00Z",
+            false,
+            false,
+        )
+        .status
+        .expect("permission request produces a status");
+        let prompt_id = asked
+            .prompt
+            .as_ref()
+            .expect("approval prompt")
+            .prompt_id
+            .clone();
+
+        // 回复第一个请求后客户端继续跑已放行的工具：这些事件不能把仍在排队
+        // 的第二张卡片清掉，且卡片 id 必须保持不变（否则界面上的按钮失效）。
+        let tool = normalize(
+            Some(&asked),
+            "PreToolUse",
+            Some(&json!({ "tool_name": "read" })),
+            Some("s-1"),
+            "2026-01-01T00:00:01Z",
+            false,
+            false,
+        )
+        .status
+        .expect("tool event produces a status");
+        let carried = tool
+            .prompt
+            .as_ref()
+            .expect("pending prompt is carried over");
+        assert_eq!(carried.prompt_id, prompt_id);
+
+        // 真正被回答后卡片消失。
+        let answered = normalize(
+            Some(&tool),
+            "PermissionResolved",
+            None,
+            Some("s-1"),
+            "2026-01-01T00:00:02Z",
+            false,
+            false,
+        )
+        .status
+        .expect("resolve produces a status");
+        assert!(answered.prompt.is_none());
     }
 
     #[test]
