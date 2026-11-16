@@ -241,6 +241,7 @@ export function SplitView({ layout, renderGroup }: SplitViewProps) {
               sashIndex={sash.index}
               mainSize={sash.containerPx}
               highlight={highlightOf(sash.key)}
+              inset={GROUP_INSET}
               style={{
                 left: sash.rect.x,
                 top: sash.rect.y,

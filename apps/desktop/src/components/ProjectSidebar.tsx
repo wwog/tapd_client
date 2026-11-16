@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState } from "react";
 import {
   EyeOff,
   Folder,
@@ -58,7 +58,6 @@ type Props = {
   onManageProjects: () => void;
   /** Opens the read-only file explorer for this project (workbench panel). */
   onBrowseFiles?: (workspaceId: string) => void;
-  onResizeStart: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
 
 /** Project list column plus its right-click menu and account footer. */
@@ -88,7 +87,6 @@ export function ProjectSidebar({
   onHideWorkspace,
   onManageProjects,
   onBrowseFiles,
-  onResizeStart,
 }: Props) {
   /** Local rows have their own two-entry menu; TAPD rows use App's `projectMenu`. */
   const [localMenu, setLocalMenu] = useState<{
@@ -289,17 +287,6 @@ export function ProjectSidebar({
           company={account.company}
           active={view === "account"}
           onClick={onOpenAccount}
-        />
-
-        <button
-          type="button"
-          aria-label={t("settings.sidebar.resizeLabel")}
-          title={t("settings.sidebar.resizeTooltip")}
-          onMouseDown={onResizeStart}
-          className={clsx(
-            "absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize",
-            resizing ? "bg-sky-400/50" : "bg-transparent transition hover:bg-overlay",
-          )}
         />
       </div>
 

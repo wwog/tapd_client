@@ -10,7 +10,7 @@ import {
 
 import { useDragResize, useVerticalDragResize } from "../../hooks/useDragResize";
 import { t } from "../../lib/i18n";
-import { CORNER_SIZE } from "../layout/defaults";
+import { CORNER_SIZE, SASH_LINE } from "../layout/defaults";
 import { intersectSashes } from "../layout/geometry";
 import type { WorkbenchLayoutApi } from "../layout/types";
 
@@ -24,6 +24,8 @@ type SashProps = {
   /** `x` = vertical line, column resize; `y` = horizontal line, row resize. */
   axis: "x" | "y";
   label: string;
+  /** Tooltip text when it should say more than the accessible label. */
+  title?: string;
   /** Split boundary this sash controls (used by `SashLayer`). */
   splitId?: string;
   sashIndex?: number;
@@ -34,6 +36,11 @@ type SashProps = {
    * `drag` while it is being dragged, so both lines stay visible.
    */
   highlight?: "hover" | "drag";
+  /**
+   * Trims both ends of the highlight line by this many px so it spans the
+   * gutter between cards exactly, instead of overshooting their edges.
+   */
+  inset?: number;
   onDragStart?: () => SashDragSession | null;
   onReset?: () => void;
   className?: string;
@@ -42,18 +49,20 @@ type SashProps = {
 
 /**
  * Unified split handle: no resting line over an 8px hit area; hovering reveals
- * a 1.5px highlight and dragging paints it sky blue — the hit area itself never
- * paints, so only the middle line shows. The same component serves split nodes
- * and the project side bar; the caller supplies what a drag does (layout
- * fractions vs. sidebar width).
+ * a 2px rounded highlight that spans the gutter length and dragging paints it
+ * sky blue — the hit area itself never paints, so only the middle line shows.
+ * The same component serves split nodes and the project side bar; the caller
+ * supplies what a drag does (layout fractions vs. sidebar width).
  */
 export function Sash({
   axis,
   label,
+  title,
   splitId,
   sashIndex,
   mainSize,
   highlight,
+  inset = 0,
   onDragStart,
   onReset,
   className,
@@ -93,7 +102,7 @@ export function Sash({
     <button
       type="button"
       aria-label={label}
-      title={label}
+      title={title ?? label}
       data-workbench-region="sash"
       data-sash-axis={axis}
       {...(splitId ? { "data-split-id": splitId } : {})}
@@ -110,11 +119,9 @@ export function Sash({
     >
       <span
         aria-hidden
+        style={lineStyle(axis, inset)}
         className={clsx(
-          "pointer-events-none absolute transition-colors",
-          axis === "x"
-            ? "left-1/2 top-0 h-full w-[1.5px] -translate-x-1/2"
-            : "left-0 top-1/2 h-[1.5px] w-full -translate-y-1/2",
+          "pointer-events-none absolute rounded-full transition-colors",
           dragging || highlight === "drag"
             ? "bg-sky-400/60"
             : highlight === "hover"
@@ -124,6 +131,28 @@ export function Sash({
       />
     </button>
   );
+}
+
+/**
+ * The line sits in the middle of the hit area with rounded caps; `inset` trims
+ * both ends so it starts and stops at the card edges — never past the top.
+ */
+function lineStyle(axis: "x" | "y", inset: number): CSSProperties {
+  return axis === "x"
+    ? {
+        left: "50%",
+        top: inset,
+        bottom: inset,
+        width: SASH_LINE,
+        marginLeft: -SASH_LINE / 2,
+      }
+    : {
+        top: "50%",
+        left: inset,
+        right: inset,
+        height: SASH_LINE,
+        marginTop: -SASH_LINE / 2,
+      };
 }
 
 type SashMeta = {
@@ -329,7 +358,7 @@ function CornerSash({
         if (!dragRef.current) onHighlight(null);
       }}
       className={clsx(
-        "absolute z-20 touch-none rounded-sm p-0",
+        "absolute z-20 touch-none rounded-full p-0",
         dragging ? "cursor-move bg-sky-400/50" : "cursor-move bg-transparent",
       )}
       style={{

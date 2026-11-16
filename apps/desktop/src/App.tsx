@@ -62,6 +62,7 @@ import {
   PANEL_MIN_SIZE,
   groupMinSize,
 } from "./workbench/layout/defaults";
+import { GROUP_INSET } from "./workbench/components/SplitView";
 import type {
   PageView,
   PanelRef,
@@ -1252,8 +1253,6 @@ export default function App() {
             setView("projects");
           }}
           onBrowseFiles={openExplorer}
-          // The shared Sash overlays the old handle; its mousedown is inert.
-          onResizeStart={(event) => event.preventDefault()}
         />
 
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -1270,8 +1269,10 @@ export default function App() {
             <Sash
               axis="x"
               label={t("settings.sidebar.resizeLabel")}
+              title={t("settings.sidebar.resizeTooltip")}
               className="z-20"
-              style={{ left: -6, top: 0, width: 8, height: "100%" }}
+              style={{ left: -4, top: 0, width: 8, height: "100%" }}
+              inset={GROUP_INSET}
               onDragStart={() => {
                 sidebar.beginResize();
                 return {

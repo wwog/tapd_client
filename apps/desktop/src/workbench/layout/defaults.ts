@@ -33,9 +33,11 @@ export const ROLE_DEFAULT_SIZE: Record<Exclude<GroupRole, "primary">, number> = 
 };
 
 /** Space between a group card and its neighbors, in px. */
-export const GROUP_GAP = 8;
-/** Sash hit area (the visible line stays 1.5px). */
+export const GROUP_GAP = 6;
+/** Sash hit area; wider than the gutter so the pointer catches it easily. */
 export const SASH_HIT = 8;
+/** Width of the sash highlight line. */
+export const SASH_LINE = 2;
 /** Corner handle size in px. */
 export const CORNER_SIZE = 8;
 
