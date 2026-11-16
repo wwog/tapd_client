@@ -24,7 +24,9 @@
   因此不需要匹配 ABI，只要版本够新即可。
 - 启动时必须用 `shell_path::user_path()` 解析 `node`（GUI 进程的 PATH 与终端不同），
   校验主次版本，失败给明确错误页（安装命令 + 重新检测），**不静默降级、不打包 node**。
-- 打包的是 JS 依赖树：`resources/dsh/{node_modules,plugins,profiles}`。
+- 打包的是压缩 payload：`resources/dsh/{manifest.json,payload-<version>-<platform>-<arch>.tar.zst}`
+  （约 19 MB，解压后约 233 MB / 2.5 万文件），首启按版本解到 `<data>/dsh/<version>/`；
+  payload 里是 JS 依赖树与自有插件，**不含 Node 二进制**。
 
 ### 2.1 已实测（2026-11-16，`/tmp/dsh-probe`）
 
@@ -71,6 +73,11 @@ P2b 的构建脚本按「必需集合 + 平台裁剪」生成 payload，并跑�
 
 启动子进程时**只**用绝对入口 + 显式 `DSH_HOME`，不 `source` 用户的 shell 配置、不写全局
 npm/pnpm 配置。`docs/DSH.md` 里所有配置都落在应用数据目录的 `agent.json` 与 `dsh/` 下。
+
+**密钥存储**：自定义模型 provider 的 API key 以**明文**写在应用数据目录的
+`agent.json`（`dshModel.apiKey`）里。这是本地单机应用，不接 Keychain、不做加密；启动运行时
+只通过环境变量 `TAPD_DSH_API_KEY` 交给子进程，profile 里写的是 `apiKeyEnv: TAPD_DSH_API_KEY`。
+密钥不进入 profile、不写进任何日志行。
 
 ## 3. 三条通道
 
@@ -405,7 +412,6 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 ### 8.8 当前未实现（UI 不要假设）
 
-- 团队任务板 `team/board`、`agentTeam` 投影未接入。
 - 归一化视图只在内存中；App 重启后需要等新快照/事件重建（dsh 自己仍持久化会话）。
 - 没有历史分页：快照是全量 `snapshotEvents()`，大仓库会话首次连接会一次推完。
 - image / file 内容块、子 agent 会话树、`subagent.*` 的归一化行都未实现。
@@ -436,7 +442,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
             | "done" | "failed" | "canceled",
   "status": "idle" | "running" | "failed", // dsh 会话实时状态
   "repoPath": "/repo",
-  "worktreePath": "/…/dsh/worktrees/<id>",  // 开启 Worktree 才有
+  "worktreePath": "<data>/worktrees/<session id>",  // 开启 Worktree 才有
   "branch": "tapd/11223344-…",
   "jsonPath": "/…/bug.json",
   "createdAt": "RFC3339", "updatedAt": "RFC3339",
@@ -510,3 +516,30 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - `notify` 模式：每次写/执行前推一张非阻塞通知卡（不等待）。
 - 手机：任务页可回答审批与提问（`dsh_approval_answer` / `dsh_question_answer`），
   Agent tab 用角标显示待处理数量；PWA 没有系统推送，进程内轮询为准。
+
+### 9.5 Agent Teams（P5）
+
+团队协作默认关闭；开启后按会话持久化（dsh 的 `team/mode`），重启沿用。
+
+```jsonc
+// dsh_team_get { sessionId } / dsh_team_set { sessionId, enabled } → { team }
+{
+  "sessionId": "…",
+  "enabled": false,
+  "tasks": [
+    { "id": "task-1", "subject": "改登录页", "description": "…",
+      "status": "pending" | "in_progress" | "completed",
+      "ownerId": "<subagent session id>", "ownerName": "架构/author",
+      "blockedBy": [], "writeScopes": ["src/login"], "ready": true }
+  ],
+  "failure": "…"                       // 投影自身报错时才有
+}
+```
+
+- 事件 `dsh://team { sessionId, team }`：连接、Team 开关、任务/归属变化时推送。
+- 运行行已在 `dsh-sdk-app` 的 profile 里（`agent-team` + `tool-agent-team`），
+  `defaultEnabled: false`；P5 不新增依赖。
+- 开启团队时，宿主向会话追加一条**同事名单**消息：已启用同事的角色、
+  技能包 `SKILL.md` 绝对路径，并要求把可拆分工作指派给匹配的同事/子 agent
+  并在任务板登记；没有匹配同事时按性质派给普通子 agent。
+- 任务板不创建独立工作目录；成员共用当前 checkout（worktree 语义不变）。

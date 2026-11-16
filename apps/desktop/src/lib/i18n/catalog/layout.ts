@@ -15,7 +15,6 @@ export const layout = {
   "layout.restore": ["还原布局", "Restore layout"],
   "layout.sashReset": ["双击复位", "Double-click to reset"],
   "layout.cornerSash": ["拖动调整横向与纵向尺寸", "Drag to resize both axes"],
-  "layout.noTabs": ["没有打开的标签", "No open tabs"],
 
   // ------------------------------------------------------------- tab drag
   "layout.dropCenter": ["放入标签栏", "Add to tab strip"],
@@ -23,7 +22,6 @@ export const layout = {
   "layout.dropRight": ["向右分屏", "Split right"],
   "layout.dropTop": ["向上分屏", "Split up"],
   "layout.dropBottom": ["向下分屏", "Split down"],
-  "layout.dragHint": ["拖动标签可移动到其他区域", "Drag the tab to move it to another area"],
   "layout.unsavedTitle": ["未保存的修改", "Unsaved changes"],
   "layout.unsavedBody": [
     "{name} 有未保存的修改，关闭后会丢失。",

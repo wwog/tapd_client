@@ -9,7 +9,6 @@ pub static MESSAGES: &[Message] = &[
     ("app.cache.workspace", "缺少 workspaceId", "Missing workspaceId"),
     ("app.comment.empty", "评论不能为空", "Comment must not be empty"),
     ("app.coworker.accent", "{}：accent 不是 #rrggbb，已忽略", "{}: accent is not #rrggbb; ignored"),
-    ("app.coworker.agent", "Agent 模块尚未初始化", "The Agent module is not initialized"),
     ("app.coworker.avatar.label", "avatar：{}", "avatar: {}"),
     ("app.coworker.avatar.load", "{}：头像未加载：{}", "{}: avatar was not loaded: {}"),
     ("app.coworker.avatar.missing", "头像不存在：{}", "Avatar does not exist: {}"),

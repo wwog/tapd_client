@@ -16,6 +16,10 @@ use tauri::{AppHandle, Manager};
 
 const PAYLOAD_SUBDIR: &str = "dsh";
 const MARKER: &str = "node_modules/@deepseek-ai/dsh/package.json";
+/// Build identity of the extracted tree. The dsh version alone is not enough:
+/// our plugins and the prune rules change between builds, and a rebuilt
+/// payload under an unchanged version must still replace the old tree.
+const DIGEST: &str = ".payload-digest";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,10 +89,22 @@ pub fn read_manifest(app: &AppHandle) -> Result<(PayloadManifest, PathBuf, Paylo
     Ok((manifest, root, source))
 }
 
+fn extracted_digest(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(DIGEST))
+        .ok()
+        .map(|value| value.trim().to_string())
+}
+
 fn extracted_version(dir: &Path) -> Option<String> {
     let raw = fs::read_to_string(dir.join(MARKER)).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     value.get("version")?.as_str().map(str::to_string)
+}
+
+/// A tree is usable only when both the version and the archive digest match.
+fn is_fresh(dir: &Path, manifest: &PayloadManifest) -> bool {
+    extracted_version(dir).as_deref() == Some(manifest.version.as_str())
+        && extracted_digest(dir).as_deref() == Some(manifest.sha256.as_str())
 }
 
 fn sha256_of(bytes: &[u8]) -> String {
@@ -106,7 +122,7 @@ pub fn status(app: &AppHandle) -> Result<PayloadStatus, String> {
         version: manifest.version.clone(),
         source,
         archive: manifest.archive_path(&root),
-        extracted: extracted_version(&dir).as_deref() == Some(manifest.version.as_str()),
+        extracted: is_fresh(&dir, &manifest),
         runtime_dir: dir,
     })
 }
@@ -129,7 +145,7 @@ pub fn ensure_payload(app: &AppHandle) -> Result<PayloadStatus, String> {
     let target = runtime_dir(&data_dir, &manifest.version);
     let archive = manifest.archive_path(&root);
 
-    if extracted_version(&target).as_deref() == Some(manifest.version.as_str()) {
+    if is_fresh(&target, &manifest) {
         remove_other_versions(&data_dir, &manifest.version);
         return Ok(PayloadStatus {
             version: manifest.version,
@@ -171,6 +187,8 @@ pub fn ensure_payload(app: &AppHandle) -> Result<PayloadStatus, String> {
         if extracted_version(&staging).as_deref() != Some(manifest.version.as_str()) {
             return Err("payload does not contain the expected dsh version".to_string());
         }
+        fs::write(staging.join(DIGEST), format!("{}\n", manifest.sha256))
+            .map_err(|error| format!("payload digest marker failed: {error}"))?;
         Ok(())
     })();
 

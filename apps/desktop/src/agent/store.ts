@@ -13,6 +13,7 @@ import {
   dshPolicyApi,
   dshSettingsApi,
   dshTaskApi,
+  dshTeamApi,
   type DshAgentConfig,
   type DshApprovalEvent,
   type DshApprovalOutcome,
@@ -27,11 +28,16 @@ import {
   type DshStream,
   type DshTask,
   type DshTasksEvent,
+  type DshTeam,
+  type DshTeamEvent,
 } from "../lib/dsh";
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
 
 export type AgentTab = "tasks" | "config";
+
+/** Which pane the task header shows; the transcript is the fallback. */
+export type AgentTeamView = "chat" | "board";
 
 export type LiveToolCall = {
   callId: string;
@@ -91,6 +97,14 @@ export type AgentState = {
   pendingPrompts: Record<string, string[] | undefined>;
   approvals: PendingApproval[];
   questions: PendingQuestion[];
+  /** Team board per session; absent until read or pushed. */
+  team: Record<string, DshTeam>;
+  /** Sessions whose board was read once; `dsh://team` updates it afterwards. */
+  teamLoaded: Record<string, true>;
+  teamBusy: Record<string, boolean>;
+  teamErrors: Record<string, string | null>;
+  /** Explicit transcript/board choice; absent means "derive from team mode". */
+  teamViews: Record<string, AgentTeamView>;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -124,6 +138,11 @@ const initialState: AgentState = {
   pendingPrompts: {},
   approvals: [],
   questions: [],
+  team: {},
+  teamLoaded: {},
+  teamBusy: {},
+  teamErrors: {},
+  teamViews: {},
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -234,7 +253,10 @@ function adoptTasks(tasks: DshTask[]): void {
   }));
   persistPrefs();
 
-  if (moved && selectedId) void loadEntries(selectedId);
+  if (moved && selectedId) {
+    void loadEntries(selectedId);
+    ensureTeam(selectedId);
+  }
 }
 
 function clearSelection(sessionId: string): void {
@@ -252,6 +274,61 @@ function clearSelection(sessionId: string): void {
   persistPrefs();
   const selected = agentStore.get().selectedId;
   if (selected) void loadEntries(selected);
+}
+
+// ---------------------------------------------------------------------------
+// Team board (docs/DSH.md §9.5)
+// ---------------------------------------------------------------------------
+
+/** Reads in flight; keeps selection and enqueue from issuing the same read. */
+const teamReads = new Set<string>();
+
+/** Team mode is offered on tasks with workflow metadata, not free chats. */
+function hasTeamUi(state: AgentState, sessionId: string): boolean {
+  return (state.tasks ?? []).some((task) => task.id === sessionId && task.kind !== "chat");
+}
+
+/** The pane to show: the reader's explicit choice, else the team mode default. */
+export function agentTeamView(state: AgentState, sessionId: string | null): AgentTeamView {
+  if (!sessionId) return "chat";
+  return state.teamViews[sessionId] ?? (state.team[sessionId]?.enabled ? "board" : "chat");
+}
+
+function applyTeam(sessionId: string, team: DshTeam): void {
+  update((state) => ({
+    ...state,
+    team: { ...state.team, [sessionId]: team },
+    teamLoaded: { ...state.teamLoaded, [sessionId]: true },
+    teamErrors: { ...state.teamErrors, [sessionId]: null },
+  }));
+}
+
+/**
+ * One read per session; the event channel keeps the board current afterwards.
+ * A failed read is retried the next time the task is selected.
+ */
+async function readTeam(sessionId: string): Promise<void> {
+  if (teamReads.has(sessionId)) return;
+  teamReads.add(sessionId);
+  try {
+    const { team } = await dshTeamApi.get(sessionId);
+    applyTeam(sessionId, team);
+  } catch (error) {
+    update((state) => ({
+      ...state,
+      teamErrors: { ...state.teamErrors, [sessionId]: String(error) },
+    }));
+  } finally {
+    teamReads.delete(sessionId);
+  }
+}
+
+function ensureTeam(sessionId: string | null): void {
+  if (!sessionId) return;
+  const state = agentStore.get();
+  if (!hasTeamUi(state, sessionId)) return;
+  if (state.teamLoaded[sessionId] || teamReads.has(sessionId)) return;
+  void readTeam(sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +570,7 @@ async function selectSession(sessionId: string): Promise<void> {
     },
   }));
   persistPrefs();
+  ensureTeam(sessionId);
   await loadEntries(sessionId);
 }
 
@@ -527,6 +605,9 @@ export const agentActions = {
       // same reducers the live events use so the cards render on first paint.
       agentActions.loadPending(),
     ]);
+    // A selection restored from preferences is not a move, so `adoptTasks`
+    // did not read its board.
+    ensureTeam(agentStore.get().selectedId);
   },
 
   setTab: (tab: AgentTab): void => {
@@ -604,6 +685,7 @@ export const agentActions = {
     }));
     persistPrefs();
     void loadEntries(task.id);
+    ensureTeam(task.id);
   },
 
   /** Task workflow actions. They throw so the action bar shows the reason next
@@ -631,6 +713,50 @@ export const agentActions = {
     update((state) =>
       state.config ? { ...state, config: { ...state.config, permissionMode: saved } } : state,
     );
+  },
+
+  setTeamView: (sessionId: string, view: AgentTeamView): void => {
+    update((state) => ({
+      ...state,
+      teamViews: { ...state.teamViews, [sessionId]: view },
+    }));
+  },
+
+  /** Retries a failed board read; the toggle itself never bypasses this. */
+  refreshTeam: (sessionId: string): void => {
+    void readTeam(sessionId);
+  },
+
+  /**
+   * Switches team mode for one session. The returned board replaces the local
+   * copy, and an explicit pane choice is dropped so the new default applies.
+   */
+  setTeamEnabled: async (sessionId: string, enabled: boolean): Promise<void> => {
+    if (agentStore.get().teamBusy[sessionId]) return;
+    update((state) => ({
+      ...state,
+      teamBusy: { ...state.teamBusy, [sessionId]: true },
+      teamErrors: { ...state.teamErrors, [sessionId]: null },
+    }));
+    try {
+      const { team } = await dshTeamApi.set(sessionId, enabled);
+      applyTeam(sessionId, team);
+      update((state) => {
+        const teamViews = { ...state.teamViews };
+        delete teamViews[sessionId];
+        return { ...state, teamViews };
+      });
+    } catch (error) {
+      update((state) => ({
+        ...state,
+        teamErrors: { ...state.teamErrors, [sessionId]: String(error) },
+      }));
+    } finally {
+      update((state) => ({
+        ...state,
+        teamBusy: { ...state.teamBusy, [sessionId]: false },
+      }));
+    }
   },
 
   refreshStatus: async (): Promise<void> => {
@@ -811,6 +937,8 @@ export const agentEvents = {
   question: (payload: DshQuestionEvent): void => applyQuestion(payload),
   /** The list is authoritative; replace it and repair the selection. */
   tasks: (payload: DshTasksEvent): void => adoptTasks(payload.tasks),
+  /** The board is authoritative for its session, including after a toggle. */
+  team: (payload: DshTeamEvent): void => applyTeam(payload.sessionId, payload.team),
   /** The capsule asked for a session: show the task list on that task. */
   focusSession: (payload: DshFocusSessionEvent): void => {
     update((state) => ({ ...state, tab: "tasks" }));

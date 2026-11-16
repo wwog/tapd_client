@@ -45,6 +45,29 @@ export const agent = {
   "agent.task.stop": ["停止", "Stop"],
   "agent.task.openExport": ["打开导出目录", "Open export folder"],
 
+  // Team board (P5).
+  "agent.team.toggle": ["团队协作", "Team mode"],
+  "agent.team.toggleHint": [
+    "开启后主 Agent 会把可拆分的工作派给同事，并在任务板登记。",
+    "The lead agent hands splittable work to coworkers and registers it on the board.",
+  ],
+  "agent.team.viewChat": ["会话", "Chat"],
+  "agent.team.viewBoard": ["任务板", "Board"],
+  "agent.team.lead": ["协调者", "Coordinator"],
+  "agent.team.colPending": ["待分配", "Pending"],
+  "agent.team.colInProgress": ["进行中", "In progress"],
+  "agent.team.colCompleted": ["已完成", "Done"],
+  "agent.team.unassigned": ["未分配", "Unassigned"],
+  "agent.team.blocked": ["{n} 项阻塞", "{n} blocked"],
+  "agent.team.ready": ["可开始", "Ready"],
+  "agent.team.moreScopes": ["+{n}", "+{n}"],
+  "agent.team.empty": ["任务板为空", "No board tasks"],
+  "agent.team.emptyHint": [
+    "团队协作开启后，主 Agent 会把可拆分的工作登记在这里。",
+    "With team mode on, the lead agent registers splittable work here.",
+  ],
+  "agent.team.loadFailed": ["任务板读取失败", "Could not load the board"],
+
   // Enqueue sheet (bug footer, bug row, local item row).
   "agent.enqueue.bugHint": ["导出缺陷并交给 Agent 修复", "Export the bug and let the agent fix it"],
   "agent.enqueue.placeholder": [

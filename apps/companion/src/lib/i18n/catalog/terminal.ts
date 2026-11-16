@@ -55,8 +55,4 @@ export const terminal = {
   "mobile.terminal.chooseFolder": ["选择目录", "Choose folder"],
   "mobile.terminal.homeFolder": ["家目录", "Home folder"],
   "mobile.terminal.projectFolders": ["项目目录", "Project folders"],
-  "mobile.terminal.sessionTerminated": [
-    "无法连接这个终端",
-    "Couldn't connect to this terminal",
-  ],
 } as const satisfies Catalog;

@@ -201,3 +201,32 @@
 - 文件 / 终端项目列表：TAPD 项目只有在 `agentConfig().projects[id].repoPath` 非空时才显示；本地项目始终显示；终端新建仍保留「家目录」。文件页额外提供 `__root__`（根目录）源，从 `/` 只读浏览，写接口对根目录返回 403。
 - 限制：交给 Agent 前桌面目录必须是带 `HEAD` 的 git 仓库，否则返回明确错误；根目录浏览只读，不能编辑系统文件。
 
+## 12. 内置 Agent 任务（dsh P4，2026-11-16）
+
+内置 Agent 换成 dsh 运行时后，手机端的 Agent 页按任务闭环重做（本条替换 §8 里旧的
+`agent_*` 队列命令，旧的队列 / 历史 / 待审核 / 待合并四个子页合并为一个列表）。
+
+- **Agent tab = 统一任务列表**：`dsh_tasks` 返回 `{ tasks: DshTask[] }`，按项目分组
+  （TAPD / 本地 / 未关联），每行是 workflow chip（`running` / `awaiting_review` /
+  `awaiting_merge` / `done` / `failed` / `canceled`）+ 实时运行点；动作在任务条上直接给：
+  通过（`dsh_task_approve`）、合并（`dsh_task_merge`）、取消（`dsh_task_cancel`，可选 stash）、
+  查看 diff（`dsh_task_diff`）。入队走 `dsh_task_enqueue_bug` / `dsh_task_enqueue_local`，
+  恢复旧会话走 `dsh_task_resume`。
+- **审批与提问可在手机上回答**：`dsh_pending` 返回所有阻塞请求（approval / question），
+  `dsh_approval_answer` / `dsh_question_answer` 直接回执；桌面先登记再发事件，所以手机轮询
+  拿到的快照与实时事件一致。Agent tab 角标显示待处理数量。
+- **没有实时流**：token 级 `dsh://stream` 只在桌面端消费；手机读已提交的
+  `dsh_session_entries`（打开会话时 3s 轮询）和任务列表，不渲染 live 文本。
+- **新增 `dsh_*` 白名单**（仍走 `/companion/api/feature`，60 次/分钟/ IP，白名单外 403）：
+  - 运行时：`dsh_status` / `dsh_start` / `dsh_stop` / `dsh_sessions` / `dsh_session_entries` /
+    `dsh_pending` / `dsh_new_session` / `dsh_prompt` / `dsh_approval_answer` / `dsh_question_answer`
+  - 任务：`dsh_tasks` / `dsh_task_enqueue_bug` / `dsh_task_enqueue_local` / `dsh_task_approve` /
+    `dsh_task_merge` / `dsh_task_cancel` / `dsh_task_diff` / `dsh_task_resume`
+  - 权限与团队：`dsh_policy_get` / `dsh_policy_set` / `dsh_team_get` / `dsh_team_set`
+- **单一 8 s 轮询**：`lib/dsh.ts` 的 `useAgentFeedPolling`（`FEED_POLL_MS = 8_000`）由 `App`
+  挂载一次，同时拉 `dsh_tasks` + `dsh_pending`，用 `useSyncExternalStore` 共享给 tab 角标、
+  任务列表与会话页；页面隐藏时暂停，恢复可见立即补一轮。旧的按页 8s/30s 自适应轮询不再承担
+  Agent 数据。
+- 设置页仍通过 `settings_agent_get` / `settings_agent_set` 改 Worktree 与执行单元；提示词模板与
+  模型密钥只在桌面编辑。
+

@@ -68,6 +68,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     "dsh_task_resume",
     "dsh_policy_get",
     "dsh_policy_set",
+    "dsh_team_get",
+    "dsh_team_set",
     // Agent 配置（Worktree 隔离与执行单元；提示词仍只在桌面端编辑）
     "settings_agent_get",
     "settings_agent_set",
@@ -209,6 +211,8 @@ mod tests {
     "dsh_task_resume",
     "dsh_policy_get",
     "dsh_policy_set",
+    "dsh_team_get",
+    "dsh_team_set",
     "settings_agent_get",
     "settings_agent_set",
     "notification_settings_get",

@@ -1,10 +1,6 @@
 /** 同事包页面（CoworkersPage）的文案；随协作功能留在伴侣端。 */
 export const coworkers = {
   "magent.coworkers": ["同事包", "Coworker packs"],
-  "magent.coworkersHint": [
-    "同事包由桌面端的 assets/coworker 提供，勾选后随内置 Agent 的会话一起使用。",
-    "Coworker packs come from the desktop assets/coworker folder; selected packs join built-in agent sessions.",
-  ],
   "magent.coworkersSelectedHint": [
     "勾选的同事会随 Agent 会话一起使用。",
     "Selected coworkers are used in agent sessions.",

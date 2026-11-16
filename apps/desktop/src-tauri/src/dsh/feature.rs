@@ -165,6 +165,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_start" => serde_json::to_value(start(app).await?).map_err(|error| error.to_string()),
         "dsh_stop" => serde_json::to_value(stop(app).await?).map_err(|error| error.to_string()),
         "dsh_sessions" => sessions(app),
+        name if name.starts_with("dsh_team_") => super::team::command(app, name, payload).await,
         name if name.starts_with("dsh_task") => super::tasks::command(app, name, payload).await,
         name if name.starts_with("dsh_policy_") => super::policy::command(app, name, payload).await,
         "dsh_pending" => pending(app),

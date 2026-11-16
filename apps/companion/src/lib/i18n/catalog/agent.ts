@@ -69,6 +69,29 @@ export const agent = {
   "mobile.agent.questionCustomPlaceholder": ["输入回答", "Type an answer"],
   "mobile.agent.questionFailed": ["提交回答失败", "Couldn't submit the answer"],
 
+  /* -- Team board --------------------------------------------------------- */
+  "mobile.agent.teamToggle": ["团队协作", "Team mode"],
+  "mobile.agent.teamToggleHint": [
+    "开启后主 Agent 会把可拆分的工作派给同事，并在任务板登记。",
+    "The lead agent hands splittable work to coworkers and registers it on the board.",
+  ],
+  "mobile.agent.teamToggleFailed": ["切换团队协作失败", "Couldn't switch team mode"],
+  "mobile.agent.viewChat": ["会话", "Chat"],
+  "mobile.agent.viewBoard": ["任务板", "Board"],
+  "mobile.agent.colPending": ["待分配", "Pending"],
+  "mobile.agent.colInProgress": ["进行中", "In progress"],
+  "mobile.agent.colCompleted": ["已完成", "Done"],
+  "mobile.agent.teamUnassigned": ["未分配", "Unassigned"],
+  "mobile.agent.teamBlocked": ["{n} 项阻塞", "{n} blocked"],
+  "mobile.agent.teamReady": ["可开始", "Ready"],
+  "mobile.agent.teamMoreScopes": ["+{n}", "+{n}"],
+  "mobile.agent.teamEmpty": ["任务板为空", "No board tasks"],
+  "mobile.agent.teamEmptyHint": [
+    "团队协作开启后，主 Agent 会把可拆分的工作登记在这里。",
+    "With team mode on, the lead agent registers splittable work here.",
+  ],
+  "mobile.agent.teamLoadFailed": ["读取任务板失败", "Couldn't load the board"],
+
   /* -- Session view ------------------------------------------------------- */
   "mobile.agent.syncing": ["同步中", "Syncing"],
   "mobile.agent.entriesLoadFailed": ["读取消息失败", "Couldn't load messages"],

@@ -1,11 +1,8 @@
 //! Local work-item package: the single file an agent reads for a local task.
 //!
 //! Local projects have no TAPD counterpart, so there is no bug fetch and no
-//! media download — only the item fields the user typed in the client.
-//!
-//! The built-in agent flow reuses this when local items are handed to a session
-//! (P4); until then nothing calls into the module.
-#![allow(dead_code)]
+//! media download — only the item fields the user typed in the client. The
+//! built-in agent flow calls this when a local item is handed to a session.
 
 use std::path::PathBuf;
 

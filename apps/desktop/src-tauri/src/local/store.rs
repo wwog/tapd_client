@@ -365,7 +365,6 @@ impl LocalStore {
 
     /// Links an agent task to the item. The caller attaches only after the task
     /// exists, so a failed enqueue leaves the item untouched.
-    #[allow(dead_code)] // used once local items feed built-in sessions (P4)
     pub fn attach_task(&self, item_id: &str, task_id: &str, now: &str) -> Result<WorkItem, String> {
         let item_id = item_id.trim();
         self.with_conn(|conn| {
@@ -382,7 +381,6 @@ impl LocalStore {
     /// retrying a local task creates a new task id; the item must still complete
     /// and now point at the task that actually succeeded. Only items still in
     /// progress are touched, so a manual move back to pending is respected.
-    #[allow(dead_code)] // used once local items feed built-in sessions (P4)
     pub fn complete_work_item(
         &self,
         project_id: &str,
@@ -402,7 +400,7 @@ impl LocalStore {
 
     /// Points the item from the old task at a retried task and reopens it.
     /// TAPD task ids simply update zero rows.
-    #[allow(dead_code)] // used once local items feed built-in sessions (P4)
+    #[allow(dead_code)] // only the tests exercise it; the retry path does not relink yet
     pub fn relink_task(
         &self,
         old_task_id: &str,
@@ -422,7 +420,6 @@ impl LocalStore {
     /// Drops the link when a task record is deleted. The status is the user's
     /// own field (see `WorkItem::clear_task`), so unlinking never moves an item
     /// back to pending behind their back.
-    #[allow(dead_code)] // used once local items feed built-in sessions (P4)
     pub fn forget_task(&self, task_id: &str, now: &str) -> Result<usize, String> {
         self.with_conn(|conn| {
             conn.execute(
@@ -436,7 +433,6 @@ impl LocalStore {
 
     /// One item together with its project, loaded in the same critical section
     /// so an enqueue cannot mix two different project edits.
-    #[allow(dead_code)] // used once local items feed built-in sessions (P4)
     pub fn item_with_project(&self, item_id: &str) -> Result<(WorkItem, LocalProject), String> {
         let item_id = item_id.trim();
         self.with_conn(|conn| {

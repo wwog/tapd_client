@@ -178,6 +178,34 @@ export type DshTask = {
   merge?: DshTaskMerge | null;
 };
 
+// ---------------------------------------------------------------------------
+// Team board (docs/DSH.md §9.5)
+// ---------------------------------------------------------------------------
+
+export type DshTeamTaskStatus = "pending" | "in_progress" | "completed";
+
+export type DshTeamTask = {
+  id: string;
+  subject: string;
+  description: string;
+  status: DshTeamTaskStatus;
+  /** The subagent session that owns the task. */
+  ownerId?: string;
+  ownerName?: string;
+  blockedBy: string[];
+  writeScopes: string[];
+  /** Nothing blocks this task, so the owner can start right away. */
+  ready: boolean;
+};
+
+export type DshTeam = {
+  sessionId: string;
+  enabled: boolean;
+  tasks: DshTeamTask[];
+  /** Present only when the runtime's own projection failed. */
+  failure?: string;
+};
+
 export const dshSettingsApi = {
   get: () => agentSettingsApi.get(),
   save: (config: DshAgentConfig) => agentSettingsApi.set(config) as Promise<DshAgentConfig>,
@@ -210,6 +238,8 @@ export type DshApprovalEvent = { rpcId: number; request: DshApprovalRequest };
 export type DshQuestionEvent = { rpcId: number; request: DshQuestionRequest };
 export type DshErrorEvent = { code: string; message: string };
 export type DshTasksEvent = { tasks: DshTask[] };
+/** Pushed on connect, on every switch and on any task or owner change. */
+export type DshTeamEvent = { sessionId: string; team: DshTeam };
 /** The capsule asks the main window to reveal a session (docs/DSH.md §9.4). */
 export type DshFocusSessionEvent = { sessionId: string };
 
@@ -229,7 +259,9 @@ type DshFeatureCommand =
   | "dsh_task_cancel"
   | "dsh_task_diff"
   | "dsh_task_resume"
-  | "dsh_policy_set";
+  | "dsh_policy_set"
+  | "dsh_team_get"
+  | "dsh_team_set";
 
 const feature = <T>(name: DshFeatureCommand, payload: unknown = {}): Promise<T> =>
   invoke<T>("feature_command", { name, payload });
@@ -277,6 +309,14 @@ export const dshPolicyApi = {
   /** The mode is part of `agent_settings_get`; only writes go through policy. */
   set: (mode: DshPermissionMode) =>
     feature<{ mode: DshPermissionMode }>("dsh_policy_set", { mode }),
+};
+
+export const dshTeamApi = {
+  /** Reads the persisted board; a session with no board returns it disabled. */
+  get: (sessionId: string) => feature<{ team: DshTeam }>("dsh_team_get", { sessionId }),
+  /** Enabling also queues the coworker roster into the session. */
+  set: (sessionId: string, enabled: boolean) =>
+    feature<{ team: DshTeam }>("dsh_team_set", { sessionId, enabled }),
 };
 
 /** A request the runtime is still blocked on (snapshot after a page reload). */

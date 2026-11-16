@@ -19,16 +19,21 @@ import { Badge, type BadgeTone } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
 import {
   applyAgentTask,
+  applyAgentTeam,
   dshApi,
   isTerminalWorkflow,
   refreshAgentFeed,
   useAgentFeed,
+  watchAgentTeam,
   type DshAnswer,
   type DshApprovalOutcome,
   type DshEntry,
   type DshPendingRequest,
   type DshStatus,
   type DshTask,
+  type DshTeam,
+  type DshTeamTask,
+  type DshTeamTaskStatus,
   type DshToolStatus,
   type DshWorkflow,
 } from "../lib/dsh";
@@ -80,6 +85,15 @@ const TOOL_LABELS: Record<DshToolStatus, MessageKey> = {
   ok: "common.done",
   error: "common.failed",
 };
+
+const TEAM_COLUMNS: ReadonlyArray<{ status: DshTeamTaskStatus; label: MessageKey }> = [
+  { status: "pending", label: "mobile.agent.colPending" },
+  { status: "in_progress", label: "mobile.agent.colInProgress" },
+  { status: "completed", label: "mobile.agent.colCompleted" },
+];
+
+/** Scope chips per card; the rest collapse into a `+n` chip. */
+const MAX_SCOPES = 3;
 
 type ApprovalPending = Extract<DshPendingRequest, { kind: "approval" }>;
 type QuestionPending = Extract<DshPendingRequest, { kind: "question" }>;
@@ -927,6 +941,176 @@ function QuestionSheet(props: { pending: QuestionPending; onClose: () => void })
   );
 }
 
+/* -------------------------------------------------------------------------
+   Team board (docs/DSH.md §9.5)
+   ------------------------------------------------------------------------- */
+
+function TeamSwitch(props: {
+  checked: boolean;
+  disabled: boolean;
+  label: string;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked}
+      aria-label={props.label}
+      title={props.label}
+      disabled={props.disabled}
+      onClick={() => props.onChange(!props.checked)}
+      className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
+        props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
+      } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
+    >
+      <span
+        className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
+          props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
+        }`}
+      />
+    </button>
+  );
+}
+
+/** Transcript/board choice; the board is the default while team mode is on. */
+function ViewSwitch(props: {
+  value: "chat" | "board";
+  onChange: (value: "chat" | "board") => void;
+}) {
+  const options: ReadonlyArray<{ value: "chat" | "board"; label: MessageKey }> = [
+    { value: "chat", label: "mobile.agent.viewChat" },
+    { value: "board", label: "mobile.agent.viewBoard" },
+  ];
+  return (
+    <div
+      role="tablist"
+      className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
+    >
+      {options.map((option) => {
+        const active = option.value === props.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => props.onChange(option.value)}
+            className={`rounded-md px-2.5 py-1 text-ui-sm transition ${
+              active ? "bg-slate-100 text-slate-900" : "text-slate-500 active:bg-overlay-soft"
+            }`}
+          >
+            {t(option.label)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TeamCard(props: { task: DshTeamTask }) {
+  const task = props.task;
+  const scopes = task.writeScopes.slice(0, MAX_SCOPES);
+  const hidden = task.writeScopes.length - scopes.length;
+  return (
+    <article className="rounded-lg border border-border bg-surface px-3 py-2">
+      <p
+        className="line-clamp-2 text-ui-caption leading-5 text-slate-900"
+        title={task.description || undefined}
+      >
+        {task.subject}
+      </p>
+      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-ui-xs text-slate-500">
+        <span className="max-w-full truncate">
+          {task.ownerName || t("mobile.agent.teamUnassigned")}
+        </span>
+        {task.blockedBy.length > 0 ? (
+          <span className="shrink-0 text-amber-700" title={task.blockedBy.join(", ")}>
+            {t("mobile.agent.teamBlocked", { n: task.blockedBy.length })}
+          </span>
+        ) : null}
+        {task.ready && task.status === "pending" ? (
+          <span className="shrink-0 text-emerald-700">{t("mobile.agent.teamReady")}</span>
+        ) : null}
+      </p>
+      {scopes.length > 0 ? (
+        <p className="mt-1 flex flex-wrap gap-1">
+          {scopes.map((scope) => (
+            <span
+              key={scope}
+              title={scope}
+              className="max-w-full truncate rounded-md border border-border px-1 font-mono text-ui-2xs text-slate-500"
+            >
+              {scope}
+            </span>
+          ))}
+          {hidden > 0 ? (
+            <span className="px-1 text-ui-2xs text-slate-400">
+              {t("mobile.agent.teamMoreScopes", { n: hidden })}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+/** Vertical status groups; empty groups and an empty board carry no rows. */
+function TeamBoard(props: { team: DshTeam | null; error: string | null }) {
+  const team = props.team;
+  if (!team) {
+    return props.error ? (
+      <p
+        className="px-4 py-6 text-ui-caption leading-5 text-rose-600"
+        title={t("mobile.agent.teamLoadFailed")}
+      >
+        {props.error}
+      </p>
+    ) : (
+      <p className="px-4 py-6 text-ui-caption text-slate-400">{t("common.reading")}</p>
+    );
+  }
+
+  return (
+    <div>
+      {team.failure ? (
+        <p
+          className="mx-4 mt-2 select-text truncate text-ui-xs leading-5 text-amber-700"
+          title={team.failure}
+        >
+          {team.failure}
+        </p>
+      ) : null}
+
+      {team.tasks.length === 0 ? (
+        <p
+          className="px-4 py-10 text-center text-ui-base text-slate-400"
+          title={t("mobile.agent.teamEmptyHint")}
+        >
+          {t("mobile.agent.teamEmpty")}
+        </p>
+      ) : (
+        TEAM_COLUMNS.map((column) => {
+          const tasks = team.tasks.filter((task) => task.status === column.status);
+          if (tasks.length === 0) return null;
+          return (
+            <section key={column.status}>
+              <h2 className="mt-3 border-y border-border bg-overlay-soft px-4 py-1.5 text-ui-2xs text-slate-500">
+                {t(column.label)}
+              </h2>
+              <div className="space-y-2 px-4 py-2">
+                {tasks.map((task) => (
+                  <TeamCard key={task.id} task={task} />
+                ))}
+              </div>
+            </section>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 /**
  * One task: header (title + workflow chip), workflow actions, polled
  * transcript, answerable approvals/questions and the composer. No live token
@@ -969,6 +1153,10 @@ export function AgentSessionPage(props: { id: string }) {
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [activeQuestion, setActiveQuestion] = useState<number | null>(null);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
+  /** Explicit pane; `null` follows the team mode default (board when on). */
+  const [teamView, setTeamView] = useState<"chat" | "board" | null>(null);
 
   const alive = useRef(true);
   const entriesInFlight = useRef(false);
@@ -1024,6 +1212,16 @@ export function AgentSessionPage(props: { id: string }) {
       off();
     };
   }, [loadEntries]);
+
+  // The app's only poller also refreshes this session's board while the page
+  // is open, so the board never needs an interval of its own. Free chats have
+  // no board, and a failed first task read simply leaves it unregistered.
+  const hasTeam = Boolean(task && task.kind !== "chat");
+  useEffect(() => {
+    if (!hasTeam) return;
+    watchAgentTeam(id);
+    return () => watchAgentTeam(null);
+  }, [id, hasTeam]);
 
   // A task restored from a previous desktop run has no live session until it
   // is resumed. Do that once, on open, so its persisted transcript appears.
@@ -1093,6 +1291,28 @@ export function AgentSessionPage(props: { id: string }) {
     setDiffError(null);
   };
 
+  const team = feed.teams[id];
+  const teamEnabled = Boolean(team?.enabled);
+  const boardView = teamEnabled && (teamView ?? "board") === "board";
+
+  /** Team mode is per session; the returned board replaces the polled copy. */
+  const toggleTeam = async (enabled: boolean) => {
+    if (teamBusy) return;
+    setTeamBusy(true);
+    setTeamError(null);
+    try {
+      const { team: next } = await dshApi.teamSet(id, enabled);
+      applyAgentTeam(id, next);
+      // The new mode decides the default pane again.
+      setTeamView(null);
+      void refreshAgentFeed();
+    } catch (err) {
+      if (alive.current) setTeamError(asApiError(err).message);
+    } finally {
+      if (alive.current) setTeamBusy(false);
+    }
+  };
+
   const openQuestion = useMemo(
     () => questions.find((item) => item.rpcId === activeQuestion) ?? null,
     [questions, activeQuestion],
@@ -1159,6 +1379,22 @@ export function AgentSessionPage(props: { id: string }) {
 
   const title = task?.title || t("mobile.agent.untitledSession");
 
+  /** Same cards in either pane; the board puts them above the groups. */
+  const pendingCards = (
+    <>
+      {approvals.map((request) => (
+        <ApprovalCard key={request.rpcId} request={request} />
+      ))}
+      {questions.map((request) => (
+        <QuestionCard
+          key={request.rpcId}
+          request={request}
+          onAnswer={() => setActiveQuestion(request.rpcId)}
+        />
+      ))}
+    </>
+  );
+
   return (
     <div>
       {/* Header and workflow actions share one sticky block: opening a task
@@ -1178,6 +1414,41 @@ export function AgentSessionPage(props: { id: string }) {
           </span>
           {task && task.kind !== "chat" ? <WorkflowChip workflow={task.workflow} /> : null}
         </header>
+
+        {task && task.kind !== "chat" ? (
+          <section className="border-b border-border bg-canvas px-4 py-1.5">
+            <div className="flex items-center gap-2">
+              <div
+                className="inline-flex min-w-0 items-center gap-2 text-ui-xs text-slate-500"
+                title={t("mobile.agent.teamToggleHint")}
+              >
+                <TeamSwitch
+                  checked={teamEnabled}
+                  disabled={teamBusy}
+                  label={t("mobile.agent.teamToggle")}
+                  onChange={(value) => void toggleTeam(value)}
+                />
+                <span className="truncate">{t("mobile.agent.teamToggle")}</span>
+              </div>
+              {teamEnabled ? (
+                <div className="ml-auto">
+                  <ViewSwitch
+                    value={boardView ? "board" : "chat"}
+                    onChange={(value) => setTeamView(value)}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {teamError ? (
+              <p
+                className="mt-1 text-ui-xs leading-5 text-rose-600"
+                title={t("mobile.agent.teamToggleFailed")}
+              >
+                {teamError}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         {task && !isTerminalWorkflow(task.workflow) ? (
           <section className="border-b border-border px-4 py-2.5">
@@ -1291,44 +1562,48 @@ export function AgentSessionPage(props: { id: string }) {
         </p>
       ) : null}
 
-      {entriesError ? (
-        <p
-          className="px-4 py-2 text-ui-xs text-rose-600"
-          title={t("mobile.agent.entriesLoadFailed")}
-        >
-          {entriesError}
-        </p>
-      ) : null}
+      {boardView ? (
+        <>
+          {/* A blocking ask wins over the board: the turn waits until it is
+              answered, and the cards must not need a pane switch. */}
+          {pendingCards}
+          <TeamBoard team={team ?? null} error={feed.teamErrors[id] ?? null} />
+        </>
+      ) : (
+        <>
+          {entriesError ? (
+            <p
+              className="px-4 py-2 text-ui-xs text-rose-600"
+              title={t("mobile.agent.entriesLoadFailed")}
+            >
+              {entriesError}
+            </p>
+          ) : null}
 
-      {entries === null && !entriesError ? <TranscriptSkeleton /> : null}
+          {entries === null && !entriesError ? <TranscriptSkeleton /> : null}
 
-      {sorted && sorted.length === 0 ? (
-        <div className="grid place-items-center px-6 py-16 text-center">
-          <p className="text-ui-base text-slate-400" title={t("mobile.agent.emptyTranscriptHint")}>
-            {t("mobile.agent.emptyTranscript")}
-          </p>
-        </div>
-      ) : null}
+          {sorted && sorted.length === 0 ? (
+            <div className="grid place-items-center px-6 py-16 text-center">
+              <p
+                className="text-ui-base text-slate-400"
+                title={t("mobile.agent.emptyTranscriptHint")}
+              >
+                {t("mobile.agent.emptyTranscript")}
+              </p>
+            </div>
+          ) : null}
 
-      {sorted && sorted.length > 0 ? (
-        <div className="space-y-3 px-4 py-3">
-          {sorted.map((entry) => (
-            <EntryRow key={entry.seq} entry={entry} />
-          ))}
-        </div>
-      ) : null}
+          {sorted && sorted.length > 0 ? (
+            <div className="space-y-3 px-4 py-3">
+              {sorted.map((entry) => (
+                <EntryRow key={entry.seq} entry={entry} />
+              ))}
+            </div>
+          ) : null}
 
-      {approvals.map((request) => (
-        <ApprovalCard key={request.rpcId} request={request} />
-      ))}
-
-      {questions.map((request) => (
-        <QuestionCard
-          key={request.rpcId}
-          request={request}
-          onAnswer={() => setActiveQuestion(request.rpcId)}
-        />
-      ))}
+          {pendingCards}
+        </>
+      )}
 
       <div className="sticky bottom-14 z-20 border-t border-border bg-canvas px-3 py-2">
         {sendError ? (

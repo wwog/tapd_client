@@ -64,8 +64,6 @@ export const local = {
   "mobile.local.moveToPending": ["移回待处理", "Move back to pending"],
   "mobile.local.markDone": ["标记完成", "Mark done"],
   "mobile.local.reopen": ["重新打开", "Reopen"],
-  "mobile.local.toAgent": ["交给 Agent", "Hand to Agent"],
-  "mobile.local.openTask": ["查看 Agent 任务", "Open Agent task"],
   "mobile.local.deleteConfirm": [
     "删除后无法恢复，确定删除？",
     "This cannot be undone. Delete it?",
@@ -82,19 +80,4 @@ export const local = {
   ],
   "mobile.local.picker.notFound": ["文件夹不存在", "Folder not found"],
   "mobile.local.picker.loadFailed": ["读取目录失败", "Couldn't load the folder"],
-
-  /* -- Hand to Agent ------------------------------------------------------ */
-  "mobile.local.extraPrompt": ["附加说明", "Additional notes"],
-  "mobile.local.extraPromptPlaceholder": [
-    "给 Agent 的补充说明（可选，支持 Markdown）",
-    "Extra instructions for the Agent (optional, Markdown supported)",
-  ],
-  "mobile.local.runtime": ["运行时", "Runtime"],
-  "mobile.local.runtimeHint": ["默认跟随桌面端设置。", "Follows the desktop setting by default."],
-  "mobile.local.enqueue": ["入队", "Queue"],
-  "mobile.local.enqueueing": ["正在入队…", "Queueing…"],
-  "mobile.local.enqueueFailedHint": [
-    "入队失败，表单保留可重试。",
-    "Queueing failed; your input is kept so you can retry.",
-  ],
 } as const satisfies Catalog;

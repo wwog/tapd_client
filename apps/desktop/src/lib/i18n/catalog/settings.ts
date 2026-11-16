@@ -509,18 +509,4 @@ export const settings = {
   "settings.sidebar.manage": ["管理项目", "Manage projects"],
 
   // Recovery banner
-  "settings.recovery.requeued": ["{n} 个已重新排队", ({ n }) => `${n} requeued`],
-  "settings.recovery.review": ["{n} 个待审核", ({ n }) => `${n} awaiting review`],
-  "settings.recovery.merge": ["{n} 个待合并", ({ n }) => `${n} awaiting merge`],
-  "settings.recovery.failed": ["{n} 个失败", ({ n }) => `${n} failed`],
-  "settings.recovery.summary": [
-    "已恢复 {total} 个任务：{details}。",
-    ({ total, details }) =>
-      `Restored ${total} task${Number(total) === 1 ? "" : "s"}: ${details}.`,
-  ],
-  "settings.recovery.paused": [
-    "队列已暂停，可到 Agent 页继续。",
-    "The queue is paused; resume it on the Agent page.",
-  ],
-  "settings.recovery.viewTasks": ["查看任务", "View tasks"],
 } as const satisfies Catalog;

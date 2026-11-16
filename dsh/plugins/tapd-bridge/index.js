@@ -8,16 +8,19 @@
  *   hello    → identity of the feed (always first)
  *   snapshot → one session's recorded events, sent on every connect
  *   stream   → every `agent/assistant-stream` frame, forwarded verbatim
+ *   team     → one root session's whole `agentTeam` board (enabled + tasks)
  *   notice   → advisory notice from the policy plugin (notify mode)
  *
  * The same socket carries control frames the other way (NDJSON, one per line):
  *
  *   assign → move a session to a working directory (task worktrees)
  *   cancel → stop one session's turn
+ *   team   → enable / disable Agent Teams for one root session
  *
  * Assignments that arrive before the session exists are remembered and applied
  * when the session is created, so the task flow can queue a worktree without
- * racing session creation.
+ * racing session creation. The same applies to a Team toggle, which needs the
+ * live Agent that owns the session.
  *
  * The Rust side owns normalization and deduplication, so this plugin holds no
  * transcript state. Reconnecting re-sends snapshots; the receiver dedupes by
@@ -36,6 +39,8 @@ export const inject = ['sessions', 'agents', 'workingDirectory']
 
 const RECONNECT_MIN_MS = 250
 const RECONNECT_MAX_MS = 4000
+/** Board changes commit as session events; one settled frame per burst. */
+const TEAM_DEBOUNCE_MS = 300
 
 export function apply(ctx) {
   const url = process.env.TAPD_DSH_BRIDGE_URL
@@ -54,6 +59,10 @@ export function apply(ctx) {
   let delay = RECONNECT_MIN_MS
   /** sessionId → cwd, for assignments that arrived before the session existed. */
   const assignments = new Map()
+  /** sessionId → enabled, for Team toggles that arrived before the Agent existed. */
+  const teamModes = new Map()
+  /** sessionId → pending debounce timer for that session's board frame. */
+  const teamTimers = new Map()
 
   const send = (message) => {
     if (!socket || socket.destroyed) return
@@ -98,6 +107,73 @@ export function apply(ctx) {
   }
 
   // -------------------------------------------------------------------------
+  // Team board (agentTeam projection → Rust)
+  // -------------------------------------------------------------------------
+
+  // Team mode is a root-session selection; children reuse the root's board.
+  const isRoot = (session) => session != null && session.header?.origin !== 'subagent'
+
+  /** The projection values, or null when the Team service is not composed. */
+  const teamProjection = (session) => {
+    const projections = ctx.get('sessionProjections')
+    if (!projections) return null
+    try {
+      return projections.snapshot(session, ['agentTeam']).values.agentTeam ?? null
+    } catch (error) {
+      warn(`team ${session.id}`, error)
+      return null
+    }
+  }
+
+  const sendTeam = (session) => {
+    if (!isRoot(session)) return
+    const team = teamProjection(session)
+    if (!team) return
+    send({
+      type: 'team',
+      token,
+      sessionId: session.id,
+      enabled: team.enabled === true,
+      tasks: Array.isArray(team.tasks) ? team.tasks : [],
+      ...(typeof team.failure === 'string' ? { failure: team.failure } : {}),
+    })
+  }
+
+  const sendTeamFrames = () => {
+    for (const session of ctx.sessions.list()) {
+      try {
+        sendTeam(session)
+      } catch (error) {
+        warn(`team ${session?.id ?? '?'}`, error)
+      }
+    }
+  }
+
+  // Any committed event may move a row (claim, complete, assign), change the
+  // mode, or invalidate the projection; the whole board is cheap to re-send, so
+  // one settled frame per session per burst keeps the ordering without games.
+  const scheduleTeam = (sessionId) => {
+    const pending = teamTimers.get(sessionId)
+    if (pending) clearTimeout(pending)
+    teamTimers.set(
+      sessionId,
+      setTimeout(() => {
+        teamTimers.delete(sessionId)
+        const session = ctx.sessions.get(sessionId)
+        if (session) sendTeam(session)
+      }, TEAM_DEBOUNCE_MS),
+    )
+  }
+
+  ctx.on('session/event', (session) => {
+    try {
+      if (isRoot(session)) scheduleTeam(session.id)
+    } catch (error) {
+      warn(`session/event ${session?.id ?? '?'}`, error)
+    }
+  })
+
+  // -------------------------------------------------------------------------
   // Rust → plugin control frames
   // -------------------------------------------------------------------------
 
@@ -118,9 +194,33 @@ export function apply(ctx) {
       .catch((error) => warn(`assign ${sessionId} → ${cwd}`, error))
   }
 
+  /**
+   * Applies one Team toggle. The service needs the live Agent that owns the
+   * session; a toggle for a session created later waits for `session/created`.
+   */
+  const applyTeamMode = (sessionId, enabled) => {
+    const teams = ctx.get('agentTeams')
+    if (!teams) {
+      warn(`team ${sessionId}`, 'the agentTeams service is not composed')
+      return
+    }
+    const agent = ctx.agents.get(sessionId)
+    if (!agent) {
+      teamModes.set(sessionId, enabled)
+      return
+    }
+    teamModes.delete(sessionId)
+    Promise.resolve(teams.setEnabled(agent, enabled)).then(
+      () => ctx.logger.info(`${name}: session ${sessionId} team mode → ${enabled}`),
+      (error) => warn(`team ${sessionId} → ${enabled}`, error),
+    )
+  }
+
   const applyPending = (sessionId) => {
     const cwd = assignments.get(sessionId)
     if (cwd !== undefined) applyAssignment(sessionId, cwd)
+    const enabled = teamModes.get(sessionId)
+    if (enabled !== undefined) applyTeamMode(sessionId, enabled)
   }
 
   // A created Session exists before its Agent is published; both edges flush,
@@ -161,6 +261,8 @@ export function apply(ctx) {
       applyAssignment(sessionId, frame.cwd)
     } else if (frame.type === 'cancel') {
       cancelSession(sessionId)
+    } else if (frame.type === 'team' && typeof frame.enabled === 'boolean') {
+      applyTeamMode(sessionId, frame.enabled)
     }
   }
 
@@ -200,6 +302,7 @@ export function apply(ctx) {
       buffer = ''
       send({ type: 'hello', token })
       sendSnapshots()
+      sendTeamFrames()
     })
     next.on('data', (chunk) => {
       buffer += chunk
@@ -226,6 +329,8 @@ export function apply(ctx) {
       closed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
       reconnectTimer = null
+      for (const timer of teamTimers.values()) clearTimeout(timer)
+      teamTimers.clear()
       socket?.destroy()
       socket = null
     }

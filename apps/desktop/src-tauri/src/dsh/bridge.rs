@@ -19,6 +19,7 @@
 //! The listener binds `127.0.0.1:0` per runtime start; the URL and token go
 //! into the child's environment and never leave the machine.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 
+use super::team::{normalize_team, DshTeam};
 use super::{EVENT_ENTRY, EVENT_SESSIONS, EVENT_STREAM};
 use tapd_i18n::tr;
 
@@ -61,6 +63,9 @@ pub struct BridgeState {
     control: std::sync::Mutex<Option<Control>>,
     /// This runtime's token, echoed in every outbound frame.
     token: std::sync::Mutex<Option<String>>,
+    /// Last team board per session (P5). Owned by inbound `team` frames and
+    /// cleared with the runtime, so a restart never shows the old board.
+    teams: std::sync::Mutex<HashMap<String, DshTeam>>,
     /// Per-connection identity, see [`Control`].
     connections: AtomicU64,
 }
@@ -104,6 +109,7 @@ impl BridgeState {
         // Frames queued for one runtime must never reach the next one.
         *self.control.lock().expect("dsh bridge control lock") = None;
         *self.token.lock().expect("dsh bridge token lock") = None;
+        self.teams.lock().expect("dsh team lock").clear();
     }
 
     /// Moves one session to `cwd` (used to point a task at its worktree). The
@@ -120,6 +126,28 @@ impl BridgeState {
     /// Stops the current turn of one session without touching the others.
     pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
         self.send_control(json!({ "type": "cancel", "sessionId": session_id }))
+    }
+
+    /// Toggles Team mode for one session. The plugin applies it through the
+    /// `agentTeams` service and re-publishes the board; the session must exist
+    /// in the runtime (a queued frame for an unknown id is ignored).
+    pub async fn set_team_mode(&self, session_id: &str, enabled: bool) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "team",
+            "sessionId": session_id,
+            "enabled": enabled,
+        }))
+    }
+
+    /// The board the plugin last reported for this session. `None` means the
+    /// runtime has not published one yet, which the command surfaces as an
+    /// empty, disabled team rather than an error.
+    pub fn team(&self, session_id: &str) -> Option<DshTeam> {
+        self.teams
+            .lock()
+            .expect("dsh team lock")
+            .get(session_id)
+            .cloned()
     }
 
     /// Queues one frame for the connected plugin.
@@ -233,6 +261,7 @@ impl BridgeState {
                 }
             }
             Some("stream") => self.ingest_stream(app, message),
+            Some("team") => self.ingest_team(app, message),
             Some("notice") => super::policy::notice(message),
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
             None => tracing::warn!("agent bridge: frame without a type"),
@@ -283,6 +312,25 @@ impl BridgeState {
         let _ = app.emit(
             EVENT_STREAM,
             json!({ "sessionId": session_id, "stream": stream }),
+        );
+    }
+
+    /// Team board for one root session. Every frame replaces the stored board
+    /// and reaches the UI; the plugin only sends it when the projection exists
+    /// and after a settled burst of board events.
+    fn ingest_team(&self, app: &AppHandle, message: &Value) {
+        let Some(session_id) = message.get("sessionId").and_then(Value::as_str) else {
+            tracing::warn!("agent bridge: team frame without a session");
+            return;
+        };
+        let team = normalize_team(session_id, message);
+        self.teams
+            .lock()
+            .expect("dsh team lock")
+            .insert(session_id.to_string(), team.clone());
+        let _ = app.emit(
+            super::team::EVENT_TEAM,
+            json!({ "sessionId": session_id, "team": team }),
         );
     }
 
@@ -607,5 +655,31 @@ mod tests {
 
         let frame: Value = serde_json::from_str(&new_rx.recv().await.unwrap()).unwrap();
         assert_eq!(frame["type"], "assign");
+    }
+
+    #[tokio::test]
+    async fn team_mode_is_queued_as_one_token_carrying_frame() {
+        let bridge = BridgeState::default();
+        assert!(
+            bridge.team("s1").is_none(),
+            "no board before the runtime reports one"
+        );
+        // No plugin yet: the toggle must fail instead of pretending it applied.
+        assert!(bridge.set_team_mode("s1", true).await.is_err());
+
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge.set_team_mode("s1", true).await.expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "team");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["enabled"], true);
+
+        bridge.set_team_mode("s1", false).await.expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["enabled"], false);
     }
 }

@@ -13,6 +13,7 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 - **`tapd-workspace`**：任务工作区的 git 事实（变更文件、增删行数、diff、HEAD）。单任务的主仓库与 Worktree 任务共用同一实现；worktree 目录被清理后按分支重算。
 - **`tapd-local`**：纯领域类型，本地项目与事项（`WorkItem`）的校验和状态迁移；不做文件、时钟或数据库 IO。
 - **`tapd-mcp`**：stdio MCP sidecar，随 App 打包，供 MCP 客户端调用。
+- **`dsh-host`**：与 Tauri 无关的内置 Agent 宿主库：SDK RPC 信封、桥协议、profile 渲染、transcript 归一化、payload 清单与 Node 版本门槛。
 
 ```
 ┌──────────────────────────── TAPD Client.app ────────────────────────────┐
@@ -32,7 +33,8 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 │         └── cache.sqlite3 ◄── 缓存 / 轮询         │                     │
 │                                       MCP 客户端（opencode 等）         │
 │                                                                         │
-│   内置 Agent Host ── dsh 运行时（系统 Node）── SDK RPC / 桥插件 / 胶囊    │
+│   内置 Agent Host ── dsh 运行时（~19 MB zstd payload + 系统 Node）      │
+│                      SDK RPC / 桥插件 / 胶囊                            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,12 +42,12 @@ TAPD Client 是一个 Tauri 2 桌面应用：
 
 | 部分 | 生命周期 | 职责 |
 | --- | --- | --- |
-| 主窗口 | 随 App | 项目、缺陷列表、详情、Agent（建设中）、MCP、设置 |
+| 主窗口 | 随 App | 项目、缺陷列表、详情、Agent、MCP、设置 |
 | 隐藏 WebView | 随 App | 持有 tapd.cn 登录态；执行注入脚本抓取网页内部接口 |
 | 通知胶囊 | 随 App | 自绘通知与更新进度，可拖动 |
 | 本地 HTTP | 随 App | 仅监听 `127.0.0.1`，随机端口，每次启动轮换 token |
 | `tapd-mcp` | 由 AI 客户端启动 | stdio MCP，反向调用本地 HTTP |
-| dsh 运行时 | 随 App（单进程多会话） | 内置 Agent，stdio JSON-RPC 控制面 + 桥插件流式面 |
+| dsh 运行时 | 随 App（单进程多会话） | 内置 Agent，stdio JSON-RPC 控制面 + 桥插件流式面；首次启动把 `resources/dsh/payload-*.tar.zst` 解到 `<数据目录>/dsh/<version>` |
 
 登录页不是独立窗口：主窗口直接镜像隐藏 WebView 里的企业微信二维码，扫码完成后隐藏 WebView 保留会话。
 
@@ -80,16 +82,23 @@ React → Tauri command → feature_router → session bridge（隐藏 WebView �
 5. 「处理」自动改派给自己并把起始状态流转到处理中。
 6. `bug_list` 返回后把当前页写入 seen：列表在前台且主窗口有焦点时，刷新（手动 / 30 秒自动 / 翻页 / 筛选）等同于一次静默轮询，屏幕上已经看到的缺陷不会再补发通知；窗口失焦（用户在其他应用）时自动刷新不观察，避免误吞通知。不创建卡片，也不推进轮询 cursor。
 
-### 3.4 内置 Agent（建设中）
+### 3.4 内置 Agent
 
-外置 CLI 执行层（PTY、TUI 适配、会话 hook、transcript 解析、`tapd-workflow` 状态机与队列）已整体移除。
-内置 Agent 的契约与调研结论见 [DSH.md](DSH.md)，实现按 P2–P5 分阶段落地：
+外置 CLI 执行层（PTY、TUI 适配、会话 hook、transcript 解析、`tapd-workflow` 状态机与队列）已整体移除；
+Agent 只跑 App 内置的 DeepSeek Harness 运行时。契约与调研结论见 [DSH.md](DSH.md)。
 
-- 运行时：钉死版本的 DeepSeek Harness（Cordis 组合），用系统 Node 启动，不随包分发 Node。
-- 能力接入：自己的 Cordis 插件把 TAPD 能力注册成 `ctx.tools`，不走 MCP；MCP sidecar 只服务外部客户端。
-- 会话流与审批：控制面走官方 SDK JSON-RPC，token 级流式与任务板由自带桥插件推送；审批 / 提问进通知胶囊。
-
-目前只保留跨运行时仍然成立的配置：项目仓库与规则、提示词模板、Worktree 隔离、同事。
+- **宿主库 `crates/dsh-host`**：SDK RPC 信封、桥协议、profile 渲染、transcript 归一化
+  （`rpc` / `protocol` / `profile` / `transcript`），纯逻辑、可单测；payload 清单与 Node 版本门槛也在这里。
+- **`src-tauri/src/dsh/`**：`payload`（发现 / 校验 / 原子解压）、`runtime`（进程与状态机）、
+  `bridge`（回环 NDJSON + 逐帧 token）、`policy`（权限模式）、`tasks` + `task_store`（统一任务与 SQLite）、
+  `team`（团队任务板）、`worktree`、`writeback`。
+- **分发形态**：安装包只带 ~19 MB 的 zstd payload（`resources/dsh/payload-*.tar.zst` + `manifest.json`，
+  解压后 ~233 MB / 2.5 万文件），首次启动按版本解到 `<数据目录>/dsh/<version>`；Node 由系统提供（≥ 24.9），
+  不打包 Node 二进制。
+- **能力接入**：自有 Cordis 插件 `dsh/plugins/{tapd-tools,tapd-bridge,tapd-policy}` 随 App 打包，profile 以
+  绝对路径挂载；TAPD 工具走本机 HTTP，不走 MCP；MCP sidecar 只服务外部客户端。
+- **会话、任务与审批**：控制面走官方 SDK JSON-RPC；token 级流式与任务板由桥插件推送；审批 / 提问进通知胶囊，
+  手机也能回答。任务元数据持久化在 `cache.sqlite3` 的 `dsh_tasks`（schema v9），transcript 仍由 dsh 自己保存。
 
 ### 3.5 MCP 调用
 
@@ -134,14 +143,14 @@ LayoutState（fraction 分割树）→ SplitView（实测像素）→ GroupView�
 ```
 React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
                                       → tapd-local（领域类型 / 状态迁移）
-                                      → Agent 队列（sourceKind = local_work_item）
+                                      → 内置 Agent 任务（kind = local_item）
 ```
 
 - 本地项目只是一个本机目录，没有 TAPD workspace；事项（`WorkItem`）有 `pending` / `in_progress` / `done` 三个状态。关联 Agent 任务成功时由宿主自动置为 `done`，也可手动标记完成 / 重新打开。
 - 每个本地项目有独立的 `rule`（项目规则），创建 / 编辑时写入；交给 Agent 时随 `quest.json` 导出并追加到本地修复、提交与合并提示词，TAPD 任务不受影响。
 - 数据写 `<数据目录>/local.sqlite3`（`local_projects` / `local_work_items`，schema v2 增加 `rule`），与 `cache.sqlite3` 分开：TAPD 退出登录、清缓存和 `Cache::clear()` 都不会删除自己的项目；「清理缓存」显式保留该文件及 WAL 旁文件。
 - 桌面在项目侧栏右键 / 项目页创建，移动端可浏览桌面目录后创建；文件浏览与终端共用同一目录解析：TAPD 项目配置优先，其次本地项目仓库。移动端文件 / 终端只列出有文件夹的 TAPD 项目，并加入本地项目。
-- 事项交给 Agent 时使用合成 ID（`lp_…` / `lw_…`）与 `sourceKind = local_work_item`，复用队列 / 审核 / 合并状态机；准备阶段导出 `quest.json` 而不是 `bug.json`，不注入 TAPD MCP，也不回写 TAPD。
+- 事项交给 Agent 时以 `kind = local_item` 进入统一任务列表（DSH.md §9），准备阶段导出 `quest.json` 而不是 `bug.json`，不注入 TAPD 工具，也不回写 TAPD；任务成功由宿主把事项置为 `done`。
 - 移动端文件页额外提供 `__root__` 源，从 `/` 只读浏览；写接口对根目录直接 403。项目目录选择仍限制 `$HOME` 或已配置的本地仓库；伴侣目录浏览在列目录前先校验允许根。
 
 ## 4. 已实现能力
@@ -169,15 +178,19 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
 - AI / MCP 通知：MCP 客户端通过 `tapd_notify_user` 唤起通用卡片（tone + 内容块 + 动作），用户点击后把动作回执给同一工具调用；设置里可开关与调试。
 - 处理动作：自动改派给自己，并把起始状态流转到处理中（`in_progress` / `progressing`）。
 
-### Agent（建设中）
+### Agent
 
-会话列表、消息流、审批与任务板随内置 dsh 运行时一起落地，见 [DSH.md](DSH.md)。当前版本只保留：
-项目级仓库 / 规则、提示词模板、Worktree 隔离与执行单元、同事包选择。旧的运行时选择、模型与权限参数、
-TUI 终端接管、历史续接与「处理中」范围都已移除。
+- 一个统一任务列表：项目分组，状态 chip（`running` / `awaiting_review` / `awaiting_merge` / `done` /
+  `failed` / `canceled`）+ 实时运行点；bug、本地事项与自由会话都在同一列表。契约见 [DSH.md](DSH.md) §9。
+- 审核 / 合并 / 取消 / 查看 diff 在任务条上直接操作；提交、合并与 TAPD 回写由宿主确定性地做，模型只改代码、跑测试。
+- 审批与提问可在桌面与手机回答，阻塞请求可随时用 `dsh_pending` 查快照；手机没有 token 级实时流，靠轮询收齐。
+- 配置页：权限模式三选一（auto / notify / full）、内置模型 API、Worktree 隔离与执行单元、同事包选择；
+  提示词模板只在桌面编辑。
+- 旧的运行时选择、模型与权限 CLI 参数、TUI 终端接管、历史续接与「处理中」范围都已移除。
 
 ### MCP 与运维
 
-- MCP tab：10 个工具（whoami / 项目 / 查询 / 我的缺陷 / 详情导出（含修复提示词与 skills）/ 状态查询 / 评论 / 状态更新 / 胶囊通知 / 等待回执）；「接入 AI 客户端」按客户端一行，一键写入 opencode / ZCode / Claude Code / Cursor 的用户级配置（自动备份、幂等）；Codex 的一键导入入口暂时隐藏（后端 spec 保留，启动 Codex Agent 时仍会幂等注入）。启动受支持的 Agent 运行时也会幂等确保注入。
+- MCP tab：10 个工具（whoami / 项目 / 查询 / 我的缺陷 / 详情导出（含修复提示词与 skills）/ 状态查询 / 评论 / 状态更新 / 胶囊通知 / 等待回执）；「接入 AI 客户端」按客户端一行，一键写入 opencode / ZCode / Claude Code / Cursor 的用户级配置（自动备份、幂等）；Codex 的一键导入入口暂时隐藏（后端 spec 保留）。
 - MCP 策略与审计：可关闭写操作、限制可访问项目、限制目标状态白名单；每次调用记录工具、客户端、允许 / 拒绝 / 失败、耗时与项目 / 缺陷（不保存评论正文和 Cookie），支持筛选、导出与清空。
 - 首启引导：首次登录后展示三步引导（登录与离线缓存 / MCP 与内置 Agent / 通知与胶囊），可跳过，完成状态写入 `config.json`。
 - 自动更新：启动时立即检查 GitHub Releases，之后每 30 分钟查询一次并记录检查时间；标题栏更新图标在有新版本时变绿，hover 展示更新日志。更新期间主窗口隐藏，胶囊放大 3 倍显示下载 / 解包安装进度；失败时可手动下载或取消。发布说明带 `<!-- force-update -->` 标记时为强制更新：要求写入 `config.json` 的 `forcedUpdate`，登录页与主界面都显示不可关闭的升级模态框，直到当前版本不低于目标版本。
@@ -213,10 +226,14 @@ apps/desktop/
     export.rs                bug.json / quest.json 导出、资源下载与提示词渲染
     media_cache.rs           URL 寻址的媒体缓存（导出 / 代理 / 打开原图共用）
     diagnostics.rs           脱敏诊断包
+    dsh/                     内置 Agent 宿主：payload / runtime / bridge / policy / tasks /
+                             team / worktree / task_store / writeback（契约见 DSH.md）
     companion/terminal.rs    远程终端 WebSocket（回放 + 实时输出 + 输入 / 尺寸）
     server.rs                本地 HTTP（/healthz、/mcp/call、/media、/file、调试端点）
     update.rs                GitHub Releases 检查与更新状态
     reset.rs / open_with.rs  本地数据清理 / 按默认应用打开资源
+dsh/plugins/                 随 payload 打包的 Cordis 插件：tapd-tools、tapd-bridge、tapd-policy
+crates/dsh-host/             SDK RPC / 桥协议 / profile / transcript / payload 清单（无 Tauri 依赖）
 crates/tapd-core/            模型、过滤器、响应解析、媒体收集、配置与存储
 crates/tapd-workspace/       工作区的 git 事实（变更 / 行数 / diff / HEAD），供内置 Agent 的 Worktree 复用
 crates/tapd-local/           本地项目 / 事项领域类型、校验与状态迁移（无 IO）
@@ -235,7 +252,7 @@ scripts/                     图标、sidecar、发版等构建工具
 - **终端会话归后端，视图可丢弃**：PTY、输出环形缓冲和订阅广播都在 `terminal.rs`，关面板 / 切页面只销毁 xterm 视图，shell 继续运行；重开时回放尾部 256 KiB 并按累计字节数去重，手机与桌面可以同时挂同一会话。
 - **右 / 下容器先开者优先**：主视图区是一个 Grid（`main` / `term` / `detail` 三个稳定节点），先打开的容器保持整幅跨度，后打开者让出空间；只切 `grid-template-areas`，不重建 React 树，所以切换时缺陷列表、详情与终端都不丢状态。
 - **Agent 内核不 fork**：内置运行时钉死上游版本，只通过 profile 组合与自有插件扩展；差异集中在 `docs/DSH.md` 记录的扩展点，升级是改版本号 + 跑契约测试，不做 rebase。
-- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此运行中、审核、待合并与历史使用同一套计算。实时刷新由会话 hook 的编辑类 tool 事件置脏，去抖 800ms、单飞、在阻塞线程跑 git，命令优先返回缓存。
+- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此审核、待合并与历史使用同一套计算。diff 在打开 / 审核时按需计算（含未跟踪文件、超长截断并标注），git 在阻塞线程执行，不阻塞 async 路径。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
@@ -246,7 +263,8 @@ scripts/                     图标、sidecar、发版等构建工具
 - 仅 macOS（发布物为 Apple Silicon arm64）。
 - 通知的「项目」范围仍只轮询当前项目；「我的」范围已跨项目轮询。
 - `assigned_time` 缺失时“转移”判定偏保守。
-- Agent 就绪检测与完成判定是启发式的；取消按进程组回收，仍可能有极端情况下的孙进程残留。
+- Agent 的 token 级流式只在桌面端；手机收任务列表与阻塞请求，没有 live 文本。
+- 团队任务板的写作用域按会话投影，成员共用当前 checkout（不建独立工作目录）。
 - 终端回放是原始输出尾部（不做终端状态序列化），全屏 TUI 中途重挂只能近似重建；手机断线期间超出 256 KiB 的输出会丢。
 - 远程终端与伴侣共用配对 token，没有独立的二次确认；隧道开启时等价于把桌面用户的 shell 暴露到公网，只在可信设备上配对。
 - 发布包默认未签名、未公证；首次打开需在「系统设置 → 隐私与安全性」中允许。

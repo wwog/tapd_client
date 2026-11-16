@@ -6,7 +6,9 @@ import { MessageStream } from "./MessageStream";
 import { RuntimeNotice } from "./RuntimeNotice";
 import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
-import { agentActions, agentStore } from "./store";
+import { TeamBar } from "./TeamBar";
+import { TeamBoard } from "./TeamBoard";
+import { agentActions, agentStore, agentTeamView } from "./store";
 
 type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
@@ -20,6 +22,15 @@ type Props = {
 export function AgentWorkspace({ toast }: Props) {
   const state = agentStore.use();
   const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
+  const team = state.selectedId ? state.team[state.selectedId] : undefined;
+  // The board replaces the transcript in the same pane, so the transcript stays
+  // mounted (hidden) and keeps its scroll position.
+  const showBoard = Boolean(
+    selected &&
+      selected.kind !== "chat" &&
+      team?.enabled &&
+      agentTeamView(state, state.selectedId) === "board",
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -39,10 +50,15 @@ export function AgentWorkspace({ toast }: Props) {
         <div className="flex min-h-0 flex-1">
           <TaskList />
           <div className="flex min-w-0 flex-1 flex-col">
+            {selected && selected.kind !== "chat" ? <TeamBar task={selected} /> : null}
             {selected && selected.kind !== "chat" ? (
               <TaskActions key={selected.id} task={selected} />
             ) : null}
-            <MessageStream key={state.selectedId ?? "draft"} />
+            {showBoard ? <TeamBoard /> : null}
+            <MessageStream
+              key={state.selectedId ?? "draft"}
+              visible={!showBoard}
+            />
             <div className="shrink-0 border-t border-border">
               <RuntimeNotice />
               <Composer />

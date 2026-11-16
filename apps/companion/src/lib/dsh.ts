@@ -95,6 +95,33 @@ export function isTerminalWorkflow(workflow: DshWorkflow): boolean {
 
 export type DshToolStatus = "running" | "ok" | "error";
 
+/* -------------------------------------------------------------------------
+   Team board (docs/DSH.md §9.5)
+   ------------------------------------------------------------------------- */
+
+export type DshTeamTaskStatus = "pending" | "in_progress" | "completed";
+
+export type DshTeamTask = {
+  id: string;
+  subject: string;
+  description: string;
+  status: DshTeamTaskStatus;
+  ownerId?: string;
+  ownerName?: string;
+  blockedBy: string[];
+  writeScopes: string[];
+  /** Nothing blocks this task, so the owner can start right away. */
+  ready: boolean;
+};
+
+export type DshTeam = {
+  sessionId: string;
+  enabled: boolean;
+  tasks: DshTeamTask[];
+  /** Present only when the runtime's own projection failed. */
+  failure?: string;
+};
+
 /** One rendered transcript row; `seq` is unique and monotonic per session. */
 export type DshEntry =
   | { kind: "user"; seq: number; at: string; text: string }
@@ -186,6 +213,12 @@ export const dshApi = {
   taskResume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
 
+  /** The persisted board of one session; disabled with no tasks by default. */
+  teamGet: (sessionId: string) => feature<{ team: DshTeam }>("dsh_team_get", { sessionId }),
+  /** Enabling also queues the coworker roster into the session. */
+  teamSet: (sessionId: string, enabled: boolean) =>
+    feature<{ team: DshTeam }>("dsh_team_set", { sessionId, enabled }),
+
   approvalAnswer: (rpcId: number, outcome: DshApprovalOutcome) =>
     feature<{ ok: true }>("dsh_approval_answer", { rpcId, outcome }),
   /** `answers: null` dismisses the question (the runtime gets a cancellation). */
@@ -205,14 +238,32 @@ export type AgentFeed = {
   /** Oldest first, exactly as the runtime reports them. */
   pending: DshPendingRequest[];
   pendingError: string | null;
+  /** Team boards per session, keyed by id; only the open task is polled. */
+  teams: Record<string, DshTeam>;
+  teamErrors: Record<string, string | null>;
 };
 
-/** Task list cadence; the badge is part of the same loop. */
+/** Task list cadence; the badge and the open board are part of the same loop. */
 const FEED_POLL_MS = 8_000;
 
-let feed: AgentFeed = { tasks: null, tasksError: null, pending: [], pendingError: null };
+const emptyFeed = (): AgentFeed => ({
+  tasks: null,
+  tasksError: null,
+  pending: [],
+  pendingError: null,
+  teams: {},
+  teamErrors: {},
+});
+
+let feed: AgentFeed = emptyFeed();
 const feedListeners = new Set<() => void>();
 let queue: Promise<void> = Promise.resolve();
+
+/**
+ * The session whose board the poller refreshes. The task page registers it on
+ * open, so the app keeps one polling loop instead of one per board.
+ */
+let watchedTeamSession: string | null = null;
 
 const publish = (next: AgentFeed): void => {
   feed = next;
@@ -220,7 +271,14 @@ const publish = (next: AgentFeed): void => {
 };
 
 const fetchFeed = async (): Promise<void> => {
-  const [tasks, pending] = await Promise.allSettled([dshApi.tasks(), dshApi.pending()]);
+  const watched = watchedTeamSession;
+  const [tasks, pending, team] = await Promise.allSettled([
+    dshApi.tasks(),
+    dshApi.pending(),
+    watched ? dshApi.teamGet(watched) : Promise.resolve(null),
+  ]);
+
+  const teamError = team.status === "rejected" ? asApiError(team.reason).message : null;
   publish({
     // A failed call keeps the last good rows: an inline error explains the gap.
     tasks: tasks.status === "fulfilled" ? tasks.value.tasks : feed.tasks,
@@ -228,6 +286,12 @@ const fetchFeed = async (): Promise<void> => {
     pending: pending.status === "fulfilled" ? pending.value.requests : feed.pending,
     pendingError:
       pending.status === "fulfilled" ? null : asApiError(pending.reason).message,
+    teams:
+      watched && team.status === "fulfilled" && team.value
+        ? { ...feed.teams, [watched]: team.value.team }
+        : feed.teams,
+    teamErrors:
+      watched === null ? feed.teamErrors : { ...feed.teamErrors, [watched]: teamError },
   });
 };
 
@@ -248,6 +312,25 @@ export const applyAgentTask = (task: DshTask): void => {
     .map((row) => (row.id === task.id ? task : row))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   publish({ ...feed, tasks, tasksError: null });
+};
+
+/** Folds a `dsh_team_set` result (or a fresh read) into the snapshot. */
+export const applyAgentTeam = (sessionId: string, team: DshTeam): void => {
+  publish({
+    ...feed,
+    teams: { ...feed.teams, [sessionId]: team },
+    teamErrors: { ...feed.teamErrors, [sessionId]: null },
+  });
+};
+
+/**
+ * Registers the session whose board the feed polls; `null` stops polling it.
+ * Called by the open task page so the app keeps a single interval.
+ */
+export const watchAgentTeam = (sessionId: string | null): void => {
+  if (watchedTeamSession === sessionId) return;
+  watchedTeamSession = sessionId;
+  if (sessionId) void refreshAgentFeed();
 };
 
 const subscribeFeed = (listener: () => void): (() => void) => {

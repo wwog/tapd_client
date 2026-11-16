@@ -263,8 +263,6 @@ pub fn load(app: &AppHandle) -> Registry {
 
 /// Prompt block for `ids`, using the current bundled registry. Empty when
 /// nothing valid is selected.
-/// Rendered into the task prompt once the built-in agent flow lands (P4).
-#[allow(dead_code)]
 pub fn prompt_section(app: &AppHandle, ids: &[String]) -> String {
     if ids.is_empty() {
         // Every task calls this; do not scan the bundle when nobody is enabled.

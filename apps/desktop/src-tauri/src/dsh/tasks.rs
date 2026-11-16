@@ -889,12 +889,14 @@ async fn rollback(app: &AppHandle, record: &TaskRecord, local: Option<&LocalLink
     if let Some(link) = local {
         let store = state.local.clone();
         let item_id = link.item_id.clone();
+        let task_id = record.task.id.clone();
         let at = now();
         // `attach_task` also moved the item to in_progress; a failed launch must
-        // put it back exactly where the user had it.
+        // put it back exactly where the user had it. `forget_task` matches on
+        // the stored task id, not the item id.
         let previous = link.previous_status.as_str().to_string();
         if let Err(error) = blocking(move || {
-            store.forget_task(&item_id, &at)?;
+            store.forget_task(&task_id, &at)?;
             store
                 .update_item(&item_id, None, None, Some(previous.as_str()))
                 .map(|_| ())

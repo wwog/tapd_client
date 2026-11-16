@@ -4,7 +4,7 @@
 >
 > 版本：v1.0 计划（2026-11-09）
 >
-> 历史文档：工具清单、导出产物与任务完成判定以当前 `docs/ARCHITECTURE.md`、`docs/AGENT.md`、`docs/MCP.md` 为准。
+> 历史文档：工具清单、导出产物与任务完成判定以当前 `docs/ARCHITECTURE.md`、`docs/DSH.md`、`docs/MCP.md` 为准。
 
 ---
 

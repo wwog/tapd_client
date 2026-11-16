@@ -45,7 +45,6 @@ export const local = {
   "local.items.moveToPending": ["移回待处理", "Move back to pending"],
   "local.items.markDone": ["标记完成", "Mark done"],
   "local.items.reopen": ["重新打开", "Reopen"],
-  "local.items.viewTask": ["查看任务", "View task"],
   "local.items.delete": ["删除事项", "Delete item"],
   "local.items.deleteConfirm": ["删除事项「{title}」？", "Delete \"{title}\"?"],
   "local.items.emptyPending": ["没有待处理的事项", "No pending items"],

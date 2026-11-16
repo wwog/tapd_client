@@ -125,9 +125,11 @@ function entryKey(entry: DshEntry): string {
 
 /**
  * Committed history plus the live attempt on top. The page remounts this per
- * session (`key`), which also resets the scroll position.
+ * session (`key`), which also resets the scroll position. `visible` hides the
+ * pane for the team board without unmounting it, so the scroll position and the
+ * live overlay survive a trip to the board and back.
  */
-export function MessageStream() {
+export function MessageStream({ visible = true }: { visible?: boolean }) {
   const state = agentStore.use();
   const sessionId = state.selectedId;
   const history = sessionId ? state.entries[sessionId] : undefined;
@@ -158,10 +160,11 @@ export function MessageStream() {
   ].join(":");
 
   useEffect(() => {
+    if (!visible) return;
     const element = scrollRef.current;
     if (!element || !stickRef.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [signature]);
+  }, [signature, visible]);
 
   const onScroll = () => {
     const element = scrollRef.current;
@@ -173,7 +176,10 @@ export function MessageStream() {
   if (!sessionId) {
     return (
       <div
-        className="grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400"
+        className={clsx(
+          "grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400",
+          !visible && "hidden",
+        )}
         title={t("agent.stream.noSessionHint")}
       >
         {t("agent.stream.noSession")}
@@ -198,7 +204,10 @@ export function MessageStream() {
     <div
       ref={scrollRef}
       onScroll={onScroll}
-      className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4"
+      className={clsx(
+        "min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4",
+        !visible && "hidden",
+      )}
     >
       <div
         className={clsx(
