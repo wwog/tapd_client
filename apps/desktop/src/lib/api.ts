@@ -155,11 +155,13 @@ export type Attachment = {
 
 export type MediaKind = "image" | "video" | "file";
 
-/** Image/video embedded in the rich-text description or a comment. */
+/** Resource embedded in the rich-text description or a comment. */
 export type MediaRef = {
   url: string;
   kind: MediaKind;
   filenameHint: string;
+  /** Size TAPD reported for an inline attachment card; 0 when unknown. */
+  size: number;
 };
 
 export type ChangeField = {

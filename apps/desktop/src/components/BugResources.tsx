@@ -214,7 +214,9 @@ function Thumbnail(props: {
 }) {
   const { url, icon: Icon, iconSize = 16, onClick, title } = props;
   const [broken, setBroken] = useState(false);
-  const source = mediaSrc(url);
+  // Files (logs, archives) are not images: fetching them here would pull the
+  // whole attachment through the proxy just to fail as an `<img>`.
+  const source = url ? mediaSrc(url) : undefined;
   const clickable = Boolean(onClick);
 
   return (
@@ -399,7 +401,7 @@ function AttachmentRow(props: {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
       <Thumbnail
-        url={attachment.downloadUrl}
+        url={previewable ? attachment.downloadUrl : ""}
         icon={Icon}
         iconSize={17}
         title={previewable ? t("bugs.preview") : undefined}
@@ -437,14 +439,18 @@ function EmbeddedMediaRow(props: {
   onSelectTarget: (kind: string, id: string) => void;
 }) {
   const { media, previewItems, onPreview, onOpen, targetSets, onSelectTarget } = props;
-  const Icon = media.kind === "image" ? ImageIcon : media.kind === "video" ? Video : Paperclip;
+  const previewable = media.kind === "image" || media.kind === "video";
+  const Icon = previewable
+    ? media.kind === "image"
+      ? ImageIcon
+      : Video
+    : iconForFilename(media.filenameHint);
   const kindLabel =
     media.kind === "image"
       ? t("bugs.image")
       : media.kind === "video"
         ? t("bugs.video")
         : t("bugs.file");
-  const previewable = media.kind === "image" || media.kind === "video";
   const previewIndex = previewable
     ? previewItems.findIndex((item) => item.url === media.url)
     : -1;
@@ -452,18 +458,19 @@ function EmbeddedMediaRow(props: {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
       <Thumbnail
-        url={media.url}
+        url={previewable ? media.url : ""}
         icon={Icon}
         iconSize={15}
         title={previewable ? t("bugs.preview") : undefined}
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption text-slate-700" title={media.url}>
+        <div className="truncate text-ui-caption text-slate-700" title={media.filenameHint || media.url}>
           {media.filenameHint || t("bugs.embeddedResource")}
         </div>
-        <div className="mt-0.5 text-ui-xs text-slate-400">
-          {t("bugs.embeddedKind", { kind: kindLabel })}
+        <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
+          {media.size > 0 ? <span>{formatBytes(media.size)}</span> : null}
+          <span className="truncate">{t("bugs.embeddedKind", { kind: kindLabel })}</span>
         </div>
       </div>
       {previewable && previewIndex >= 0 ? (
@@ -512,5 +519,13 @@ function iconForAttachment(attachment: Attachment) {
   if (type.includes("compress") || type.includes("zip")) return FileArchive;
   if (type.includes("text") || type.includes("log") || type.includes("ips")) return FileText;
   if (type.includes("user")) return UserRound;
+  return Paperclip;
+}
+
+/** Icon for a resource that only carries its filename (inline file cards). */
+function iconForFilename(filename: string) {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["zip", "gz", "tgz", "tar", "7z", "rar"].includes(extension)) return FileArchive;
+  if (["xlog", "log", "txt", "ips", "json", "crash"].includes(extension)) return FileText;
   return Paperclip;
 }

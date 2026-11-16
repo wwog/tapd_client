@@ -136,8 +136,8 @@ export const bugs = {
     "No text description (video included, see Resources)",
   ],
   "bugs.embeddedNotice": [
-    "描述中包含内嵌图片/视频，已在下方「资源」列出；导出时会下载到 assets 目录。",
-    'The description contains embedded images/videos, listed under "Resources" below; exports download them into the assets folder.',
+    "描述中的内嵌图片/视频/附件已列在下方「资源」；导出时会下载到 assets 目录。",
+    'Images/videos/attachments embedded in the description are listed under "Resources" below; exports download them into the assets folder.',
   ],
   "bugs.loadingDetail": ["正在加载缺陷详情", "Loading bug details"],
   "bugs.lastModified": ["最后修改", "Last modified"],
@@ -204,8 +204,8 @@ export const bugs = {
   // ------------------------------------------------------------- resources
   "bugs.resourcesCount": ["资源（{count}）", "Resources ({count})"],
   "bugs.noResources": [
-    "没有附件或内嵌图片/视频",
-    "No attachments or embedded images/videos",
+    "没有附件或内嵌资源",
+    "No attachments or embedded resources",
   ],
   "bugs.embeddedCount": [
     "描述 / 评论内嵌（{count}）",

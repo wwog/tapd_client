@@ -2,7 +2,7 @@
 //!
 //! Turns the parsed detail into the flat [`MediaRef`] list the detail page and
 //! the Markdown exporter both consume, from attachments and from the rich-text
-//! HTML.
+//! HTML (images/videos and inline file cards).
 
 use std::collections::HashSet;
 
@@ -10,7 +10,7 @@ use crate::tapd::model::{Attachment, BugDetail, Comment, MediaKind, MediaRef};
 
 use super::html::scan_html_media;
 
-/// Collects images/videos embedded in the description and comments.
+/// Collects the resources embedded in the description and comments.
 ///
 /// TAPD does not list these under `attachments`; they only exist inside the
 /// rich-text HTML, which is why a bug can look like it has no resources.
@@ -50,6 +50,7 @@ fn push_attachment(attachment: &Attachment, media: &mut Vec<MediaRef>) {
         url: attachment.download_url.clone(),
         kind: MediaKind::from_content_type(&attachment.content_type, &attachment.filename),
         filename_hint: attachment.filename.clone(),
+        size: attachment.size,
     });
 }
 

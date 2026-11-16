@@ -421,7 +421,8 @@ function BugDetailDrawerImpl(props: Props) {
                   </div>
                 )}
                 {detail.descriptionHtml.includes("<img") ||
-                detail.descriptionHtml.includes("<video") ? (
+                detail.descriptionHtml.includes("<video") ||
+                detail.descriptionHtml.includes("data-is-tapd-attachment") ? (
                   <p className="mt-2 text-ui-sm text-slate-400">
                     {t("bugs.embeddedNotice")}
                   </p>

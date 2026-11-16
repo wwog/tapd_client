@@ -198,6 +198,7 @@ mod tests {
             url: format!("http://{address}/a.png"),
             kind: MediaKind::Image,
             filename_hint: "shot.png".to_string(),
+            size: 0,
         };
         let client = reqwest::Client::new();
 
