@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::devices::manage_guard;
-use super::pairing::{authorize, authorize_token, bearer_token};
+use super::pairing::{authorize, authorize_media, bearer_token};
 use super::{err_data, ok_data, CompanionCtx};
 
 #[derive(Deserialize)]
@@ -96,7 +96,7 @@ pub(super) async fn api_file_raw(
     headers: HeaderMap,
     Query(query): Query<RawQuery>,
 ) -> Response {
-    if let Some(response) = authorize_token(&ctx.state, bearer_token(&headers).or(query.t)) {
+    if let Some(response) = authorize_media(&ctx.state, bearer_token(&headers).or(query.t)) {
         return response;
     }
     let root = match fs::root_for(&ctx.app, &query.workspace_id) {

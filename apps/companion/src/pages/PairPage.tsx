@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api, asApiError } from "../lib/api";
 import { t } from "../lib/i18n";
-import { setSession } from "../lib/session";
+import { getDeviceId, setSession } from "../lib/session";
 
 /** Short device label for the desktop's paired-device list. */
 const deviceName = (): string => {
@@ -48,7 +48,7 @@ export function PairPage() {
     setError(null);
     void (async () => {
       try {
-        const data = await api.pair(code, deviceName());
+        const data = await api.pair(code, deviceName(), getDeviceId());
         if (cancelled) return;
         setSession(data.sessionToken);
         window.location.hash = "#/bugs";

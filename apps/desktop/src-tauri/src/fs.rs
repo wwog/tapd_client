@@ -258,6 +258,13 @@ pub(crate) fn resolve_in_root(root: &Path, relative: &str) -> Result<PathBuf, Fs
     let relative_to_root = target
         .strip_prefix(&canonical_root)
         .map_err(|_| FsError::outside())?;
+    // Root browsing is a deliberate convenience feature (the paired device is
+    // the owner's own phone). The one thing it must never do is read back the
+    // machine's credentials or this app's own token stores: a lost phone would
+    // otherwise hand over every key on the disk.
+    if canonical_root == Path::new("/") && denied_under_fs_root(&target) {
+        return Err(FsError::outside());
+    }
     for component in relative_to_root.components() {
         if let Component::Normal(name) = component {
             if name.to_string_lossy().eq_ignore_ascii_case(".git") {
@@ -266,6 +273,63 @@ pub(crate) fn resolve_in_root(root: &Path, relative: &str) -> Result<PathBuf, Fs
         }
     }
     Ok(target)
+}
+
+/// Credential stores and the app's own data directory, denied only when the
+/// root is the whole filesystem.
+///
+/// The paired device is trusted for project files; it is not trusted with
+/// private keys, cloud credentials or the companion token file. Everything else
+/// (including dot-directories) stays browsable, so nothing normal is blocked.
+fn denied_under_fs_root(target: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    denied_under_home(target, home.as_deref())
+}
+
+/// Testable core of [`denied_under_fs_root`].
+fn denied_under_home(target: &Path, home: Option<&Path>) -> bool {
+    // The app's own data directory holds config.json (device token hashes) and
+    // runtime.json; a file viewer has no reason to open them.
+    let app_data = target.components().any(|component| match component {
+        Component::Normal(name) => name
+            .to_string_lossy()
+            .starts_with("com.tapdclient.desktop"),
+        _ => false,
+    });
+    if app_data {
+        return true;
+    }
+
+    const DENIED: [&[&str]; 7] = [
+        &[".ssh"],
+        &[".aws"],
+        &[".gnupg"],
+        &[".kube", "config"],
+        &[".docker", "config.json"],
+        &[".npmrc"],
+        &[".netrc"],
+    ];
+    let Some(home) = home.and_then(|home| home.canonicalize().ok()) else {
+        return false;
+    };
+    let Ok(relative) = target.strip_prefix(&home) else {
+        return false;
+    };
+    let parts: Vec<String> = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    DENIED.iter().any(|blocked| {
+        !parts.is_empty()
+            && parts.len() >= blocked.len()
+            && blocked
+                .iter()
+                .enumerate()
+                .all(|(index, name)| parts[index].eq_ignore_ascii_case(name))
+    })
 }
 
 /// Path relative to the canonical root with `/` separators ("" at the root).
@@ -1281,6 +1345,44 @@ mod stream_tests {
             file.read(0, MAX_STREAM_BYTES + 1).is_err(),
             "an oversized span is rejected like an oversized body"
         );
+
+        let _ = std_fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod root_deny_tests {
+    use super::*;
+
+    #[test]
+    fn root_browsing_blocks_credentials_and_our_own_data_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "tapd-fs-home-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let home = base.join("home");
+        std_fs::create_dir_all(home.join(".ssh")).expect("home");
+        std_fs::create_dir_all(home.join("projects/app")).expect("projects");
+        let home = home.canonicalize().expect("canonical home");
+
+        assert!(denied_under_home(&home.join(".ssh/id_rsa"), Some(&home)));
+        assert!(denied_under_home(&home.join(".aws/credentials"), Some(&home)));
+        assert!(denied_under_home(
+            &home.join(".docker/config.json"),
+            Some(&home)
+        ));
+        // Normal project files and dotfiles stay readable.
+        assert!(!denied_under_home(
+            &home.join("projects/app/main.rs"),
+            Some(&home)
+        ));
+        assert!(!denied_under_home(&home.join(".zshrc"), Some(&home)));
+        // The app's own token store is never browsable, even outside home.
+        assert!(denied_under_home(
+            &Path::new("/Users/x/Library/Application Support/com.tapdclient.desktop/config.json"),
+            Some(&home)
+        ));
 
         let _ = std_fs::remove_dir_all(&base);
     }

@@ -118,6 +118,51 @@ pub(super) fn authorize_token(state: &SharedState, token: Option<String>) -> Opt
     (!paired).then(unauthorized)
 }
 
+/// Media-only credential for one device.
+///
+/// Derived from the stored token hash and a per-run secret, so the value that
+/// rides in `<img src>` / `file/raw` URLs is useless as a Bearer. A URL that
+/// leaks through tunnel logs or a screenshot cannot be replayed against the
+/// rest of the API.
+pub(super) fn media_token(secret: &str, token_hash: &str) -> String {
+    sha256_hex(&format!("media:{secret}:{token_hash}"))
+}
+
+/// Auth for the two routes that must accept credentials in the URL.
+///
+/// A media token (current phones) or the session token (phones that predate
+/// it) is accepted; only this pair of read-only routes ever sees a query
+/// credential.
+pub(super) fn authorize_media(state: &SharedState, token: Option<String>) -> Option<Response> {
+    let unauthorized = || {
+        err_data(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            tr("companion.pairing.expired"),
+        )
+    };
+    let Some(token) = token else {
+        return Some(unauthorized());
+    };
+    let devices = state
+        .config
+        .lock()
+        .expect("config lock")
+        .companion
+        .devices
+        .clone();
+    let secret = state
+        .companion
+        .lock()
+        .expect("companion lock")
+        .media_secret()
+        .to_string();
+    let accepted = devices.iter().any(|device| {
+        device.token_hash == token || media_token(&secret, &device.token_hash) == token
+    });
+    (!accepted).then(unauthorized)
+}
+
 /// Whether the presented session token matches a paired device's stored hash.
 fn token_is_paired(devices: &[CompanionDevice], token: &str) -> bool {
     let token_hash = sha256_hex(token);
@@ -185,10 +230,15 @@ fn sha256_hex(input: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PairRequest {
     /// Absent when pairing codes are switched off (direct pairing).
     token: Option<String>,
     name: Option<String>,
+    /// Generated once by the phone; lets two same-named phones stay separate
+    /// devices and is what re-pairing matches on.
+    #[serde(default)]
+    device_id: Option<String>,
 }
 
 /// Exchanges a one-time pairing code for a long-lived session token.
@@ -229,13 +279,14 @@ pub(super) async fn pair(
     let token = opaque_token();
     let device = CompanionDevice {
         id: uuid::Uuid::new_v4().to_string(),
+        device_id: normalize_device_id(request.device_id.as_deref()),
         name: normalize_device_name(request.name.as_deref()),
         token_hash: sha256_hex(&token),
         paired_at: chrono::Utc::now().to_rfc3339(),
         can_manage: false,
     };
-    // Replace-by-name: one phone keeps one slot, re-pairing rotates its token
-    // while preserving its id and management permission.
+    // Re-pairing keeps the device slot (and its management permission) while
+    // rotating the token; matching prefers the phone-generated id.
     let saved = ctx.state.update_config(|config| {
         config.companion.device_permissions_initialized = true;
         apply_pairing(&mut config.companion.devices, device)
@@ -292,17 +343,22 @@ pub(super) async fn heartbeat(
         );
     };
     let now = chrono::Utc::now();
-    ctx.state
-        .companion
-        .lock()
-        .expect("companion lock")
-        .presence
-        .insert(device.id.clone(), Presence { last_seen: now });
+    // The heartbeat is authenticated and periodic, so it also hands the phone
+    // the scoped credential for media/file URLs (no long-lived token in a URL).
+    let media = {
+        let mut runtime = ctx.state.companion.lock().expect("companion lock");
+        runtime
+            .presence
+            .insert(device.id.clone(), Presence { last_seen: now });
+        let secret = runtime.media_secret().to_string();
+        media_token(&secret, &device.token_hash)
+    };
     let response = ok_data(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "deviceName": device.name.clone(),
         "deviceId": device.id.clone(),
         "canManage": device.can_manage,
+        "mediaToken": media,
         "now": now.to_rfc3339(),
     }));
     let _ = ctx.app.emit(
@@ -322,6 +378,17 @@ fn normalize_device_name(raw: Option<&str>) -> String {
     trimmed.chars().take(MAX_DEVICE_NAME_CHARS).collect()
 }
 
+/// The phone's own id: keep only characters that are safe in a config value.
+/// An empty result means "no id", which falls back to name matching.
+fn normalize_device_id(raw: Option<&str>) -> String {
+    raw.unwrap_or_default()
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .take(64)
+        .collect()
+}
+
 /// Registers a device by name. A new device gets management rights only when
 /// it is the first paired entry; re-pairing with an existing name keeps that
 /// device's id and management flag and rotates its token/time.
@@ -329,7 +396,26 @@ fn apply_pairing(
     devices: &mut Vec<CompanionDevice>,
     mut incoming: CompanionDevice,
 ) -> CompanionDevice {
-    if let Some(existing) = devices.iter_mut().find(|device| device.name == incoming.name) {
+    // Match on the phone-generated id first: two iPhones share a display name,
+    // and replacing by name made the second one take over the first one's slot
+    // (and its management permission). Name matching stays for old clients and
+    // for upgrading a row that was paired before ids existed.
+    let matched = if incoming.device_id.is_empty() {
+        devices
+            .iter()
+            .position(|device| device.name == incoming.name)
+    } else {
+        devices
+            .iter()
+            .position(|device| device.device_id == incoming.device_id)
+            .or_else(|| {
+                devices.iter().position(|device| {
+                    device.device_id.is_empty() && device.name == incoming.name
+                })
+            })
+    };
+    if let Some(index) = matched {
+        let existing = &mut devices[index];
         incoming.id = existing.id.clone();
         incoming.can_manage = existing.can_manage;
         *existing = incoming.clone();
@@ -354,6 +440,7 @@ mod tests {
     fn device(name: &str, token_hash: &str) -> CompanionDevice {
         CompanionDevice {
             id: uuid::Uuid::new_v4().to_string(),
+            device_id: String::new(),
             name: name.to_string(),
             token_hash: token_hash.to_string(),
             paired_at: "2026-11-13T00:00:00+00:00".to_string(),
@@ -505,6 +592,57 @@ mod tests {
         assert!(first.can_manage);
         assert!(!second.can_manage);
         assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn two_same_named_phones_with_different_ids_stay_separate() {
+        let mut devices = Vec::new();
+        let mut first = device("iPhone", "hash-a");
+        first.device_id = "phone-a".to_string();
+        let mut second = device("iPhone", "hash-b");
+        second.device_id = "phone-b".to_string();
+
+        let stored_first = apply_pairing(&mut devices, first);
+        let stored_second = apply_pairing(&mut devices, second);
+
+        assert_eq!(devices.len(), 2, "an id keeps the phones apart");
+        assert!(stored_first.can_manage);
+        assert!(
+            !stored_second.can_manage,
+            "a second phone must not inherit the first one's management"
+        );
+    }
+
+    #[test]
+    fn re_pairing_the_same_id_keeps_its_slot_even_after_a_rename() {
+        let mut devices = Vec::new();
+        let mut first = device("iPhone", "hash-a");
+        first.device_id = "phone-a".to_string();
+        let stored = apply_pairing(&mut devices, first);
+        let original_id = stored.id.clone();
+
+        let mut renamed = device("iPhone 15", "hash-b");
+        renamed.device_id = "phone-a".to_string();
+        let stored = apply_pairing(&mut devices, renamed);
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(stored.id, original_id);
+        assert!(stored.can_manage);
+        assert_eq!(devices[0].name, "iPhone 15");
+        assert_eq!(devices[0].token_hash, "hash-b");
+    }
+
+    #[test]
+    fn media_credentials_differ_from_the_session_token() {
+        let hash = sha256_hex("session-token");
+        let media = media_token("secret-one", &hash);
+        assert_ne!(media, hash);
+        assert_eq!(media, media_token("secret-one", &hash));
+        assert_ne!(
+            media,
+            media_token("secret-two", &hash),
+            "a different run's secret produces a different credential"
+        );
     }
 
     #[test]

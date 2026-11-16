@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import { api } from "./api";
-import { getSession } from "./session";
+import { getSession, setMediaToken } from "./session";
 
 /** What the phone knows about its link to the desktop. */
 export type DesktopPresence = {
@@ -42,6 +42,7 @@ async function beat(): Promise<void> {
   if (!getSession()) return;
   try {
     const data = await api.heartbeat();
+    setMediaToken(data.mediaToken);
     update({
       online: true,
       deviceName: data.deviceName,

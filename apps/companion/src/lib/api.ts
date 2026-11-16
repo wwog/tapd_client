@@ -10,7 +10,7 @@ import { useSyncExternalStore } from "react";
 
 import { t, type MessageKey } from "./i18n";
 import { navigate } from "./router";
-import { clearSession, getSession } from "./session";
+import { clearSession, getMediaToken, getSession } from "./session";
 
 export type UserProfile = {
   nick: string;
@@ -787,11 +787,11 @@ export const api = {
   workspaces: () => request<WorkspaceContext>("/companion/api/workspaces"),
 
   /** One-time pairing code -> long-lived session token. */
-  pair: (token: string, name: string) =>
+  pair: (token: string, name: string, deviceId: string) =>
     request<{ sessionToken: string }>("/companion/api/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, name }),
+      body: JSON.stringify({ token, name, deviceId }),
     }),
 
   /** Presence handshake: tells the desktop this device is still connected. */
@@ -801,6 +801,7 @@ export const api = {
       deviceName: string;
       deviceId: string;
       canManage: boolean;
+      mediaToken: string;
       now: string;
     }>("/companion/api/heartbeat", { method: "POST" }, { trackConnection: false }),
 
@@ -1058,7 +1059,7 @@ export const api = {
  */
 export const fileRawUrl = (workspaceId: string, path: string): string => {
   const params = new URLSearchParams({
-    t: getSession() ?? "",
+    t: getMediaToken() ?? "",
     workspaceId,
     path,
   });

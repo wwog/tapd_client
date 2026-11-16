@@ -126,9 +126,24 @@ pub struct CompanionRuntime {
     /// HTTP auth only happens before the upgrade.
     pub(crate) revoked: Arc<tokio::sync::Notify>,
     pub(crate) revoked_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Per-run secret behind media URL credentials. Generated on first use, so
+    /// a URL captured from one run is worthless in the next.
+    pub(crate) media_secret: String,
 }
 
 impl CompanionRuntime {
+    /// Per-run media secret, generated lazily.
+    pub(super) fn media_secret(&mut self) -> &str {
+        if self.media_secret.is_empty() {
+            self.media_secret = format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+        }
+        &self.media_secret
+    }
+
     /// Wakes every live companion socket so it can re-check its authorization.
     /// Callers hold the runtime lock, so a socket that reads the generation
     /// after this call always observes the bump.
@@ -621,6 +636,7 @@ mod tests {
     fn device(id: &str, can_manage: bool) -> CompanionDevice {
         CompanionDevice {
             id: id.to_string(),
+            device_id: String::new(),
             name: id.to_string(),
             token_hash: format!("hash-{id}"),
             paired_at: "2026-11-13T00:00:00+00:00".to_string(),

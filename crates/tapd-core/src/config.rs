@@ -118,6 +118,11 @@ impl CompanionConfig {
 pub struct CompanionDevice {
     /// Stable id the unpair action targets.
     pub id: String,
+    /// Stable id generated once by the phone and kept across pairings. Two
+    /// phones with the same display name (two iPhones) stay separate devices.
+    /// Empty for configs paired by a client that predates it.
+    #[serde(default)]
+    pub device_id: String,
     /// Display name from pairing; blank names fall back to 移动设备.
     pub name: String,
     /// Lowercase hex SHA-256 of the phone's session token.
