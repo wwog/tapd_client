@@ -1,0 +1,187 @@
+//! The `dsh_*` feature surface.
+//!
+//! One implementation serves both adapters: the Tauri commands in
+//! [`super::commands`] and the `feature_router` / companion allowlist used by
+//! the paired phone. Frontends therefore cannot diverge on behavior or shapes.
+//!
+//! Session state lives in [`BridgeState`]; these functions only translate
+//! JSON payloads, call the runtime, and return the documented shapes.
+
+use std::sync::Arc;
+
+use dsh_host::protocol::{AnswerItem, ApprovalOutcome, ApprovalRequestResult, UserQuestionResult};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use tauri::{AppHandle, Manager};
+
+use super::bridge::BridgeState;
+use super::runtime::{DshStatus, RuntimeState};
+use tapd_i18n::{tr, tr_args};
+
+fn runtime(app: &AppHandle) -> Result<Arc<RuntimeState>, String> {
+    app.try_state::<Arc<RuntimeState>>()
+        .map(|state| state.inner().clone())
+        .ok_or_else(|| tr("dsh.state.unavailable").to_string())
+}
+
+fn bridge(app: &AppHandle) -> Result<Arc<BridgeState>, String> {
+    app.try_state::<Arc<BridgeState>>()
+        .map(|state| state.inner().clone())
+        .ok_or_else(|| tr("dsh.bridge.unavailable").to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Operations (shared by both adapters)
+// ---------------------------------------------------------------------------
+
+pub fn status(app: &AppHandle) -> Result<DshStatus, String> {
+    Ok(runtime(app)?.status())
+}
+
+pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
+    runtime(app)?.ensure_ready(app).await
+}
+
+pub async fn stop(app: &AppHandle) -> Result<DshStatus, String> {
+    let state = runtime(app)?;
+    state.stop(app).await?;
+    Ok(state.status())
+}
+
+/// Newest first (shape in `docs/DSH.md` §8.4). Wrapped so the desktop invoke
+/// and the phone's feature proxy share one shape (it mirrors `dsh://sessions`).
+pub fn sessions(app: &AppHandle) -> Result<Value, String> {
+    let sessions = bridge(app)?.sessions();
+    Ok(json!({ "sessions": sessions }))
+}
+
+/// Requests the runtime is still blocked on, so a page opened after the event
+/// can still render the approval / question card.
+pub fn pending(app: &AppHandle) -> Result<Value, String> {
+    let requests = runtime(app)?.pending();
+    Ok(json!({ "requests": requests }))
+}
+
+pub fn session_entries(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let bridge = bridge(app)?;
+    // A persisted selection from before a restart names a session this process
+    // has not seen yet. That is a "gone" state, not a failure: `known: false`
+    // lets the UI fall back instead of rendering an error panel.
+    let Some(entries) = bridge.entries(session_id) else {
+        return Ok(json!({ "sessionId": session_id, "known": false, "entries": [] }));
+    };
+    Ok(json!({ "sessionId": session_id, "known": true, "entries": entries }))
+}
+
+/// Allocates an id and its (empty) registry row. The runtime creates the real
+/// session on the first prompt.
+pub fn new_session(app: &AppHandle) -> Result<Value, String> {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    bridge(app)?.create_session(app, &session_id);
+    Ok(json!({ "sessionId": session_id }))
+}
+
+/// Ensures the runtime is up, then queues one prompt. The registry row exists
+/// before the call, so the session is listable even if the model call fails.
+pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
+    bridge(app)?.create_session(app, session_id);
+    let state = runtime(app)?;
+    state.ensure_ready(app).await?;
+    let receipt = state.query(session_id, text).await?;
+    Ok(json!({ "sessionId": session_id, "receipt": receipt }))
+}
+
+/// Only `allowed-once` grants the operation.
+pub async fn approval_answer(app: &AppHandle, rpc_id: u64, outcome: &str) -> Result<(), String> {
+    let outcome = match outcome {
+        "allowed-once" | "allowed_once" | "allow" => ApprovalOutcome::AllowedOnce,
+        "rejected" | "reject" => ApprovalOutcome::Rejected,
+        _ => ApprovalOutcome::Cancelled,
+    };
+    let result = serde_json::to_value(ApprovalRequestResult { outcome })
+        .map_err(|error| error.to_string())?;
+    runtime(app)?.respond(rpc_id, result).await
+}
+
+/// `answers: None` dismisses the whole request; dismissal is never approval.
+pub async fn question_answer(
+    app: &AppHandle,
+    rpc_id: u64,
+    answers: Option<Vec<AnswerItem>>,
+) -> Result<(), String> {
+    let result = match answers {
+        Some(answers) => serde_json::to_value(UserQuestionResult::Answers { answers }),
+        None => serde_json::to_value(UserQuestionResult::Cancelled { cancelled: true }),
+    }
+    .map_err(|error| error.to_string())?;
+    runtime(app)?.respond(rpc_id, result).await
+}
+
+// ---------------------------------------------------------------------------
+// JSON dispatch (feature_router)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionIdPayload {
+    session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptPayload {
+    session_id: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalPayload {
+    rpc_id: u64,
+    outcome: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestionPayload {
+    rpc_id: u64,
+    #[serde(default)]
+    answers: Option<Vec<AnswerItem>>,
+}
+
+fn parse<T: for<'de> Deserialize<'de>>(payload: Value, name: &str) -> Result<T, String> {
+    serde_json::from_value(payload)
+        .map_err(|error| tr_args("dsh.args.invalid", &[&name, &error]))
+}
+
+/// Dispatches one `dsh_*` feature command. Every name is also an arm of the
+/// companion allowlist (`companion/feature.rs`).
+pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Value, String> {
+    match name {
+        "dsh_status" => serde_json::to_value(status(app)?).map_err(|error| error.to_string()),
+        "dsh_start" => serde_json::to_value(start(app).await?).map_err(|error| error.to_string()),
+        "dsh_stop" => serde_json::to_value(stop(app).await?).map_err(|error| error.to_string()),
+        "dsh_sessions" => sessions(app),
+        "dsh_pending" => pending(app),
+        "dsh_session_entries" => {
+            let request: SessionIdPayload = parse(payload, "dsh_session_entries")?;
+            session_entries(app, &request.session_id)
+        }
+        "dsh_prompt" => {
+            let request: PromptPayload = parse(payload, "dsh_prompt")?;
+            prompt(app, &request.session_id, &request.text).await
+        }
+        "dsh_new_session" => new_session(app),
+        "dsh_approval_answer" => {
+            let request: ApprovalPayload = parse(payload, "dsh_approval_answer")?;
+            approval_answer(app, request.rpc_id, &request.outcome).await?;
+            Ok(json!({ "ok": true }))
+        }
+        "dsh_question_answer" => {
+            let request: QuestionPayload = parse(payload, "dsh_question_answer")?;
+            question_answer(app, request.rpc_id, request.answers).await?;
+            Ok(json!({ "ok": true }))
+        }
+        other => Err(format!("unknown dsh command: {other}")),
+    }
+}

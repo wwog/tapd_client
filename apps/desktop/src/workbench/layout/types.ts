@@ -14,6 +14,7 @@ export type GroupRole = "primary" | "secondary" | "bottom";
 export type PageView =
   | "bugs"
   | "local"
+  | "agent"
   | "projects"
   | "coworker"
   | "mcp"

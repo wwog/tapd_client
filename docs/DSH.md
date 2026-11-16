@@ -57,6 +57,21 @@ tool-worktree、inspector 等）本来就随 `@deepseek-ai/dsh` 的依赖树发�
 
 P2b 的构建脚本按「必需集合 + 平台裁剪」生成 payload，并跑契约冒烟确认裁剪没有破坏启动。
 
+## 2.3 与已安装 dsh 的隔离
+
+用户机器上可能已经装了 `dsh`（npm 全局或桌面版）。内置运行时不与它共享任何东西：
+
+| 维度 | 内置运行时 | 已安装 dsh |
+| --- | --- | --- |
+| 代码 | `<data>/dsh/<version>/node_modules/...`（打包 payload 解压） | 用户自己的安装目录 |
+| 配置 / 会话 | `DSH_HOME=<data>/dsh/home`（显式覆盖，绝不读 `~/.dsh`） | 默认 home |
+| profile 名 | `tapd` | `web` / `desktop` / `sdk` … |
+| 入口 | `node <payload>/@deepseek-ai/dsh/lib/bin.js`（绝对路径） | PATH 上的 `dsh` |
+| 端口 | stdio + 桥接随机端口 | 默认 3080 |
+
+启动子进程时**只**用绝对入口 + 显式 `DSH_HOME`，不 `source` 用户的 shell 配置、不写全局
+npm/pnpm 配置。`docs/DSH.md` 里所有配置都落在应用数据目录的 `agent.json` 与 `dsh/` 下。
+
 ## 3. 三条通道
 
 | 通道 | 方向 | 用途 | 稳定性 |
@@ -242,3 +257,158 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - 不再读别人的 transcript / JSONL；消息流来自 dsh 的 session log。
 - 不再给内置 Agent 注入 MCP 配置；外部客户端仍走 `tapd-mcp` sidecar。
 - 状态机只剩 `running → awaiting_review → awaiting_merge → done`，turn 生命周期交给 dsh。
+
+## 8. 桥插件与归一化视图
+
+本节是**前端唯一的渲染契约**。第 5 节是最初的设计草图；实际实现以本节为准。
+
+### 8.1 通道与生命周期
+
+- Rust 在每次 `dsh_start` 时绑定 `127.0.0.1:0`，生成随机 token，把
+  `TAPD_DSH_BRIDGE_URL`（`http://127.0.0.1:<port>`）与 `TAPD_DSH_BRIDGE_TOKEN`
+  注入子进程环境；插件 `@tapd/plugin-bridge` 读取这两个变量。
+- 两个变量缺失时插件完全惰性（`scripts/dsh/prepare.mjs --verify` 与独立 dsh 运行都不受影响）。
+- 插件只连回环地址；Rust 只接受回环连接，并校验**每一帧**的 `token`，不匹配立即断开。
+- 插件断线后按 250ms → 4s 退避重连，重连成功后**重发全部会话快照**；Rust 按事件
+  `seq` 去重，重复快照不会产生重复行。
+- 插件不读 stdin、不写 stdout（stdout 属于 SDK JSON-RPC 协议槽）。
+
+### 8.2 NDJSON（插件 → Rust）
+
+每行一个 JSON 对象；所有帧都带 `token`。字段名是 camelCase。
+
+```jsonc
+// 连接后的第一帧
+{ "type": "hello", "token": "<token>" }
+
+// 每个存活会话一帧，连接时（含重连）发送；events 是 dsh SessionEvent 原样数组
+{ "type": "snapshot", "token": "<token>", "sessionId": "probe-1", "events": [ /* SessionEvent[] */ ] }
+
+// 每个 agent/assistant-stream 帧一行，frame 原样透传（见 4.2 的 AssistantStreamFrame）
+{ "type": "stream", "token": "<token>", "sessionId": "probe-1", "frame": { /* AssistantStreamFrame */ } }
+```
+
+`event`（单条事件）是保留类型：Rust 已能接收 `{type:"event",token,sessionId,event}`，
+当前插件不发（已提交事件走 SDK 的 `session.event`，两边共用同一个 ingest）。
+
+`start` / `end` / `usage` / `finish` 帧不产生增量，不向上转发；`end(committed)` 之后
+必然跟一条已提交的 `assistant/message` 行，前端据此把 live 文本换成持久行。
+
+### 8.3 持久行 `DshEntry`
+
+按 `seq` 唯一；`at` 是事件自带 `time`（epoch ms）转成的 RFC3339 UTC（毫秒精度）。
+`kind` 四种：
+
+```jsonc
+{ "kind": "user", "seq": 3, "at": "2026-11-16T12:00:00.000Z", "text": "hello" }
+
+{ "kind": "assistant", "seq": 5, "at": "…", "text": "…", "reasoning": "…" } // reasoning 可省略
+
+{ "kind": "tool", "seq": 6, "at": "…", "callId": "call_1", "name": "bash",
+  "args": "{\"cmd\":\"ls\"}",          // 模型产出的原始 JSON 字符串，由前端解析
+  "status": "running",                 // running | ok | error
+  "result": "file.txt" }               // ok/error 后出现，字符串（工具结果的文本）
+
+{ "kind": "turn", "seq": 0, "at": "…", "state": "start" }   // state: start | end
+{ "kind": "turn", "seq": 9, "at": "…", "state": "end", "reason": "error" } // reason = TurnEndReason.kind
+```
+
+规则（实现见 `crates/dsh-host/src/transcript.rs`）：
+
+- `tool` 行使用 **`tool/call` 的 seq**；`tool/result` 到达时原地更新该行并以同一 `seq`
+  重新发一条 `dsh://entry`。前端按 `seq` 覆盖即可，不要按到达顺序追加。
+- 只有工具调用、没有文本/推理的 assistant 消息**不产生行**（对应的 `tool` 行已表达）。
+- `user/message` 只在 `data.source.kind == "user"`（无 `source` 的旧日志也按人类输入处理）时产生
+  `user` 行；`agent-instructions`、时间采样等注入上下文虽然也是 `user/message`，但**不进入对话**
+  （否则会把 AGENTS.md 渲染成用户气泡），它们仍留在 dsh 自己的会话日志里。
+- 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
+- 未知事件类型（`step/start`、`request/header` 等）忽略，每种类型只记一条 debug 日志。
+- 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
+
+### 8.4 会话 `DshSession`
+
+```jsonc
+{ "id": "probe-1", "title": "hello", "updatedAt": "2026-11-16T12:00:00.000Z",
+  "status": "idle", "messageCount": 1 }   // status: idle | running | failed
+```
+
+- `title`：第一条人类 user 行的首行，最多 60 字符（超长以 `…` 结尾）；还没有 user 行时为空串，
+  UI 自己渲染空态，不要伪造标题。
+- `messageCount`：已提交的 user + assistant 行数（tool / turn 不计）。
+- `status`：`turn/start` 或 `session.status(running)` → `running`；`turn/end` 且
+  `reason.kind` 为 `error` / `blocked` → `failed`，其余 → `idle`；随后到达的
+  `session.status(idle)` 是权威值，可把失败会话改回 `idle`（失败原因保留在 `turn` 行里）；
+  运行时进程退出时，仍为 `running` 的会话改为 `failed`。
+- `updatedAt` 是固定宽度的 RFC3339（毫秒、UTC），字典序即时间序；列表按它降序。
+
+### 8.5 实时增量 `DshStream`
+
+```jsonc
+{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 7,
+  "delta": { "type": "text", "text": "你" } }
+{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 8,
+  "delta": { "type": "reasoning", "text": "…" } }
+{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 9,
+  "delta": { "type": "tool-call", "callId": "call_1", "name": "bash",
+             "arguments": "{\"cmd\":" } }
+```
+
+- **不持久**：只用于流式渲染。live 文本按 `(sessionId, attemptId, revision)` 分组；
+  `revision` 变大表示该 attempt 被替换（重试/改写），先清空再追加，不要拼接。
+- 已提交的 `assistant` 行到达后丢弃对应的 live 文本；`turn/end` 到达后清空该会话所有 live。
+- 插件不合并 delta（每帧一行）；Rust 也不合并，`index` 保留上游含义。
+
+### 8.6 Tauri 事件与命令
+
+事件（UI 只渲染 `entry` / `stream` / `sessions`，不要从原始事件重建状态）：
+
+| 事件 | 载荷 |
+| --- | --- |
+| `dsh://entry` | `{ sessionId, entry: DshEntry }`（tool 行更新会再次发送） |
+| `dsh://stream` | `{ sessionId, stream: DshStream }` |
+| `dsh://sessions` | `{ sessions: DshSession[] }`（新增会话、标题/状态/计数变化时） |
+| `dsh://session-event` | SDK 原始 `{sessionId, event}`（保留给调试/原始消费者） |
+| `dsh://approval` / `dsh://question` | 见 4.4，回执按 `rpcId` |
+| `dsh://status` / `dsh://ready` / `dsh://error` | 运行时状态机 |
+
+命令（桌面 `invoke` 与手机 `feature_router` 的 `dsh_*` 是同一实现）：
+
+| 名称 | 入参 | 返回 |
+| --- | --- | --- |
+| `dsh_status` | — | `DshStatus` |
+| `dsh_start` / `dsh_stop` | — | `DshStatus` |
+| `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
+| `dsh_session_entries` | `{ sessionId }` | `{ sessionId, known, entries: DshEntry[] }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错） |
+| `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
+| `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
+| `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
+| `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
+| `dsh_question_answer` | `{ rpcId, answers }`（`answers: null` = 取消） | `{ ok: true }` |
+
+### 8.7 阻塞请求快照 `dsh_pending`
+
+事件可能在页面打开之前到达（例如手机发起、桌面还没进 Agent 页），所以阻塞请求必须可查：
+
+```jsonc
+{ "requests": [
+  { "rpcId": 12, "sessionId": "s1", "kind": "approval",
+    "request": { "sessionId": "s1", "toolName": "bash", "callId": "c1", "reason": "…" } },
+  { "rpcId": 13, "sessionId": "s1", "kind": "question",
+    "request": { "requestId": "q1", "sessionId": "s1", "questions": [ … ] } }
+] }
+```
+
+- 唯一 owner 是 `RuntimeState.pending`：请求到达时登记、`dsh_approval_answer` /
+  `dsh_question_answer` 成功时移除、运行时退出或 `dsh_stop` 时清空。
+- 桌面在 Agent 页 bootstrap 时拉一次并喂给与实时事件相同的 reducer；手机在每次会话轮询时拉取。
+- 顺序：先登记再发事件，所以事件到达后立刻查快照也能看到同一条。
+
+### 8.8 当前未实现（UI 不要假设）
+
+- 团队任务板 `team/board`、`agentTeam` 投影未接入。
+- 归一化视图只在内存中；App 重启后需要等新快照/事件重建（dsh 自己仍持久化会话）。
+- 没有历史分页：快照是全量 `snapshotEvents()`，大仓库会话首次连接会一次推完。
+- image / file 内容块、子 agent 会话树、`subagent.*` 的归一化行都未实现。
+- `assistant/attempt`（失败/被取消的模型尝试）与 `session/title` 被忽略：模型失败只通过
+  `turn` 行的 `reason` 呈现，标题由第一条人类 user 行生成（不用 dsh 自带的标题投影）。
+- 未做 token 侧合并（见 8.5），高吞吐模型下 NDJSON 行数等于 delta 帧数。

@@ -1,18 +1,17 @@
 //! Tauri commands for the built-in agent runtime.
+//!
+//! Every command is a thin typed wrapper over [`super::feature`], which is also
+//! what the paired phone reaches through `feature_router`. Keeping one
+//! implementation means the desktop and the phone cannot drift apart.
 
-use std::sync::Arc;
-
+use dsh_host::protocol::AnswerItem;
 use serde::Serialize;
-use serde_json::{json, Value};
-use tauri::{AppHandle, State};
+use serde_json::Value;
+use tauri::AppHandle;
 
+use super::feature;
 use super::payload::{self, PayloadStatus};
-use super::runtime::{DshStatus, RuntimeState};
-use dsh_host::protocol::{AnswerItem, ApprovalOutcome, ApprovalRequestResult, UserQuestionResult};
-
-fn runtime(state: &State<'_, Arc<RuntimeState>>) -> Arc<RuntimeState> {
-    state.inner().clone()
-}
+use super::runtime::DshStatus;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,77 +66,72 @@ pub async fn dsh_prepare(app: AppHandle) -> Result<PayloadReport, String> {
 }
 
 #[tauri::command]
-pub async fn dsh_status(state: State<'_, Arc<RuntimeState>>) -> Result<DshStatus, String> {
-    Ok(runtime(&state).status())
+pub async fn dsh_status(app: AppHandle) -> Result<DshStatus, String> {
+    feature::status(&app)
 }
 
 /// Extracts the payload (first run) and starts + initializes the runtime.
 #[tauri::command]
-pub async fn dsh_start(
-    app: AppHandle,
-    state: State<'_, Arc<RuntimeState>>,
-) -> Result<DshStatus, String> {
-    runtime(&state).ensure_ready(&app).await
+pub async fn dsh_start(app: AppHandle) -> Result<DshStatus, String> {
+    feature::start(&app).await
 }
 
 #[tauri::command]
-pub async fn dsh_stop(
-    app: AppHandle,
-    state: State<'_, Arc<RuntimeState>>,
-) -> Result<DshStatus, String> {
-    let runtime = runtime(&state);
-    runtime.stop(&app).await?;
-    Ok(runtime.status())
+pub async fn dsh_stop(app: AppHandle) -> Result<DshStatus, String> {
+    feature::stop(&app).await
 }
 
-/// Allocates a session id. Sessions are created by the runtime on first prompt;
-/// the id is ours to choose so tasks can be tracked before they start.
+/// Sessions, newest first, as `{ sessions: DshSession[] }`.
 #[tauri::command]
-pub async fn dsh_new_session() -> Result<Value, String> {
-    Ok(json!({ "sessionId": uuid::Uuid::new_v4().to_string() }))
+pub async fn dsh_sessions(app: AppHandle) -> Result<Value, String> {
+    feature::sessions(&app)
+}
+
+/// Normalized committed entries for one session.
+#[tauri::command]
+pub async fn dsh_session_entries(app: AppHandle, session_id: String) -> Result<Value, String> {
+    feature::session_entries(&app, &session_id)
+}
+
+/// Approvals and questions the runtime is blocked on.
+#[tauri::command]
+pub async fn dsh_pending(app: AppHandle) -> Result<Value, String> {
+    super::feature::pending(&app)
+}
+
+/// Allocates a session id and its registry row. The runtime creates the real
+/// session on the first prompt.
+#[tauri::command]
+pub async fn dsh_new_session(app: AppHandle) -> Result<Value, String> {
+    feature::new_session(&app)
 }
 
 /// Queues one user message on a session.
 #[tauri::command]
 pub async fn dsh_prompt(
     app: AppHandle,
-    state: State<'_, Arc<RuntimeState>>,
     session_id: String,
     text: String,
 ) -> Result<Value, String> {
-    let runtime = runtime(&state);
-    runtime.ensure_ready(&app).await?;
-    runtime.query(&session_id, &text).await
+    feature::prompt(&app, &session_id, &text).await
 }
 
 /// Answers one approval request. Only `allowed-once` grants the operation.
 #[tauri::command]
 pub async fn dsh_approval_answer(
-    state: State<'_, Arc<RuntimeState>>,
+    app: AppHandle,
     rpc_id: u64,
     outcome: String,
 ) -> Result<(), String> {
-    let outcome = match outcome.as_str() {
-        "allowed-once" | "allowed_once" | "allow" => ApprovalOutcome::AllowedOnce,
-        "rejected" | "reject" => ApprovalOutcome::Rejected,
-        _ => ApprovalOutcome::Cancelled,
-    };
-    let result = serde_json::to_value(ApprovalRequestResult { outcome })
-        .map_err(|error| error.to_string())?;
-    runtime(&state).respond(rpc_id, result).await
+    feature::approval_answer(&app, rpc_id, &outcome).await
 }
 
 /// Answers a batch of questions; `answers: null` dismisses the whole request.
 #[tauri::command]
 pub async fn dsh_question_answer(
-    state: State<'_, Arc<RuntimeState>>,
+    app: AppHandle,
     rpc_id: u64,
     answers: Option<Vec<AnswerItem>>,
 ) -> Result<(), String> {
-    let result = match answers {
-        Some(answers) => serde_json::to_value(UserQuestionResult::Answers { answers }),
-        None => serde_json::to_value(UserQuestionResult::Cancelled { cancelled: true }),
-    }
-    .map_err(|error| error.to_string())?;
-    runtime(&state).respond(rpc_id, result).await
+    feature::question_answer(&app, rpc_id, answers).await
 }

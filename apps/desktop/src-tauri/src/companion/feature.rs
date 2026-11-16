@@ -46,6 +46,17 @@ use super::{
 /// `feature_router::dispatch`; anything else answers 403 `forbidden` before
 /// the desktop command layer is ever reached.
 const ALLOWED_FEATURES: &[&str] = &[
+    // 内置 Agent 运行时（会话、提示词、审批回执；流式只在桌面端）
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_pending",
+    "dsh_new_session",
+    "dsh_prompt",
+    "dsh_approval_answer",
+    "dsh_question_answer",
     // Agent 配置（Worktree 隔离与执行单元；提示词仍只在桌面端编辑）
     "settings_agent_get",
     "settings_agent_set",
@@ -167,6 +178,16 @@ mod tests {
     /// The feature surface mobile v2 documents. The allowlist must cover every
     /// documented name (each one is also an arm of `feature_router::dispatch`).
     const DOCUMENTED_FEATURES: &[&str] = &[
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_pending",
+    "dsh_new_session",
+    "dsh_prompt",
+    "dsh_approval_answer",
+    "dsh_question_answer",
     "settings_agent_get",
     "settings_agent_set",
     "notification_settings_get",
@@ -186,6 +207,15 @@ mod tests {
     "local_item_update",
     "local_item_delete",
     "local_browse_dirs",
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_prompt",
+    "dsh_new_session",
+    "dsh_approval_answer",
+    "dsh_question_answer",
 ];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {

@@ -12,12 +12,27 @@ export type ProjectAgentConfig = {
   rule: string;
 };
 
+export type DshModelProtocol = "openai-completions" | "anthropic" | "gemini";
+
+/** Custom model API rendered into the runtime profile. */
+export type DshModelConfig = {
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  protocol: DshModelProtocol;
+  apiKey: string;
+  model: string;
+  contextWindow: number;
+  models: string[];
+};
+
 export type AgentConfig = {
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
   coworkerIds: string[];
   worktreeEnabled: boolean;
   executionUnits: number;
+  dshModel: DshModelConfig;
 };
 
 export const agentSettingsApi = {

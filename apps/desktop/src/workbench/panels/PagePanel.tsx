@@ -3,6 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { t } from "../../lib/i18n";
 import type { PageView } from "../layout/types";
 import { AccountPage } from "../../components/AccountPage";
+import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
 import { CoworkerPage } from "../../components/CoworkerPage";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
@@ -136,6 +137,9 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "coworker":
       return <CoworkerPage toast={host.toast} />;
+
+    case "agent":
+      return <AgentPage toast={host.toast} />;
 
     case "mcp":
       return (

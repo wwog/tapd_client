@@ -24,13 +24,21 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use super::{payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_READY, EVENT_STATUS};
+use super::{
+    bridge, payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_READY, EVENT_STATUS,
+};
 use crate::agent_settings::{self, DshModelConfig};
 use crate::shell_path;
+use tapd_i18n::{tr, tr_args};
 
 /// Environment variable carrying the custom provider key into the runtime.
 /// The profile references it by name; the secret never enters a config file.
 const API_KEY_ENV: &str = "TAPD_DSH_API_KEY";
+
+/// Sent when the user leaves the key empty. Hand-declared gateways (local
+/// vLLM/Ollama, proxies) usually ignore the header, but the credential seam
+/// fails closed on a reference that resolves to nothing.
+const NO_AUTH_PLACEHOLDER: &str = "tapd-no-auth";
 
 /// Requests that never answered in time are abandoned; the UI shows an error
 /// instead of hanging forever.
@@ -111,6 +119,27 @@ pub struct RuntimeState {
     running: Mutex<Option<Running>>,
     /// Serialises start attempts so two UI actions cannot spawn twice.
     start_lock: Mutex<()>,
+    /// Server-initiated requests still waiting for an answer. The runtime owns
+    /// their lifecycle: `remember` on arrival, `respond` removes, exit clears.
+    pending: std::sync::Mutex<Vec<PendingRequest>>,
+}
+
+/// A question or approval the runtime is blocked on. `request` is the typed
+/// payload the UI cards render; `rpc_id` is what the answer goes back on.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRequest {
+    pub rpc_id: u64,
+    pub session_id: String,
+    pub kind: PendingKind,
+    pub request: Value,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PendingKind {
+    Approval,
+    Question,
 }
 
 impl Default for RuntimeState {
@@ -119,6 +148,7 @@ impl Default for RuntimeState {
             status: std::sync::Mutex::new(DshStatus::default()),
             running: Mutex::new(None),
             start_lock: Mutex::new(()),
+            pending: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -126,6 +156,28 @@ impl Default for RuntimeState {
 impl RuntimeState {
     pub fn status(&self) -> DshStatus {
         self.status.lock().expect("dsh status lock").clone()
+    }
+
+    /// Requests the runtime is still waiting on, oldest first.
+    pub fn pending(&self) -> Vec<PendingRequest> {
+        self.pending.lock().expect("dsh pending lock").clone()
+    }
+
+    fn remember_pending(&self, request: PendingRequest) {
+        let mut pending = self.pending.lock().expect("dsh pending lock");
+        pending.retain(|item| item.rpc_id != request.rpc_id);
+        pending.push(request);
+    }
+
+    pub fn clear_pending(&self) {
+        self.pending.lock().expect("dsh pending lock").clear();
+    }
+
+    fn forget_pending(&self, rpc_id: u64) {
+        self.pending
+            .lock()
+            .expect("dsh pending lock")
+            .retain(|item| item.rpc_id != rpc_id);
     }
 
     fn set_status(&self, app: &AppHandle, status: DshStatus) -> DshStatus {
@@ -169,7 +221,7 @@ impl RuntimeState {
             return Err(self.fail(
                 app,
                 "model_missing",
-                "还没有配置模型 API：请先在「设置 → 模型」填写 API 地址与模型。",
+                tr("dsh.model.unconfigured"),
             ));
         }
 
@@ -178,15 +230,25 @@ impl RuntimeState {
             Err(error) => return Err(self.fail(app, "profile_failed", error)),
         };
 
-        let mut child = match spawn_runtime(&node_path, &layout, &config.dsh_model) {
+        // One loopback port per runtime start; the plugin reads these from env.
+        let endpoint = match bridge::open(app).await {
+            Ok(endpoint) => endpoint,
+            Err(error) => return Err(self.fail(app, "bridge_failed", error)),
+        };
+
+        let mut child = match spawn_runtime(&node_path, &layout, &config.dsh_model, &endpoint) {
             Ok(child) => child,
-            Err(error) => return Err(self.fail(app, "spawn_failed", error)),
+            Err(error) => {
+                bridge::shutdown(app).await;
+                return Err(self.fail(app, "spawn_failed", error));
+            }
         };
 
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
             None => {
                 let _ = child.kill().await;
+                bridge::shutdown(app).await;
                 return Err(self.fail(app, "spawn_failed", "runtime stdout is unavailable"));
             }
         };
@@ -194,10 +256,14 @@ impl RuntimeState {
             pump_stderr(stderr).await;
         }
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| self.fail(app, "spawn_failed", "runtime stdin is unavailable"))?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = child.kill().await;
+                bridge::shutdown(app).await;
+                return Err(self.fail(app, "spawn_failed", "runtime stdin is unavailable"));
+            }
+        };
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut stdin = stdin;
         tauri::async_runtime::spawn(async move {
@@ -287,41 +353,42 @@ impl RuntimeState {
         let id = {
             let running = self.running.lock().await;
             let Some(running) = running.as_ref() else {
-                return Err("内置 Agent 运行时未启动".to_string());
+                return Err(tr("dsh.runtime.notStarted").to_string());
             };
             let id = running.ids.fetch_add(1, Ordering::SeqCst) + 1;
             running.pending.lock().await.insert(id, tx);
             running
                 .stdin
                 .send(rpc::encode_request(RpcId(id), method, params))
-                .map_err(|_| "内置 Agent 运行时已退出".to_string())?;
+                .map_err(|_| tr("dsh.runtime.exited").to_string())?;
             id
         };
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(error))) => Err(error.message),
-            Ok(Err(_)) => Err("内置 Agent 运行时中断了请求".to_string()),
+            Ok(Err(_)) => Err(tr("dsh.runtime.interrupted").to_string()),
             Err(_) => {
                 let running = self.running.lock().await;
                 if let Some(running) = running.as_ref() {
                     running.pending.lock().await.remove(&id);
                 }
-                Err(format!("{method} 超时"))
+                Err(tr_args("dsh.call.timeout", &[&method]))
             }
         }
     }
 
     /// Answers a server-initiated request (approval / question) by its RPC id.
     pub async fn respond(&self, id: u64, result: Value) -> Result<(), String> {
+        self.forget_pending(id);
         let running = self.running.lock().await;
         let Some(running) = running.as_ref() else {
-            return Err("内置 Agent 运行时未启动".to_string());
+            return Err(tr("dsh.runtime.notStarted").to_string());
         };
         running
             .stdin
             .send(rpc::encode_success(RpcId(id), result))
-            .map_err(|_| "内置 Agent 运行时已退出".to_string())
+            .map_err(|_| tr("dsh.runtime.exited").to_string())
     }
 
     /// Queues one prompt on a session, creating it on first use.
@@ -340,8 +407,10 @@ impl RuntimeState {
     }
 
     pub async fn stop(&self, app: &AppHandle) -> Result<(), String> {
+        self.clear_pending();
         let mut guard = self.running.lock().await;
         let Some(mut running) = guard.take() else {
+            bridge::shutdown(app).await;
             let status = self.set_status(app, DshStatus::default());
             let _ = status;
             return Ok(());
@@ -364,6 +433,7 @@ impl RuntimeState {
             }
         }
         drop(guard);
+        bridge::shutdown(app).await;
         self.set_status(app, DshStatus::default());
         Ok(())
     }
@@ -404,11 +474,7 @@ fn prepare_profile(
         },
         api: model.protocol.clone(),
         base_url: model.base_url.clone(),
-        api_key_env: if model.api_key.is_empty() {
-            None
-        } else {
-            Some(API_KEY_ENV.to_string())
-        },
+        api_key_env: Some(API_KEY_ENV.to_string()),
         models: provider_models(model),
     };
     let spec = ProfileSpec {
@@ -499,6 +565,7 @@ fn spawn_runtime(
     node: &Path,
     layout: &RuntimeLayout,
     model: &DshModelConfig,
+    bridge: &bridge::BridgeEndpoint,
 ) -> Result<Child, String> {
     let mut command = Command::new(node);
     command
@@ -507,15 +574,20 @@ fn spawn_runtime(
         .arg(PROFILE_NAME)
         .current_dir(&layout.default_cwd)
         .env("DSH_HOME", &layout.home)
+        .env("TAPD_DSH_BRIDGE_URL", &bridge.url)
+        .env("TAPD_DSH_BRIDGE_TOKEN", &bridge.token)
         // Finder-launched apps inherit a minimal PATH; the runtime shells out.
         .env("PATH", shell_path::user_path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    if !model.api_key.is_empty() {
-        command.env(API_KEY_ENV, &model.api_key);
-    }
+    let key = if model.api_key.is_empty() {
+        NO_AUTH_PLACEHOLDER
+    } else {
+        model.api_key.as_str()
+    };
+    command.env(API_KEY_ENV, key);
     command.spawn().map_err(|error| {
         format!(
             "failed to start {} {}: {error}",
@@ -564,10 +636,13 @@ fn spawn_reader(
 
         // The process ended: fail every request still waiting for an answer.
         pending.lock().await.clear();
+        // No live turn can outlive its process.
+        bridge::shutdown(&app).await;
         if let Some(state) = app.try_state::<Arc<RuntimeState>>() {
+            state.clear_pending();
             let status = state.status();
             if status.phase != Phase::Stopped {
-                state.set_status(&app, DshStatus::failed("exited", "内置 Agent 运行时已退出"));
+                state.set_status(&app, DshStatus::failed("exited", tr("dsh.runtime.exited")));
             }
         }
     });
@@ -578,6 +653,7 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
     match method {
         rpc::METHOD_APPROVAL_REQUEST => match serde_json::from_value::<ApprovalRequestParams>(params) {
             Ok(params) => {
+                remember(app, id, PendingKind::Approval, &params.session_id, &params);
                 let _ = app.emit(
                     EVENT_APPROVAL,
                     json!({ "rpcId": id.0, "request": params }),
@@ -590,6 +666,7 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
         },
         rpc::METHOD_USER_QUESTION => match serde_json::from_value::<UserQuestionRequest>(params) {
             Ok(params) => {
+                remember(app, id, PendingKind::Question, &params.session_id, &params);
                 let _ = app.emit(EVENT_QUESTION, json!({ "rpcId": id.0, "request": params }));
             }
             Err(error) => {
@@ -605,6 +682,27 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
     }
 }
 
+/// Records a blocking request so a page opened after the event still sees it.
+/// The typed payload is serialized once; the UI receives the same shape.
+fn remember(
+    app: &AppHandle,
+    id: RpcId,
+    kind: PendingKind,
+    session_id: &str,
+    request: &impl serde::Serialize,
+) {
+    let Some(state) = app.try_state::<Arc<RuntimeState>>() else {
+        return;
+    };
+    let request = serde_json::to_value(request).unwrap_or(Value::Null);
+    state.inner().remember_pending(PendingRequest {
+        rpc_id: id.0,
+        session_id: session_id.to_string(),
+        kind,
+        request,
+    });
+}
+
 fn answer_now(app: &AppHandle, id: RpcId, result: &Value) {
     if let Some(state) = app.try_state::<Arc<RuntimeState>>() {
         let state = state.inner().clone();
@@ -618,19 +716,62 @@ fn answer_now(app: &AppHandle, id: RpcId, result: &Value) {
 fn forward_notification(app: &AppHandle, method: &str, params: Value) {
     match method {
         rpc::METHOD_SESSION_EVENT => {
+            ingest_session_event(app, &params);
             let _ = app.emit(super::EVENT_SESSION_EVENT, params);
+        }
+        rpc::METHOD_SESSION_STATUS => {
+            apply_session_status(app, &params);
+            // Unchanged generic shape: existing listeners keep working.
+            let _ = app.emit(
+                "dsh://notification",
+                json!({ "method": method, "params": params }),
+            );
         }
         rpc::METHOD_SESSION_QUERY_COMPLETED => {
             let _ = app.emit("dsh://query-completed", params);
         }
         other => {
-            // session.status, subagent.*, user-question.cancelled: forwarded
-            // verbatim so the UI can pick up anything the runtime adds.
+            // subagent.*, user-question.cancelled: forwarded verbatim so the UI
+            // can pick up anything the runtime adds.
             let _ = app.emit(
                 "dsh://notification",
                 json!({ "method": other, "params": params }),
             );
         }
+    }
+}
+
+/// The committed event feed also reaches the normalized registry, so a UI that
+/// never subscribes to the bridge still sees history it missed.
+fn ingest_session_event(app: &AppHandle, params: &Value) {
+    let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
+        tracing::warn!("session.event without a sessionId");
+        return;
+    };
+    let Some(event) = params.get("event") else {
+        tracing::warn!(%session_id, "session.event without an event");
+        return;
+    };
+    if let Some(state) = app.try_state::<Arc<bridge::BridgeState>>() {
+        state.ingest(app, session_id, event);
+    }
+}
+
+fn apply_session_status(app: &AppHandle, params: &Value) {
+    let status = match params.get("status").and_then(Value::as_str) {
+        Some("running") => dsh_host::transcript::SessionStatus::Running,
+        Some("idle") => dsh_host::transcript::SessionStatus::Idle,
+        other => {
+            tracing::debug!(?other, "session.status with an unknown state");
+            return;
+        }
+    };
+    let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
+        tracing::warn!("session.status without a sessionId");
+        return;
+    };
+    if let Some(state) = app.try_state::<Arc<bridge::BridgeState>>() {
+        state.set_status(app, session_id, status);
     }
 }
 
@@ -675,18 +816,16 @@ fn resolve_node() -> Result<(PathBuf, String), String> {
             Ok(version) => match dsh_host::node::evaluate(Some(&version)) {
                 Ok(_) => return Ok((candidate, version)),
                 Err(error) => {
-                    return Err(format!(
-                        "{error}。请升级 Node（https://nodejs.org）后重试。"
-                    ))
+                    return Err(tr_args("dsh.node.tooOld", &[&error]))
                 }
             },
             Err(error) => last_error = error,
         }
     }
     if last_error.is_empty() {
-        Err("找不到 node。内置 Agent 需要系统安装 Node.js >= 24.9（不会随 App 打包）。".to_string())
+        Err(tr("dsh.node.missing").to_string())
     } else {
-        Err(format!("{last_error}。内置 Agent 需要 Node.js >= 24.9。"))
+        Err(tr_args("dsh.node.tooOld", &[&last_error]))
     }
 }
 

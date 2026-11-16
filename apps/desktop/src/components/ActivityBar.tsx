@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import type { ReactNode } from "react";
 import {
+  Bot,
   Bug,
   FolderGit2,
   Plug,
@@ -16,6 +17,7 @@ import { t, type MessageKey } from "../lib/i18n";
 export type View =
   | "bugs"
   | "local"
+  | "agent"
   | "projects"
   | "coworker"
   | "mcp"
@@ -39,6 +41,7 @@ const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
   // 事项 has no rail entry: local projects open their own tab from the project
   // column (and the projects page), like TAPD projects do.
+  { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },

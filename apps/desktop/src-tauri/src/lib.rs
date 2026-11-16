@@ -106,6 +106,9 @@ pub fn run() {
             dsh::commands::dsh_status,
             dsh::commands::dsh_start,
             dsh::commands::dsh_stop,
+            dsh::commands::dsh_sessions,
+            dsh::commands::dsh_session_entries,
+            dsh::commands::dsh_pending,
             dsh::commands::dsh_new_session,
             dsh::commands::dsh_prompt,
             dsh::commands::dsh_approval_answer,
@@ -158,6 +161,9 @@ pub fn run() {
             let handle = app.handle().clone();
             let state = setup_state.clone();
             app.manage(std::sync::Arc::new(dsh::runtime::RuntimeState::default()));
+            // Normalized transcript + plugin socket; owned here so commands and
+            // the runtime share one registry.
+            app.manage(std::sync::Arc::new(dsh::bridge::BridgeState::default()));
 
             let server_state = state.clone();
             let server_handle = handle.clone();

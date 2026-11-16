@@ -1,4 +1,5 @@
 /** Every message group, merged into one catalogue. */
+import { agent } from "./agent";
 import { common } from "./common";
 import { coworkers } from "./coworkers";
 import { local } from "./local";
@@ -14,6 +15,7 @@ export const CATALOG = {
   ...terminal,
   ...workspace,
   ...local,
+  ...agent,
   ...misc,
 } as const;
 

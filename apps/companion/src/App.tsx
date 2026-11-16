@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bug, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
+import { Bug, Bot, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import { startHeartbeat } from "./lib/heartbeat";
@@ -8,6 +8,7 @@ import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
 import { PairPage } from "./pages/PairPage";
+import { AgentPage, AgentSessionPage } from "./pages/AgentPage";
 import { BugsPage } from "./pages/BugsPage";
 import { BugDetailPage } from "./pages/BugDetailPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
@@ -39,11 +40,12 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "local" | "files" | "terminal" | "settings";
+type TabKey = "bugs" | "agent" | "local" | "files" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
+  { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
   { key: "local", label: "mobile.local.title", hash: "#/local" },
   { key: "files", label: "mobile.files.title", hash: "#/files" },
   { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
@@ -56,6 +58,9 @@ const tabOf = (route: Route): TabKey => {
     case "bugs":
     case "bug":
       return "bugs";
+    case "agent":
+    case "agent-session":
+      return "agent";
     case "local":
       return "local";
     case "coworkers":
@@ -94,6 +99,7 @@ function TabBar(props: { active: TabKey }) {
             >
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
+                {tab.key === "agent" ? <Bot size={18} /> : null}
                 {tab.key === "local" ? <ListChecks size={18} /> : null}
                 {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
@@ -147,9 +153,11 @@ export default function App() {
       />
     );
   }
-  if (connection.kind === "not_logged_in" && route.name !== "local") {
-    // Local projects and their items live on the desktop and never call TAPD,
-    // so that tab stays usable before the desktop signs in.
+  // Local projects/items and the built-in dsh runtime never call TAPD, so
+  // those pages stay usable before the desktop signs in.
+  const worksWithoutLogin =
+    route.name === "local" || route.name === "agent" || route.name === "agent-session";
+  if (connection.kind === "not_logged_in" && !worksWithoutLogin) {
     // The hidden poller keeps running, so this clears itself once the
     // desktop logs back in.
     return (
@@ -177,6 +185,12 @@ export default function App() {
       >
         {route.name === "pair" ? <PairPage /> : null}
         {route.name === "bugs" ? <BugsPage /> : null}
+        {route.name === "agent" ? <AgentPage /> : null}
+        {route.name === "agent-session" ? (
+          // One instance per session: transcript, draft and poll state must
+          // not leak from the previous session when the route id changes.
+          <AgentSessionPage key={route.id} id={route.id} />
+        ) : null}
         {route.name === "local" ? <LocalPage projectId={route.projectId} /> : null}
         {route.name === "bug" ? (
           <BugDetailPage id={route.id} workspaceId={route.workspaceId} />

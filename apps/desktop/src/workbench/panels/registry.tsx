@@ -5,6 +5,7 @@
  */
 import type { ReactNode } from "react";
 import {
+  Bot,
   Bug,
   FileCode2,
   FolderGit2,
@@ -35,6 +36,7 @@ import type { PanelProps } from "./context";
 const PAGE_TITLES: Record<PageView, MessageKey> = {
   bugs: "common.bugs",
   local: "app.nav.local",
+  agent: "app.nav.agent",
   projects: "common.projects",
   coworker: "app.nav.coworker",
   mcp: "app.nav.mcp",
@@ -45,6 +47,7 @@ const PAGE_TITLES: Record<PageView, MessageKey> = {
 const PAGE_ICONS: Record<PageView, ReactNode> = {
   bugs: <Bug size={13} />,
   local: <ListChecks size={13} />,
+  agent: <Bot size={13} />,
   projects: <FolderGit2 size={13} />,
   coworker: <Users size={13} />,
   mcp: <Plug size={13} />,
