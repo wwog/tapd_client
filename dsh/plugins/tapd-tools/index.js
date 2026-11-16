@@ -26,10 +26,10 @@ export function apply(ctx) {
         schema: {
           type: 'object',
           properties: {
-            ok: { type: 'boolean' },
-            cwd: { type: 'string' },
+            ok: { type: 'boolean', required: true },
+            cwd: { type: 'string', required: true },
           },
-          required: ['ok', 'cwd'],
+          additionalProperties: false,
         },
         render: (_args, value) => [
           { type: 'text', text: value.ok ? `TAPD bridge ok at ${value.cwd}` : 'TAPD bridge unavailable' },

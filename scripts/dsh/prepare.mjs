@@ -161,16 +161,21 @@ function dropPackages() {
   }
 }
 
-function strip(dir, counters) {
+/**
+ * Removes sources/typings/maps. `src` and `docs` are only stripped at a package
+ * root: `build/src/index.js` is real runtime code in several packages.
+ */
+function strip(dir, counters, isPackageRoot = false) {
+  const packageRoot = existsSync(join(dir, "package.json"));
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (STRIP_DIRS.has(entry.name)) {
+      if (packageRoot && STRIP_DIRS.has(entry.name)) {
         rmSync(full, { recursive: true, force: true });
         counters.dirs += 1;
         continue;
       }
-      strip(full, counters);
+      strip(full, counters, isPackageRoot);
       continue;
     }
     if (STRIP_FILE_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) {
@@ -278,7 +283,9 @@ async function main() {
   }
 
   if (!alreadyPrepared || !repack) {
-    if (installed !== version) install();
+    // A missing marker means the tree may have been pruned/stripped before:
+    // reinstall so `build/src` and friends come back before we strip again.
+    if (installed !== version || !existsSync(markerFile)) install();
     const plugins = installPlugins();
     dropPackages();
     dropForeignPrebuilds();

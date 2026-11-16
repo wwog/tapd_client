@@ -49,6 +49,91 @@ pub struct AgentConfig {
     /// 同时运行的任务数；仅在开启 worktree 时生效。
     #[serde(default = "default_execution_units")]
     pub execution_units: u32,
+    /// 自定义模型 API（设置 → 模型）。内置运行时启动时渲染进 profile。
+    #[serde(default)]
+    pub dsh_model: DshModelConfig,
+}
+
+/// 自定义模型提供商。只支持「自定义 API」这一种形态：
+/// Provider ID + 显示名 + Base URL + 协议 + 密钥 + 模型目录。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DshModelConfig {
+    /// 小写字母开头的标识，渲染进 profile 的 providers key。
+    pub provider_id: String,
+    pub display_name: String,
+    /// OpenAI 兼容 / Anthropic / Gemini 网关地址。
+    pub base_url: String,
+    /// `openai-completions` | `anthropic` | `gemini`。
+    pub protocol: String,
+    pub api_key: String,
+    /// 会话默认模型 id；目录外 id 也可直接填。
+    pub model: String,
+    pub context_window: u64,
+    /// 目录里的其它可选模型，每行一个 id（空行忽略）。
+    pub models: Vec<String>,
+}
+
+impl Default for DshModelConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: "custom".to_string(),
+            display_name: String::new(),
+            base_url: String::new(),
+            protocol: "openai-completions".to_string(),
+            api_key: String::new(),
+            model: String::new(),
+            context_window: 128_000,
+            models: Vec::new(),
+        }
+    }
+}
+
+impl DshModelConfig {
+    /// 是否已经足够启动运行时。
+    pub fn is_configured(&self) -> bool {
+        !self.base_url.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    fn sanitized(mut self) -> Self {
+        self.provider_id = normalize_provider_id(&self.provider_id);
+        self.display_name = self.display_name.trim().to_string();
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        self.protocol = match self.protocol.trim() {
+            "anthropic" => "anthropic".to_string(),
+            "gemini" => "gemini".to_string(),
+            _ => "openai-completions".to_string(),
+        };
+        self.api_key = self.api_key.trim().to_string();
+        self.model = self.model.trim().to_string();
+        self.context_window = self.context_window.clamp(1_024, 4_000_000);
+        let mut seen: Vec<String> = Vec::new();
+        for model in std::mem::take(&mut self.models) {
+            let model = model.trim().to_string();
+            if model.is_empty() || seen.iter().any(|item| item == &model) {
+                continue;
+            }
+            seen.push(model);
+        }
+        self.models = seen;
+        self
+    }
+}
+
+/// Providers are dictionary keys in the rendered YAML; keep them boring.
+fn normalize_provider_id(raw: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in raw.trim().chars().enumerate() {
+        let allowed = ch.is_ascii_alphanumeric() || ch == '-' || ch == '_';
+        if allowed && !(index == 0 && ch.is_ascii_digit()) {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    if out.is_empty() {
+        "custom".to_string()
+    } else {
+        out
+    }
 }
 
 /// Worktree 开启后默认并行两个任务：再多也不利于排查。
@@ -65,6 +150,7 @@ impl Default for AgentConfig {
             coworker_ids: Vec::new(),
             worktree_enabled: false,
             execution_units: default_execution_units(),
+            dsh_model: DshModelConfig::default(),
         }
     }
 }
@@ -79,6 +165,7 @@ impl AgentConfig {
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
         self.execution_units = self.execution_units.clamp(1, 8);
+        self.dsh_model = std::mem::take(&mut self.dsh_model).sanitized();
 
         // Migrate the old id -> path map into per-project settings once.
         for (workspace_id, path) in std::mem::take(&mut self.repo_mappings) {

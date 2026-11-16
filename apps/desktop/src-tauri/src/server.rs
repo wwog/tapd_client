@@ -79,6 +79,7 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/cookies", get(dev::dev_cookies))
         .route("/dev/export", post(dev::dev_export))
         .route("/dev/feature", post(dev::dev_feature))
+        .route("/dev/dsh", post(dev::dev_dsh))
         .route("/dev/companion", get(dev::dev_companion))
         .route("/dev/companion/pairing", post(dev::dev_companion_pairing));
 

@@ -181,6 +181,14 @@ function drive(entry, homeDir, timeoutMs) {
         if (receipt?.kind !== "prompt" || !receipt.messageId) {
           throw new Error(`unexpected session/query receipt: ${JSON.stringify(receipt)}`);
         }
+        // The launcher logs a failed plugin import and keeps booting, so a
+        // green handshake alone does not prove the composition is healthy.
+        const broken = stderr
+          .split("\n")
+          .filter((line) => /failed to import:|JsonSchemaError|failed to load/i.test(line));
+        if (broken.length > 0) {
+          throw new Error(`runtime reported broken plugins:\n${broken.slice(0, 8).join("\n")}`);
+        }
         await call("shutdown", undefined).catch(() => undefined);
         child.stdin.end();
         // Wait for the runtime to flush SQLite and close its log handles before

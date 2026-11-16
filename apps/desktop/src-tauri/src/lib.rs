@@ -5,6 +5,7 @@ mod commands;
 mod companion;
 mod coworker;
 mod diagnostics;
+mod dsh;
 mod export;
 mod feature_router;
 mod fs;
@@ -100,6 +101,15 @@ pub fn run() {
             commands::mcp_policy_set,
             agent_settings::agent_settings_get,
             agent_settings::agent_settings_set,
+            dsh::commands::dsh_payload_status,
+            dsh::commands::dsh_prepare,
+            dsh::commands::dsh_status,
+            dsh::commands::dsh_start,
+            dsh::commands::dsh_stop,
+            dsh::commands::dsh_new_session,
+            dsh::commands::dsh_prompt,
+            dsh::commands::dsh_approval_answer,
+            dsh::commands::dsh_question_answer,
             commands::mcp_audit_list,
             commands::mcp_audit_clear,
             commands::mcp_audit_export,
@@ -147,6 +157,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let state = setup_state.clone();
+            app.manage(std::sync::Arc::new(dsh::runtime::RuntimeState::default()));
 
             let server_state = state.clone();
             let server_handle = handle.clone();
@@ -201,7 +212,15 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::Exit => {
-                // Terminal shells live in their own sessions too.
+                // The built-in runtime and terminal shells live in their own
+                // sessions, so they must be stopped explicitly.
+                if let Some(dsh) = app.try_state::<Arc<dsh::runtime::RuntimeState>>() {
+                    let dsh = dsh.inner().clone();
+                    let app = app.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let _ = dsh.stop(&app).await;
+                    });
+                }
                 terminal::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     // Persist the final geometry before the config file goes away.

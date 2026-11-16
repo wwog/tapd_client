@@ -70,6 +70,29 @@ P2b 的构建脚本按「必需集合 + 平台裁剪」生成 payload，并跑�
 Typert 生成式 RPC）确实有 `assistant/live-chunk`，但那是内部生成协议 + 每进程凭证，
 用 Rust 逆向不划算。所以我们自己在插件里订阅并把 frame 转发出来。
 
+
+### 3.1 应用侧宿主（已实现，P2c）
+
+| 步骤 | 代码 | 实测 |
+| --- | --- | --- |
+| 找到 payload | `dsh/payload.rs`：`TAPD_DSH_PAYLOAD` → 调试期 `src-tauri/resources/dsh` → 打包资源 | 三种来源都能解析 |
+| 校验 + 解压 | sha256 + 大小比对，解到 `<data>/dsh/<version>/`，先写 staging 再 rename | 231 MB / 25k 文件，首次 6.0 s（debug 构建 23 s） |
+| 找 Node | `dsh/runtime.rs::resolve_node`：`shell_path::user_path()` + Homebrew 兜底，`node --version` 过门槛 | 命中 nvm 的 `v24.21.0` |
+| 组合 profile | `crates/dsh-host/profile.rs` 渲染 manifest/patch/pnpm-workspace；插件来自 `<runtime>/node_modules/@tapd/*` | ready 1.8 s |
+| 控制面 | `initialize`（approvalRequests + userQuestions）→ `session/query` | 返回 `{kind:"prompt",messageId}` |
+| 事件 | `session.event` → `dsh://session-event`；审批/提问 → `dsh://approval` / `dsh://question`，回执按 RPC id | 待 P2d 接前端 |
+
+调试期有一个只读驱动：`POST /dev/dsh`（`{"action":"payload|prepare|start|stop|status|prompt"}`），
+用 `_dev` 数据目录里的 token 鉴权，可以在不打开 UI 的情况下走完整条链路。
+
+### 3.2 两个容易踩的坑（已修）
+
+1. **裁剪不能删 `build/src`**：`@opentelemetry/api-logs`、`human-signals` 的运行时入口就在
+   `build/src/index.js`。`prepare.mjs` 现在只在**包根**删除 `src/` 与 `docs/`。
+2. **`output.schema` 是 ValueSchemaSpec，不是 JSON Schema**：`required: [...]` 会直接抛
+   `JsonSchemaError`，必填要写成属性上的 `required: true`，并且对象要显式给
+   `additionalProperties`。
+
 ## 4. 已验证的扩展点
 
 ### 4.1 工具注册（不走 MCP）
