@@ -7,9 +7,10 @@ const CARD_WIDTH: f64 = 384.0;
 /// Room for a two-line title, the metadata row and the two action buttons.
 const CARD_BASE_HEIGHT: f64 = 160.0;
 const CARD_ROW_HEIGHT: f64 = 148.0;
-/// Agent question options are listed one per row (label over its description).
-/// One row replaces the shared action row counted in `CARD_BASE_HEIGHT`.
-const CARD_OPTION_ROW_HEIGHT: f64 = 48.0;
+/// Agent question options are listed one per row (label over its description),
+/// with the answer field as the last row. One row replaces the shared action
+/// row counted in `CARD_BASE_HEIGHT`.
+const CARD_STACKED_ROW_HEIGHT: f64 = 48.0;
 const CARD_ACTION_ROW_HEIGHT: f64 = 30.0;
 pub(super) const ISLAND_TOP_MARGIN: f64 = 6.0;
 /// Hover peek: the collapsed capsule widens a little and grows a summary card
@@ -23,18 +24,18 @@ pub(super) const PEEK_HEIGHT: f64 = PILL_HEIGHT + PEEK_GAP + PEEK_CARD_HEIGHT;
 pub(super) const UPDATE_WIDTH: f64 = PILL_WIDTH * 3.0;
 pub(super) const UPDATE_HEIGHT: f64 = PILL_HEIGHT * 3.0;
 
-/// `option_rows` is the longest list of stacked option rows across the cards;
-/// zero keeps the plain card size.
-pub(super) fn island_size(expanded: bool, count: usize, option_rows: usize) -> (f64, f64) {
+/// `stacked_rows` is the tallest stacked block (options + answer field) across
+/// the cards; zero keeps the plain card size.
+pub(super) fn island_size(expanded: bool, count: usize, stacked_rows: usize) -> (f64, f64) {
     if !expanded {
         return (PILL_WIDTH, PILL_HEIGHT);
     }
     let rows = count.clamp(1, 5) as f64;
-    let options = option_rows.min(4) as f64;
-    let options_extra = (options * CARD_OPTION_ROW_HEIGHT - CARD_ACTION_ROW_HEIGHT).max(0.0);
+    let options = stacked_rows.min(5) as f64;
+    let stacked_extra = (options * CARD_STACKED_ROW_HEIGHT - CARD_ACTION_ROW_HEIGHT).max(0.0);
     (
         CARD_WIDTH,
-        CARD_BASE_HEIGHT + (rows - 1.0) * CARD_ROW_HEIGHT + options_extra,
+        CARD_BASE_HEIGHT + (rows - 1.0) * CARD_ROW_HEIGHT + stacked_extra,
     )
 }
 
@@ -83,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn option_rows_grow_a_single_card() {
+    fn stacked_rows_grow_a_single_card() {
         assert_eq!(island_size(false, 3, 3).0, PILL_WIDTH);
         let plain = island_size(true, 1, 0);
         let one = island_size(true, 1, 1);

@@ -56,6 +56,12 @@ objc2-app-kit = { version = "0.3", features = [
   "NSView",
   "NSTrackingArea",
   "NSEvent",
+  # Answering a question from the capsule needs the keyboard: the "never key"
+  # rule is lifted for as long as its text field is focused.
+  "NSApplication",
+  "NSResponder",
+  "NSWorkspace",
+  "NSRunningApplication",
 ] }
 objc2-foundation = { version = "0.3", features = ["NSObject", "NSGeometry"] }
 

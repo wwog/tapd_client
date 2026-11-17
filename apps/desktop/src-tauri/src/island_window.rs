@@ -115,6 +115,24 @@ pub fn set_peek(active: bool) {
     PEEK.store(active, Ordering::SeqCst);
 }
 
+/// Lets the capsule take the keyboard while its answer field is focused, and
+/// hands it back to the previous app once the answer is sent. Everything else
+/// keeps the capsule out of the focus chain.
+pub fn set_answer_focus(app: &AppHandle, active: bool, restore: bool) {
+    #[cfg(target_os = "macos")]
+    macos::set_answer_focus(app, active, restore);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, active, restore);
+    }
+}
+
+/// Forgets any keyboard permission; the cards that needed it are gone.
+fn reset_answer_focus() {
+    #[cfg(target_os = "macos")]
+    macos::reset_answer_focus();
+}
+
 /// Applies the 3x update panel.
 pub fn apply_update_panel(app: &AppHandle, state: &SharedState) {
     // The update panel owns the capsule: drop any open hover peek so it does
@@ -307,14 +325,14 @@ fn anchor_is_on_screen(app: &AppHandle, anchor: (i32, i32)) -> bool {
 /// Places the island at the top centre of the screen. `animated` interpolates
 /// the resize so the card grows out of the capsule (Dynamic Island style).
 ///
-/// `option_rows` is how many agent question options the tallest card lists, so
-/// the card can grow past the shared action row (see `geometry`).
+/// `stacked_rows` is the tallest stacked block (agent question options plus the
+/// answer field), so the card can grow past the shared action row.
 pub(crate) fn apply_island(
     app: &AppHandle,
     state: &SharedState,
     expanded: bool,
     count: usize,
-    option_rows: usize,
+    stacked_rows: usize,
     animated: bool,
 ) {
     // An update owns the capsule: polling, notification expansion and user
@@ -326,11 +344,15 @@ pub(crate) fn apply_island(
     // arrived must not come back when they are dismissed.
     if expanded {
         PEEK.store(false, Ordering::SeqCst);
+    } else {
+        // The answer field is gone with the cards: the capsule goes back to
+        // never taking the keyboard.
+        reset_answer_focus();
     }
     let (width, height) = if !expanded && PEEK.load(Ordering::SeqCst) {
         (PEEK_WIDTH, PEEK_HEIGHT)
     } else {
-        island_size(expanded, count, option_rows)
+        island_size(expanded, count, stacked_rows)
     };
     apply_island_sized(app, state, width, height, expanded, count, animated);
 }

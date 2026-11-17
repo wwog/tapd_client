@@ -258,8 +258,10 @@ pub fn ai_payload_from_arguments(
             client,
             blocks,
             // A hint only reads under its own label: an action row would cut it
-            // off, so actions carrying a description get a row each.
+            // off, so actions carrying a description get a row each. MCP cards
+            // have no free-text answer: only the agent's questions do.
             stack_actions: actions.iter().any(|action| action.description.is_some()),
+            allow_custom: false,
             actions,
             tag,
             resolution: None,
@@ -336,6 +338,7 @@ impl NotificationService {
                             kind: "replaced".to_string(),
                             action_id: None,
                             action_label: None,
+                            value: None,
                             at: now.to_rfc3339(),
                         });
                     }
@@ -353,12 +356,14 @@ impl NotificationService {
     }
 
     /// Stores the user's decision on an AI card. `kind` is `action`,
-    /// `dismissed` or `replaced`; `action_id` is required for `action`.
+    /// `dismissed` or `replaced`; `action` needs an action id or a typed
+    /// `value` (the card's free-text answer).
     pub(super) fn finish_ai(
         &self,
         id: &str,
         kind: &str,
         action_id: Option<&str>,
+        value: Option<&str>,
     ) -> Result<NotificationItem, String> {
         let item = {
             let mut items = self.ai_items.lock().expect("ai notification lock");
@@ -384,6 +389,7 @@ impl NotificationService {
                     kind: kind.to_string(),
                     action_id: action.as_ref().map(|action| action.id.clone()),
                     action_label: action.as_ref().map(|action| action.label.clone()),
+                    value: value.map(str::to_string),
                     at: Local::now().to_rfc3339(),
                 });
             }
@@ -637,14 +643,14 @@ mod ai_notification_tests {
         // Blank hints are dropped instead of rendering an empty line.
         assert_eq!(payload.actions[1].description, None);
         // Two actions are listed one per row, so the card needs the extra height.
-        assert_eq!(payload.option_rows(), 2);
+        assert_eq!(payload.stacked_rows(), 2);
 
         let (_, single) = ai_payload_from_arguments(
             &json!({"title": "x", "actions": [{"id": "a", "label": "A"}]}),
             "client",
         )
         .expect("payload");
-        assert_eq!(single.option_rows(), 0);
+        assert_eq!(single.stacked_rows(), 0);
     }
 
     #[test]

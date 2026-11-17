@@ -515,7 +515,10 @@ async fn delete_chat(app: &AppHandle, request: SessionRequest) -> Result<Value, 
     let state = shared(app)?;
     let cache = state.cache.clone();
     let id = request.session_id.clone();
-    let _ = blocking(move || super::mode_store::delete(&cache, &id)).await;
+    let _ = blocking(move || super::mode_store::delete(&cache, &id)).await
+        .map_err(|error| {
+            tracing::warn!(%error, session = %request.session_id, "failed to delete the session mode");
+        });
     if let Ok(bridge) = bridge(app) {
         bridge.forget_session(app, &request.session_id);
     }

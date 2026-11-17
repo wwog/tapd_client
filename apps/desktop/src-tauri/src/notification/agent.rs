@@ -125,6 +125,7 @@ fn approval(app: &AppHandle, payload: &Value) {
             },
         ],
         stack_actions: false,
+        allow_custom: false,
         tag: None,
         resolution: None,
     };
@@ -288,6 +289,9 @@ fn option_card(question: &Question) -> AiPayload {
             })
             .collect(),
         stack_actions: true,
+        // "Other answer": the capsule can send free text back as a custom
+        // answer instead of one of the listed options.
+        allow_custom: true,
         tag: None,
         resolution: None,
     }
@@ -307,6 +311,7 @@ fn summary_card(count: usize) -> AiPayload {
             description: None,
         }],
         stack_actions: false,
+        allow_custom: false,
         tag: None,
         resolution: None,
     }
@@ -339,6 +344,7 @@ pub fn notice(tool: &str, target: &str, risk: &str) {
         },
         actions: Vec::new(),
         stack_actions: false,
+        allow_custom: false,
         tag: Some(NOTICE_TAG.to_string()),
         resolution: None,
     };
@@ -363,6 +369,8 @@ enum Answer {
 
 enum Decision {
     Action(String),
+    /// Text typed into the card's answer field ("other answer").
+    Custom(String),
     /// The card was closed.
     Dismissed,
     /// The card store dropped it (cap / restart).
@@ -418,7 +426,12 @@ async fn wait(app: &AppHandle, card_id: &str, rpc_id: u64) -> Decision {
         let (exists, resolution) = service.ai_state(card_id);
         if let Some(resolution) = resolution {
             return match resolution.kind.as_str() {
-                "action" => Decision::Action(resolution.action_id.unwrap_or_default()),
+                "action" => match (resolution.action_id, resolution.value) {
+                    (Some(action_id), _) => Decision::Action(action_id),
+                    // The answer field resolves the card with text, no action.
+                    (None, Some(value)) => Decision::Custom(value),
+                    (None, None) => Decision::Dismissed,
+                },
                 _ => Decision::Dismissed,
             };
         }
@@ -451,7 +464,7 @@ async fn answer_from(
             // Only an explicit allow grants the call.
             let outcome = match &decision {
                 Decision::Action(action) if action == "allow" => "allowed-once",
-                Decision::Action(_) => "rejected",
+                Decision::Action(_) | Decision::Custom(_) => "rejected",
                 Decision::Dismissed | Decision::Gone => "cancelled",
                 Decision::Settled => return,
             };
@@ -462,6 +475,11 @@ async fn answer_from(
         Answer::Single { question } => {
             let answers = match &decision {
                 Decision::Action(action) => option_answers(action, &question),
+                Decision::Custom(text) => Some(vec![AnswerItem {
+                    id: question.id.clone(),
+                    selected: Vec::new(),
+                    custom: Some(text.clone()),
+                }]),
                 Decision::Dismissed | Decision::Gone => None,
                 Decision::Settled => return,
             };
@@ -495,7 +513,7 @@ fn option_answers(action: &str, question: &Question) -> Option<Vec<AnswerItem>> 
 /// The request is gone from the runtime; drop its card without answering.
 fn finish_dismissed(card_id: &str) {
     if let Ok(service) = service() {
-        let _ = service.finish_ai(card_id, "dismissed", None);
+        let _ = service.finish_ai(card_id, "dismissed", None, None);
     }
 }
 
@@ -628,6 +646,34 @@ mod tests {
         assert_eq!(answers[0].selected, vec!["no".to_string()]);
         assert!(option_answers("option-9", &question).is_none());
         assert!(option_answers("open", &question).is_none());
+    }
+
+    #[test]
+    fn option_card_offers_a_custom_answer_row() {
+        let question = Question {
+            id: "q1".into(),
+            question: "Pick one".into(),
+            detail: None,
+            header: Some("Header".into()),
+            options: vec![
+                dsh_host::protocol::QuestionOption {
+                    label: "yes".into(),
+                    description: Some("do it".into()),
+                },
+                dsh_host::protocol::QuestionOption {
+                    label: "no".into(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+            intent: None,
+        };
+        let card = option_card(&question);
+        // Two options and the typed answer: three rows tall.
+        assert!(card.allow_custom);
+        assert_eq!(card.stacked_rows(), 3);
+        assert_eq!(card.actions[0].description.as_deref(), Some("do it"));
+        assert_eq!(card.actions[1].description, None);
     }
 
     #[test]

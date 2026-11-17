@@ -36,6 +36,8 @@ export type AiResolution = {
   kind: "action" | "dismissed" | "replaced" | string;
   actionId?: string;
   actionLabel?: string;
+  /** Free text typed into the card's answer field (no action picked). */
+  value?: string;
   at: string;
 };
 
@@ -47,6 +49,8 @@ export type AiPayload = {
   actions: AiAction[];
   /** List the actions one per row (question options) instead of one row. */
   stackActions?: boolean;
+  /** The card ends with a free-text answer field ("other answer"). */
+  allowCustom?: boolean;
   tag?: string | null;
   resolution?: AiResolution | null;
 };
@@ -157,11 +161,13 @@ export const notificationApi = {
     }),
   simulate: (payload: { title?: string; bugId?: string; kind?: NotificationKind } = {}) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_simulate", payload),
-  /** Reports the user's choice on an AI card back to the waiting MCP call. */
-  aiAction: (notificationId: string, actionId: string) =>
+  /** Reports the user's choice on an AI card back to the waiting MCP call.
+   *  A free-text answer sends the text instead of an action id. */
+  aiAction: (notificationId: string, actionId: string | null, value?: string) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_ai_action", {
       notificationId,
-      actionId,
+      ...(actionId ? { actionId } : {}),
+      ...(value ? { value } : {}),
     }),
   /** Raises a card from the settings debug panel (works even when AI is off). */
   aiDebug: (payload: {
@@ -194,6 +200,13 @@ export const notificationApi = {
     featureCommand<{ ok: boolean }>("notification_open_bug", { workspaceId, bugId }),
   /** Starts an OS window drag; the Rust side persists the final position. */
   startDrag: () => featureCommand<{ ok: boolean }>("notification_start_drag"),
+  /** Lends the capsule the keyboard while its answer field is focused; with
+   *  `restore` the previous app gets it back once the answer is sent. */
+  setAnswerFocus: (active: boolean, restore = false) =>
+    featureCommand<{ ok: boolean }>("notification_island_answer_focus", {
+      active,
+      restore,
+    }),
 };
 
 /** Subscribes to the pending list pushed by the Rust window manager. */

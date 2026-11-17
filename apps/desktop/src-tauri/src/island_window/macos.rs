@@ -6,7 +6,9 @@
 //!    keeps focus in the window the user was in — the same effect as Electron's
 //!    `focusable: false` plus `acceptFirstMouse`. A window cannot be told that
 //!    at runtime, so it is re-classed into a subclass whose
-//!    `canBecomeKeyWindow` says no.
+//!    `canBecomeKeyWindow` says no. The one exception is the answer field on a
+//!    question card: typing needs the keyboard, so the rule is lifted for as
+//!    long as it is focused ([`set_answer_focus`]).
 //! 2. Hover is tracked natively. Both AppKit's default tracking rect (what tao
 //!    uses) and WebKit only report hover for the key window, and this window
 //!    deliberately never becomes one. An `NSTrackingArea` with
@@ -18,7 +20,7 @@
 use std::{
     ffi::CStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
         OnceLock,
     },
     time::Duration,
@@ -30,7 +32,10 @@ use objc2::{
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
     sel, AnyThread, DefinedClass, MainThreadMarker,
 };
-use objc2_app_kit::{NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSEvent, NSRunningApplication, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWorkspace,
+};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSRect};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -38,10 +43,19 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 /// Tauri event carrying `{ active: bool }` on pointer enter/exit.
 const HOVER_EVENT: &str = "island://hover";
 
+/// Lifted only while the capsule's answer field is focused: typing needs the
+/// keyboard, and a non-key window never receives key events. Everything else
+/// keeps the capsule out of the focus chain.
+static KEY_ALLOWED: AtomicBool = AtomicBool::new(false);
+/// App that had the keyboard before we took it (`0` = none). Handed back when
+/// the answer is submitted, so the user lands where they were.
+static PREVIOUS_APP: AtomicI32 = AtomicI32::new(0);
+
 /// `canBecomeKeyWindow` = NO: clicks, drags and scrolling still reach the
-/// webview, but focus never moves to the capsule.
+/// webview, but focus never moves to the capsule — except for the answer field,
+/// which lifts the rule through [`KEY_ALLOWED`].
 extern "C-unwind" fn can_become_key_window(_this: &'static mut AnyObject, _sel: Sel) -> Bool {
-    Bool::NO
+    Bool::from(KEY_ALLOWED.load(Ordering::SeqCst))
 }
 
 /// `canBecomeMainWindow` = NO for the same reason.
@@ -165,6 +179,84 @@ fn pointer_inside(window: &NSWindow) -> bool {
         && point.x < frame.origin.x + frame.size.width
         && point.y >= frame.origin.y
         && point.y < frame.origin.y + frame.size.height
+}
+
+/// Lets the capsule take the keyboard while its answer field is focused.
+///
+/// A click into the answer field activates the app (key events only reach the
+/// active app) and makes the capsule key. `restore` hands the keyboard back to
+/// the app the user came from, which is what makes answering "in place" feel
+/// like the capsule never stole focus. The activation is cooperative from
+/// macOS 14 on, hence the selector checks instead of a version switch.
+pub fn set_answer_focus(app: &AppHandle, active: bool, restore: bool) {
+    KEY_ALLOWED.store(active, Ordering::SeqCst);
+    let Some(window) = app.get_webview_window(super::WINDOW_LABEL) else {
+        return;
+    };
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    let ns_window = ns_window as usize;
+    let app_for_call = app.clone();
+    let apply = move || unsafe {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let ns_window = &*(ns_window as *const NSWindow);
+        let ns_app = NSApplication::sharedApplication(mtm);
+        if active {
+            if !ns_app.isActive() {
+                if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+                    PREVIOUS_APP.store(front.processIdentifier(), Ordering::SeqCst);
+                }
+            }
+            activate_app(&ns_app);
+            ns_window.makeKeyWindow();
+        } else {
+            ns_window.resignKeyWindow();
+            let pid = PREVIOUS_APP.swap(0, Ordering::SeqCst);
+            if restore && pid > 0 {
+                if let Some(previous) =
+                    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                {
+                    yield_activation(&ns_app, &previous);
+                }
+            }
+        }
+    };
+    if MainThreadMarker::new().is_some() {
+        apply();
+    } else {
+        let _ = app_for_call.run_on_main_thread(apply);
+    }
+}
+
+/// Drops the typing permission without touching focus: the card is going away,
+/// so the next click on the capsule must not make it key again.
+pub fn reset_answer_focus() {
+    KEY_ALLOWED.store(false, Ordering::SeqCst);
+    PREVIOUS_APP.store(0, Ordering::SeqCst);
+}
+
+/// `activate` exists from macOS 14 (where the old variant became a no-op).
+unsafe fn activate_app(ns_app: &NSApplication) {
+    if ns_app.respondsToSelector(sel!(activate)) {
+        let _: () = msg_send![ns_app, activate];
+    } else {
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+    }
+}
+
+/// Hands the keyboard back: `yieldActivationToApplication:` on macOS 14+, the
+/// deprecated activation option before that.
+unsafe fn yield_activation(ns_app: &NSApplication, previous: &NSRunningApplication) {
+    if ns_app.respondsToSelector(sel!(yieldActivationToApplication:)) {
+        let _: () = msg_send![ns_app, yieldActivationToApplication: previous];
+    } else {
+        #[allow(deprecated)]
+        previous.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+    }
 }
 
 /// Resizes the capsule while pinning its top edge and horizontal centre.

@@ -147,6 +147,10 @@ type AgentPrefs = { tab?: unknown; sessionId?: unknown };
  */
 const drafts = new Set<string>();
 
+/** Latest mode write per session. A failed older write must not revert a
+ *  newer pick that is already on screen. */
+const modeWrites = new Map<string, number>();
+
 const initialState: AgentState = {
   tab: "tasks",
   selectedId: null,
@@ -919,6 +923,8 @@ export const agentActions = {
     const beforePlan = state.planOverrides[sessionId];
     const plan = next === "plan";
     const mode = next === "plan" ? undefined : next;
+    const write = (modeWrites.get(sessionId) ?? 0) + 1;
+    modeWrites.set(sessionId, write);
     update((current) => ({
       ...current,
       sessionModes: mode
@@ -932,6 +938,8 @@ export const agentActions = {
         plan,
       });
     } catch (error) {
+      // A newer pick owns the screen now; its own failure/success decides.
+      if (modeWrites.get(sessionId) !== write) return;
       update((current) => {
         const sessionModes = { ...current.sessionModes };
         if (beforeMode === undefined) delete sessionModes[sessionId];

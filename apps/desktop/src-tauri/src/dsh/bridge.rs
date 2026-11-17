@@ -81,6 +81,9 @@ pub struct BridgeState {
     /// `plan/mode` event clears the entry, so the session log stays the
     /// authority once the agent has acted on it.
     plans: std::sync::Mutex<HashMap<String, bool>>,
+    /// The runtime-wide default last written. Replayed on every plugin connect
+    /// so a config change that missed the socket is not silently lost.
+    default_mode: std::sync::Mutex<Option<PermissionMode>>,
     /// Per-connection identity, see [`Control`].
     connections: AtomicU64,
 }
@@ -194,12 +197,25 @@ impl BridgeState {
     }
 
     /// Pushes the runtime-wide default permission mode. Every session without
-    /// an override picks it up on its next tool call.
+    /// an override picks it up on its next tool call. The value is remembered
+    /// so a reconnect can replay it (the plugin may have missed the first send).
     pub fn set_default_mode(&self, mode: PermissionMode) -> Result<(), String> {
+        self.remember_default_mode(mode);
         self.send_control(json!({
             "type": "default-mode",
             "mode": mode.as_env(),
         }))
+    }
+
+    pub fn remember_default_mode(&self, mode: PermissionMode) {
+        *self
+            .default_mode
+            .lock()
+            .expect("dsh default mode lock") = Some(mode);
+    }
+
+    fn current_default_mode(&self) -> Option<PermissionMode> {
+        *self.default_mode.lock().expect("dsh default mode lock")
     }
 
     /// Pushes one session's permission mode and remembers it for the next
@@ -402,6 +418,14 @@ impl BridgeState {
     /// Forgets a deleted session so the list and any later read cannot
     /// resurrect it. The caller removes the log and the task row.
     pub fn forget_session(&self, app: &AppHandle, session_id: &str) {
+        self.modes
+            .lock()
+            .expect("dsh mode lock")
+            .remove(session_id);
+        self.plans
+            .lock()
+            .expect("dsh plan lock")
+            .remove(session_id);
         let removed = self
             .transcript
             .lock()
@@ -458,7 +482,16 @@ impl BridgeState {
     /// Applies one NDJSON message from the plugin.
     fn dispatch(&self, app: &AppHandle, message: &Value) {
         match message.get("type").and_then(Value::as_str) {
-            Some("hello") => tracing::info!("agent bridge connected"),
+            Some("hello") => {
+                tracing::info!("agent bridge connected");
+                // The plugin may have connected after a default-mode frame was
+                // attempted; replay it so the running gate is never stale.
+                if let Some(mode) = self.current_default_mode() {
+                    if let Err(error) = self.set_default_mode(mode) {
+                        tracing::debug!(%error, "default mode was not replayed on connect");
+                    }
+                }
+            }
             Some("snapshot") => self.ingest_snapshot(app, message),
             Some("event") => {
                 let session_id = message.get("sessionId").and_then(Value::as_str);

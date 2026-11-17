@@ -21,7 +21,7 @@ use super::{
         NotificationSource, NotificationState,
     },
     rules::{current_user_nick, format_tapd_time, is_hhmm},
-    service, suppress_transfer, NotificationService, MAX_HISTORY,
+    service, suppress_transfer, NotificationService, MAX_AI_ANSWER_CHARS, MAX_HISTORY,
 };
 
 // ---------------------------------------------------------------------------
@@ -82,10 +82,24 @@ pub async fn command(
                 state,
                 expanded,
                 count,
-                super::option_rows(&items),
+                super::stacked_rows(&items),
                 true,
             );
             Ok(json!({ "ok": true, "expanded": expanded, "count": count }))
+        }
+        "notification_island_answer_focus" => {
+            // The capsule never becomes the key window; while its answer field
+            // is focused it has to, or typing would go to the other app.
+            let active = payload
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let restore = payload
+                .get("restore")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::island_window::set_answer_focus(app, active, restore);
+            Ok(json!({ "ok": true }))
         }
         "notification_island_peek" => {
             // Hovering the collapsed capsule reveals which task the Agent is
@@ -108,13 +122,13 @@ pub async fn command(
                 .unwrap_or(true);
             crate::island_window::set_collapsed_visible(visible);
             if visible {
-                let (expanded, count, option_rows) = service()
+                let (expanded, count, stacked_rows) = service()
                     .map(|service| {
                         let (items, quiet) = service.pending_payload();
                         (
                             !items.is_empty() && !quiet,
                             items.len(),
-                            super::option_rows(&items),
+                            super::stacked_rows(&items),
                         )
                     })
                     .unwrap_or((false, 0, 0));
@@ -123,7 +137,7 @@ pub async fn command(
                     state,
                     expanded,
                     count,
-                    option_rows,
+                    stacked_rows,
                     false,
                 );
             } else {
@@ -161,8 +175,23 @@ pub async fn command(
         "notification_ai_action" => {
             let service = service()?;
             let id = payload_str(&payload, "notificationId")?;
-            let action_id = payload_str(&payload, "actionId")?;
-            let item = service.finish_ai(&id, "action", Some(&action_id))?;
+            // A free-text answer carries no action id: the card's answer field
+            // sends the typed text instead.
+            let action_id = payload
+                .get("actionId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|action_id| !action_id.is_empty());
+            let value = payload
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| text.chars().take(MAX_AI_ANSWER_CHARS).collect::<String>());
+            if action_id.is_none() && value.is_none() {
+                return Err(tr_args("notify.param.missing", &[&"actionId"]));
+            }
+            let item = service.finish_ai(&id, "action", action_id, value.as_deref())?;
             Ok(json!({ "ok": true, "item": item }))
         }
         "notification_ai_debug" => {
@@ -220,7 +249,7 @@ fn ignore_notification(service: &NotificationService, id: &str) -> Result<Value,
     // AI cards are dismissed (and the waiting MCP call is released) rather
     // than added to the bug ignore list.
     if service.find_ai_item(id).is_ok() {
-        let item = service.finish_ai(id, "dismissed", None)?;
+        let item = service.finish_ai(id, "dismissed", None, None)?;
         return Ok(json!({ "ok": true, "item": item }));
     }
 

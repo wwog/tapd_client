@@ -15,6 +15,7 @@ import {
   Eye,
   Info,
   Loader2,
+  Send,
   X,
 } from "lucide-react";
 
@@ -177,10 +178,15 @@ export function IslandWindow() {
     }
   };
 
-  /** Reports an AI card's button click back to the waiting MCP call. */
-  const runAi = async (item: NotificationItem, actionId: string) => {
+  /** Reports an AI card decision (button id, or typed text) back to the
+   *  request that raised the card. */
+  const runAi = async (
+    item: NotificationItem,
+    actionId: string | null,
+    value?: string,
+  ) => {
     if (busy) return;
-    setBusy({ id: item.id, action: `ai:${actionId}` });
+    setBusy({ id: item.id, action: `ai:${actionId ?? "custom"}` });
     setErrors((previous) => {
       const next = { ...previous };
       delete next[item.id];
@@ -188,7 +194,7 @@ export function IslandWindow() {
     });
 
     try {
-      await notificationApi.aiAction(item.id, actionId);
+      await notificationApi.aiAction(item.id, actionId, value);
       setItems((previous) => previous.filter((candidate) => candidate.id !== item.id));
       void refreshStatus();
     } catch (error) {
@@ -353,7 +359,7 @@ export function IslandWindow() {
                 payload={item.ai}
                 busyAction={itemBusy}
                 error={error}
-                onAction={(actionId) => void runAi(item, actionId)}
+                onAction={(actionId, value) => void runAi(item, actionId, value)}
                 onDismiss={() => void run(item, "ignore")}
               />
             );
@@ -516,7 +522,8 @@ function AiCard(props: {
   payload: AiPayload;
   busyAction: string | null;
   error?: string;
-  onAction: (actionId: string) => void;
+  /** A button pick, or `null` + text for the card's "other answer" field. */
+  onAction: (actionId: string | null, value?: string) => void;
   onDismiss: () => void;
 }) {
   const { item, payload, busyAction, error, onAction, onDismiss } = props;
@@ -525,11 +532,12 @@ function AiCard(props: {
   const dismissBusy = busyAction === "ignore";
   /** Agent question options: one full-width row each, label over description.
    *  Older payloads have no flag, so a hint alone also means "list". A single
-   *  action never stacks (it already fills the row). */
+   *  action never stacks, unless the card also takes a typed answer below. */
   const stacked =
-    payload.actions.length > 1 &&
-    (payload.stackActions ??
-      payload.actions.some((action) => action.description));
+    payload.actions.length > 1
+      ? (payload.stackActions ??
+        payload.actions.some((action) => action.description))
+      : Boolean(payload.allowCustom);
 
   return (
     <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
@@ -608,6 +616,13 @@ function AiCard(props: {
             />
           ))
         )}
+        {payload.allowCustom ? (
+          <CustomAnswer
+            busy={busyAction === "ai:custom"}
+            disabled={Boolean(busyAction)}
+            onSubmit={(text) => onAction(null, text)}
+          />
+        ) : null}
       </div>
 
       {error ? (
@@ -676,6 +691,67 @@ function AiOptionRow(props: {
         />
       ) : null}
     </button>
+  );
+}
+
+/**
+ * "Other answer" field under a question card's options.
+ *
+ * The capsule is a non-activating window, so it cannot receive keystrokes on
+ * its own: focusing the field asks the Rust side for the keyboard, and sending
+ * hands it back to the app the user came from.
+ */
+function CustomAnswer(props: {
+  busy: boolean;
+  disabled: boolean;
+  onSubmit: (text: string) => void;
+}) {
+  const { busy, disabled, onSubmit } = props;
+  const [text, setText] = useState("");
+  /** Set on send so the unmount blur does not release the keyboard twice. */
+  const sent = useRef(false);
+  const value = text.trim();
+
+  const lend = (active: boolean, restore = false) => {
+    void notificationApi.setAnswerFocus(active, restore).catch(() => undefined);
+  };
+
+  return (
+    <form
+      className="flex shrink-0 items-center gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!value || disabled) return;
+        sent.current = true;
+        onSubmit(value);
+        lend(false, true);
+      }}
+    >
+      <input
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onFocus={() => lend(true)}
+        onBlur={() => {
+          if (sent.current) return;
+          lend(false);
+        }}
+        disabled={disabled}
+        maxLength={500}
+        aria-label={t("agent.question.custom")}
+        placeholder={t("agent.question.custom")}
+        spellCheck={false}
+        className="min-w-0 flex-1 rounded-lg border border-island-line bg-island-soft px-2 py-1 text-ui-sm text-island-ink transition placeholder:text-island-muted disabled:opacity-50"
+      />
+      <button
+        type="submit"
+        disabled={disabled || !value}
+        aria-label={t("common.send")}
+        title={t("common.send")}
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
+      >
+        {busy ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+      </button>
+    </form>
   );
 }
 

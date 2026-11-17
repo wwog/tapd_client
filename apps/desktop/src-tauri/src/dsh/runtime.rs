@@ -514,6 +514,11 @@ impl RuntimeState {
         };
 
         let config = agent_settings::config_for(app);
+        // The bridge replays this default on every plugin connect, so a config
+        // change that raced the socket still reaches the running gate.
+        if let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() {
+            bridge.inner().remember_default_mode(config.permission_mode);
+        }
         if !config.dsh_models.is_configured() {
             return Err(self.fail(
                 app,

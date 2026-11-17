@@ -58,6 +58,8 @@ const MAX_AI_ITEMS: usize = 20;
 const MAX_AI_BLOCKS: usize = 8;
 const MAX_AI_ACTIONS: usize = 4;
 const MAX_AI_ACTION_DESC_CHARS: usize = 120;
+/// Longest free-text answer a card accepts from its answer field.
+const MAX_AI_ANSWER_CHARS: usize = 500;
 const MAX_AI_TITLE_CHARS: usize = 140;
 const MAX_AI_TEXT_CHARS: usize = 1_500;
 const MAX_AI_CODE_CHARS: usize = 4_000;
@@ -297,13 +299,13 @@ impl NotificationService {
             json!({ "items": items, "quiet": quiet }),
         );
 
-        let (expanded, count, option_rows) = island_layout_state(&items, quiet);
+        let (expanded, count, stacked_rows) = island_layout_state(&items, quiet);
         crate::island_window::apply_island(
             &self.app,
             &self.state,
             expanded,
             count,
-            option_rows,
+            stacked_rows,
             true,
         );
     }
@@ -395,29 +397,34 @@ pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
         return;
     }
 
-    let (expanded, count, option_rows) = service()
+    let (expanded, count, stacked_rows) = service()
         .map(|service| {
             let (items, _quiet) = service.pending_payload();
             island_layout_state(&items, false)
         })
         .unwrap_or((false, 0, 0));
-    crate::island_window::apply_island(app, state, expanded, count, option_rows, true);
+    crate::island_window::apply_island(app, state, expanded, count, stacked_rows, true);
 }
 
-/// Expanded state, row count and the tallest card's stacked option rows for a
-/// layout refresh. Only pending notifications can expand the capsule; a
-/// collapsed capsule never opens on its own.
+/// Expanded state, row count and the tallest card's stacked rows for a layout
+/// refresh. Only pending notifications can expand the capsule; a collapsed
+/// capsule never opens on its own.
 fn island_layout_state(items: &[NotificationItem], quiet: bool) -> (bool, usize, usize) {
-    (!items.is_empty() && !quiet, items.len(), option_rows(items))
+    (
+        !items.is_empty() && !quiet,
+        items.len(),
+        stacked_rows(items),
+    )
 }
 
-/// Agent question cards list their options one per row, so the island has to
-/// grow past the shared action row; the tallest card decides by how much.
-pub(super) fn option_rows(items: &[NotificationItem]) -> usize {
+/// Agent question cards list their options one per row (plus the answer field),
+/// so the island has to grow past the shared action row; the tallest card
+/// decides by how much.
+pub(super) fn stacked_rows(items: &[NotificationItem]) -> usize {
     items
         .iter()
         .filter_map(|item| item.ai.as_ref())
-        .map(|ai| ai.option_rows())
+        .map(|ai| ai.stacked_rows())
         .max()
         .unwrap_or(0)
 }

@@ -62,6 +62,7 @@ export type FeatureCommandName =
   | "notification_ai_debug"
   | "notification_handle"
   | "notification_ignore"
+  | "notification_island_answer_focus"
   | "notification_island_expand"
   | "notification_island_peek"
   | "notification_island_visible"

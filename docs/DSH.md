@@ -639,6 +639,10 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   动作带了 `description`）改成**每个动作一行、固定占满卡宽**，说明作第二行
   小字。标签与说明都只占一行，放不下时靠 `ScrollingName` 在 hover 时按固定
   步进滚到末尾；行数会带进胶囊高度（`island_window::geometry`）。
+- 提问卡最后还有「其他答案」输入框（`allow_custom`）：胶囊平时不抢键盘
+  （`canBecomeKeyWindow = NO`），输入框获得焦点时由 `set_answer_focus` 临时
+  放开并激活应用，提交后把键盘交还之前的应用；回包是 `answer_item.custom`，
+  与主窗口 QuestionSheet 走同一条 `dsh_question_answer`。
 - `notify` 模式：每次写/执行前推一张非阻塞通知卡（不等待）。
 - 手机：任务页可回答审批与提问（`dsh_approval_answer` / `dsh_question_answer`），
   Agent tab 用角标显示待处理数量；PWA 没有系统推送，进程内轮询为准。
