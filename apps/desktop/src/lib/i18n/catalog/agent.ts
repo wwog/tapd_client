@@ -137,6 +137,26 @@ export const agent = {
   "agent.action.openTrace": ["在轨迹中查看这次调用", "Open this call in the trajectory"],
   "agent.thinking": ["思考", "Reasoning"],
 
+  // Built-in plugin inventory (agent config → plugins).
+  "agent.plugins.loading": ["正在读取插件…", "Reading plugins…"],
+  "agent.plugins.search": ["搜索插件", "Search plugins"],
+  "agent.plugins.sessionTitle": ["会话插件", "Session plugins"],
+  "agent.plugins.sessionHint": ["按会话组成", "Composed per session"],
+  "agent.plugins.sessionEmpty": [
+    "本部署没有按会话组成的插件：引擎插件都在全局组成",
+    "No per-session plugins here: every engine plugin is composed globally",
+  ],
+  "agent.plugins.globalTitle": ["全局插件", "Global plugins"],
+  "agent.plugins.globalHint": ["系统与所有会话共用", "Shared by the system and every session"],
+  "agent.plugins.empty": ["没有插件", "No plugins"],
+  "agent.plugins.emptySearch": ["没有匹配的插件", "No matching plugins"],
+  "agent.plugins.stateOff": ["已停用", "Disabled"],
+  "agent.plugins.statePending": ["等待依赖", "Waiting"],
+  "agent.plugins.stateLoading": ["加载中", "Loading"],
+  "agent.plugins.stateActive": ["运行中", "Running"],
+  "agent.plugins.stateFailed": ["启动失败", "Failed"],
+  "agent.plugins.stateUnloading": ["卸载中", "Unloading"],
+
   // Token usage.
   "agent.usage.chip": ["用量 {tokens} tok", "Usage {tokens} tok"],
   "agent.usage.hint": [
@@ -351,6 +371,7 @@ export const agent = {
   "agent.config.nav.models": ["模型", "Models"],
   "agent.config.nav.rules": ["规则", "Rules"],
   "agent.config.nav.general": ["常规", "General"],
+  "agent.config.nav.plugins": ["内置插件", "Built-in plugins"],
   "agent.config.execution": ["执行", "Execution"],
   "agent.config.prompt": ["提示词模板", "Prompt template"],
   "agent.config.promptHint": [

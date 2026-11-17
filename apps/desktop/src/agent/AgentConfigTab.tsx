@@ -3,6 +3,7 @@ import clsx from "clsx";
 import {
   Boxes,
   Check,
+  Puzzle,
   ScrollText,
   Settings2,
   SlidersHorizontal,
@@ -17,6 +18,7 @@ import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui
 import { t, type MessageKey } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
 import { ModelSettings } from "./ModelSettings";
+import { PluginInventory } from "./PluginInventory";
 import {
   agentActions,
   agentStore,
@@ -41,6 +43,7 @@ const NAV: Array<{ id: Section; label: MessageKey; icon: LucideIcon }> = [
   { id: "general", label: "agent.config.nav.general", icon: SlidersHorizontal },
   { id: "models", label: "agent.config.nav.models", icon: Boxes },
   { id: "rules", label: "agent.config.nav.rules", icon: ScrollText },
+  { id: "plugins", label: "agent.config.nav.plugins", icon: Puzzle },
 ];
 
 /**
@@ -243,6 +246,10 @@ export function AgentConfigTab({ toast, onClose }: Props) {
               value={draft.dshModels}
               onChange={(dshModels) => patchDraft({ dshModels })}
             />
+          ) : section === "plugins" ? (
+            <div className="mx-auto max-w-3xl pb-2">
+              <PluginInventory />
+            </div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-3 pb-2">
               {section === "rules" ? (

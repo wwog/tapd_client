@@ -23,6 +23,7 @@
  *   select-model → switch one session's model route (durable in its log)
  *   models → adopt a model catalog, Team default and credentials live
  *   discover-models → ask the engine which models a draft endpoint advertises
+ *   plugins → read the Loader's composed plugin inventory (settings panel)
  *
  * `models` and `discover-models` are requests: the same socket carries the
  * reply (`models-applied` / `models-discovered`) tagged with the caller's
@@ -33,6 +34,11 @@
  * racing session creation. The same applies to a Team toggle and a model pick:
  * both need the live Agent that owns the session.
  *
+ * An assignment also registers the new directory as a writable root for that
+ * session's sandbox: the engine resolves `workspace-write` from the Session's
+ * original header cwd, so a worktree or chat directory would otherwise count as
+ * "outside the workspace" and every write would be denied or escalated.
+ *
  * The Rust side owns normalization and deduplication, so this plugin holds no
  * transcript state. Reconnecting re-sends snapshots; the receiver dedupes by
  * event seq. Without `TAPD_DSH_BRIDGE_URL`/`_TOKEN` it is inert — the payload
@@ -41,8 +47,10 @@
  * stdout belongs to the SDK protocol: never write there.
  */
 
+import { readFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
-import { isAbsolute } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'tapd-bridge'
@@ -51,8 +59,36 @@ export const inject = ['sessions', 'agents', 'workingDirectory']
 
 const RECONNECT_MIN_MS = 250
 const RECONNECT_MAX_MS = 4000
+/** Cordis root-Fiber states, in the order the Loader numbers them. */
+const FIBER_PHASES = ['pending', 'loading', 'active', 'failed', 'unloading']
 /** Board and meter changes commit as session events; one settled frame per burst. */
 const SETTLE_MS = 300
+
+/**
+ * Package name behind a Loader row's module specifier. Our own rows are
+ * absolute entry URLs, so the name comes from the nearest `package.json`; a
+ * bare specifier is its own answer.
+ */
+function packageNameOf(module) {
+  if (!module.startsWith('file:')) return module
+  try {
+    let dir = dirname(fileURLToPath(module))
+    for (let depth = 0; depth < 4; depth += 1) {
+      try {
+        const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+        if (typeof manifest.name === 'string' && manifest.name) return manifest.name
+      } catch {
+        // No manifest here: the package root is one level up.
+      }
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  } catch {
+    // A malformed entry URL falls through to the raw specifier.
+  }
+  return module
+}
 
 export function apply(ctx) {
   const url = process.env.TAPD_DSH_BRIDGE_URL
@@ -275,6 +311,45 @@ export function apply(ctx) {
   // Rust → plugin control frames
   // -------------------------------------------------------------------------
 
+  /** Per-session grant that keeps the engine sandbox in step with the cwd. */
+  const sandboxGrants = new Map()
+
+  /**
+   * The engine's sandbox resolves its `workspace-write` boundary from the
+   * Session's *immutable* header cwd, while tasks and chats move to their own
+   * directory afterwards. Without this grant every write inside the worktree
+   * counts as outside the workspace and the call is denied or escalated, so the
+   * user is asked to approve their own working directory over and over.
+   *
+   * `registerWritableRoot` is runtime-only and per Session, which is exactly the
+   * lifecycle here: re-registered on every assignment and on every resumed
+   * Agent, dropped when the session goes away.
+   */
+  const allowSandboxRoot = (agent, cwd) => {
+    const session = agent?.session
+    if (!session?.id || typeof cwd !== 'string' || !cwd) return
+    const policy = ctx.get('sandboxPolicy')
+    if (typeof policy?.registerWritableRoot !== 'function') return
+    sandboxGrants.get(session.id)?.()
+    try {
+      sandboxGrants.set(session.id, policy.registerWritableRoot(session, cwd))
+    } catch (error) {
+      warn(`sandbox root ${session.id} → ${cwd}`, error)
+    }
+  }
+
+  /** Re-registers the grant for a session that already moved somewhere else. */
+  const restoreSandboxRoot = (agent) => {
+    const session = agent?.session
+    if (!session?.id) return
+    try {
+      const current = ctx.workingDirectory.get(session)
+      if (current) allowSandboxRoot(agent, current)
+    } catch (error) {
+      warn(`sandbox root ${session.id}`, error)
+    }
+  }
+
   /**
    * Points one session at `cwd`. The live agent owns the directory change, so
    * an assignment for a not-yet-created session waits for `session/created`.
@@ -288,7 +363,10 @@ export function apply(ctx) {
     assignments.delete(sessionId)
     ctx.workingDirectory
       .set(agent, cwd)
-      .then((applied) => ctx.logger.info(`${name}: session ${sessionId} cwd → ${applied}`))
+      .then((applied) => {
+        allowSandboxRoot(agent, applied)
+        ctx.logger.info(`${name}: session ${sessionId} cwd → ${applied}`)
+      })
       .catch((error) => warn(`assign ${sessionId} → ${cwd}`, error))
   }
 
@@ -368,7 +446,11 @@ export function apply(ctx) {
   // A created Session exists before its Agent is published; both edges flush,
   // and the second is a no-op after the first succeeds.
   ctx.on('session/created', (session) => applyPending(session?.id))
-  ctx.on('agent/created', ({ agent } = {}) => applyPending(agent?.session?.id))
+  ctx.on('agent/created', ({ agent } = {}) => {
+    applyPending(agent?.session?.id)
+    // A resumed Agent lost the runtime-only grant its predecessor had.
+    restoreSandboxRoot(agent)
+  })
 
   const cancelSession = (sessionId) => {
     try {
@@ -412,6 +494,78 @@ export function apply(ctx) {
   /** Replies to one Rust request; `error` is the engine's own diagnostic. */
   const reply = (type, requestId, body = {}) => {
     send({ type, token, requestId, ...body })
+  }
+
+  /** Both languages of one engine-localized string; the client picks its own. */
+  const localized = (text) => {
+    if (typeof text === 'string') return text ? { zh: text, en: text } : null
+    if (!text || typeof text !== 'object') return null
+    const zh = typeof text.zh === 'string' ? text.zh : ''
+    const en = typeof text.en === 'string' ? text.en : ''
+    if (!zh && !en) return null
+    return { zh: zh || en, en: en || zh }
+  }
+
+  /**
+   * Answers "which plugins is this runtime actually running?".
+   *
+   * The Loader is the only truth here: `entries()` yields the composed rows in
+   * composition order, each with its own enabled flag and root Fiber state, so
+   * the panel never shows a guess. Display text comes from the engine's package
+   * metadata (localized title/description); a package without metadata falls
+   * back to its short module name.
+   *
+   * Scope: an entry mounted inside a session's subtree is a session plugin
+   * (`scope: 'session'` plus the owning session); everything composed on the
+   * root context is shared by the whole process.
+   */
+  const pluginInventory = () => {
+    // `loader` is a root service this plugin does not inject; `get` is the
+    // context-free read, `ctx.loader` only exists for injected dependencies.
+    const loader = ctx.get('loader') ?? ctx.loader
+    if (typeof loader?.entries !== 'function') return { entries: [] }
+    const packages = ctx.get('pluginPackages')
+    const entries = []
+    for (const entry of loader.entries()) {
+      const options = entry.options ?? {}
+      const module = String(options.name ?? '')
+      // `cordis:*` rows are composition sugar (include/group markers), not
+      // plugins: the panel would list them as blank rows.
+      if (!module || module.startsWith('cordis:')) continue
+      const fiber = entry.fiber
+      // Walk up to the root: a session subtree is where the per-session rows
+      // live, and its id is what the panel groups them under.
+      let sessionId = ''
+      for (let node = entry.parent; node; node = node.parent) {
+        const id = String(node.id ?? '')
+        const match = /^(?:session|agent):(.+)$/.exec(id)
+        if (match) {
+          sessionId = match[1]
+          break
+        }
+      }
+      let meta
+      try {
+        meta = packages?.metaOf(module, entry.parent?.tree?.ctx?.baseUrl)
+      } catch {
+        // Package metadata is display-only; a broken manifest must not hide rows.
+      }
+      entries.push({
+        id: String(entry.id ?? '').replace(/^include:/, ''),
+        module,
+        // Our own rows are inserted by absolute entry path, so the panel needs
+        // the package name behind that path to show something readable.
+        package: packageNameOf(module),
+        group: Boolean(options.group),
+        enabled: !entry.disabled,
+        phase: fiber ? (FIBER_PHASES[fiber.state] ?? null) : null,
+        scope: sessionId ? 'session' : 'global',
+        sessionId: sessionId || null,
+        title: localized(meta?.title),
+        description: localized(meta?.description),
+      })
+    }
+    return { entries }
   }
 
   /**
@@ -509,6 +663,15 @@ export function apply(ctx) {
     // Catalog requests carry no session either.
     if (frame.type === 'models' && typeof frame.requestId === 'number') {
       void applyModels(frame)
+      return
+    }
+    if (frame.type === 'plugins' && typeof frame.requestId === 'number') {
+      try {
+        reply('plugins-listed', frame.requestId, pluginInventory())
+      } catch (error) {
+        warn('plugins', error)
+        reply('plugins-listed', frame.requestId, { entries: [], error: messageOf(error) })
+      }
       return
     }
     if (frame.type === 'discover-models' && typeof frame.requestId === 'number') {

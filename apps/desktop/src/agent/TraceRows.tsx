@@ -272,8 +272,3 @@ export function ReasoningRow({ text, live = false }: { text: string; live?: bool
     </div>
   );
 }
-
-/** Kept for the older call sites; the fold is the same as {@link ReasoningRow}. */
-export function TraceReasoning({ text }: { text: string }) {
-  return <ReasoningRow text={text} />;
-}

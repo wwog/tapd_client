@@ -159,6 +159,12 @@ impl BridgeState {
             .expect("dsh bridge reply lock")
             .insert(id, tx);
         let mut frame = frame;
+        // The timeout message names the request that timed out, not a fixed one.
+        let method = frame
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("request")
+            .to_string();
         frame["requestId"] = json!(id);
         if let Err(error) = self.send_control(frame) {
             self.replies
@@ -176,7 +182,6 @@ impl BridgeState {
                     .lock()
                     .expect("dsh bridge reply lock")
                     .remove(&id);
-                let method = "models";
                 return Err(tapd_i18n::tr_args("dsh.call.timeout", &[&method]));
             }
         };
@@ -241,6 +246,19 @@ impl BridgeState {
             frame["teamDefaultEnabled"] = json!(team_default);
         }
         self.request(frame, REPLY_TIMEOUT).await.map(|_| ())
+    }
+
+    /// Reads the runtime's composed plugin inventory (the settings panel's
+    /// "内置插件"). The plugin answers from its own Loader, so this is what is
+    /// actually running, not what the profile file says.
+    pub async fn plugin_inventory(&self) -> Result<Value, String> {
+        let reply = self
+            .request(json!({ "type": "plugins" }), REPLY_TIMEOUT)
+            .await?;
+        Ok(reply
+            .get("entries")
+            .cloned()
+            .unwrap_or_else(|| json!([])))
     }
 
     /// Asks the runtime which models a draft provider endpoint advertises.
@@ -624,7 +642,7 @@ impl BridgeState {
             Some("stats") => self.ingest_stats(app, message),
             Some("team") => self.ingest_team(app, message),
             Some("notice") => super::policy::notice(message),
-            Some("models-applied") | Some("models-discovered") => {
+            Some("models-applied") | Some("models-discovered") | Some("plugins-listed") => {
                 self.resolve_reply(message)
             }
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),

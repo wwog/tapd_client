@@ -385,6 +385,7 @@ type DshFeatureCommand =
   | "dsh_session_dir"
   | "dsh_worktrees"
   | "dsh_worktree_remove"
+  | "dsh_plugins"
   | "dsh_session_mode_get"
   | "dsh_session_mode_set"
   | "dsh_models_discover"
@@ -464,6 +465,36 @@ export type DshWorktree = {
 export const dshWorktreeApi = {
   list: () => feature<{ root: string; worktrees: DshWorktree[] }>("dsh_worktrees"),
   remove: (path: string) => feature<{ path: string }>("dsh_worktree_remove", { path }),
+};
+
+/** Root-Fiber phase of one composed plugin entry; null when it has no fiber. */
+export type DshPluginPhase =
+  | "pending"
+  | "loading"
+  | "active"
+  | "failed"
+  | "unloading"
+  | null;
+
+/** One plugin the runtime actually composed, as the Loader reports it. */
+export type DshPluginEntry = {
+  id: string;
+  module: string;
+  /** Package behind the module specifier; our own rows are entry URLs. */
+  package: string;
+  /** Composition group rows are filtered out server-side; kept for clarity. */
+  group?: boolean;
+  enabled: boolean;
+  phase: DshPluginPhase;
+  /** `session` when the row lives inside one session's subtree. */
+  scope: "session" | "global";
+  sessionId: string | null;
+  title: { zh: string; en: string } | null;
+  description: { zh: string; en: string } | null;
+};
+
+export const dshPluginApi = {
+  list: () => feature<{ entries: DshPluginEntry[] }>("dsh_plugins"),
 };
 
 export const dshPolicyApi = {

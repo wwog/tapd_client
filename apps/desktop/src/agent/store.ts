@@ -90,7 +90,7 @@ export type AgentConfigDraft = Pick<
 >;
 
 /** The settings dialog's groups, in nav order. */
-export type AgentConfigSection = "general" | "models" | "rules";
+export type AgentConfigSection = "general" | "models" | "rules" | "plugins";
 
 export type AgentState = {
   /** The settings dialog; the page itself only shows the conversation. */

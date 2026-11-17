@@ -31,7 +31,9 @@ export function AgentWorkspace({ toast }: Props) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex min-h-0 flex-1">
+      {/* One step up from the app scale (styles.css `.agent-type`): the session
+          is read as prose, and the config dialog stays outside it. */}
+      <div className="agent-type flex min-h-0 flex-1">
         <TaskList />
         <div className="flex min-w-0 flex-1 flex-col">
           {state.selectedId ? (

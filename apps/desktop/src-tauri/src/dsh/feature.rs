@@ -524,6 +524,12 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             let request: WorktreeRequest = parse(payload, "dsh_worktree_remove")?;
             super::tasks::remove_worktree(app, &request.path).await
         }
+        "dsh_plugins" => {
+            // The panel reads the live runtime: a stopped one has no Loader.
+            runtime(app)?.ensure_ready(app).await?;
+            let entries = bridge(app)?.plugin_inventory().await?;
+            Ok(json!({ "entries": entries }))
+        }
         "dsh_sessions" => sessions(app),
         name if name.starts_with("dsh_team_") => super::team::command(app, name, payload).await,
         name if name.starts_with("dsh_task") => super::tasks::command(app, name, payload).await,

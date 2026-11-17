@@ -136,11 +136,7 @@ export function TaskList() {
         ) : (
           groupTasks(ordered ?? []).map((group) => {
             const folded = collapsed.has(group.key);
-            // The selected row stays visible when its group is folded: the pane
-            // on the right is still that task, so hiding it would be a lie.
-            const rows = folded
-              ? group.tasks.filter((task) => task.id === state.selectedId)
-              : group.tasks;
+            const rows = folded ? [] : group.tasks;
             return (
               <section key={group.key} className="mt-1 first:mt-0">
                 <button
