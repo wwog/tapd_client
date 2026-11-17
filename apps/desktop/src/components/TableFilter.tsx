@@ -12,6 +12,7 @@ import clsx from "clsx";
 
 import { useDismiss } from "../hooks/useDismiss";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 
 export type TableFilterOption = { value: string; label: string };
 
@@ -252,14 +253,13 @@ export function TableFilter(props: Props) {
                             )
                           ) : null}
                         </span>
-                        <span
+                        <ScrollingName
+                          text={option.label}
                           className={clsx(
-                            "min-w-0 flex-1 truncate",
+                            "min-w-0 flex-1",
                             checked ? "text-slate-800" : "text-slate-600",
                           )}
-                        >
-                          {option.label}
-                        </span>
+                        />
                       </button>
                     );
                   })}

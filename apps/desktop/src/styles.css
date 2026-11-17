@@ -55,6 +55,19 @@
   --text-ui-lg--line-height: 1.4;
 }
 
+/* The Agent session is prose, not table chrome: every tier sits one step above
+   the app scale. Shifting the tokens (not the classes) keeps the hierarchy and
+   the user's font-size setting intact — the transcript, composer, task column
+   and trajectory all move together. */
+.agent-type {
+  --text-ui-2xs: calc(var(--ui-font-size) - 3px);
+  --text-ui-xs: calc(var(--ui-font-size) - 2px);
+  --text-ui-sm: calc(var(--ui-font-size) - 1px);
+  --text-ui-caption: var(--ui-font-size);
+  --text-ui-base: calc(var(--ui-font-size) + 1px);
+  --text-ui-lg: calc(var(--ui-font-size) + 3px);
+}
+
 html,
 body,
 #root {

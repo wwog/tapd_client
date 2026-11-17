@@ -6,6 +6,7 @@ import { Check, ChevronDown, Search } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
 import { t } from "../lib/i18n";
 import { computeMenuPosition, type MenuPosition } from "../lib/menuPosition";
+import { ScrollingName } from "./ScrollingName";
 
 export type SelectOption = {
   value: string;
@@ -238,9 +239,10 @@ export function SelectPicker(props: Props) {
                       onClick={() => choose(custom)}
                       className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-50"
                     >
-                      <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
-                        {t("common.picker.useValue", { value: custom })}
-                      </span>
+                      <ScrollingName
+                        text={t("common.picker.useValue", { value: custom })}
+                        className="min-w-0 flex-1 text-ui-caption text-slate-700"
+                      />
                     </button>
                   ) : null}
 
@@ -269,18 +271,18 @@ export function SelectPicker(props: Props) {
                           )}
                         >
                           <span className="min-w-0 flex-1">
-                            <span
+                            <ScrollingName
+                              text={option.label}
                               className={clsx(
-                                "block truncate text-ui-caption",
+                                "text-ui-caption",
                                 active ? "text-sky-700" : "text-slate-700",
                               )}
-                            >
-                              {option.label}
-                            </span>
+                            />
                             {option.description ? (
-                              <span className="mt-0.5 block truncate text-ui-2xs text-slate-400">
-                                {option.description}
-                              </span>
+                              <ScrollingName
+                                text={option.description}
+                                className="mt-0.5 text-ui-2xs text-slate-400"
+                              />
                             ) : null}
                           </span>
                           <span className="grid h-3 w-3 shrink-0 place-items-center">

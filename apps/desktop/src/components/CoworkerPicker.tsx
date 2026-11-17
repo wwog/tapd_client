@@ -5,6 +5,7 @@ import { Check, Coffee, RefreshCw } from "lucide-react";
 import { coworkerApi, type Coworker } from "../lib/coworker";
 import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
+import { ScrollingName } from "./ScrollingName";
 import { Button, EmptyState, Spinner } from "./ui";
 
 type Toast = (kind: "ok" | "error", text: string) => void;
@@ -214,9 +215,10 @@ function CoworkerCard(props: {
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className="truncate text-ui-base text-slate-900">
-              {coworker.name}
-            </span>
+            <ScrollingName
+              text={coworker.name}
+              className="text-ui-base text-slate-900"
+            />
             <span
               className="shrink-0 rounded-full px-1.5 py-0.5 text-ui-2xs"
               style={{ color: accent, backgroundColor: `${accent}16` }}
@@ -225,9 +227,10 @@ function CoworkerCard(props: {
             </span>
           </div>
           {coworker.title ? (
-            <div className="mt-0.5 truncate text-ui-xs text-slate-400">
-              {coworker.title}
-            </div>
+            <ScrollingName
+              text={coworker.title}
+              className="mt-0.5 text-ui-xs text-slate-400"
+            />
           ) : null}
         </div>
       </div>
