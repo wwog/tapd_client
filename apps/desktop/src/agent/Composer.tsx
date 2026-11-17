@@ -4,6 +4,7 @@ import { Send } from "lucide-react";
 import { Button } from "../components/ui";
 import { t } from "../lib/i18n";
 import { runtimeBlock, runtimeLabel } from "./runtime";
+import { SessionModePicker } from "./SessionModePicker";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { SessionUsageBar } from "./usage/SessionUsageBar";
 import { agentActions, agentStore } from "./store";
@@ -58,6 +59,7 @@ export function Composer() {
         />
         <div className="mt-2 flex items-center gap-2">
           <SessionModelPicker />
+          <SessionModePicker />
           <span className="h-3 w-px shrink-0 bg-border" />
           <SessionUsageBar
             usage={

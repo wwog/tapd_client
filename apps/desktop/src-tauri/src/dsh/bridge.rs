@@ -949,6 +949,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mode_and_plan_frames_are_remembered_and_carry_the_token() {
+        let bridge = BridgeState::default();
+        // Offline: the frame cannot be queued, but the choice must survive for
+        // the next prompt.
+        assert!(bridge.set_session_mode("s1", PermissionMode::Full).is_err());
+        assert_eq!(bridge.pending_mode("s1"), Some(PermissionMode::Full));
+        assert!(bridge.set_plan("s1", true).is_err());
+        assert_eq!(bridge.pending_plan("s1"), Some(true));
+
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge.set_default_mode(PermissionMode::Notify).unwrap();
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "default-mode");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["mode"], "notify");
+
+        bridge.set_session_mode("s1", PermissionMode::Auto).unwrap();
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "mode");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["mode"], "auto");
+
+        bridge.set_plan("s1", false).unwrap();
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "plan");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["active"], false);
+    }
+
+    #[test]
+    fn only_a_matching_plan_event_clears_the_pending_choice() {
+        let bridge = BridgeState::default();
+        bridge.set_plan("s1", true).expect_err("offline");
+
+        // A snapshot from before the request reports `false`; it must not cancel
+        // the choice the user just made.
+        bridge.settle_plan_event(
+            "s1",
+            &json!({ "type": "plan/mode", "data": { "active": false } }),
+        );
+        assert_eq!(bridge.pending_plan("s1"), Some(true));
+
+        bridge.settle_plan_event(
+            "s1",
+            &json!({ "type": "plan/mode", "data": { "active": true } }),
+        );
+        assert_eq!(bridge.pending_plan("s1"), None);
+    }
+
+    #[tokio::test]
     async fn a_stale_connection_cannot_clear_a_newer_control_slot() {
         let bridge = BridgeState::default();
         *bridge.token.lock().unwrap() = Some("t".into());

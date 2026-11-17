@@ -221,7 +221,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 10);
+        assert_eq!(version, super::migrate::SCHEMA_VERSION);
         for table in [
             "snapshots",
             "bugs",
@@ -231,6 +231,8 @@ mod tests {
             "notification_cursors",
             "mcp_audit",
             "dsh_tasks",
+            "dsh_session_meters",
+            "dsh_session_modes",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -281,7 +283,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 10);
+        assert_eq!(version, super::migrate::SCHEMA_VERSION);
         let snapshots: i64 = conn
             .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
             .expect("snapshots");

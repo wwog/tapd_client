@@ -16,7 +16,7 @@ use rusqlite::Connection;
 /// Schema version. Bumped only when the stored shape changes; fresh and
 /// pre-release databases are rebuilt from scratch, while shipped shapes are
 /// upgraded in place.
-const SCHEMA_VERSION: i64 = 11;
+pub(super) const SCHEMA_VERSION: i64 = 11;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn

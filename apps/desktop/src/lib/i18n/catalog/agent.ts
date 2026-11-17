@@ -193,6 +193,15 @@ export const agent = {
     "The split updates with the next request",
   ],
 
+  // Session mode picker (composer).
+  "agent.mode.title": ["会话模式", "Session mode"],
+  "agent.mode.hint": ["立即生效", "Takes effect immediately"],
+  "agent.mode.plan": ["计划模式", "Plan mode"],
+  "agent.mode.planHint": [
+    "先出计划，批准后再动手",
+    "Plan first; act after approval",
+  ],
+
   // Composer.
   "agent.composer.placeholder": ["描述要做什么…", "Describe the task…"],
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
@@ -297,10 +306,12 @@ export const agent = {
     "The runtime needs at least one enabled model.",
   ],
   "agent.model.default": ["默认", "Default"],
+  "agent.model.defaultModel": ["默认模型", "Default model"],
   "agent.model.setDefault": ["设为默认模型", "Use as the default model"],
   "agent.model.pick": ["选择模型", "Select model"],
   "agent.model.pickTitle": ["模型", "Model"],
   "agent.model.manage": ["管理模型", "Manage models"],
+  "agent.model.providerModels": ["{count} 个模型", "{count} models"],
   "agent.model.noAvailable": ["还没有可用模型", "No model available yet"],
   "agent.model.orderHint": [
     "拖动调整顺序;第一个供应商的默认模型用于新会话",
@@ -342,10 +353,10 @@ export const agent = {
     "同时运行的任务数，1–8；关闭 worktree 时固定为 1。",
     "Concurrent tasks, 1-8; fixed at 1 when worktree isolation is off.",
   ],
-  "agent.config.permission": ["权限模式", "Permission mode"],
+  "agent.config.permission": ["默认权限模式", "Default permission mode"],
   "agent.config.permissionHint": [
-    "规则在执行前判定；切换后需要重启运行时。",
-    "Rules are checked before each call; a change needs a runtime restart.",
+    "新会话和未单独设置的会话使用；在每个会话的输入框下方可单独调整，立即生效。",
+    "Used by new sessions and sessions without their own choice; each session can override it from its composer, effective immediately.",
   ],
   "agent.config.permissionAuto": ["自主", "Autonomous"],
   "agent.config.permissionAutoHint": [

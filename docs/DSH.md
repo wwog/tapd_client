@@ -395,6 +395,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   「下一步用什么模型」的选择，不是已经发生的请求，所以不动 `usage` 的累计值。切换模型后
   dsh 会自动插入一条 `source.kind = "model-selection"` 的提示消息，按上面的规则也不会变成
   用户气泡。
+- `plan/mode` 只更新会话的 `planActive`，**不产生行**；引擎在进入/退出计划模式时写入。
 - 未知事件类型（`request/header` 等）忽略，每种类型只记一条 debug 日志。
 - 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
 
@@ -402,7 +403,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 ```jsonc
 { "id": "probe-1", "title": "hello", "updatedAt": "2026-11-16T12:00:00.000Z",
-  "status": "idle", "messageCount": 1,
+  "status": "idle", "messageCount": 1, "planActive": false,
   // 可省略；还没有选择时为空，UI 退回 usage 或配置的默认模型
   "selection": { "provider": "opencode-go", "model": "deepseek-v4.1-flash",
                  "reasoningEffort": "high" } }   // status: idle | running | failed
@@ -421,6 +422,8 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - `selection`：会话当前的模型选择（`model/selection` 事件的 `data`），不带 effort 表示适配器
   默认。它是**会话级**的：切换只影响这一个会话，并随会话日志持久化；SDK 在 resume 时会把路由
   重置成运行时默认，所以 Rust 在 resume 前先快照、下一次 prompt 前再恢复。
+- `planActive`：引擎原生 plan mode 的状态（`plan/mode` 事件），随会话日志持久化；批准
+  `exit_plan_mode` 的 review 后自动变回 `false`。
 
 ### 8.5 实时增量 `DshStream`
 
@@ -472,6 +475,8 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；运行时已启动但 profile 里没有这个路由时报可读错误（需重启运行时） |
+| `dsh_session_mode_get` | `{ sessionId }` | `{ sessionId, mode }`；`mode: null` = 继承默认；读 `dsh_session_modes` |
+| `dsh_session_mode_set` | `{ sessionId, mode?, plan? }` | `{ sessionId, mode, plan }`；`mode` 写库并推 `mode` 帧，`plan` 推 `plan` 帧；两者都在下一次工具调用/下一步生效，不需要重启 |
 | `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
 | `dsh_question_answer` | `{ rpcId, answers }`（`answers: null` = 取消） | `{ ok: true }` |
 
@@ -481,7 +486,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   `<data>/dsh/chats/<sessionId>`；没有项目的自由会话不读写任何真实仓库。运行时进程的默认
   cwd 也是 `<data>/dsh/workspace`。
 - `dsh_restart` / `dsh_session_cancel` / `dsh_task_delete` 只开放给桌面端，不在手机
-  白名单里。
+  白名单里（`dsh_session_mode_get/set` 已在白名单，手机 UI 暂未接入）。
 
 ### 8.7 阻塞请求快照 `dsh_pending`
 
@@ -588,7 +593,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 | `dsh_task_diff` | `{ sessionId, file? }` | `{ diff }`（统一 diff 文本） |
 | `dsh_task_resume` | `{ sessionId }` | `{ task }`（恢复 dsh 持久化会话） |
 | `dsh_task_delete` | `{ sessionId }` | `{ sessionId }`；仅 `kind: "chat"` 且不在运行；删行、日志目录与 chat scratch 目录 |
-| `dsh_policy_get` / `dsh_policy_set` | `{ mode }` | `{ mode }` |
+| `dsh_policy_get` / `dsh_policy_set` | `{ mode }` | `{ mode }`；写 `agent.json` 的默认模式并推 `default-mode` 帧，立即作用于没有会话覆盖的会话 |
 
 事件：`dsh://tasks { tasks }`（列表变化），其余沿用第 8 节。
 
@@ -611,8 +616,16 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 - 提示词只要求模型「改代码 + 跑测试」，明确不 commit、不 push、不写 TAPD：提交、合并与回写
   由宿主在审核后确定性地做。仍带 `tapd_add_bug_comment` / `tapd_update_bug_status` 等旧工具的
   模板会被判定为失效并替换成新默认模板（校验而非迁移）。
-- 模式来自 `agent.json.permissionMode`，通过 `TAPD_DSH_PERMISSION_MODE`
-  传入运行时；切换模式需要重启运行时（UI 明说）。
+- 模式是**会话级**的：`agent.json.permissionMode` 只是默认值（启动时的
+  `TAPD_DSH_PERMISSION_MODE` 与 `dsh_policy_set` 的 `default-mode` 帧），会话覆盖存在
+  `dsh_session_modes`（cache v11），由 `dsh_session_mode_set` 推 `mode` 控制帧。
+  `tools/pre-execute` 每次调用都读当前模式，所以切换在**下一个工具调用**生效，不需要重启。
+- 会话选择器另有「计划模式」：走引擎原生 plan mode（`plan` 控制帧 → `ctx.planMode.set`），
+  退出由 `exit_plan_mode` 的 review 提问卡批准；plan 激活期间 `tapd-policy` 额外拒绝
+  `write` / `edit` / `apply_patch` / `str_replace_editor`，bash 不拦（引擎本身是提示级约束）。
+  `plan/mode` 事件进 `DshSession.planActive`，选择器据此回显。
+- 默认模式改动通过 `default-mode` 帧立即作用于没有会话覆盖的会话；模型目录与同事名单仍
+  只读启动快照，改动后由「重启运行时」生效。
 - 不做模型审查：规则是确定性的，零 token，可单测。若以后要模型审查，
   再挂上游 `dsh-experimental-auto-review` 作为 `auto` 的一层。
 

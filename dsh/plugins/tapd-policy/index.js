@@ -3,13 +3,19 @@
  *
  * `tools/pre-execute` is the upstream waterfall for allow / ask before a tool
  * body runs. This plugin is the deterministic half of the permission story:
- * one rule table, no model call, no token cost, unit-testable. The mode comes
- * from `TAPD_DSH_PERMISSION_MODE`, which the desktop app writes into the
- * runtime's environment at start:
+ * one rule table, no model call, no token cost, unit-testable.
+ *
+ * The mode is per session. `TAPD_DSH_PERMISSION_MODE` only seeds the default;
+ * the desktop pushes overrides over the bridge control channel and the gate
+ * reads them on the next call, so switching a session never restarts anything:
  *
  *   auto   (default)  hard + soft → ask (our capsule card)
  *   notify            hard + soft → notice card, always allow
  *   full              hard → ask, everything else allowed
+ *
+ * Plan mode is a separate engine flag (not a permission mode): while it is
+ * active, file-writing tools are denied so "plan first" is deterministic, and
+ * the model leaves it through the engine's own `exit_plan_mode` review.
  *
  * `ask` goes through the runtime's approval service (initialized with
  * `approvalRequests: true`), which reaches the app as `approval/request`.

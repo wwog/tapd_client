@@ -107,6 +107,9 @@ export type AgentState = {
   pendingPrompts: Record<string, string[] | undefined>;
   /** Model picked before a session exists; applied to the next allocation. */
   draftSelection: ModelSelection | null;
+  /** Picks the transcript row does not know yet (a session without a committed
+   *  message). Retired once the backend reports the route. */
+  selectionOverrides: Record<string, ModelSelection | undefined>;
   approvals: PendingApproval[];
   questions: PendingQuestion[];
   /** Session rows (usage, counters) keyed by id; the status line reads them. */
@@ -158,6 +161,7 @@ const initialState: AgentState = {
   committedAttempts: {},
   pendingPrompts: {},
   draftSelection: null,
+  selectionOverrides: {},
   approvals: [],
   questions: [],
   sessions: {},
@@ -341,17 +345,28 @@ function applySessions(sessions: DshSessionRow[]): void {
     // override forever would pin a queued choice that the engine has not
     // applied yet.
     let planOverrides = state.planOverrides;
+    let selectionOverrides = state.selectionOverrides;
     for (const row of sessions) {
-      if (row.planActive === undefined) continue;
-      if (planOverrides[row.id] === row.planActive) {
-        if (planOverrides === state.planOverrides) planOverrides = { ...planOverrides };
-        delete planOverrides[row.id];
+      if (row.planActive !== undefined) {
+        if (planOverrides[row.id] === row.planActive) {
+          if (planOverrides === state.planOverrides) planOverrides = { ...planOverrides };
+          delete planOverrides[row.id];
+        }
+      }
+      // The row only carries a route once the backend knows the session, so a
+      // reported route retires the optimistic pick.
+      if (row.selection && selectionOverrides[row.id]) {
+        if (selectionOverrides === state.selectionOverrides) {
+          selectionOverrides = { ...selectionOverrides };
+        }
+        delete selectionOverrides[row.id];
       }
     }
     return {
       ...state,
       sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
       planOverrides,
+      selectionOverrides,
     };
   });
 }
@@ -359,11 +374,21 @@ function applySessions(sessions: DshSessionRow[]): void {
 /** Optimistic selection echo; the `model/selection` event confirms it. */
 function applySelection(sessionId: string, selection: ModelSelection | undefined): void {
   update((state) => {
+    // A session without a committed message has no transcript row yet, so
+    // writing only the row would leave the pick invisible until the first
+    // reply. The override keeps it on screen (the runtime uses it for the next
+    // request regardless).
+    const selectionOverrides = { ...state.selectionOverrides };
+    if (selection) selectionOverrides[sessionId] = selection;
+    else delete selectionOverrides[sessionId];
+
     const row = state.sessions[sessionId];
-    if (!row) return state;
     return {
       ...state,
-      sessions: { ...state.sessions, [sessionId]: { ...row, selection } },
+      selectionOverrides,
+      sessions: row
+        ? { ...state.sessions, [sessionId]: { ...row, selection } }
+        : state.sessions,
     };
   });
 }
@@ -383,6 +408,7 @@ function adoptTasks(tasks: DshTask[]): void {
 
   if (moved && selectedId) {
     void loadEntries(selectedId);
+    void readSessionMode(selectedId);
     ensureTeam(selectedId);
   }
 }
@@ -398,6 +424,10 @@ function clearSelection(sessionId: string): void {
     delete committedAttempts[sessionId];
     const pendingPrompts = { ...state.pendingPrompts };
     delete pendingPrompts[sessionId];
+    const sessionModes = { ...state.sessionModes };
+    delete sessionModes[sessionId];
+    const planOverrides = { ...state.planOverrides };
+    delete planOverrides[sessionId];
     const fallback = (state.tasks ?? []).find((task) => task.id !== sessionId)?.id ?? null;
     return {
       ...state,
@@ -406,6 +436,8 @@ function clearSelection(sessionId: string): void {
       live,
       committedAttempts,
       pendingPrompts,
+      sessionModes,
+      planOverrides,
     };
   });
   persistPrefs();
@@ -755,6 +787,7 @@ async function selectSession(sessionId: string): Promise<void> {
   }));
   persistPrefs();
   ensureTeam(sessionId);
+  void readSessionMode(sessionId);
   await loadEntries(sessionId);
 }
 
@@ -772,6 +805,7 @@ async function allocateSession(): Promise<string> {
     lastError: null,
   }));
   persistPrefs();
+  void readSessionMode(sessionId);
   return sessionId;
 }
 
@@ -810,6 +844,8 @@ export const agentActions = {
     // A selection restored from preferences is not a move, so `adoptTasks`
     // did not read its board.
     ensureTeam(agentStore.get().selectedId);
+    const selected = agentStore.get().selectedId;
+    if (selected) void readSessionMode(selected);
   },
 
   setTab: (tab: AgentTab): void => {
@@ -860,12 +896,51 @@ export const agentActions = {
       update((state) => ({ ...state, draftSelection: selection }));
       return;
     }
-    const before = agentStore.get().sessions[sessionId]?.selection;
+    const current = agentStore.get();
+    const before =
+      current.sessions[sessionId]?.selection ?? current.selectionOverrides[sessionId];
     applySelection(sessionId, selection);
     try {
       await dshApi.selectModel(sessionId, selection);
     } catch (error) {
       applySelection(sessionId, before);
+      setError(error);
+    }
+  },
+
+  /** Switches one session between plan mode and the three permission modes.
+   *  Plan is a separate engine flag; a permission pick also leaves plan mode. */
+  selectSessionMode: async (
+    sessionId: string,
+    next: DshPermissionMode | "plan",
+  ): Promise<void> => {
+    const state = agentStore.get();
+    const beforeMode = state.sessionModes[sessionId];
+    const beforePlan = state.planOverrides[sessionId];
+    const plan = next === "plan";
+    const mode = next === "plan" ? undefined : next;
+    update((current) => ({
+      ...current,
+      sessionModes: mode
+        ? { ...current.sessionModes, [sessionId]: mode }
+        : current.sessionModes,
+      planOverrides: { ...current.planOverrides, [sessionId]: plan },
+    }));
+    try {
+      await dshApi.setSessionMode(sessionId, {
+        ...(mode ? { mode } : {}),
+        plan,
+      });
+    } catch (error) {
+      update((current) => {
+        const sessionModes = { ...current.sessionModes };
+        if (beforeMode === undefined) delete sessionModes[sessionId];
+        else sessionModes[sessionId] = beforeMode;
+        const planOverrides = { ...current.planOverrides };
+        if (beforePlan === undefined) delete planOverrides[sessionId];
+        else planOverrides[sessionId] = beforePlan;
+        return { ...current, sessionModes, planOverrides };
+      });
       setError(error);
     }
   },
@@ -915,6 +990,7 @@ export const agentActions = {
     }));
     persistPrefs();
     void loadEntries(task.id);
+    void readSessionMode(task.id);
     ensureTeam(task.id);
   },
 
@@ -961,6 +1037,12 @@ export const agentActions = {
       delete committedAttempts[sessionId];
       const pendingPrompts = { ...state.pendingPrompts };
       delete pendingPrompts[sessionId];
+      const sessionModes = { ...state.sessionModes };
+      delete sessionModes[sessionId];
+      const planOverrides = { ...state.planOverrides };
+      delete planOverrides[sessionId];
+      const selectionOverrides = { ...state.selectionOverrides };
+      delete selectionOverrides[sessionId];
       return {
         ...state,
         tasks,
@@ -969,6 +1051,9 @@ export const agentActions = {
         live,
         committedAttempts,
         pendingPrompts,
+        sessionModes,
+        planOverrides,
+        selectionOverrides,
       };
     });
     persistPrefs();

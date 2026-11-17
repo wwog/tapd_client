@@ -20,6 +20,7 @@
     "build:mcp": "cargo build -p tapd-mcp",
     "release": "bash scripts/release.sh",
     "changelog": "node scripts/changelog.mjs",
-    "test:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo test --workspace"
+    "test:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo test --workspace",
+    "test:policy": "node --test scripts/dsh/policy.test.mjs"
   }
 }

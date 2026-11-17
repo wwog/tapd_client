@@ -16,7 +16,9 @@
  *
  *   assign → move a session to a working directory (task worktrees)
  *   cancel → stop one session's turn
- *   team   → enable / disable Agent Teams for one root session
+ *   mode / default-mode → session permission mode / runtime-wide default
+ *   plan → enter or leave the engine's plan mode
+ *   team → enable / disable Agent Teams for one root session
  *   select-model → switch one session's model route (durable in its log)
  *
  * Assignments that arrive before the session exists are remembered and applied
