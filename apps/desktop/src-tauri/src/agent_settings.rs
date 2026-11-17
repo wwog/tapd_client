@@ -781,6 +781,9 @@ pub async fn command(
 
     match name {
         "settings_agent_get" => Ok(json!({ "config": companion_view(&config_for(app)) })),
+        "settings_agent_models" => {
+            Ok(json!({ "models": companion_models(&config_for(app)) }))
+        }
         "settings_agent_set" => {
             let patch: Patch = serde_json::from_value(payload)
                 .map_err(|error| error.to_string())?;
@@ -805,6 +808,52 @@ fn companion_view(config: &AgentConfig) -> serde_json::Value {
     serde_json::json!({
         "worktreeEnabled": config.worktree_enabled,
         "executionUnits": config.execution_units,
+    })
+}
+
+/// The sanitized model catalog for the phone's composer picker
+/// (`settings_agent_models`): providers and models the session picker lists,
+/// plus the active route and remembered reasoning levels. Like
+/// [`companion_view`], this is a projection on purpose — a provider's API key
+/// and protocol wiring never cross the paired wire.
+fn companion_models(config: &AgentConfig) -> serde_json::Value {
+    let providers: Vec<serde_json::Value> = config
+        .dsh_models
+        .providers
+        .iter()
+        .map(|provider| {
+            let models: Vec<serde_json::Value> = provider
+                .models
+                .iter()
+                .map(|model| {
+                    let levels: Vec<&str> = model
+                        .reasoning
+                        .iter()
+                        .map(|effort| effort.level.as_str())
+                        .collect();
+                    serde_json::json!({
+                        "id": model.id,
+                        "contextWindow": model.context_window,
+                        "input": model.input,
+                        "reasoning": levels,
+                        "enabled": model.enabled,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "id": provider.id,
+                "name": provider.name,
+                "baseUrl": provider.base_url,
+                "enabled": provider.enabled,
+                "models": models,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "providers": providers,
+        "activeProviderId": config.dsh_models.active_provider_id,
+        "activeModelId": config.dsh_models.active_model_id,
+        "modelEfforts": config.dsh_models.model_efforts,
     })
 }
 
@@ -1264,6 +1313,38 @@ mod tests {
         })
         .expect("model survives");
         assert!(entry.reasoning.is_empty());
+    }
+
+    /// The phone's model catalog is a projection: no API key, no protocol
+    /// wiring, just the route data the composer picker renders.
+    #[test]
+    fn companion_models_stays_sanitized() {
+        let mut config = AgentConfig::default();
+        config.dsh_models.providers.push(DshProvider {
+            id: "p".into(),
+            name: "Provider".into(),
+            base_url: "https://example.com/v1".into(),
+            protocol: "openai-completions".into(),
+            api_key: "secret".into(),
+            enabled: true,
+            models: vec![DshModelEntry {
+                id: "m".into(),
+                context_window: 64_000,
+                ..Default::default()
+            }],
+        });
+        config.dsh_models.active_provider_id = "p".into();
+        config.dsh_models.active_model_id = "m".into();
+
+        let wire = companion_models(&config);
+        let body = wire.to_string();
+        assert!(!body.contains("secret"));
+        assert!(!body.contains("openai-completions"));
+        assert_eq!(wire["activeProviderId"], "p");
+        assert_eq!(wire["activeModelId"], "m");
+        assert_eq!(wire["providers"][0]["baseUrl"], "https://example.com/v1");
+        assert_eq!(wire["providers"][0]["models"][0]["contextWindow"], 64_000);
+        assert_eq!(wire["providers"][0]["models"][0]["reasoning"], serde_json::json!([]));
     }
 
     fn model(id: &str) -> DshModelEntry {

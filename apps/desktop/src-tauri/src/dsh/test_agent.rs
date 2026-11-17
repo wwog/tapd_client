@@ -11,6 +11,7 @@
 //!
 //! ```text
 //! /test all        reasoning + text + file tools + bash + a user question (default)
+//! /test e2e        the whole product flow across several turns (see below)
 //! /test text       text only
 //! /test reasoning  reasoning then text
 //! /test files      write → read → edit → read, all under <workspace>/tmp/test-agent
@@ -23,6 +24,13 @@
 //!
 //! A second turn (the request ends with tool results) always answers with a
 //! short text and no tool calls, so the loop terminates.
+//!
+//! `/test e2e` is the one-prompt tour of every UI surface. It stretches over
+//! several turns: plan + todo list, the file lifecycle plus a failing command,
+//! two dispatched subagents (whose settlement notices start the next turns on
+//! their own), a final todo check-off and a user question. The stage is read
+//! from the conversation history, so the same command keeps driving the flow
+//! no matter how many turns it takes.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -107,7 +115,11 @@ pub async fn completions(Json(request): Json<Value>) -> Response {
         Some(last) if last["role"] == "tool"
     );
     let scenario = scenario_for(&request);
-    let events = if second_turn {
+    // The e2e flow owns its whole conversation, tool results included: its
+    // stage machine reads the history instead of the one shortcut below.
+    let events = if scenario == Scenario::E2e {
+        e2e_script(&request)
+    } else if second_turn {
         vec![Event::Text(summary(scenario))]
     } else {
         script(scenario, &request)
@@ -246,6 +258,10 @@ fn plain_text(events: &[Event]) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
     All,
+    /// One prompt, several turns: todo plan → file lifecycle with a failing
+    /// command → two subagents whose settlement notices start the next turns
+    /// → final check-off and a user question.
+    E2e,
     Text,
     Reasoning,
     Files,
@@ -268,6 +284,10 @@ enum Scenario {
 /// "Ask the user to clarify…" and "Current working directory", so any keyword
 /// matching would fire on it and the choice would never reach the model. The
 /// newest command in the conversation wins.
+///
+/// `/test e2e` additionally latches: its later turns are started by settlement
+/// notices (no new command), so the whole history is scanned for it after the
+/// newest-command window. Any `/test` in the newest window still wins.
 fn scenario_for(request: &Value) -> Scenario {
     for text in user_texts(request, 4) {
         // A delegated prompt carries its own job tag; it never has `/test`.
@@ -280,6 +300,12 @@ fn scenario_for(request: &Value) -> Scenario {
                 return scenario;
             }
         }
+    }
+    if user_texts(request, 200)
+        .iter()
+        .any(|text| text.contains("/test e2e"))
+    {
+        return Scenario::E2e;
     }
     Scenario::All
 }
@@ -302,6 +328,7 @@ fn child_marker(text: &str) -> Option<Scenario> {
 fn parse(token: &str) -> Option<Scenario> {
     Some(match token.trim_matches(|c: char| !c.is_ascii_alphanumeric()) {
         "all" => Scenario::All,
+        "e2e" | "flow" => Scenario::E2e,
         "text" => Scenario::Text,
         "reasoning" => Scenario::Reasoning,
         "files" | "file" => Scenario::Files,
@@ -339,7 +366,8 @@ fn user_texts(request: &Value, limit: usize) -> Vec<String> {
 }
 
 const INTRO: &str = "你好，我是 TestAgent——客户端内置的测试模型，回复是脚本化的。\n\n\
-可用指令：`/test all | text | reasoning | files | tools | ask | agents | error | long | ping`。\n\
+可用指令：`/test all | e2e | text | reasoning | files | tools | ask | agents | error | long | ping`。\n\
+`e2e` 是全流程演示：一条指令跑多轮（todo 计划 → 文件与失败命令 → 派子 agent → 汇总与提问）。\n\
 `agents` 会派三个子 agent，分别做文件查找、curl 请求与内容检索。\n\
 文件脚本只动工作目录下的 `tmp/test-agent/`。\n";
 
@@ -509,6 +537,9 @@ fn script(scenario: Scenario, request: &Value) -> Vec<Event> {
             );
             push_question(&mut events, &available);
         }
+        // The e2e flow never enters this dispatcher: `completions` routes it to
+        // the stage machine (`e2e_script`) before any per-script match runs.
+        Scenario::E2e => unreachable!("e2e is routed to e2e_script in completions"),
     }
     events
 }
@@ -537,6 +568,217 @@ fn child_jobs() -> Vec<(&'static str, String)> {
             ),
         ),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// The e2e flow: one command, several turns
+// ---------------------------------------------------------------------------
+
+/// The settlement notice dsh injects when a background child finishes. The
+/// leading words come from the runtime itself (`continuation-messages.ts`), so
+/// matching the prefix is stable across stop reasons.
+const NOTICE_MARKER: &str = "Background subagent";
+
+/// The deliberately failing command of turn two, recognizable in history by
+/// its own description (the args are what the model produced, so the
+/// description travels with the call).
+const FAIL_MARKER: &str = "故意失败";
+
+/// Text of the settle turns (a child notice arrived). Tool-free on purpose:
+/// every tool call re-enters the loop, and the stage machine has nothing left
+/// to do until the next notice.
+const SETTLE_TEXT: &str = "收到一个子 agent 的完成通知（notice 已并进上方「子 agent」折叠组）。等其余子 agent 回来后我会汇总收尾。";
+
+/// Closing text after the dispatch results came back: the turn ends here and
+/// the children's settlement notices start the following turns on their own.
+const DISPATCHED_TEXT: &str = "两个子 agent 已派出（tool 行里能看到 started）。本轮到此结束——它们完成时会各自动开启新轮次，无需你再发消息。";
+
+/// Closing text once the final question was answered (or the user speaks up
+/// afterwards): the tour is over.
+const FLOW_DONE_TEXT: &str = "全流程演示结束：todo 计划与勾选、文件生命周期、成功与失败的命令、子 agent 派发与完成通知、提问与回答都已覆盖。想单独看某一类可再试 `/test text`、`/test agents`、`/test error`。";
+
+/// The stage machine behind `/test e2e`. Every branch is chosen from the
+/// conversation history alone, so the flow survives restarts of neither state
+/// nor order: it simply reads what already happened.
+fn e2e_script(request: &Value) -> Vec<Event> {
+    let available = available_tools(request);
+    let mut events = Vec::new();
+
+    let messages = request["messages"].as_array();
+    let notices = messages
+        .map(|list| {
+            list.iter()
+                .filter(|message| message["role"] == "user")
+                .filter(|message| message_text(message).contains(NOTICE_MARKER))
+                .count()
+        })
+        .unwrap_or(0);
+    let last_is_tool = matches!(messages.and_then(|list| list.last()), Some(last) if last["role"] == "tool");
+    let dispatched = has_tool_call(request, |name, _| name == "subagent");
+    let failed_ran = has_tool_call(request, |name, args| name == "bash" && args.contains(FAIL_MARKER));
+    // The final turn announces itself in prose (todo_write/ask_user_question
+    // are shared with other scripts, so tool names cannot mark the stage).
+    let finalized = messages
+        .map(|list| {
+            list.iter().any(|message| {
+                message["role"] == "assistant"
+                    && message_text(message).contains("最后把 todo 勾完")
+            })
+        })
+        .unwrap_or(false);
+
+    if notices >= 2 {
+        // All children settled. The question's result arriving (or the final
+        // turn already spoken, or any later human input) closes the tour;
+        // anything else is the final turn: check the list off and ask.
+        if last_is_tool || finalized {
+            events.push(Event::Text(FLOW_DONE_TEXT.to_string()));
+        } else {
+            events.push(Event::Text(
+                "两个子 agent 都回来了，全部范畴已覆盖。最后把 todo 勾完，并发起一次提问收尾。".to_string(),
+            ));
+            push_tool(
+                &mut events,
+                &available,
+                "todo_write",
+                json!({ "todos": [
+                    { "content": "梳理测试范畴并写计划", "status": "completed" },
+                    { "content": "文件生命周期四连", "status": "completed" },
+                    { "content": "成功与失败的命令", "status": "completed" },
+                    { "content": "派发两个子 agent", "status": "completed" },
+                    { "content": "汇总收尾与提问", "status": "completed" },
+                ]}),
+            );
+            push_question(&mut events, &available);
+        }
+        return events;
+    }
+
+    if notices == 1 {
+        events.push(Event::Text(SETTLE_TEXT.to_string()));
+        return events;
+    }
+
+    if dispatched {
+        // The dispatch results ("started subagent …") came back: end the turn.
+        events.push(Event::Text(DISPATCHED_TEXT.to_string()));
+        return events;
+    }
+
+    if failed_ran && last_is_tool {
+        // The file lifecycle and both commands already ran: dispatch children
+        // next. No wait_agent here — the settlement notices must open the
+        // following turns for the fold to be visible.
+        events.push(Event::Text(
+            "文件与命令都执行完了（含一条故意失败的命令）。现在派两个子 agent：一个找文件、一个 curl 本机接口。".to_string(),
+        ));
+        push_tool(
+            &mut events,
+            &available,
+            "todo_write",
+            json!({ "todos": [
+                { "content": "梳理测试范畴并写计划", "status": "completed" },
+                { "content": "文件生命周期四连", "status": "completed" },
+                { "content": "成功与失败的命令", "status": "completed" },
+                { "content": "派发两个子 agent", "status": "in_progress" },
+                { "content": "汇总收尾与提问", "status": "pending" },
+            ]}),
+        );
+        for (description, prompt) in child_jobs().into_iter().take(2) {
+            push_tool(
+                &mut events,
+                &available,
+                "subagent",
+                json!({ "description": description, "prompt": prompt }),
+            );
+        }
+        return events;
+    }
+
+    if last_is_tool {
+        // The plan's todo_write came back: run the file lifecycle plus one
+        // succeeding and one deliberately failing command.
+        events.push(Event::Text(
+            "继续：文件生命周期四连，外加一条成功命令与一条故意失败的命令。".to_string(),
+        ));
+        push_files(&mut events, &available);
+        push_tool(
+            &mut events,
+            &available,
+            "bash",
+            json!({ "description": "查看测试目录", "command": "ls -la tmp/test-agent" }),
+        );
+        push_tool(
+            &mut events,
+            &available,
+            "bash",
+            json!({ "description": FAIL_MARKER, "command": "echo boom >&2; exit 3" }),
+        );
+        return events;
+    }
+
+    // A fresh prompt: reason, explain, and write the plan. The todo_write
+    // result re-enters the machine above.
+    events.push(Event::Reasoning(
+        "全流程演示。分几轮走：先落 todo 计划；然后文件生命周期和两条命令（一条故意失败）；再派两个子 agent 并结束本轮，让它们的完成通知自动开启后续轮次；最后勾完 todo 并提问。"
+            .to_string(),
+    ));
+    events.push(Event::Text(
+        "全流程演示开始（/test e2e）：我会分几轮覆盖 todo、文件、命令、子 agent 和提问。先落计划。".to_string(),
+    ));
+    push_tool(
+        &mut events,
+        &available,
+        "todo_write",
+        json!({ "todos": [
+            { "content": "梳理测试范畴并写计划", "status": "completed" },
+            { "content": "文件生命周期四连", "status": "in_progress" },
+            { "content": "成功与失败的命令", "status": "pending" },
+            { "content": "派发两个子 agent", "status": "pending" },
+            { "content": "汇总收尾与提问", "status": "pending" },
+        ]}),
+    );
+    events
+}
+
+/// One assistant tool call in the history matching `pred`. Tool calls travel
+/// as `function.name` + `function.arguments` (a JSON *string*).
+fn has_tool_call(request: &Value, mut pred: impl FnMut(&str, &str) -> bool) -> bool {
+    request["messages"]
+        .as_array()
+        .map(|list| {
+            list.iter().any(|message| {
+                message["role"] == "assistant"
+                    && message["tool_calls"].as_array().is_some_and(|calls| {
+                        calls.iter().any(|call| {
+                            let name = call
+                                .pointer("/function/name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let args = call
+                                .pointer("/function/arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            pred(name, args)
+                        })
+                    })
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The text of one wire message, whether the provider sent a string or the
+/// content-parts array.
+fn message_text(message: &Value) -> String {
+    match &message["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
 }
 
 /// `write → read → edit → read`, all inside [`TEST_DIR`].
@@ -641,6 +883,7 @@ mod tests {
                 { "type": "function", "function": { "name": "bash" } },
                 { "type": "function", "function": { "name": "glob" } },
                 { "type": "function", "function": { "name": "grep" } },
+                { "type": "function", "function": { "name": "todo_write" } },
                 { "type": "function", "function": { "name": "subagent" } },
                 { "type": "function", "function": { "name": "wait_agent" } },
                 { "type": "function", "function": { "name": "ask_user_question" } },
@@ -779,6 +1022,140 @@ mod tests {
         let calls = tools_of(&script(Scenario::ChildCurl, &request("curl")));
         let command = calls[0].1["command"].as_str().unwrap_or_default();
         assert!(command.contains("127.0.0.1:1234/healthz"), "{command}");
+    }
+
+    // -- e2e stage machine --------------------------------------------------
+
+    /// The standard tool surface, detached from any prompt.
+    fn body_tools() -> Value {
+        request("")["tools"].clone()
+    }
+
+    fn user_msg(text: &str) -> Value {
+        json!({ "role": "user", "content": text })
+    }
+
+    fn assistant_tools(calls: Vec<(&str, Value)>) -> Value {
+        json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, args))| json!({
+                    "id": format!("call_{index}"),
+                    "type": "function",
+                    "function": { "name": name, "arguments": args.to_string() },
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    fn tool_result() -> Value {
+        json!({ "role": "tool", "content": "ok" })
+    }
+
+    fn notice(name: &str) -> Value {
+        user_msg(&format!(
+            "Background subagent {name} finished and will do no further work unless you send it more.\nIts closing message: done."
+        ))
+    }
+
+    /// The full tour: plan → files+commands → dispatch → dispatch close →
+    /// settle → final check-off + question → close. Every later request
+    /// carries the whole history, exactly like the runtime sends it.
+    #[test]
+    fn the_e2e_flow_walks_every_stage() {
+        let todo_plan = json!({ "todos": [{ "content": "梳理测试范畴并写计划", "status": "completed" }] });
+        let mut messages = vec![user_msg("/test e2e 走一遍全流程")];
+
+        // Turn 1a: reason + plan.
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        assert!(events.iter().any(|event| matches!(event, Event::Reasoning(_))));
+        let tools = tools_of(&events);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "todo_write");
+        assert!(tools[0].1["todos"].as_array().is_some());
+
+        // Turn 1b: files + succeeding + failing command, no agents yet.
+        messages.push(assistant_tools(vec![("todo_write", todo_plan.clone())]));
+        messages.push(tool_result());
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        let tools = tools_of(&events);
+        let names: Vec<&str> = tools.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["write", "read", "edit", "read", "bash", "bash"]);
+        assert!(tools[5].1["command"].as_str().unwrap_or_default().contains("echo boom"));
+
+        // Turn 1c: progress todo + two tagged children, never wait_agent.
+        messages.push(assistant_tools(vec![
+            ("write", json!({ "file_path": "tmp/test-agent/hello.txt" })),
+            ("bash", json!({ "description": "故意失败", "command": "echo boom >&2; exit 3" })),
+        ]));
+        messages.push(tool_result());
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        let tools = tools_of(&events);
+        let names: Vec<&str> = tools.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["todo_write", "subagent", "subagent"]);
+        let prompts = tools
+            .iter()
+            .filter(|(name, _)| name == "subagent")
+            .map(|(_, args)| args["prompt"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert!(prompts[0].contains("[test-child:files]"));
+        assert!(prompts[1].contains("[test-child:curl]"));
+        assert!(!names.contains(&"wait_agent"));
+
+        // Dispatch results came back: the turn ends in words only.
+        messages.push(assistant_tools(vec![
+            ("subagent", json!({ "description": "查找测试文件", "prompt": prompts[0].clone() })),
+            ("subagent", json!({ "description": "curl 本机接口", "prompt": prompts[1].clone() })),
+        ]));
+        messages.push(tool_result());
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        assert!(tools_of(&events).is_empty());
+        assert!(events.iter().any(|event| matches!(event, Event::Text(text) if text.contains("本轮到此结束"))));
+
+        // First settlement notice: a new turn, still tool-free.
+        messages.push(notice("agent-1"));
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        assert!(tools_of(&events).is_empty());
+
+        // Second notice: check the list off and ask the closing question.
+        messages.push(notice("agent-2"));
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        let tools = tools_of(&events);
+        let names: Vec<&str> = tools.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["todo_write", "ask_user_question"]);
+        assert!(tools[0].1["todos"].as_array().is_some_and(|todos| todos
+            .iter()
+            .all(|todo| todo["status"] == "completed")));
+
+        // The question was answered: the tour closes in words only.
+        messages.push(assistant_tools(vec![("ask_user_question", json!({}))]));
+        messages.push(tool_result());
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        let events = e2e_script(&request);
+        assert!(tools_of(&events).is_empty());
+        assert!(events.iter().any(|event| matches!(event, Event::Text(text) if text.contains("全流程演示结束"))));
+    }
+
+    /// `/test e2e` survives settlement turns (no new command) but never
+    /// outlives a newer `/test`.
+    #[test]
+    fn e2e_latches_from_history_until_a_newer_command() {
+        let mut messages = vec![user_msg("/test e2e 开始"), user_msg("背景说明一"), user_msg("背景说明二"), user_msg("背景说明三"), user_msg("背景说明四"), user_msg("背景说明五")];
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        assert!(scenario_for(&request) == Scenario::E2e);
+
+        messages.push(user_msg("换个 /test text 看看"));
+        let request = json!({ "stream": true, "messages": messages, "tools": body_tools() });
+        assert!(scenario_for(&request) == Scenario::Text);
     }
 
     #[test]

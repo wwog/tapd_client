@@ -151,6 +151,11 @@ impl ProfileSpec {
             let _ = writeln!(out, "- id: {row}\n  disabled: true");
         }
 
+        // The todo tool's config field is required, so the row states it
+        // explicitly: team and subagent work runs tasks in parallel, and the
+        // description must then let the model mark several `in_progress`.
+        out.push_str("- id: tool-todo\n  config:\n    allowParallelInProgress: true\n");
+
         if let Some(enabled) = self.team_default_enabled {
             let _ = writeln!(out, "- id: agent-team\n  config:\n    defaultEnabled: {enabled}");
         }
@@ -357,6 +362,11 @@ mod tests {
             "      name: '/Users/me/Library/Application Support/tapd/dsh/0.2.2-rc.3/node_modules/@tapd/plugin-tools/index.js'"
         ));
         assert!(yaml.contains("- id: tool-plugin-manager\n  disabled: true"));
+        // The todo tool mounts with parallel in-progress tasks allowed: team /
+        // subagent work legitimately runs several tasks at once.
+        assert!(yaml.contains(
+            "- id: tool-todo\n  config:\n    allowParallelInProgress: true\n"
+        ));
         assert!(yaml.contains("- id: agent-team\n  config:\n    defaultEnabled: false"));
         assert!(yaml.contains("        apiKeyEnv: 'ACME_API_KEY'"));
         assert!(yaml.contains("            contextWindow: 262144"));

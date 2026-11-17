@@ -1,5 +1,8 @@
 import { Segmented } from "../components/Segmented";
+import { Markdown } from "../components/Markdown";
 import { t } from "../lib/i18n";
+import { api } from "../lib/api";
+import { AgentHostProvider } from "../../../shared/agent/host";
 import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
@@ -8,6 +11,7 @@ import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
 import { TeamBar } from "./TeamBar";
 import { TeamBoard } from "./TeamBoard";
+import { MessageUsageChip } from "./usage/MessageUsageChip";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
 import {
   agentActions,
@@ -17,6 +21,22 @@ import {
   agentTeamView,
   isSessionRunning,
 } from "./store";
+
+/**
+ * The host capabilities the shared agent view may use: rich Markdown for
+ * answers, the usage chip under messages, image bytes for `read_image`
+ * results. One instance for the whole page — the shared components fall back
+ * to plain text / hidden chip / no preview without it.
+ */
+const agentHost = {
+  renderMarkdown: (source: string) => <Markdown source={source} />,
+  renderUsage: (
+    usage: Parameters<typeof MessageUsageChip>[0]["usage"],
+    provider?: string,
+    model?: string,
+  ) => <MessageUsageChip usage={usage} provider={provider} model={model} />,
+  loadImage: (path: string) => api.imageDataUrl(path),
+};
 
 type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
@@ -44,48 +64,50 @@ export function AgentWorkspace({ toast }: Props) {
   const board = view === "chat" && agentTeamView(state, state.selectedId) === "board";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* One step up from the app scale (styles.css `.agent-type`): the session
-          is read as prose, and the config dialog stays outside it. */}
-      <div className="agent-type flex min-h-0 flex-1">
-        <TaskList />
-        <div className="flex min-w-0 flex-1 flex-col">
-          {state.selectedId ? (
-            <div className="shrink-0 border-b border-border px-5 py-2">
-              <div className="mx-auto flex max-w-3xl items-center justify-center">
-                <Segmented
-                  value={view}
-                  onChange={(next) => agentActions.setTaskView(state.selectedId!, next)}
-                  options={[
-                    { value: "chat", label: t("agent.traj.viewChat") },
-                    { value: "trajectory", label: t("agent.traj.viewTrajectory") },
-                  ]}
-                />
+    <AgentHostProvider value={agentHost}>
+      <div className="flex h-full min-h-0 flex-col">
+        {/* One step up from the app scale (styles.css `.agent-type`): the session
+            is read as prose, and the config dialog stays outside it. */}
+        <div className="agent-type flex min-h-0 flex-1">
+          <TaskList />
+          <div className="flex min-w-0 flex-1 flex-col">
+            {state.selectedId ? (
+              <div className="shrink-0 border-b border-border px-5 py-2">
+                <div className="mx-auto flex max-w-3xl items-center justify-center">
+                  <Segmented
+                    value={view}
+                    onChange={(next) => agentActions.setTaskView(state.selectedId!, next)}
+                    options={[
+                      { value: "chat", label: t("agent.traj.viewChat") },
+                      { value: "trajectory", label: t("agent.traj.viewTrajectory") },
+                    ]}
+                  />
+                </div>
               </div>
+            ) : null}
+            {selected && teamUi ? <TeamBar key={`team:${selected.id}`} task={selected} /> : null}
+            {selected && selected.kind !== "chat" ? (
+              <TaskActions key={selected.id} task={selected} />
+            ) : null}
+            <MessageStream
+              key={`chat:${state.selectedId ?? "draft"}`}
+              visible={view === "chat" && !board}
+            />
+            {state.selectedId && view === "trajectory" ? (
+              <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
+            ) : null}
+            {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
+            <div className="shrink-0 border-t border-border">
+              <RuntimeNotice />
+              <Composer />
             </div>
-          ) : null}
-          {selected && teamUi ? <TeamBar key={`team:${selected.id}`} task={selected} /> : null}
-          {selected && selected.kind !== "chat" ? (
-            <TaskActions key={selected.id} task={selected} />
-          ) : null}
-          <MessageStream
-            key={`chat:${state.selectedId ?? "draft"}`}
-            visible={view === "chat" && !board}
-          />
-          {state.selectedId && view === "trajectory" ? (
-            <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
-          ) : null}
-          {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
-          <div className="shrink-0 border-t border-border">
-            <RuntimeNotice />
-            <Composer />
           </div>
         </div>
+        {state.configOpen ? (
+          <AgentConfigTab toast={toast} onClose={agentActions.closeConfig} />
+        ) : null}
       </div>
-      {state.configOpen ? (
-        <AgentConfigTab toast={toast} onClose={agentActions.closeConfig} />
-      ) : null}
-    </div>
+    </AgentHostProvider>
   );
 }
 

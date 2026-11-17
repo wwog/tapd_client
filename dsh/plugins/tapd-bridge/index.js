@@ -7,6 +7,9 @@
  *
  *   hello    → identity of the feed (always first)
  *   snapshot → one session's recorded events, sent on every connect
+ *   session-meta → one session's header identity (origin/parentSession/
+ *                  agentPreset); a child agent session is created by the
+ *                  runtime, so this frame is how the app learns the relation
  *   stream   → every `agent/assistant-stream` frame, forwarded verbatim
  *   stats    → one session's meter projections (context occupancy/composition)
  *   team     → one root session's whole `agentTeam` board (enabled + tasks)
@@ -162,6 +165,25 @@ export function apply(ctx) {
     }
   })
 
+  /**
+   * One session's immutable header identity. `origin` is only ever
+   * `'subagent'` (validation upstream enforces that); `parentSession` presence
+   * is what marks a child, `agentPreset` names the preset that spawned it.
+   * Absent fields are omitted, so a root session sends a bare frame.
+   */
+  const sendSessionMeta = (session) => {
+    if (!session?.id) return
+    const header = session.header ?? {}
+    send({
+      type: 'session-meta',
+      token,
+      sessionId: session.id,
+      ...(header.origin !== undefined ? { origin: header.origin } : {}),
+      ...(header.parentSession !== undefined ? { parentSession: header.parentSession } : {}),
+      ...(header.agentPreset !== undefined ? { agentPreset: header.agentPreset } : {}),
+    })
+  }
+
   const sendSnapshots = () => {
     for (const session of ctx.sessions.list()) {
       try {
@@ -174,6 +196,10 @@ export function apply(ctx) {
           // full log to rebuild the transcript after a reconnect.
           events: session.snapshotEvents(),
         })
+        // Subagent sessions are created inside the runtime, so the identity
+        // never arrives any other way; re-sent on every reconnect like the
+        // snapshot itself.
+        sendSessionMeta(session)
       } catch (error) {
         warn(`snapshot ${session?.id ?? '?'}`, error)
       }
@@ -457,7 +483,16 @@ export function apply(ctx) {
 
   // A created Session exists before its Agent is published; both edges flush,
   // and the second is a no-op after the first succeeds.
-  ctx.on('session/created', (session) => applyPending(session?.id))
+  ctx.on('session/created', (session) => {
+    try {
+      applyPending(session?.id)
+      // Child sessions appear here first (the runtime spawns them), so this is
+      // the earliest point the app can learn the parent/preset relation.
+      sendSessionMeta(session)
+    } catch (error) {
+      warn(`session/created ${session?.id ?? '?'}`, error)
+    }
+  })
   ctx.on('agent/created', ({ agent } = {}) => {
     applyPending(agent?.session?.id)
     // A resumed Agent lost the runtime-only grant its predecessor had.

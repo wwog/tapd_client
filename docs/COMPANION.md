@@ -217,7 +217,7 @@
   拿到的快照与实时事件一致。Agent tab 角标显示待处理数量。
 - **没有实时流**：token 级 `dsh://stream` 只在桌面端消费；手机读已提交的
   `dsh_session_entries`（打开会话时 3s 轮询）和任务列表，不渲染 live 文本。
-- **新增 `dsh_*` 白名单**（仍走 `/companion/api/feature`，60 次/分钟/ IP，白名单外 403）：
+- **新增 `dsh_*` 白名单**（仍走 `/companion/api/feature`，120 次/分钟/ IP，白名单外 403；2026-11-18 由 60 提到 120——实时会话页 entries+sessions+feed+子折叠轮询合计 ~70/min，60 会把手机锁在限速外）：
   - 运行时：`dsh_status` / `dsh_start` / `dsh_stop` / `dsh_sessions` / `dsh_session_entries` /
     `dsh_pending` / `dsh_new_session` / `dsh_prompt` / `dsh_approval_answer` / `dsh_question_answer`
   - 任务：`dsh_tasks` / `dsh_task_enqueue_bug` / `dsh_task_enqueue_local` / `dsh_task_approve` /

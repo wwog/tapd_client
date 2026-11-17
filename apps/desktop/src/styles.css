@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Shared agent view components live outside this app root; scan them too. */
+@source "../../shared";
+
 @theme {
   --color-ink-900: #0b1524;
   --color-ink-800: #0f1e31;

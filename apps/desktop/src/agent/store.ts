@@ -582,9 +582,15 @@ function applyEntry(payload: DshEntryEvent): void {
       }
     }
 
-    const bucket = state.entries[sessionId];
+    // Child agent sessions of the selected parent stream their own entries:
+    // the sub-agent fold reads them from the same per-session buckets. Their
+    // buckets start on the first pushed row; an explicit refresh then merges
+    // the full history under what already arrived.
     const selected = sessionId === state.selectedId;
-    if (!selected || !bucket) {
+    const childOfSelected = state.sessions[sessionId]?.parentSession === state.selectedId;
+    let bucket = state.entries[sessionId];
+    if (!bucket && childOfSelected) bucket = { items: [], loaded: false, error: null };
+    if ((!selected && !childOfSelected) || !bucket) {
       return { ...state, live, committedAttempts, pendingPrompts };
     }
     return {
@@ -773,8 +779,25 @@ async function loadEntries(sessionId: string): Promise<void> {
         }));
         return;
       }
-      // A draft chat the runtime never registered: fall back to a real task.
-      clearSelection(sessionId);
+      if (drafts.has(sessionId)) {
+        // A draft chat the runtime never registered: fall back to a real task.
+        clearSelection(sessionId);
+        return;
+      }
+      // Neither a task nor a draft — a child agent session the runtime has
+      // already retired, most likely. Keep whatever streamed in (its settle
+      // notice may be all that is left) and never touch the selection.
+      update((state) => ({
+        ...state,
+        entries: {
+          ...state.entries,
+          [sessionId]: {
+            items: state.entries[sessionId]?.items ?? [],
+            loaded: true,
+            error: null,
+          },
+        },
+      }));
       return;
     }
     update((state) => {

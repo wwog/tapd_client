@@ -100,10 +100,26 @@ export type DshSessionRow = {
   selection?: ModelSelection;
   /** The engine's plan mode for this session (`plan/mode` events). */
   planActive?: boolean;
+  /** Current session todo list (`todo/write`); empty until the agent plans. */
+  todos?: DshTodo[];
+  /** Present on a child agent session (`header.origin === "subagent"`):
+   *  the parent session this child was started from. Roots never set it. */
+  parentSession?: string;
+  /** The agent preset a child session runs under, when one was recorded. */
+  agentPreset?: string;
 };
 
 /** dsh's 1-based turn/step counters; a step is one model request. */
 type DshEntryPosition = { turn: number; step: number };
+
+/**
+ * One entry of the session todo list (`todo/write`, whole-list replacement).
+ * No id: every write replaces the list, so entries have no stable identity.
+ */
+export type DshTodo = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+};
 
 export type DshEntry =
   | ({ kind: "user"; seq: number; at: string; text: string } & DshEntryPosition)
@@ -147,7 +163,22 @@ export type DshEntry =
       state: "start" | "end";
       reason?: string;
       error?: string;
-    };
+    }
+  | ({
+      /** The runtime's account of a child agent settling (`subagent-settled`
+       *  user/message, `source.kind` in the dsh log). Rendered as part of the
+       *  sub-agent group, never as a human bubble. */
+      kind: "notice";
+      seq: number;
+      at: string;
+      text: string;
+      /** The `source.summary` line: how the child ended. */
+      summary: string;
+      /** `completed` / `aborted` / `max-tokens` / `refusal` / `error` … */
+      stopReason?: string;
+      /** The child session id, linking this row to the child's transcript. */
+      senderSessionId: string;
+    } & DshEntryPosition)
 
 export type DshStreamDelta =
   | { type: "text"; text: string }

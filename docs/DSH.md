@@ -339,6 +339,12 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 // 每个存活会话一帧，连接时（含重连）发送；events 是 dsh SessionEvent 原样数组
 { "type": "snapshot", "token": "<token>", "sessionId": "probe-1", "events": [ /* SessionEvent[] */ ] }
 
+// 每个会话一帧的日志 header 身份，紧随对应 snapshot；`origin` 只会是
+// "subagent"，子 agent 会话由运行时自行创建，这一帧是父会话/预设信息的唯一来路，
+// 字段缺省即根会话
+{ "type": "session-meta", "token": "<token>", "sessionId": "child-9",
+  "origin": "subagent", "parentSession": "root-1", "agentPreset": "author" }
+
 // 每个 agent/assistant-stream 帧一行，frame 原样透传（见 4.2 的 AssistantStreamFrame）
 { "type": "stream", "token": "<token>", "sessionId": "probe-1", "frame": { /* AssistantStreamFrame */ } }
 
@@ -451,6 +457,11 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - `user/message` 只在 `data.source.kind == "user"`（无 `source` 的旧日志也按人类输入处理）时产生
   `user` 行；`agent-instructions`、时间采样等注入上下文虽然也是 `user/message`，但**不进入对话**
   （否则会把 AGENTS.md 渲染成用户气泡），它们仍留在 dsh 自己的会话日志里。
+- `data.source.kind == "subagent-settled"` 的 `user/message`（子 agent 结束通知落在父会话日志里）
+  产生一行 `{ kind: "notice", seq, at, turn, step, text, summary, stopReason?, senderSessionId }`：
+  `text` 是通知文本块，`summary` / `stopReason` / `senderSessionId` 来自 `source`（结束原因省略时
+  键省略），它**不进** `messageCount`、不影响标题；`senderSessionId` 是子会话 id，前端据此把该行
+  挂到子 agent 的轨迹组里。
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
@@ -478,6 +489,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 ```jsonc
 { "id": "probe-1", "title": "hello", "updatedAt": "2026-11-16T12:00:00.000Z",
   "status": "idle", "messageCount": 1, "planActive": false,
+  // 当前 todo 列表；还没有 todo/write 时为空数组
+  "todos": [{ "content": "survey", "status": "in_progress" }],
+  // 以下两项可省略；仅子 agent 会话携带，根会话两者都不出现
+  "parentSession": "root-1", "agentPreset": "author",
   // 可省略；还没有选择时为空，UI 退回 usage 或配置的默认模型
   "selection": { "provider": "opencode-go", "model": "deepseek-v4.1-flash",
                  "reasoningEffort": "high" } }   // status: idle | running | failed
@@ -498,6 +513,12 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   重置成运行时默认，所以 Rust 在 resume 前先快照、下一次 prompt 前再恢复。
 - `planActive`：引擎原生 plan mode 的状态（`plan/mode` 事件），随会话日志持久化；批准
   `exit_plan_mode` 的 review 后自动变回 `false`。
+- `todos`：会话当前 todo 列表，`todo/write` 事件整表替换（最新一次写入生效）；它是日志态，
+  **不产生行**，`status` 原样是 `pending` / `in_progress` / `completed` 字符串。fold 语义与
+  dsh 自己的 `todos` projection 一致：下一个 `turn/start` 清空（`turn/end` 保留已完清单可见）。
+- `parentSession` / `agentPreset`：子 agent 会话（日志 header `origin === "subagent"`）的父会话
+  id 与启动 preset，来源是日志 header（hydration）与桥的 `session-meta` 帧（live）；两者省略即
+  根会话，`parentSession` 存在本身是子会话的判据。
 
 ### 8.5 实时增量 `DshStream`
 
@@ -560,8 +581,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - `dsh_prompt` 对 `kind: "chat"` 的会话先创建并 assign 独立目录
   `<data>/dsh/chats/<sessionId>`；没有项目的自由会话不读写任何真实仓库。运行时进程的默认
   cwd 也是 `<data>/dsh/workspace`。
-- `dsh_restart` / `dsh_session_cancel` / `dsh_task_delete` 只开放给桌面端，不在手机
-  白名单里（`dsh_session_mode_get/set` 已在白名单，手机 UI 暂未接入）。
+- `dsh_restart` / `dsh_task_delete` 只开放给桌面端，不在手机白名单里。
+- 手机会话页使用 `dsh_session_cancel`（发送键的停止态）、`dsh_select_model` +
+  `dsh_session_mode_get/set`（输入框工具条上的模型/模式选择）与
+  `settings_agent_models`（脱敏模型目录，无 apiKey/protocol）。
 
 ### 8.7 阻塞请求快照 `dsh_pending`
 

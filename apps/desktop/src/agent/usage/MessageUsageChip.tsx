@@ -1,24 +1,33 @@
 import { Database } from "lucide-react";
 
 import { t } from "../../lib/i18n";
-import type { DshEntryUsage } from "../../lib/dsh";
 import { UsagePopover, UsageRow, UsageRows } from "./Popover";
 import { cacheHitPercent, compactCount, exactCount } from "./format";
 
 /**
  * What one reply cost. dsh reports usage per assistant message, so these
  * numbers settle when the message commits — there is nothing to stream.
+ *
+ * The usage fields mirror the shared agent view's per-reply shape (cache
+ * fields optional there), so the chip can be injected into the shared
+ * `MessageMeta` through `AgentHostProvider.renderUsage`.
  */
 export function MessageUsageChip({
   usage,
   provider,
   model,
 }: {
-  usage: DshEntryUsage;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    totalTokens: number;
+  };
   provider?: string;
   model?: string;
 }) {
-  const cache = cacheHitPercent(usage.inputTokens, usage.cacheReadTokens);
+  const cache = cacheHitPercent(usage.inputTokens, usage.cacheReadTokens ?? 0);
 
   return (
     <UsagePopover
@@ -49,7 +58,7 @@ export function MessageUsageChip({
           {t("agent.usage.tokens", { tokens: exactCount(usage.inputTokens) })}
         </UsageRow>
         <UsageRow label={t("agent.usage.cacheRead")}>
-          {t("agent.usage.tokens", { tokens: exactCount(usage.cacheReadTokens) })}
+          {t("agent.usage.tokens", { tokens: exactCount(usage.cacheReadTokens ?? 0) })}
         </UsageRow>
         <UsageRow label={t("agent.usage.output")}>
           {t("agent.usage.tokens", { tokens: exactCount(usage.outputTokens) })}

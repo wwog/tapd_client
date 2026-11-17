@@ -16,7 +16,7 @@
 //! commands that do depend on one return their own business error from the
 //! desktop side, which passes through unchanged (`ok: false, upstream`).
 //!
-//! Rate limiting is a fresh per-IP 60/minute budget on top of session auth;
+//! Rate limiting is a fresh per-IP 120/minute budget on top of session auth;
 //! the pairing limiter stays pairing-specific.
 
 use std::{
@@ -55,6 +55,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     "dsh_pending",
     "dsh_new_session",
     "dsh_prompt",
+    // 停止当前回合：发送键的停止态（工作流取消仍走 dsh_task_cancel）
+    "dsh_session_cancel",
     "dsh_select_model",
     "dsh_session_mode_get",
     "dsh_session_mode_set",
@@ -76,6 +78,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     // Agent 配置（Worktree 隔离与执行单元；提示词仍只在桌面端编辑）
     "settings_agent_get",
     "settings_agent_set",
+    // 模型目录（脱敏投影：无 apiKey/protocol），供会话级模型选择
+    "settings_agent_models",
     // 通知设置
     "notification_settings_get",
     "notification_settings_set",
@@ -100,8 +104,15 @@ const ALLOWED_FEATURES: &[&str] = &[
     "local_browse_dirs",
 ];
 
-/// Feature-proxy budget: at most 60 requests per IP per minute.
-const FEATURE_MAX_REQUESTS: usize = 60;
+/// Feature-proxy budget: at most 120 requests per IP per minute.
+///
+/// Sized for the live session page: transcript + session rows + feed + an open
+/// child fold poll add up to ~70/min in steady state, so the original 60/min
+/// budget locked the phone out mid-session (rate limited replies surface as
+/// error bars and a frozen transcript). Still well under an unauthenticated
+/// hammering threshold: the session auth and the pairing flow keep their own
+/// budgets.
+const FEATURE_MAX_REQUESTS: usize = 120;
 const FEATURE_WINDOW: Duration = Duration::from_secs(60);
 
 /// The feature proxy's own limiter; the budget numbers live here only.
@@ -202,6 +213,7 @@ mod tests {
     "dsh_pending",
     "dsh_new_session",
     "dsh_prompt",
+    "dsh_session_cancel",
     "dsh_select_model",
     "dsh_session_mode_get",
     "dsh_session_mode_set",
@@ -221,6 +233,7 @@ mod tests {
     "dsh_team_set",
     "settings_agent_get",
     "settings_agent_set",
+    "settings_agent_models",
     "notification_settings_get",
     "notification_settings_set",
     "coworker_list",

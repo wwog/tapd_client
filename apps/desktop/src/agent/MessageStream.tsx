@@ -1,13 +1,18 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 
 import { Button, Spinner } from "../components/ui";
-import { t } from "../lib/i18n";
+import { t, useLocale } from "../lib/i18n";
+import { TodoCard } from "../../../shared/agent/TodoCard";
+import { TurnBlock as ChildTurnBlock } from "../../../shared/agent/TurnBlock";
+import type { AgentNotice } from "../../../shared/agent/types";
+import type { AgentSubagentChild } from "../../../shared/agent/SubagentGroup";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { UserBubble } from "./MessageParts";
 import { TurnBlock } from "./TurnBlock";
 import { groupTurns } from "./turns";
+import { assembleSessionSubagents, isPendingChild } from "./subagents";
 import { agentActions, agentStore, isSessionRunning } from "./store";
 
 /**
@@ -15,16 +20,23 @@ import { agentActions, agentStore, isSessionRunning } from "./store";
  * remounts this per session (`key`), which also resets the scroll position.
  * `visible` hides the pane for the team board without unmounting it, so the
  * scroll position and the live overlay survive a trip to the board and back.
+ *
+ * The session todo card sits above the turns (session-level state, no turn),
+ * and each turn's `subagent` calls render as the shared sub-agent fold with
+ * child transcripts assembled in `subagents.ts`.
  */
 export function MessageStream({ visible = true }: { visible?: boolean }) {
   const state = agentStore.use();
+  const locale = useLocale();
   const sessionId = state.selectedId;
   const history = sessionId ? state.entries[sessionId] : undefined;
   const live = sessionId ? state.live[sessionId] : undefined;
+  const session = sessionId ? state.sessions[sessionId] : undefined;
   const pending = (sessionId ? state.pendingPrompts[sessionId] : undefined) ?? [];
   const approvals = state.approvals.filter((item) => item.sessionId === sessionId);
   const questions = state.questions.filter((item) => item.sessionId === sessionId);
   const items = history?.items ?? [];
+  const todos = session?.todos ?? [];
 
   const committedCalls = new Set(
     items.flatMap((entry) => (entry.kind === "tool" ? [entry.callId] : [])),
@@ -40,7 +52,11 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     ? { text: live.text, reasoning: live.reasoning, tools: liveTools }
     : undefined;
 
-  const blocks = groupTurns(items);
+  // Grouping is memoized on the committed rows: the live overlay re-renders
+  // per token, and the sub-agent assembly below must not re-group child
+  // transcripts per token (the shared assembler caches per transcript
+  // identity, but re-splitting the parent stays per render).
+  const blocks = useMemo(() => groupTurns(items), [items]);
   const running = isSessionRunning(state, sessionId);
 
   // The live stream belongs to the turn whose `turn/end` has not landed yet;
@@ -52,11 +68,12 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       activeKey = last.key;
     } else if (liveHasContent) {
       activeKey = "live";
-      blocks.push({ key: activeKey, entries: [] });
     }
   }
+  const assembledBlocks =
+    activeKey === "live" ? [...blocks, { key: activeKey, entries: [] }] : blocks;
 
-  const shown = blocks.filter(
+  const shown = assembledBlocks.filter(
     (block) =>
       block.entries.length > 0 ||
       block.key === activeKey ||
@@ -65,6 +82,79 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       block.end?.reason === "error" ||
       block.end?.reason === "blocked",
   );
+
+  // Sub-agent data per turn: calls paired with settle notices ACROSS the whole
+  // transcript (a background child settles in a later turn than its call),
+  // transcripts from the child buckets, live calls as running placeholders in
+  // the active block only.
+  const subagentGroups = useMemo(
+    () => assembleSessionSubagents(state, assembledBlocks, liveTools, activeKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [assembledBlocks, liveTools, activeKey, state.sessions, state.entries],
+  );
+
+  // Which child folds are open (controlled, so a toggle can trigger the
+  // transcript fetch before the shared group renders the child).
+  const [openChildren, setOpenChildren] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleChild = (childSessionId: string) => {
+    setOpenChildren((prev) => {
+      const next = new Set(prev);
+      if (next.has(childSessionId)) next.delete(childSessionId);
+      else next.add(childSessionId);
+      return next;
+    });
+    // Opening a child fetches its transcript once; rows that already streamed
+    // are merged under the fetched history, and pending placeholders have no
+    // session to read at all.
+    const opening = !openChildren.has(childSessionId);
+    if (opening && !isPendingChild(childSessionId)) {
+      agentActions.refreshEntries(childSessionId);
+    }
+  };
+
+  /** One child's transcript, rendered with the same shared turn block (no
+   *  trajectory deep-link: the panel shows the current session only). Nested
+   *  sub-agent calls inside a child assemble the same way, so the fold reads
+   *  identically at every depth. */
+  const renderChildTurns = (child: AgentSubagentChild) => {
+    if (isPendingChild(child.sessionId)) return null;
+    const childBlocks = child.turns.filter(
+      (block) =>
+        block.entries.length > 0 ||
+        block.end?.reason === "error" ||
+        block.end?.reason === "blocked",
+    );
+    let childActiveKey: string | null = null;
+    if (child.running) {
+      const last = childBlocks[childBlocks.length - 1];
+      if (last && last.start && !last.end) childActiveKey = last.key;
+    }
+    // Same cross-turn pairing as the top level. Live calls of a nested child
+    // are not tracked (children have no token-level stream); committed rows
+    // assemble fine, which is all a settled child shows.
+    const nestedGroups = assembleSessionSubagents(state, childBlocks, [], null);
+    return (
+      <div className="flex flex-col gap-3">
+        {childBlocks.map((block) => {
+          const nested = nestedGroups.get(block.key) ?? { children: [], orphans: [] };
+          return (
+            <NestedTurnBlock
+              key={block.key}
+              block={block}
+              running={block.key === childActiveKey}
+              locale={locale}
+              subagents={nested.children}
+              orphanNotices={nested.orphans}
+              renderTurns={renderChildTurns}
+              openIds={openChildren}
+              onToggle={toggleChild}
+            />
+          );
+        })}
+      </div>
+    );
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
@@ -77,6 +167,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     pending.length,
     approvals.length,
     questions.length,
+    JSON.stringify(todos),
   ].join(":");
 
   useEffect(() => {
@@ -133,6 +224,8 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
           (quiet || loading || failed) && "min-h-full justify-center",
         )}
       >
+        {todos.length > 0 ? <TodoCard todos={todos} locale={locale} /> : null}
+
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
             <Spinner />
@@ -158,6 +251,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
         {shown.map((block) => {
           const active = block.key === activeKey;
+          const subagents = subagentGroups.get(block.key);
           return (
             <TurnBlock
               key={block.key}
@@ -165,12 +259,17 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
               running={active}
               live={active ? liveTrace : undefined}
               sessionId={sessionId ?? undefined}
+              subagents={subagents?.children}
+              orphanNotices={subagents?.orphans}
+              renderTurns={renderChildTurns}
+              openSubagentIds={openChildren}
+              onToggleSubagent={toggleChild}
             />
           );
         })}
 
         {pending.map((text, index) => (
-          <UserBubble key={`pending-${index}-${text.length}`} text={text} />
+          <UserBubble key={`pending-${index}-${text.length}`} text={text} locale={locale} />
         ))}
 
         {approvals.map((approval) => (
@@ -182,5 +281,45 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * One turn inside a child transcript. Nested `subagent` calls assemble exactly
+ * like the top level — the shared turn block routes the rows into the agents
+ * group and the caller feeds it the same store-backed data, so the fold reads
+ * the same at every depth (companion parity).
+ */
+function NestedTurnBlock({
+  block,
+  running,
+  locale,
+  subagents,
+  orphanNotices,
+  renderTurns,
+  openIds,
+  onToggle,
+}: {
+  block: ReturnType<typeof groupTurns>[number];
+  running: boolean;
+  locale: ReturnType<typeof useLocale>;
+  /** Store-backed nested assembly for this child turn. */
+  subagents?: AgentSubagentChild[];
+  orphanNotices?: AgentNotice[];
+  renderTurns: (child: AgentSubagentChild) => ReactNode;
+  openIds: ReadonlySet<string>;
+  onToggle: (sessionId: string) => void;
+}) {
+  return (
+    <ChildTurnBlock
+      block={block}
+      running={running}
+      locale={locale}
+      subagents={subagents}
+      orphanNotices={orphanNotices}
+      renderTurns={renderTurns}
+      openSubagentIds={openIds}
+      onToggleSubagent={onToggle}
+    />
   );
 }

@@ -616,6 +616,22 @@ impl BridgeState {
         };
         {
             let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+            // The log's first line is the session header (`type: "session"`),
+            // the only place the subagent identity (origin / parentSession /
+            // agentPreset) lives once the runtime is gone. It carries no `seq`,
+            // so the ingest loop below skips it either way.
+            if let Some(header) = events
+                .first()
+                .filter(|line| line.get("type").and_then(Value::as_str) == Some("session"))
+            {
+                transcript.set_meta(
+                    session_id,
+                    header.get("origin").and_then(Value::as_str),
+                    header.get("parentSession").and_then(Value::as_str),
+                    header.get("agentPreset").and_then(Value::as_str),
+                    &header_at(header),
+                );
+            }
             for event in &events {
                 transcript.ingest(session_id, event, &event_at(event));
             }
@@ -653,6 +669,7 @@ impl BridgeState {
                 }
             }
             Some("snapshot") => self.ingest_snapshot(app, message),
+            Some("session-meta") => self.ingest_session_meta(app, message),
             Some("event") => {
                 let session_id = message.get("sessionId").and_then(Value::as_str);
                 let event = message.get("event");
@@ -713,6 +730,28 @@ impl BridgeState {
             .into_iter()
             .map(|ingested| self.publish_entry(app, session_id, ingested))
             .fold(false, |changed, entry_changed| changed || entry_changed);
+        if changed {
+            self.emit_sessions(app);
+        }
+    }
+
+    /// One session's header identity from the plugin (`origin` /
+    /// `parentSession` / `agentPreset`). A child agent session is spawned by
+    /// the runtime itself, so the transcript learns the relationship from this
+    /// frame; the log header covers the hydrated path.
+    fn ingest_session_meta(&self, app: &AppHandle, message: &Value) {
+        let Some(session_id) = message.get("sessionId").and_then(Value::as_str) else {
+            tracing::warn!("agent bridge: session-meta frame without a session");
+            return;
+        };
+        let origin = message.get("origin").and_then(Value::as_str);
+        let parent = message.get("parentSession").and_then(Value::as_str);
+        let preset = message.get("agentPreset").and_then(Value::as_str);
+        let at = now();
+        let changed = {
+            let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+            transcript.set_meta(session_id, origin, parent, preset, &at)
+        };
         if changed {
             self.emit_sessions(app);
         }
@@ -998,6 +1037,18 @@ fn event_at(event: &Value) -> String {
         .unwrap_or_else(now)
 }
 
+/// The session header's own `createdAt` (epoch ms), like `event_at` for
+/// events. A hydrated session's identity lands at the time the session was
+/// created, never at "just now".
+fn header_at(header: &Value) -> String {
+    header
+        .get("createdAt")
+        .and_then(Value::as_u64)
+        .and_then(|millis| chrono::DateTime::<Utc>::from_timestamp_millis(millis as i64))
+        .map(format_time)
+        .unwrap_or_else(now)
+}
+
 fn now() -> String {
     format_time(Utc::now())
 }
@@ -1124,6 +1175,43 @@ mod tests {
         assert_eq!(value["state"], "start");
         assert!(value.get("reason").is_none());
         assert!(value.get("error").is_none());
+    }
+
+    #[test]
+    fn a_hydrated_log_header_marks_child_sessions() {
+        let dir = std::env::temp_dir().join(format!(
+            "tapd-bridge-hydrate-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let session_dir = dir.join("--Users-me--").join("child-9");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        // First line is dsh's own session header; the events follow it.
+        let log = session_dir.join("session.v4.jsonl");
+        std::fs::write(
+            &log,
+            concat!(
+                "{\"type\":\"session\",\"version\":4,\"id\":\"child-9\",\"createdAt\":1700000000000,",
+                "\"isSeeded\":false,\"delegationDepth\":1,\"origin\":\"subagent\",",
+                "\"parentSession\":\"root-1\",\"agentPreset\":\"author\"}\n",
+                "{\"type\":\"user/message\",\"seq\":0,\"time\":1700000000000,\"data\":{\"role\":\"user\",",
+                "\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"source\":{\"kind\":\"user\"}}}\n",
+                "{\"type\":\"todo/write\",\"seq\":1,\"time\":1700000001000,",
+                "\"data\":{\"todos\":[{\"content\":\"step\",\"status\":\"pending\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let bridge = BridgeState::default();
+        assert!(bridge.hydrate_from_log(&dir, "child-9"));
+        let session = bridge.sessions().into_iter().next().unwrap();
+        assert_eq!(session.parent_session.as_deref(), Some("root-1"));
+        assert_eq!(session.agent_preset.as_deref(), Some("author"));
+        assert_eq!(session.todos.len(), 1);
+        assert_eq!(session.todos[0].content, "step");
+        // The runtime never knew this session, so it must not be running.
+        assert_eq!(session.status, SessionStatus::Idle);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

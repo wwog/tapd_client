@@ -195,6 +195,18 @@ pub struct ModelSelection {
     pub reasoning_effort: Option<String>,
 }
 
+/// One entry of the session's todo list (`todo/write`, whole-list
+/// replacement). Deliberately minimal — no id, no priority: every write
+/// replaces the list, so entries have no stable identity. `status` stays the
+/// raw dsh string (`pending` / `in_progress` / `completed`) and the UI renders
+/// it verbatim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshTodo {
+    pub content: String,
+    pub status: String,
+}
+
 /// One session as the session list shows it. `title` is empty until a first
 /// user message arrives — the UI renders its own empty state rather than a
 /// fabricated title.
@@ -220,6 +232,18 @@ pub struct DshSession {
     /// is prompt-enforced upstream; the session row is where the UI reads it.
     #[serde(default)]
     pub plan_active: bool,
+    /// The session's current todo list (`todo/write` snapshots). Log-only UI
+    /// state, not transcript rows: the latest write wins.
+    #[serde(default)]
+    pub todos: Vec<DshTodo>,
+    /// The parent session of a child agent session (dsh header
+    /// `origin === "subagent"`). Roots never carry it, so its presence is the
+    /// child marker the UI reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<String>,
+    /// The agent preset a child was started with; absent on root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 impl DshSession {
@@ -233,6 +257,9 @@ impl DshSession {
             usage: SessionUsage::default(),
             selection: None,
             plan_active: false,
+            todos: Vec::new(),
+            parent_session: None,
+            agent_preset: None,
         }
     }
 }
@@ -341,6 +368,27 @@ pub enum DshEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// The runtime's account of a child agent settling (a `subagent-settled`
+    /// `user/message` in the parent's log). Transcript content — an incremental
+    /// reader must see it — but never a human bubble: no title, no message
+    /// count.
+    Notice {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        /// The notice's own text blocks, joined like a user row's.
+        text: String,
+        /// One-line account of how the child ended (`source.summary`).
+        summary: String,
+        /// Exact execution stop reason; absent on historical notices.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
+        /// The child session id, linking this row to the child's transcript.
+        sender_session_id: String,
+    },
 }
 
 impl DshEntry {
@@ -350,7 +398,8 @@ impl DshEntry {
             Self::User { seq, .. }
             | Self::Assistant { seq, .. }
             | Self::Tool { seq, .. }
-            | Self::Turn { seq, .. } => *seq,
+            | Self::Turn { seq, .. }
+            | Self::Notice { seq, .. } => *seq,
         }
     }
 
@@ -361,7 +410,8 @@ impl DshEntry {
             Self::User { at, .. }
             | Self::Assistant { at, .. }
             | Self::Tool { at, .. }
-            | Self::Turn { at, .. } => at,
+            | Self::Turn { at, .. }
+            | Self::Notice { at, .. } => at,
         }
     }
 }
@@ -513,6 +563,7 @@ impl Transcript {
                 | "request/context"
                 | "model/selection"
                 | "plan/mode"
+                | "todo/write"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -547,6 +598,11 @@ impl Transcript {
                         .unwrap_or(record.turn + 1);
                     record.step = 0;
                     record.last_step_ms = None;
+                    // dsh's own `todos` projection folds the standing checklist
+                    // away when a later turn begins; `turn/end` keeps the
+                    // finished list visible. Mirror that fold here so the card
+                    // always reads as the current turn's plan, replayed or live.
+                    record.meta.todos.clear();
                 }
                 let turn = record.turn;
                 Some(record.push_turn(seq, at, turn, TurnState::Start, None, None))
@@ -611,6 +667,32 @@ impl Transcript {
                     .unwrap_or(false);
                 None
             }
+            "todo/write" => {
+                // The payload is the complete replacement list (last write
+                // wins on replay); it is session state, not a transcript row.
+                record.meta.todos = event
+                    .pointer("/data/todos")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|item| DshTodo {
+                                content: item
+                                    .get("content")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                status: item
+                                    .get("status")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                None
+            }
             _ => None,
         };
 
@@ -644,6 +726,46 @@ impl Transcript {
         let created = self.ensure_session(session_id, at);
         let record = self.sessions.get_mut(session_id).expect("session ensured above");
         created || record.meta.usage.apply_meter(meter)
+    }
+
+    /// Applies a session header's identity facts (dsh `origin` /
+    /// `parentSession` / `agentPreset`). The bridge's `session-meta` frame and
+    /// the log's own header line both land here.
+    ///
+    /// The header is immutable upstream, so only a previously-absent value is
+    /// new information; repeated frames are no-ops. `origin` itself is not
+    /// stored — `parentSession` presence is the child marker — but a frame that
+    /// claims `subagent` without a parent has nothing to record.
+    pub fn set_meta(
+        &mut self,
+        session_id: &str,
+        origin: Option<&str>,
+        parent_session: Option<&str>,
+        agent_preset: Option<&str>,
+        at: &str,
+    ) -> bool {
+        let created = self.ensure_session(session_id, at);
+        let record = self.sessions.get_mut(session_id).expect("session ensured above");
+        let parent = if origin == Some("subagent") || parent_session.is_some() {
+            parent_session
+        } else {
+            None
+        };
+        let mut changed = created;
+        if parent.is_some() && record.meta.parent_session.is_none() {
+            record.meta.parent_session = parent.map(str::to_string);
+            changed = true;
+        }
+        if let Some(preset) = agent_preset {
+            if record.meta.agent_preset.is_none() {
+                record.meta.agent_preset = Some(preset.to_string());
+                changed = true;
+            }
+        }
+        if changed {
+            record.touch(at);
+        }
+        changed
     }
 
     /// Marks every running session as failed after the runtime process exits —
@@ -757,6 +879,11 @@ impl SessionRecord {
         // typed text. Only `source.kind == 'user'` (or an absent source, for
         // older logs) is a human prompt.
         let source_kind = event.pointer("/data/source/kind").and_then(Value::as_str);
+        if source_kind == Some("subagent-settled") {
+            // The parent log's own account of a child agent settling: real
+            // transcript content, but not a human turn (see `push_notice`).
+            return Some(self.push_notice(seq, at, event));
+        }
         if matches!(source_kind, Some(kind) if kind != "user") {
             return None;
         }
@@ -776,6 +903,42 @@ impl SessionRecord {
         self.entries.push(entry.clone());
         self.last_update.insert(seq, seq);
         Some(entry)
+    }
+
+    /// A child agent's settlement notice (`subagent-settled` user/message in
+    /// the parent's log). It is transcript content — a dropped notice would
+    /// hide "the child finished" entirely — but it is not a human turn: the
+    /// title and `message_count` stay untouched, and the `summary` /
+    /// `stopReason` / `senderSessionId` attribution comes from the source.
+    fn push_notice(&mut self, seq: u64, at: &str, event: &Value) -> DshEntry {
+        let text = join_text_blocks(event.pointer("/data/content"));
+        let summary = event
+            .pointer("/data/source/summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let stop_reason = event
+            .pointer("/data/source/stopReason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let sender_session_id = event
+            .pointer("/data/source/senderSessionId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let entry = DshEntry::Notice {
+            seq,
+            at: at.to_string(),
+            turn: self.turn,
+            step: self.step,
+            text,
+            summary,
+            stop_reason,
+            sender_session_id,
+        };
+        self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
+        entry
     }
 
     fn push_assistant(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
@@ -1211,6 +1374,227 @@ mod tests {
         let session = transcript.session("s1").unwrap();
         assert_eq!(session.title, "real question");
         assert_eq!(session.message_count, 1);
+    }
+
+    /// A `subagent-settled` user/message, as dsh writes it into the parent log
+    /// when a child agent settles (continuation-messages.ts).
+    fn notice(seq: u64, summary: &str, stop: Option<&str>, sender: &str) -> Value {
+        let mut value = event("user/message", seq);
+        let mut source = json!({
+            "kind": "subagent-settled",
+            "form": "notice",
+            "summary": summary,
+            "senderSessionId": sender,
+        });
+        if let Some(stop) = stop {
+            source["stopReason"] = json!(stop);
+        }
+        value["data"] = json!({
+            "id": format!("m{seq}"),
+            "role": "user",
+            "content": [{ "type": "text", "text": "child finished" }],
+            "source": source,
+        });
+        value
+    }
+
+    #[test]
+    fn todo_write_replaces_the_whole_list_once_per_seq() {
+        let mut transcript = Transcript::default();
+        let write = |seq: u64, todos: Value| {
+            let mut value = event("todo/write", seq);
+            value["data"] = json!({ "todos": todos });
+            value
+        };
+        let first = transcript.ingest(
+            "s1",
+            &write(
+                1,
+                json!([
+                    { "content": "survey", "status": "completed" },
+                    { "content": "patch", "status": "in_progress" },
+                ]),
+            ),
+            "2026-11-16T00:00:01.000Z",
+        );
+        // Session state, not a transcript row.
+        assert!(first.entry.is_none());
+        assert!(first.session_changed);
+
+        let session = transcript.session("s1").unwrap();
+        assert_eq!(session.todos.len(), 2);
+        assert_eq!(session.todos[0].content, "survey");
+        assert_eq!(session.todos[0].status, "completed");
+        assert_eq!(session.todos[1].status, "in_progress");
+        // The sorted list output the UI reads carries the same state.
+        assert_eq!(transcript.sessions().len(), 1);
+        assert_eq!(transcript.sessions()[0].todos.len(), 2);
+
+        // A repeated seq (snapshot replayed over live) must not reapply.
+        transcript.ingest(
+            "s1",
+            &write(1, json!([{ "content": "ghost", "status": "pending" }])),
+            "2026-11-16T00:00:02.000Z",
+        );
+        assert_eq!(transcript.session("s1").unwrap().todos.len(), 2);
+
+        // A later write replaces the list wholesale — including with an empty
+        // one — and still produces no row.
+        transcript.ingest("s1", &write(2, json!([])), "2026-11-16T00:00:03.000Z");
+        assert!(transcript.session("s1").unwrap().todos.is_empty());
+        assert!(transcript.entries("s1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_turn_folds_the_standing_todo_list_away() {
+        let mut transcript = Transcript::default();
+        let write = |seq: u64, todos: Value| {
+            let mut value = event("todo/write", seq);
+            value["data"] = json!({ "todos": todos });
+            value
+        };
+        transcript.ingest(
+            "s1",
+            &write(
+                1,
+                json!([{ "content": "patch", "status": "completed" }]),
+            ),
+            "2026-11-16T00:00:01.000Z",
+        );
+        assert_eq!(transcript.session("s1").unwrap().todos.len(), 1);
+
+        // dsh's own projection clears the standing checklist when the next
+        // turn begins; the finished list stays visible through `turn/end`.
+        let mut turn = event("turn/start", 2);
+        turn["data"] = json!({ "turn": 2 });
+        transcript.ingest("s1", &turn, "2026-11-16T00:00:02.000Z");
+        assert!(transcript.session("s1").unwrap().todos.is_empty());
+
+        // A stale replayed marker below the frontier must not fold again.
+        transcript.ingest(
+            "s1",
+            &write(3, json!([{ "content": "next", "status": "pending" }])),
+            "2026-11-16T00:00:03.000Z",
+        );
+        let mut stale = event("turn/start", 1);
+        stale["data"] = json!({ "turn": 1 });
+        transcript.ingest("s1", &stale, "2026-11-16T00:00:04.000Z");
+        assert_eq!(transcript.session("s1").unwrap().todos.len(), 1);
+    }
+
+    #[test]
+    fn a_subagent_settlement_is_a_notice_row_not_a_bubble() {
+        let mut transcript = Transcript::default();
+        let entry = transcript
+            .ingest(
+                "s1",
+                &notice(4, "wrote the report", Some("completed"), "child-9"),
+                "2026-11-16T00:00:04.000Z",
+            )
+            .entry
+            .expect("the notice is transcript content");
+        match &entry {
+            DshEntry::Notice {
+                seq,
+                text,
+                summary,
+                stop_reason,
+                sender_session_id,
+                ..
+            } => {
+                assert_eq!(*seq, 4);
+                assert_eq!(text, "child finished");
+                assert_eq!(summary, "wrote the report");
+                assert_eq!(stop_reason.as_deref(), Some("completed"));
+                assert_eq!(sender_session_id, "child-9");
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+        let session = transcript.session("s1").unwrap();
+        assert!(session.title.is_empty(), "a notice never names the session");
+        assert_eq!(session.message_count, 0, "a notice is not a human turn");
+
+        // Historical notices carry no stop reason; the key is omitted on the
+        // wire, matching the camelCase contract.
+        transcript.ingest(
+            "s1",
+            &notice(5, "revisited", None, "child-9"),
+            "2026-11-16T00:00:05.000Z",
+        );
+        let json = serde_json::to_value(
+            transcript
+                .entries("s1")
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.seq() == 5)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["kind"], "notice");
+        assert_eq!(json["summary"], "revisited");
+        assert_eq!(json["senderSessionId"], "child-9");
+        assert!(json.get("stopReason").is_none());
+    }
+
+    #[test]
+    fn session_meta_is_idempotent_and_marks_child_sessions() {
+        let mut transcript = Transcript::default();
+        assert!(transcript.set_meta(
+            "child-9",
+            Some("subagent"),
+            Some("root-1"),
+            Some("author"),
+            "2026-11-16T00:00:00.000Z",
+        ));
+        // A replayed frame (snapshot and live overlap) is not a change, and the
+        // existing timestamp is not moved forward.
+        assert!(!transcript.set_meta(
+            "child-9",
+            Some("subagent"),
+            Some("root-1"),
+            Some("author"),
+            "2026-11-16T00:00:09.000Z",
+        ));
+
+        let session = transcript.session("child-9").unwrap();
+        assert_eq!(session.parent_session.as_deref(), Some("root-1"));
+        assert_eq!(session.agent_preset.as_deref(), Some("author"));
+
+        // A root session sends no parent: nothing marks it a child.
+        assert!(transcript.set_meta(
+            "root-1",
+            None,
+            None,
+            None,
+            "2026-11-16T00:00:00.000Z",
+        ));
+        let json = serde_json::to_value(transcript.session("root-1").unwrap()).unwrap();
+        assert!(json.get("parentSession").is_none());
+        assert!(json.get("agentPreset").is_none());
+        assert_eq!(json["todos"], json!([]));
+
+        // The child row carries the contract's camelCase wire names.
+        let json = serde_json::to_value(transcript.session("child-9").unwrap()).unwrap();
+        assert_eq!(json["parentSession"], "root-1");
+        assert_eq!(json["agentPreset"], "author");
+        assert_eq!(json["todos"], json!([]));
+    }
+
+    #[test]
+    fn a_notice_reaches_incremental_readers() {
+        let mut transcript = Transcript::default();
+        transcript.ingest("s1", &user(1, "go"), "2026-11-16T00:00:01.000Z");
+        let (_, cursor) = transcript.entries_since("s1", 0).unwrap();
+
+        transcript.ingest(
+            "s1",
+            &notice(9, "wrote the report", Some("completed"), "child-9"),
+            "2026-11-16T00:00:09.000Z",
+        );
+        let (rows, cursor) = transcript.entries_since("s1", cursor).unwrap();
+        assert_eq!(rows.len(), 1, "the notice must reach a paged reader");
+        assert!(matches!(&rows[0], DshEntry::Notice { .. }));
+        assert_eq!(cursor, 9);
     }
 
     #[test]
