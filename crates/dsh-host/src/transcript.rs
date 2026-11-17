@@ -59,7 +59,11 @@ pub struct SessionUsage {
     /// Context window of the most recent request; 0 when the session never
     /// stated one.
     pub context_window: u64,
-    /// Output tokens per second over the last message's generation.
+    /// Decode speed of the whole session: output tokens over the time the
+    /// model spent producing them, read from dsh's own `sessionStats` fold. A
+    /// per-message ratio is deliberately not computed here — a short burst
+    /// (a few tokens in a few milliseconds) divides into absurd four- or
+    /// five-digit rates.
     pub tokens_per_second: u64,
     /// Average wait for the first streamed token, over the requests that
     /// reported one; 0 when no request was timed.
@@ -86,6 +90,14 @@ pub struct SessionMeter {
     pub system_tokens: Option<u64>,
     pub tools_tokens: Option<u64>,
     pub message_tokens: Option<u64>,
+    /// dsh `sessionStats.decodeTokens` / `decodeMs`: provider output tokens and
+    /// first-token → message-settle wall time, summed over the whole log.
+    pub decode_tokens: Option<u64>,
+    pub decode_ms: Option<u64>,
+    /// dsh `sessionStats.ttftMs` / `ttftSteps`: first-token latency summed over
+    /// every step that recorded one (tool-call-only steps included).
+    pub ttft_ms: Option<u64>,
+    pub ttft_steps: Option<u64>,
 }
 
 impl SessionUsage {
@@ -123,6 +135,8 @@ impl SessionUsage {
             self.system_tokens,
             self.tools_tokens,
             self.message_tokens,
+            self.tokens_per_second,
+            self.ttft_ms,
         );
         if let Some(value) = meter.context_used_tokens {
             self.context_used_tokens = value;
@@ -139,6 +153,23 @@ impl SessionUsage {
         if let Some(value) = meter.message_tokens {
             self.message_tokens = value;
         }
+        // The engine's own decode fold is the authority: tokens and milliseconds
+        // both accumulate over the whole session, so one short message cannot
+        // spike the rate.
+        if let (Some(tokens), Some(ms)) = (meter.decode_tokens, meter.decode_ms) {
+            self.tokens_per_second = if ms > 0 {
+                (tokens as f64 * 1000.0 / ms as f64).round() as u64
+            } else {
+                0
+            };
+        }
+        // The engine's first-token fold covers every step it timed; the local
+        // average only counts steps whose message reached the transcript.
+        if let (Some(total), Some(steps)) = (meter.ttft_ms, meter.ttft_steps) {
+            if steps > 0 {
+                self.ttft_ms = (total + steps / 2) / steps;
+            }
+        }
         before
             != (
                 self.context_used_tokens,
@@ -146,6 +177,8 @@ impl SessionUsage {
                 self.system_tokens,
                 self.tools_tokens,
                 self.message_tokens,
+                self.tokens_per_second,
+                self.ttft_ms,
             )
     }
 }
@@ -234,14 +267,20 @@ pub enum DshEntry {
     User {
         seq: u64,
         at: String,
+        /// Defaulted so a row serialized before the trajectory existed still
+        /// deserializes (0 = unknown).
+        #[serde(default)]
         turn: u64,
+        #[serde(default)]
         step: u64,
         text: String,
     },
     Assistant {
         seq: u64,
         at: String,
+        #[serde(default)]
         turn: u64,
+        #[serde(default)]
         step: u64,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,7 +306,9 @@ pub enum DshEntry {
     Tool {
         seq: u64,
         at: String,
+        #[serde(default)]
         turn: u64,
+        #[serde(default)]
         step: u64,
         call_id: String,
         name: String,
@@ -289,6 +330,7 @@ pub enum DshEntry {
     Turn {
         seq: u64,
         at: String,
+        #[serde(default)]
         turn: u64,
         state: TurnState,
         /// `TurnEndReason.kind` (`completed`, `error`, `aborted`, …).
@@ -376,17 +418,39 @@ struct SessionRecord {
     seen: BTreeSet<u64>,
     /// `callId` → index in `entries`, for merging `tool/result` into its call.
     calls: HashMap<String, usize>,
+    /// Row seq → the event seq that last touched it. A tool row keeps its
+    /// call's seq while the result lands much later, so incremental readers
+    /// page on this instead of the row's own seq.
+    last_update: HashMap<u64, u64>,
+    /// Results whose `tool/call` has not arrived yet, keyed by call id.
+    orphans: HashMap<String, OrphanResult>,
     first_user_seen: bool,
     /// dsh's current 1-based turn and step. Assistant/tool events carry both;
     /// `user/message` does not, so it takes the counters as they stand.
     turn: u64,
     step: u64,
+    /// Highest turn/step boundary seq applied, so a snapshot replayed after
+    /// newer live events cannot roll the counters back.
+    last_boundary: u64,
+    /// `(turn, step)` → that step's `step/start` time. A reply's own step is
+    /// the only honest generation start, so the map is keyed, not "last seen".
+    step_starts: HashMap<(u64, u64), u64>,
     /// `step/start` time of the current step, used as the generation start
     /// when a message carries no stream timing.
     last_step_ms: Option<u64>,
     /// Sum and count behind [`SessionUsage::ttft_ms`].
     ttft_total_ms: u64,
     ttft_samples: u64,
+}
+
+/// A `tool/result` that arrived before its `tool/call`.
+struct OrphanResult {
+    /// The result event's seq, so an incremental read still sees the row once
+    /// the call lands (instead of losing the update forever).
+    seq: u64,
+    text: String,
+    failed: bool,
+    ended_at_ms: Option<u64>,
 }
 
 /// The one owner of normalized session state.
@@ -410,9 +474,13 @@ impl Transcript {
                 entries: Vec::new(),
                 seen: BTreeSet::new(),
                 calls: HashMap::new(),
+                last_update: HashMap::new(),
+                orphans: HashMap::new(),
                 first_user_seen: false,
                 turn: 0,
                 step: 0,
+                last_boundary: 0,
+                step_starts: HashMap::new(),
                 last_step_ms: None,
                 ttft_total_ms: 0,
                 ttft_samples: 0,
@@ -462,17 +530,24 @@ impl Transcript {
             "user/message" => record.push_user(seq, at, event),
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
-            "tool/result" => record.merge_tool_result(event),
+            "tool/result" => record.merge_tool_result(seq, event),
             "turn/start" => {
                 record.meta.status = SessionStatus::Running;
                 record.meta.usage.turns += 1;
-                // dsh states the turn; the counter is only a fallback for a
-                // log whose turn marker lost its payload.
-                record.turn = event
-                    .pointer("/data/turn")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(record.turn + 1);
-                record.step = 0;
+                // A snapshot replayed after newer live events must not roll the
+                // counters back; only an event at the boundary frontier may
+                // move them.
+                if seq >= record.last_boundary {
+                    record.last_boundary = seq;
+                    // dsh states the turn; the counter is only a fallback for a
+                    // log whose turn marker lost its payload.
+                    record.turn = event
+                        .pointer("/data/turn")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(record.turn + 1);
+                    record.step = 0;
+                    record.last_step_ms = None;
+                }
                 let turn = record.turn;
                 Some(record.push_turn(seq, at, turn, TurnState::Start, None, None))
             }
@@ -487,20 +562,38 @@ impl Transcript {
                     .map(str::trim)
                     .filter(|message| !message.is_empty())
                     .map(str::to_string);
-                record.meta.status = match reason.as_deref() {
-                    Some("error") | Some("blocked") => SessionStatus::Failed,
-                    _ => SessionStatus::Idle,
-                };
+                if seq >= record.last_boundary {
+                    record.last_boundary = seq;
+                    record.meta.status = match reason.as_deref() {
+                        Some("error") | Some("blocked") => SessionStatus::Failed,
+                        _ => SessionStatus::Idle,
+                    };
+                    // A log that starts mid-turn still labels its rows: the
+                    // event states the turn it closes.
+                    if let Some(turn) = event.pointer("/data/turn").and_then(Value::as_u64) {
+                        record.turn = turn;
+                    }
+                }
                 let turn = record.turn;
                 Some(record.push_turn(seq, at, turn, TurnState::End, reason, error))
             }
             "step/start" => {
                 record.meta.usage.steps += 1;
-                record.step = event
-                    .pointer("/data/step")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(record.step + 1);
-                record.last_step_ms = event.get("time").and_then(Value::as_u64);
+                if seq >= record.last_boundary {
+                    record.last_boundary = seq;
+                    if let Some(turn) = event.pointer("/data/turn").and_then(Value::as_u64) {
+                        record.turn = turn;
+                    }
+                    record.step = event
+                        .pointer("/data/step")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(record.step + 1);
+                    let started = event.get("time").and_then(Value::as_u64);
+                    record.last_step_ms = started;
+                    if let Some(started) = started {
+                        record.step_starts.insert((record.turn, record.step), started);
+                    }
+                }
                 None
             }
             "request/context" => {
@@ -623,16 +716,27 @@ impl Transcript {
             .map(|record| record.entries.clone())
     }
 
-    /// Entries past `since_seq` plus the session's current last seq. The phone
-    /// polls with the previous `last_seq`, so a long transcript is not shipped
-    /// whole every few seconds.
+    /// Entries updated past `since_seq` plus the session's current cursor. The
+    /// phone polls with the previous `last_seq`, so a long transcript is not
+    /// shipped whole every few seconds.
+    ///
+    /// A tool row keeps its call's seq while the result lands later, so the
+    /// filter reads the row's last update, not its identity: otherwise a
+    /// result that arrives after the cursor would never reach the phone.
     pub fn entries_since(&self, session_id: &str, since_seq: u64) -> Option<(Vec<DshEntry>, u64)> {
         let record = self.sessions.get(session_id)?;
-        let last_seq = record.entries.last().map(|entry| entry.seq()).unwrap_or(0);
+        let last_seq = record.seen.iter().next_back().copied().unwrap_or(0);
         let entries = record
             .entries
             .iter()
-            .filter(|entry| entry.seq() > since_seq)
+            .filter(|entry| {
+                record
+                    .last_update
+                    .get(&entry.seq())
+                    .copied()
+                    .unwrap_or(entry.seq())
+                    > since_seq
+            })
             .cloned()
             .collect();
         Some((entries, last_seq))
@@ -670,6 +774,7 @@ impl SessionRecord {
             text,
         };
         self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
         Some(entry)
     }
 
@@ -722,15 +827,6 @@ impl SessionRecord {
                     }
                 }
             }
-            if usage.output_tokens > 0 {
-                if let (Some(start), Some(end)) = (generation_start.or(request_start), end) {
-                    if end > start {
-                        let elapsed = (end - start) as f64 / 1000.0;
-                        totals.tokens_per_second =
-                            (usage.output_tokens as f64 / elapsed).round() as u64;
-                    }
-                }
-            }
         }
 
         let entry = DshEntry::Assistant {
@@ -743,11 +839,17 @@ impl SessionRecord {
             usage,
             provider,
             model,
-            started_at_ms: self.last_step_ms,
-            first_token_at_ms: event.pointer("/data/stream/0/time").and_then(Value::as_u64),
+            // The reply's own step start; `last_step_ms` would attach a stale
+            // step when events arrive out of order.
+            started_at_ms: self
+                .step_starts
+                .get(&(self.event_turn(event), self.event_step(event)))
+                .copied(),
+            first_token_at_ms: first_token_ms(event),
             completed_at_ms: event.get("time").and_then(Value::as_u64),
         };
         self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
         Some(entry)
     }
 
@@ -829,24 +931,42 @@ impl SessionRecord {
             started_at_ms: event.get("time").and_then(Value::as_u64),
             ended_at_ms: None,
         };
+        let mut entry = entry;
         if let DshEntry::Tool { call_id, .. } = &entry {
             self.calls.insert(call_id.clone(), self.entries.len());
+            // A result that outran its call is applied now; the row is
+            // published already settled, so no reader ever sees a ghost.
+            if let Some(orphan) = self.orphans.remove(call_id) {
+                if let DshEntry::Tool {
+                    status,
+                    result,
+                    ended_at_ms,
+                    ..
+                } = &mut entry
+                {
+                    *status = if orphan.failed { ToolStatus::Error } else { ToolStatus::Ok };
+                    *result = Some(orphan.text);
+                    *ended_at_ms = orphan.ended_at_ms;
+                }
+                self.last_update.insert(seq, orphan.seq);
+            }
         }
         self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
         Some(entry)
     }
 
-    /// Merges a result into its call row and re-publishes that row with the
-    /// call's seq. A result whose call was never seen is dropped loudly; with a
-    /// snapshot starting at seq 0 this only happens on a malformed feed.
-    fn merge_tool_result(&mut self, event: &Value) -> Option<DshEntry> {
+    /// Applies a `tool/result` to its call row and re-publishes that row with
+    /// the call's seq. A result that arrives before its call is buffered and
+    /// applied when the call lands; dropping it would leave the row running
+    /// forever and cost the panel its duration.
+    fn merge_tool_result(&mut self, seq: u64, event: &Value) -> Option<DshEntry> {
         let call_id = event
             .pointer("/data/message/toolCallId")
             .or_else(|| event.pointer("/data/message/source/callId"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let index = *self.calls.get(&call_id)?;
         let message = event.pointer("/data/message");
         let text = join_text_blocks(message.and_then(|value| value.get("content")));
         let failed = message
@@ -854,6 +974,15 @@ impl SessionRecord {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let ended_at_ms = event.get("time").and_then(Value::as_u64);
+        let Some(index) = self.calls.get(&call_id).copied() else {
+            if !call_id.is_empty() {
+                self.orphans.insert(
+                    call_id,
+                    OrphanResult { seq, text, failed, ended_at_ms },
+                );
+            }
+            return None;
+        };
         let entry = match self.entries.get_mut(index) {
             Some(DshEntry::Tool {
                 status,
@@ -869,6 +998,7 @@ impl SessionRecord {
             // The call row was replaced (new revision); keep the log honest.
             _ => return None,
         };
+        self.last_update.insert(entry.seq(), seq);
         Some(entry)
     }
 
@@ -890,8 +1020,19 @@ impl SessionRecord {
             error,
         };
         self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
         entry
     }
+}
+
+/// Time of the first streamed chunk. dsh writes either loose chunks (`time`)
+/// or a packed run (`time0` + deltas), and only the first record matters.
+fn first_token_ms(event: &Value) -> Option<u64> {
+    let first = event.pointer("/data/stream/0")?;
+    first
+        .get("time")
+        .and_then(Value::as_u64)
+        .or_else(|| first.get("time0").and_then(Value::as_u64))
 }
 
 /// Concatenates `text` blocks of a dsh content array. Other block types are
@@ -1202,6 +1343,146 @@ mod tests {
     }
 
     #[test]
+    fn incremental_reads_return_in_place_tool_updates() {
+        let mut transcript = Transcript::default();
+        let mut call = event("tool/call", 4);
+        call["data"] = json!({
+            "turn": 1, "step": 1, "callId": "c1", "name": "bash",
+            "arguments": "{\"cmd\":\"ls\"}"
+        });
+        transcript.ingest("s1", &call, "2026-11-16T00:00:04.000Z");
+        let (rows, cursor) = transcript.entries_since("s1", 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(cursor, 4);
+
+        // The result keeps the call's seq but arrives at a later event seq.
+        let mut result = event("tool/result", 11);
+        result["data"] = json!({
+            "turn": 1, "step": 1,
+            "message": {
+                "id": "t1", "role": "tool", "toolCallId": "c1", "isError": false,
+                "content": [{ "type": "text", "text": "file.txt" }],
+                "source": { "kind": "tool", "callId": "c1" }
+            }
+        });
+        transcript.ingest("s1", &result, "2026-11-16T00:00:11.000Z");
+
+        let (rows, cursor) = transcript.entries_since("s1", cursor).unwrap();
+        assert_eq!(rows.len(), 1, "the settled row must reach an incremental reader");
+        match &rows[0] {
+            DshEntry::Tool {
+                status, result, ended_at_ms, ..
+            } => {
+                assert_eq!(*status, ToolStatus::Ok);
+                assert_eq!(result.as_deref(), Some("file.txt"));
+                assert_eq!(*ended_at_ms, Some(1_700_000_000_000));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+        assert_eq!(cursor, 11);
+    }
+
+    #[test]
+    fn a_result_that_outruns_its_call_is_applied_when_the_call_lands() {
+        let mut transcript = Transcript::default();
+        let mut result = event("tool/result", 3);
+        result["data"] = json!({
+            "turn": 1, "step": 1,
+            "message": {
+                "id": "t1", "role": "tool", "toolCallId": "c1", "isError": true,
+                "content": [{ "type": "text", "text": "boom" }],
+                "source": { "kind": "tool", "callId": "c1" }
+            }
+        });
+        assert!(transcript
+            .ingest("s1", &result, "2026-11-16T00:00:03.000Z")
+            .entry
+            .is_none());
+
+        let mut call = event("tool/call", 5);
+        call["data"] = json!({
+            "turn": 1, "step": 1, "callId": "c1", "name": "bash",
+            "arguments": "{\"cmd\":\"ls\"}"
+        });
+        let published = transcript
+            .ingest("s1", &call, "2026-11-16T00:00:05.000Z")
+            .entry
+            .expect("the call row is published");
+        match published {
+            DshEntry::Tool {
+                status, result, ended_at_ms, ..
+            } => {
+                assert_eq!(status, ToolStatus::Error, "the buffered failure is applied");
+                assert_eq!(result.as_deref(), Some("boom"));
+                assert_eq!(ended_at_ms, Some(1_700_000_000_000));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+        let (rows, cursor) = transcript.entries_since("s1", 3).unwrap();
+        assert_eq!(rows.len(), 1, "an incremental reader still sees the row");
+        assert_eq!(cursor, 5);
+    }
+
+    #[test]
+    fn a_log_that_starts_mid_turn_still_labels_its_rows() {
+        let mut transcript = Transcript::default();
+        let mut step = event("step/start", 0);
+        step["data"] = json!({ "turn": 7, "step": 3 });
+        transcript.ingest("s1", &step, "2026-11-16T00:00:00.000Z");
+
+        let asked = transcript
+            .ingest("s1", &user(1, "hi"), "2026-11-16T00:00:01.000Z")
+            .entry
+            .unwrap();
+        match asked {
+            DshEntry::User { turn, step, .. } => assert_eq!((turn, step), (7, 3)),
+            other => panic!("unexpected entry: {other:?}"),
+        }
+
+        let mut end = event("turn/end", 2);
+        end["data"] = json!({ "turn": 7, "reason": { "kind": "completed" } });
+        let closed = transcript
+            .ingest("s1", &end, "2026-11-16T00:00:02.000Z")
+            .entry
+            .unwrap();
+        match closed {
+            DshEntry::Turn { turn, .. } => assert_eq!(turn, 7, "turn/end states its turn"),
+            other => panic!("unexpected entry: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn packed_stream_records_still_time_the_first_token() {
+        let mut transcript = Transcript::default();
+        let mut step = event("step/start", 0);
+        step["data"] = json!({ "turn": 1, "step": 1 });
+        step["time"] = json!(1_700_000_000_000u64);
+        transcript.ingest("s1", &step, "2026-11-16T00:00:00.000Z");
+
+        // A packed run carries `time0` (first token) instead of a loose chunk.
+        let mut reply = assistant(1, "done", "");
+        reply["data"]["stream"] = json!([
+            { "type": "text-chunks", "time0": 1_700_000_000_400u64, "dt": [10, 12], "texts": ["a", "b"] }
+        ]);
+        reply["time"] = json!(1_700_000_001_000u64);
+        let entry = transcript
+            .ingest("s1", &reply, "2026-11-16T00:00:01.000Z")
+            .entry
+            .unwrap();
+        match entry {
+            DshEntry::Assistant {
+                started_at_ms,
+                first_token_at_ms,
+                ..
+            } => {
+                assert_eq!(started_at_ms, Some(1_700_000_000_000));
+                assert_eq!(first_token_at_ms, Some(1_700_000_000_400));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+    }
+
+    #[test]
     fn turn_boundaries_drive_status_and_reason() {
         let mut transcript = Transcript::default();
         transcript.ingest("s1", &event("turn/start", 0), "2026-11-16T00:00:00.000Z");
@@ -1308,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_totals_and_speed_come_from_the_message() {
+    fn usage_totals_come_from_the_message_and_speed_from_the_meter() {
         let mut transcript = Transcript::default();
         transcript.ingest("s1", &event("turn/start", 0), "2026-11-16T00:00:00.000Z");
         transcript.ingest("s1", &event("step/start", 1), "2026-11-16T00:00:00.000Z");
@@ -1321,11 +1602,23 @@ mod tests {
         assert_eq!(session.usage.cache_read_tokens, 7_936);
         assert_eq!(session.usage.provider, "opencode-go");
         assert_eq!(session.usage.model, "deepseek-v4.1-flash");
-        // 189 output tokens over 1.753s of streaming.
-        assert_eq!(session.usage.tokens_per_second, 108);
         assert_eq!(session.usage.cache_hit_percent(), 98);
+        // A message never states a rate: only the engine's decode fold does.
+        assert_eq!(session.usage.tokens_per_second, 0);
 
-        // The entry carries the same numbers so the popover needs no lookup.
+        // dsh's sessionStats fold: 189 output tokens over 1.75s of decoding.
+        let meter = SessionMeter {
+            decode_tokens: Some(189),
+            decode_ms: Some(1_750),
+            ..Default::default()
+        };
+        transcript.set_meter("s1", &meter, "2026-11-16T00:00:03.000Z");
+        assert_eq!(
+            transcript.session("s1").unwrap().usage.tokens_per_second,
+            108
+        );
+
+        // The entry carries the token numbers so the popover needs no lookup.
         let entries = transcript.entries("s1").expect("session exists");
         let entry = entries
             .iter()
@@ -1449,8 +1742,46 @@ mod tests {
         let usage = &transcript.session("s1").unwrap().usage;
         assert_eq!(usage.ttft_ms, 2_500);
         assert_eq!(usage.model_ms, 5_500);
-        // Speed still counts generation only (5.5s - 2.5s = 3s).
-        assert_eq!(usage.tokens_per_second, 63);
+        // A message's stream window never becomes a rate: one short burst would
+        // divide into an impossible number. The meter owns the figure.
+        assert_eq!(usage.tokens_per_second, 0);
+
+        // The engine's first-token fold wins once it has a sample; it also
+        // counts steps whose message never reached the transcript.
+        let meter = SessionMeter {
+            ttft_ms: Some(9_000),
+            ttft_steps: Some(3),
+            ..Default::default()
+        };
+        transcript.set_meter("s1", &meter, "2026-11-16T00:00:06.000Z");
+        assert_eq!(transcript.session("s1").unwrap().usage.ttft_ms, 3_000);
+    }
+
+    #[test]
+    fn a_one_token_burst_cannot_spike_the_decode_rate() {
+        let mut transcript = Transcript::default();
+        transcript.ingest("s1", &event("step/start", 1), "2026-11-16T00:00:00.000Z");
+        // 40 tokens in 4ms is exactly the shape that read as 10,000 tok/s.
+        let mut message = assistant_with_usage(2, 1_700_000_000_004);
+        message["data"]["stream"] = json!([{ "type": "chunk", "time": 1_700_000_000_000u64 }]);
+        message["data"]["usage"]["outputTokens"] = json!(40u64);
+        transcript.ingest("s1", &message, "2026-11-16T00:00:00.004Z");
+        assert_eq!(
+            transcript.session("s1").unwrap().usage.tokens_per_second,
+            0
+        );
+
+        // The whole-session fold amortizes the burst instead of amplifying it.
+        let meter = SessionMeter {
+            decode_tokens: Some(1_040),
+            decode_ms: Some(20_000),
+            ..Default::default()
+        };
+        transcript.set_meter("s1", &meter, "2026-11-16T00:00:20.000Z");
+        assert_eq!(
+            transcript.session("s1").unwrap().usage.tokens_per_second,
+            52
+        );
     }
 
     #[test]
@@ -1471,6 +1802,7 @@ mod tests {
             system_tokens: Some(1_800),
             tools_tokens: Some(8_800),
             message_tokens: Some(1_460),
+            ..Default::default()
         };
         assert!(transcript.set_meter("s1", &meter, "2026-11-16T00:00:01.000Z"));
         let usage = &transcript.session("s1").unwrap().usage;

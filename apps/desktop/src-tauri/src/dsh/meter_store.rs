@@ -82,6 +82,7 @@ mod tests {
             system_tokens: Some(1_800),
             tools_tokens: Some(8_800),
             message_tokens: Some(1_460),
+            ..Default::default()
         };
         save(&cache, "s1", "2026-11-17T03:00:00.000Z", &meter).expect("save");
 

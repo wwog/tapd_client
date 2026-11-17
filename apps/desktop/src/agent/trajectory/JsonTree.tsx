@@ -3,7 +3,8 @@
  * arrays, colored primitives, long strings collapsed behind 展开.
  *
  * The panel shows raw tool arguments and results, so this stays a viewer —
- * nothing is editable and nothing is re-serialized.
+ * nothing is editable and nothing is re-serialized. Payloads are untrusted:
+ * deep nesting and huge arrays are bounded instead of rendered whole.
  */
 import { useState } from "react";
 import clsx from "clsx";
@@ -12,6 +13,11 @@ import { ChevronRight } from "lucide-react";
 import { t } from "../../lib/i18n";
 
 const STRING_PREVIEW_CHARS = 240;
+/** Deeper payloads render a placeholder: JSX recursion is bounded by the stack. */
+const MAX_DEPTH = 20;
+/** Branches larger than this start collapsed, so a 50k array is one click away. */
+const AUTO_COLLAPSE_COUNT = 40;
+const AUTO_COLLAPSE_DEPTH = 6;
 
 type Props = {
   value: unknown;
@@ -20,7 +26,7 @@ type Props = {
   className?: string;
 };
 
-/** Renders any JSON value; objects/arrays start expanded. */
+/** Renders any JSON value; reasonable branches start expanded. */
 export function JsonTree({ value, preview = false, className }: Props) {
   return (
     <div
@@ -35,6 +41,7 @@ export function JsonTree({ value, preview = false, className }: Props) {
 }
 
 function JsonNode({ value, depth, preview }: { value: unknown; depth: number; preview: boolean }) {
+  if (depth > MAX_DEPTH) return <span className="text-slate-400">…</span>;
   if (value === null) return <span className="text-slate-400">null</span>;
   if (typeof value === "string") return <JsonString value={value} preview={preview} />;
   if (typeof value === "number") return <span className="text-amber-600">{String(value)}</span>;
@@ -46,7 +53,6 @@ function JsonNode({ value, depth, preview }: { value: unknown; depth: number; pr
       <JsonBranch
         open={`[`}
         close={`]`}
-        count={value.length}
         depth={depth}
         preview={preview}
         entries={value.map((item, index) => [String(index), item] as const)}
@@ -54,15 +60,13 @@ function JsonNode({ value, depth, preview }: { value: unknown; depth: number; pr
     );
   }
   if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
     return (
       <JsonBranch
         open={`{`}
         close={`}`}
-        count={entries.length}
         depth={depth}
         preview={preview}
-        entries={entries}
+        entries={Object.entries(value as Record<string, unknown>)}
       />
     );
   }
@@ -72,19 +76,20 @@ function JsonNode({ value, depth, preview }: { value: unknown; depth: number; pr
 function JsonBranch({
   open,
   close,
-  count,
   depth,
   preview,
   entries,
 }: {
   open: string;
   close: string;
-  count: number;
   depth: number;
   preview: boolean;
   entries: readonly (readonly [string, unknown])[];
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const count = entries.length;
+  const [expanded, setExpanded] = useState(
+    count <= AUTO_COLLAPSE_COUNT && depth < AUTO_COLLAPSE_DEPTH,
+  );
   if (count === 0) return <span className="text-slate-400">{open + close}</span>;
   return (
     <span>
@@ -119,11 +124,23 @@ function JsonBranch({
   );
 }
 
+/** Counts code points, so a cut never lands inside a surrogate pair. */
+function truncate(value: string, limit: number): string {
+  const points = Array.from(value);
+  return points.length <= limit ? value : `${points.slice(0, limit).join("")}…`;
+}
+
+function lineCount(value: string): number {
+  let lines = 1;
+  for (const character of value) if (character === "\n") lines += 1;
+  return lines;
+}
+
 function JsonString({ value, preview }: { value: string; preview: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const limit = preview ? 120 : STRING_PREVIEW_CHARS;
-  const long = value.length > limit || value.split("\n").length > (preview ? 3 : 12);
-  const shown = long && !expanded ? `${value.slice(0, limit)}…` : value;
+  const long = Array.from(value).length > limit || lineCount(value) > (preview ? 3 : 12);
+  const shown = long && !expanded ? truncate(value, limit) : value;
   return (
     <span className="text-emerald-700">
       {JSON.stringify(shown)}

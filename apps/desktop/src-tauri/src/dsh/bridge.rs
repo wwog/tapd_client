@@ -930,6 +930,11 @@ fn normalize_meter(message: &Value) -> SessionMeter {
         system_tokens: number("/breakdown/systemTokens"),
         tools_tokens: number("/breakdown/toolsTokens"),
         message_tokens: number("/breakdown/messageTokens"),
+        // dsh's own whole-log fold; the rate is derived in the transcript.
+        decode_tokens: number("/stats/decodeTokens"),
+        decode_ms: number("/stats/decodeMs"),
+        ttft_ms: number("/stats/ttftMs"),
+        ttft_steps: number("/stats/ttftSteps"),
     }
 }
 

@@ -183,11 +183,16 @@ export function apply(ctx) {
         'tokenUsage',
         'contextPressure',
         'contextBreakdown',
+        // dsh's own whole-log fold: decode tokens and decode wall time. The
+        // speed must come from it — a per-message ratio divides a short burst
+        // into an impossible four- or five-digit rate.
+        'sessionStats',
       ])
       return {
         usage: values.tokenUsage,
         pressure: values.contextPressure,
         breakdown: values.contextBreakdown,
+        stats: values.sessionStats,
       }
     } catch (error) {
       warn(`stats ${session.id}`, error)
@@ -205,6 +210,7 @@ export function apply(ctx) {
       ...(stats.usage ? { usage: stats.usage } : {}),
       ...(stats.pressure ? { pressure: stats.pressure } : {}),
       ...(stats.breakdown ? { breakdown: stats.breakdown } : {}),
+      ...(stats.stats ? { stats: stats.stats } : {}),
     })
   }
 

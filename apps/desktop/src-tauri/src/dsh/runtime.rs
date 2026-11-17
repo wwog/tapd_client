@@ -1012,7 +1012,20 @@ fn prepare_profile(
         return Err(format!("payload launcher missing at {}", entry.display()));
     }
 
-    let plugins = plugin_rows(&runtime_dir);
+    let mut plugins = plugin_rows(&runtime_dir);
+    // dsh's whole-log stats unit is not part of the base/SDK bundles, yet it is
+    // the only authoritative source for decode speed (tokens ÷ decode time) and
+    // the other wall-time figures. Mounting it lets the bridge read
+    // `sessionStats` instead of guessing a rate per message.
+    let stats_entry = runtime_dir.join("node_modules/@deepseek-ai/dsh-session-stats/lib/index.js");
+    if stats_entry.exists() {
+        plugins.push(PluginRow {
+            // App-owned row id, so a future bundle that mounts the unit under
+            // its own id cannot collide with this insert.
+            id: "tapd-session-stats".to_string(),
+            entry: stats_entry.to_string_lossy().into_owned(),
+        });
+    }
     let spec = ProfileSpec {
         plugins,
         providers: models

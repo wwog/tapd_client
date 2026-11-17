@@ -216,15 +216,25 @@ function Payload({ text, preview = false }: { text: string | undefined; preview?
 type Props = {
   record: TrajRecord;
   records: readonly TrajRecord[];
+  /** Dragged width; `null` follows the default clamp. Owned by the panel so a
+   *  new selection does not reset it. */
+  width: number | null;
+  onWidthChange: (width: number | null) => void;
   onSelect: (index: number) => void;
   onClose: () => void;
 };
 
 /** Right-hand inspector for one selected ledger row. */
-export function TrajectoryInspector({ record, records, onSelect, onClose }: Props) {
+export function TrajectoryInspector({
+  record,
+  records,
+  width,
+  onWidthChange,
+  onSelect,
+  onClose,
+}: Props) {
   const tabs = TABS[record.kind];
   const [tab, setTab] = useState<Tab>("summary");
-  const [width, setWidth] = useState<number | null>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number; split: number } | null>(
     null,
   );
@@ -247,18 +257,29 @@ export function TrajectoryInspector({ record, records, onSelect, onClose }: Prop
 
   const activate = (next: Tab) => setTab(next);
 
+  const clamp = (next: number, split: number) => {
+    const max = Math.min(DETAILS_MAX_WIDTH, Math.max(DETAILS_MIN_WIDTH, split - 280));
+    return Math.min(max, Math.max(DETAILS_MIN_WIDTH, next));
+  };
+
   return (
     <aside
       ref={asideRef}
       className="relative flex min-h-0 shrink-0 flex-col border-l border-border bg-surface"
-      style={{ width: width ?? "clamp(320px, 38%, 440px)" }}
+      style={{
+        width: width ?? "clamp(320px, 38%, 440px)",
+        maxWidth: "calc(100% - 280px)",
+      }}
       aria-label={t("agent.traj.inspectorAria")}
     >
       <div
         role="separator"
         aria-orientation="vertical"
+        aria-label={t("agent.traj.resize")}
+        aria-valuenow={Math.round(width ?? 0)}
+        tabIndex={0}
         title={t("agent.traj.resize")}
-        className="absolute inset-y-0 -left-1 z-[6] w-2 cursor-col-resize touch-none"
+        className="absolute inset-y-0 -left-1 z-[6] w-2 cursor-col-resize touch-none focus-visible:bg-sky-100"
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           const aside = asideRef.current;
@@ -276,17 +297,26 @@ export function TrajectoryInspector({ record, records, onSelect, onClose }: Prop
         onPointerMove={(event) => {
           const drag = dragRef.current;
           if (drag === null || drag.pointerId !== event.pointerId) return;
-          const max = Math.min(DETAILS_MAX_WIDTH, Math.max(DETAILS_MIN_WIDTH, drag.split - 280));
-          setWidth(
-            Math.min(max, Math.max(DETAILS_MIN_WIDTH, drag.startWidth + drag.startX - event.clientX)),
-          );
+          onWidthChange(clamp(drag.startWidth + drag.startX - event.clientX, drag.split));
         }}
         onPointerUp={(event) => {
           if (dragRef.current?.pointerId !== event.pointerId) return;
           dragRef.current = null;
           event.currentTarget.releasePointerCapture(event.pointerId);
         }}
-        onDoubleClick={() => setWidth(null)}
+        onPointerCancel={() => {
+          dragRef.current = null;
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          const aside = asideRef.current;
+          const split = aside?.parentElement?.getBoundingClientRect().width ?? 0;
+          const current = width ?? aside?.getBoundingClientRect().width ?? 0;
+          const step = event.key === "ArrowLeft" ? 16 : -16;
+          onWidthChange(clamp(current + step, split));
+          event.preventDefault();
+        }}
+        onDoubleClick={() => onWidthChange(null)}
       />
 
       <div className="flex h-[42px] shrink-0 items-center justify-between gap-2 border-b border-border pr-2 pl-3">

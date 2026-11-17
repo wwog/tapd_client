@@ -16,10 +16,11 @@ import { TrajectoryInspector } from "./Inspector";
 import { TrajectoryLedger } from "./Ledger";
 import { TrajectoryTimeline } from "./Timeline";
 import {
+  appendLiveTurns,
+  collapsibleAssistantIds,
   deriveTrajectory,
   flatten,
   matchesQuery,
-  toolCallsAfter,
   turnRecordCount,
   type LiveTraceInput,
   type TrajRecord,
@@ -70,20 +71,32 @@ function FoldButton({
 export function TrajectoryView({ entries, live, loading, failed, onRetry }: Props) {
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(new Set());
   const [collapsedAssistants, setCollapsedAssistants] = useState<ReadonlySet<string>>(new Set());
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-  const [focusIndex, setFocusIndex] = useState<number | null>(null);
+  /** Selection is a record identity, not a position: a merged history page can
+   *  shift every ordinal while the row the user picked stays the same. */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ index: number; nonce: number } | null>(null);
   const [range, setRange] = useState<TrajTimeRange | null>(null);
   const [mode, setMode] = useState<TrajTimelineMode>("sequence");
   const [query, setQuery] = useState("");
+  const [inspectorWidth, setInspectorWidth] = useState<number | null>(null);
 
-  const turns = useMemo(() => deriveTrajectory(entries, live), [entries, live]);
+  // Committed rows are the expensive part (previews, grouping); the live tail
+  // is layered on top so a streamed token does not rebuild the whole ledger.
+  const committed = useMemo(() => deriveTrajectory(entries), [entries]);
+  const turns = useMemo(() => appendLiveTurns(committed, live), [committed, live]);
   const records = useMemo(() => flatten(turns), [turns]);
 
-  // A selection that no longer exists (session switch) is cleared.
+  const selected = useMemo<TrajRecord | undefined>(
+    () => (selectedId === null ? undefined : records.find((record) => record.id === selectedId)),
+    [records, selectedId],
+  );
+  const selectedIndex = selected?.index ?? null;
+
+  // A selection whose record is gone (session switch, fold of a retracted
+  // live row) is cleared instead of silently pointing at a neighbour.
   useEffect(() => {
-    if (selectedIndex === null) return;
-    if (!records.some((record) => record.index === selectedIndex)) setSelectedIndex(null);
-  }, [records, selectedIndex]);
+    if (selectedId !== null && selected === undefined) setSelectedId(null);
+  }, [selected, selectedId]);
 
   const collapsibleTurns = useMemo(
     () => turns.filter((turn) => turn.turn > 0 && turnRecordCount(turn) > 1).map((turn) => turn.turn),
@@ -92,15 +105,7 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
   const allTurnsCollapsed =
     collapsibleTurns.length > 0 && collapsibleTurns.every((turn) => collapsedTurns.has(turn));
 
-  const collapsibleAssistants = useMemo(
-    () =>
-      records
-        .filter(
-          (record) => record.kind === "assistant" && toolCallsAfter(records, record.index).length > 0,
-        )
-        .map((record) => record.id),
-    [records],
-  );
+  const collapsibleAssistants = useMemo(() => collapsibleAssistantIds(records), [records]);
   const allAssistantsCollapsed =
     collapsibleAssistants.length > 0 &&
     collapsibleAssistants.every((id) => collapsedAssistants.has(id));
@@ -133,10 +138,24 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
     });
   }, []);
 
-  const selected = useMemo<TrajRecord | undefined>(
-    () => (selectedIndex === null ? undefined : records.find((record) => record.index === selectedIndex)),
-    [records, selectedIndex],
+  /** Selecting a row the ledger folded away reopens its turn. */
+  const selectRecord = useCallback(
+    (record: TrajRecord) => {
+      setSelectedId(record.id);
+      if (collapsedTurns.has(record.turn)) {
+        setCollapsedTurns((current) => {
+          const next = new Set(current);
+          next.delete(record.turn);
+          return next;
+        });
+      }
+    },
+    [collapsedTurns],
   );
+
+  const focusRecord = useCallback((index: number) => {
+    setFocus((current) => ({ index, nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
@@ -182,7 +201,7 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
           }
         />
 
-        <div className="ml-auto flex h-[22px] min-w-[84px] flex-[0_1_164px] items-center gap-1 rounded-md border border-border bg-canvas px-1.5 text-slate-400 transition focus-within:border-sky-400">
+        <div className="ml-auto flex h-[22px] min-w-[84px] flex-[0_1_164px] items-center gap-1 rounded-md border border-border bg-canvas px-1.5 text-slate-400 transition">
           <Search size={11} className="shrink-0" aria-hidden="true" />
           <input
             type="search"
@@ -202,8 +221,11 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
         selectedIndex={selectedIndex}
         searchMatchIndexes={searchMatchIndexes}
         onRangeChange={setRange}
-        onRecordSelect={setSelectedIndex}
-        onRecordFocus={setFocusIndex}
+        onRecordSelect={(index) => {
+          const record = records.find((candidate) => candidate.index === index);
+          if (record !== undefined) selectRecord(record);
+        }}
+        onRecordFocus={focusRecord}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -213,23 +235,31 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
           failed={failed}
           onRetry={onRetry}
           selectedIndex={selectedIndex}
-          onSelect={setSelectedIndex}
-          onClearSelection={() => setSelectedIndex(null)}
+          onSelect={(index) => {
+            const record = records.find((candidate) => candidate.index === index);
+            if (record !== undefined) selectRecord(record);
+          }}
+          onClearSelection={() => setSelectedId(null)}
+          focusIndex={focus?.index ?? null}
+          focusNonce={focus?.nonce ?? 0}
           focusIndexes={focusIndexes}
           searchMatchIndexes={searchMatchIndexes}
           collapsedTurns={collapsedTurns}
           collapsedAssistants={collapsedAssistants}
           onToggleTurn={toggleTurn}
           onToggleAssistant={toggleAssistant}
-          focusIndex={focusIndex}
         />
         {selected !== undefined ? (
           <TrajectoryInspector
-            key={selected.id}
             record={selected}
             records={records}
-            onSelect={setSelectedIndex}
-            onClose={() => setSelectedIndex(null)}
+            width={inspectorWidth}
+            onWidthChange={setInspectorWidth}
+            onSelect={(index) => {
+              const record = records.find((candidate) => candidate.index === index);
+              if (record !== undefined) selectRecord(record);
+            }}
+            onClose={() => setSelectedId(null)}
           />
         ) : null}
       </div>

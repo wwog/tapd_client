@@ -28,6 +28,8 @@ import {
 
 const MINIMUM_DRAG_PX = 3;
 const MINIMUM_ZOOM_OPERATIONS = 4;
+/** Duration mode counts epoch milliseconds, so its floor is a time window. */
+const MINIMUM_ZOOM_MS = 20_000;
 const EDGE_PAN_ZONE_FRACTION = 0.08;
 const EDGE_PAN_STEP_FRACTION = 0.025;
 const MAXIMUM_EDGE_PAN_PX = 32;
@@ -105,7 +107,7 @@ function spanLabel(span: TrajSpan, record: TrajRecord | undefined): string {
   if (record === undefined) return heading;
   const duration = record.startedAtMs === undefined
     ? undefined
-    : (record.endedAtMs ?? record.startedAtMs) - record.startedAtMs;
+    : Math.max(0, (record.endedAtMs ?? record.startedAtMs) - record.startedAtMs);
   const lines = [heading];
   if (record.startedAtMs !== undefined) {
     lines.push(
@@ -191,7 +193,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     setTooltip(null);
   };
 
-  useEffect(() => clearTooltip, []);
+  useEffect(() => () => clearTooltip(), []);
 
   // A selection outside a changed domain (mode switch, new records) is stale.
   useEffect(() => {
@@ -203,11 +205,16 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   useEffect(() => {
     if (model === null) return;
     setAnimateViewport(false);
-    setViewport((current) =>
-      current !== null && (current.end < model.start || current.start > model.end)
-        ? null
-        : current,
-    );
+    // A zoomed viewport that no longer fits (records replaced or truncated)
+    // would push the domain off-screen; clamp it to the new model instead.
+    setViewport((current) => {
+      if (current === null) return null;
+      const duration = Math.max(1, current.end - current.start);
+      if (duration >= model.end - model.start) return null;
+      if (current.end < model.start || current.start > model.end) return null;
+      const start = Math.min(Math.max(current.start, model.start), model.end - duration);
+      return start === current.start ? current : { start, end: start + duration };
+    });
   }, [model]);
 
   // Keep the selected row's span inside the zoomed viewport.
@@ -268,10 +275,13 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       setAnimateViewport(false);
       const rect = track.getBoundingClientRect();
       const anchorFraction = clampFraction((event.clientX - rect.left) / Math.max(1, rect.width));
+      // The floor is mode-aware: 4 operations in sequence mode, but duration
+      // mode counts epoch milliseconds where 4 ms is an empty slice.
+      const floor = mode === "duration" ? MINIMUM_ZOOM_MS : MINIMUM_ZOOM_OPERATIONS;
       const nextDuration = Math.min(
         fullDuration,
         Math.max(
-          Math.min(MINIMUM_ZOOM_OPERATIONS, fullDuration),
+          Math.min(floor, fullDuration),
           domainDuration * Math.exp(event.deltaY * 0.0015),
         ),
       );
@@ -288,7 +298,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     };
     track.addEventListener("wheel", onWheel, { passive: false });
     return () => track.removeEventListener("wheel", onWheel);
-  }, [domainDuration, domainStart, fullDuration, model]);
+  }, [domainDuration, domainStart, fullDuration, mode, model]);
 
   if (model === null) {
     return (
@@ -324,7 +334,10 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     clearTooltip();
+    // Right-drag pans; starting one mid-drag would leave the draft behind,
+    // because a mouse reports both buttons under one pointer id.
     if (event.button === 2) {
+      if (dragRef.current !== null) return;
       panRef.current = {
         pointerId: event.pointerId,
         anchorClientX: event.clientX,
@@ -451,11 +464,16 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     }
   };
 
-  const onPointerCancel = () => {
+  const resetGestures = () => {
     dragRef.current = null;
     panRef.current = null;
     setDraft(null);
     setHover(null);
+    clearTooltip();
+  };
+
+  const onPointerCancel = () => {
+    resetGestures();
   };
 
   const scheduleTooltip = (
@@ -496,6 +514,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerCancel}
+          onLostPointerCapture={resetGestures}
           onPointerLeave={() => {
             if (dragRef.current === null && panRef.current === null) {
               setHover(null);

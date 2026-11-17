@@ -42,7 +42,7 @@ function RuntimeAction({ block }: { block: NonNullable<ReturnType<typeof runtime
   switch (block) {
     case "model":
       return (
-        <Button size="sm" onClick={() => agentActions.setTab("config")}>
+        <Button size="sm" onClick={() => agentActions.openConfig("models")}>
           {t("agent.runtime.config")}
         </Button>
       );

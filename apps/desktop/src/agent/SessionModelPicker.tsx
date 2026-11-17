@@ -154,7 +154,8 @@ export function SessionModelPicker() {
 
   const manage = () => {
     close();
-    agentActions.setTab("config");
+    // The button is about the catalog, so the dialog opens on 模型.
+    agentActions.openConfig("models");
   };
 
   const providerLabel = route?.provider.name || route?.provider.id || chosen?.provider || "";

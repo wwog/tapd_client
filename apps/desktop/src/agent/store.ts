@@ -41,9 +41,6 @@ import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
 import { agentSettingsApi, defaultSelection } from "../lib/agentSettings";
 
-export type AgentTab = "tasks" | "config";
-
-/** Which pane the task header shows; the transcript is the fallback. */
 export type AgentTeamView = "chat" | "board";
 
 /** The session's second view: the transcript or the trajectory ledger. */
@@ -92,8 +89,14 @@ export type AgentConfigDraft = Pick<
   "promptTemplate" | "worktreeEnabled" | "executionUnits" | "dshModels"
 >;
 
+/** The settings dialog's groups, in nav order. */
+export type AgentConfigSection = "general" | "models" | "rules";
+
 export type AgentState = {
-  tab: AgentTab;
+  /** The settings dialog; the page itself only shows the conversation. */
+  configOpen: boolean;
+  /** Group the dialog opened on; the entry point chooses it. */
+  configSection: AgentConfigSection;
   selectedId: string | null;
   tasks: DshTask[] | null;
   tasksError: string | null;
@@ -140,11 +143,11 @@ export type AgentState = {
   lastError: { code: string | null; message: string } | null;
 };
 
-/** Selected task and active tab are view state, but they survive page
- *  unmounts and restarts through the config.json preference blob. */
+/** Selected task is view state, but it survives page unmounts and restarts
+ *  through the config.json preference blob. The settings dialog does not. */
 const UI_PREF_KEY = "agent.ui.v1";
 
-type AgentPrefs = { tab?: unknown; sessionId?: unknown };
+type AgentPrefs = { sessionId?: unknown };
 
 /**
  * Sessions allocated by 新建会话 in this app run. They are free conversations:
@@ -158,7 +161,8 @@ const drafts = new Set<string>();
 const modeWrites = new Map<string, number>();
 
 const initialState: AgentState = {
-  tab: "tasks",
+  configOpen: false,
+  configSection: "general",
   selectedId: null,
   tasks: null,
   tasksError: null,
@@ -203,19 +207,16 @@ function setError(error: unknown, code: string | null = null): void {
 }
 
 function persistPrefs(): void {
-  const state = agentStore.get();
-  writePref(UI_PREF_KEY, { tab: state.tab, sessionId: state.selectedId });
+  writePref(UI_PREF_KEY, { sessionId: agentStore.get().selectedId });
 }
 
 function hydratePrefs(): void {
   const saved = readPref<AgentPrefs>(UI_PREF_KEY);
   if (!saved) return;
-  const tab: AgentTab = saved.tab === "config" ? "config" : "tasks";
   const sessionId =
     typeof saved.sessionId === "string" && saved.sessionId ? saved.sessionId : null;
   update((state) => ({
     ...state,
-    tab,
     selectedId: state.selectedId ?? sessionId,
   }));
 }
@@ -921,9 +922,14 @@ export const agentActions = {
     if (selected) void readSessionMode(selected);
   },
 
-  setTab: (tab: AgentTab): void => {
-    update((state) => ({ ...state, tab }));
-    persistPrefs();
+  /** Opens the settings dialog. Entry points pick the group they are about:
+   *  the task column footer opens 常规, the composer's 「管理模型」 opens 模型. */
+  openConfig: (section: AgentConfigSection = "general"): void => {
+    update((state) => ({ ...state, configOpen: true, configSection: section }));
+  },
+
+  closeConfig: (): void => {
+    update((state) => ({ ...state, configOpen: false }));
   },
 
   selectSession: (sessionId: string): void => {
@@ -1057,7 +1063,7 @@ export const agentActions = {
     replaceTask(task);
     update((state) => ({
       ...state,
-      tab: "tasks",
+      configOpen: false,
       selectedId: task.id,
       entries: {
         ...state.entries,

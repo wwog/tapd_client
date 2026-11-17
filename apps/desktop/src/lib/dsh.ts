@@ -131,8 +131,8 @@ export type DshEntry =
       name: string;
       args: string;
       status: "running" | "ok" | "error";
-      /** Raw result. The contract documents a string; the host forwards the
-       *  JSON value it received, so the view normalizes either shape. */
+      /** Model-facing result text (docs/DSH.md §8.3). The host sends a string;
+       *  the view still normalizes objects so an older producer cannot crash it. */
       result?: unknown;
       /** `tool/call` time (epoch ms). */
       startedAtMs?: number;

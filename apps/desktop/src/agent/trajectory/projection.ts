@@ -120,18 +120,19 @@ function deriveTimedTimeline(turns: readonly TrajTurn[]): TrajTimelineModel | nu
     });
     spans.push(...projected);
     if (turn.turn > 0) {
-      turnBoundaries.push({
-        turn: turn.turn,
-        time: Math.min(...projected.map((span) => span.start)),
-      });
+      let first = Number.POSITIVE_INFINITY;
+      for (const span of projected) first = Math.min(first, span.start);
+      turnBoundaries.push({ turn: turn.turn, time: first });
     }
   }
-  return {
-    start: Math.min(...spans.map((span) => span.start)),
-    end: Math.max(...spans.map((span) => span.end)),
-    spans,
-    turnBoundaries,
-  };
+  // Spread over a huge array overflows the argument limit; one pass is enough.
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const span of spans) {
+    if (span.start < start) start = span.start;
+    if (span.end > end) end = span.end;
+  }
+  return { start, end, spans, turnBoundaries };
 }
 
 /** Records active at any point inside an inclusive selected interval. */

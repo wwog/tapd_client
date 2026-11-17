@@ -1,6 +1,6 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Settings2, Trash2 } from "lucide-react";
 
 import { relativeTime } from "../lib/api";
 import { t, type MessageKey } from "../lib/i18n";
@@ -126,6 +126,18 @@ export function TaskList() {
             </section>
           ))
         )}
+      </div>
+      {/* Settings are page-wide, not per session: the column footer is their
+          one entry point, so the conversation keeps the whole pane. */}
+      <div className="shrink-0 border-t border-border p-2">
+        <button
+          type="button"
+          onClick={() => agentActions.openConfig()}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ui-caption text-slate-600 transition hover:bg-overlay-soft hover:text-slate-800"
+        >
+          <Settings2 size={13} className="shrink-0 text-slate-400" />
+          {t("agent.tab.config")}
+        </button>
       </div>
       {deleting ? (
         <ConfirmDialog

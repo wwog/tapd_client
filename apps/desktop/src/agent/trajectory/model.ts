@@ -59,12 +59,21 @@ export type LiveTraceInput = {
 const PREVIEW_SOURCE_CHARACTERS = 2_048;
 const PREVIEW_OUTPUT_CHARACTERS = 512;
 
-/** Collapses Markdown-ish text into one bounded line, like the reference view. */
+/**
+ * Collapses text into one bounded line.
+ *
+ * Only block decoration is removed: fence markers, heading hashes and quote
+ * carets at the start of a line. Everything else — a `>` inside a shell
+ * argument, `_` in a path, the code inside a fence — is content and stays.
+ * This preview also renders tool arguments, where stripping punctuation would
+ * misstate what the tool was asked to do.
+ */
 export function previewText(text: string): string {
   const source = text.slice(0, PREVIEW_SOURCE_CHARACTERS);
   const compact = source
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[#>*_`~]/g, "")
+    .replace(/^\s{0,3}```[^\n]*$/gm, " ")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
     .replace(/\s+/g, " ")
     .trim();
   const preview = compact.slice(0, PREVIEW_OUTPUT_CHARACTERS).trimEnd();
@@ -111,7 +120,17 @@ function stateOf(entry: DshEntry): TrajState {
   return "complete";
 }
 
-/** Live tail: the assistant reply being streamed and its in-flight calls. */
+function stepTitle(step: number): string {
+  return t("agent.traj.groupStep", { step });
+}
+
+/**
+ * Live tail: the assistant reply being streamed and its in-flight calls.
+ *
+ * The stream carries no step counters, so the rows continue the step the log
+ * is on (a reply after tool rows opens the next one). The ledger positions
+ * them at the tail; the timeline has no timing for them yet.
+ */
 function liveRecords(
   live: LiveTraceInput | undefined,
   last: TrajRecord | undefined,
@@ -121,11 +140,8 @@ function liveRecords(
   const hasText = live.text.trim() !== "" || live.reasoning.trim() !== "";
   if (!hasText && live.tools.length === 0) return [];
   const turn = last?.turn ?? 0;
-  // A reply that follows tool rows is the next step; otherwise it continues
-  // the step the log is already on.
   const step =
     last === undefined ? 1 : last.kind === "tool" ? last.step + 1 : Math.max(1, last.step);
-  const group = t("agent.traj.groupStep", { step });
   const out: TrajRecord[] = [];
   let index = startIndex;
   const assistantIndex = hasText ? index : undefined;
@@ -136,7 +152,7 @@ function liveRecords(
       kind: "assistant",
       turn,
       step,
-      group,
+      group: stepTitle(step),
       text: assistantText(live.text, live.reasoning),
       state: "running",
       live: true,
@@ -150,7 +166,7 @@ function liveRecords(
       kind: "tool",
       turn,
       step,
-      group,
+      group: stepTitle(step),
       text: toolText(tool.name, tool.args),
       state: "running",
       live: true,
@@ -162,19 +178,15 @@ function liveRecords(
 }
 
 /**
- * Projects one session into turns of grouped records.
+ * Projects committed rows into turns of grouped records.
  *
  * @param entries - Committed rows in log order.
- * @param live - Live attempt overlaid on the tail, or `undefined`.
  * @returns Turns in log order; empty when the session has no rows.
  */
-export function deriveTrajectory(
-  entries: readonly DshEntry[],
-  live: LiveTraceInput | undefined,
-): TrajTurn[] {
+export function deriveTrajectory(entries: readonly DshEntry[]): TrajTurn[] {
   const records: TrajRecord[] = [];
   let index = 0;
-  let lastAssistantIndex: number | undefined;
+  let lastAssistant: { index: number; turn: number; step: number } | undefined;
 
   for (const entry of entries) {
     if (entry.kind === "turn") continue;
@@ -185,8 +197,10 @@ export function deriveTrajectory(
         index,
         kind: "user",
         turn: entry.turn,
-        step: 0,
-        group: t("agent.traj.groupMessage"),
+        // A steering message keeps its own step so it stays where it happened;
+        // the opening prompt owns the message group.
+        step: entry.step,
+        group: entry.step === 0 ? t("agent.traj.groupMessage") : stepTitle(entry.step),
         text: previewText(entry.text),
         state: "complete",
         startedAtMs: atMs(entry.at),
@@ -202,7 +216,7 @@ export function deriveTrajectory(
         kind: "assistant",
         turn: entry.turn,
         step: entry.step,
-        group: t("agent.traj.groupStep", { step: entry.step }),
+        group: stepTitle(entry.step),
         text: assistantText(entry.text, entry.reasoning),
         state: "complete",
         startedAtMs: entry.startedAtMs ?? atMs(entry.at),
@@ -210,7 +224,7 @@ export function deriveTrajectory(
         firstTokenAtMs: entry.firstTokenAtMs,
         entry,
       });
-      lastAssistantIndex = index;
+      lastAssistant = { index, turn: entry.turn, step: entry.step };
       continue;
     }
     const raw = resultText(entry.result);
@@ -220,31 +234,39 @@ export function deriveTrajectory(
           ? undefined
           : t("agent.traj.noOutput")
         : previewText(raw);
+    // A tool row only belongs to an assistant that answered the same step;
+    // tool-only steps have no assistant row at all.
+    const parent =
+      lastAssistant !== undefined &&
+      lastAssistant.turn === entry.turn &&
+      lastAssistant.step === entry.step
+        ? lastAssistant.index
+        : undefined;
     records.push({
       id: `tool:${entry.callId || entry.seq}`,
       index,
       kind: "tool",
       turn: entry.turn,
       step: entry.step,
-      group: t("agent.traj.groupStep", { step: entry.step }),
+      group: stepTitle(entry.step),
       text: toolText(entry.name, entry.args),
       ...(result === undefined ? {} : { result }),
       state: stateOf(entry),
       startedAtMs: entry.startedAtMs ?? atMs(entry.at),
       ...(entry.endedAtMs === undefined ? {} : { endedAtMs: entry.endedAtMs }),
       entry,
-      ...(lastAssistantIndex === undefined ? {} : { parentIndex: lastAssistantIndex }),
+      ...(parent === undefined ? {} : { parentIndex: parent }),
     });
   }
 
-  records.push(...liveRecords(live, records[records.length - 1], index + 1));
-
-  // Group by turn, then by `step` (0 = the message group, first).
+  // Bucket by turn number (a repeated number is one turn) and keep group order.
   const turns: TrajTurn[] = [];
+  const turnByNumber = new Map<number, TrajTurn>();
   for (const record of records) {
-    let turn = turns[turns.length - 1];
-    if (turn === undefined || turn.turn !== record.turn) {
+    let turn = turnByNumber.get(record.turn);
+    if (turn === undefined) {
       turn = { turn: record.turn, groups: [] };
+      turnByNumber.set(record.turn, turn);
       turns.push(turn);
     }
     const group = turn.groups.find((candidate) => candidate.title === record.group);
@@ -252,6 +274,35 @@ export function deriveTrajectory(
     else group.records.push(record);
   }
   return turns;
+}
+
+/** Appends the in-flight rows to an already-derived projection. */
+export function appendLiveTurns(
+  turns: readonly TrajTurn[],
+  live: LiveTraceInput | undefined,
+): readonly TrajTurn[] {
+  const all = flatten(turns);
+  const last = all[all.length - 1];
+  const rows = liveRecords(live, last, (last?.index ?? 0) + 1);
+  if (rows.length === 0) return turns;
+  const out = turns.map((turn) => ({
+    turn: turn.turn,
+    groups: turn.groups.map((group) => ({ title: group.title, records: [...group.records] })),
+  }));
+  const turnNumber = rows[0]?.turn ?? 0;
+  let turn = out.find((candidate) => candidate.turn === turnNumber);
+  if (turn === undefined) {
+    turn = { turn: turnNumber, groups: [] };
+    out.push(turn);
+  }
+  const title = rows[0]?.group ?? "";
+  let group = turn.groups.find((candidate) => candidate.title === title);
+  if (group === undefined) {
+    group = { title, records: [] };
+    turn.groups.push(group);
+  }
+  group.records.push(...rows);
+  return out;
 }
 
 /** Flattens turns back into log order (the ledger renders this list). */
@@ -304,33 +355,67 @@ export function parentAssistant(
   return records.find((candidate) => candidate.index === record.parentIndex);
 }
 
-/** Tool rows that follow an assistant message in the same step group. */
+/**
+ * Tool rows that follow an assistant message in the same step.
+ *
+ * The backend writes no row for a tool-only reply, so the scan must stop when
+ * the step changes: those tools belong to the next step, not this message.
+ */
 export function toolCallsAfter(
   records: readonly TrajRecord[],
   assistantIndex: number,
 ): TrajRecord[] {
   const at = records.findIndex((record) => record.index === assistantIndex);
-  if (at === -1 || records[at]?.kind !== "assistant") return [];
+  const assistant = records[at];
+  if (assistant === undefined || assistant.kind !== "assistant") return [];
   const calls: TrajRecord[] = [];
   for (let cursor = at + 1; cursor < records.length; cursor += 1) {
     const record = records[cursor];
-    if (record === undefined || record.kind !== "tool") break;
+    if (
+      record === undefined ||
+      record.kind !== "tool" ||
+      record.step !== assistant.step ||
+      record.turn !== assistant.turn
+    ) {
+      break;
+    }
     calls.push(record);
   }
   return calls;
 }
 
-/** Ledger search over what a row actually shows (plus the full text). */
+/** Assistant rows that own at least one tool row (one pass, for fold-all). */
+export function collapsibleAssistantIds(records: readonly TrajRecord[]): string[] {
+  const ids: string[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === undefined || record.kind !== "assistant") continue;
+    const next = records[index + 1];
+    if (
+      next !== undefined &&
+      next.kind === "tool" &&
+      next.step === record.step &&
+      next.turn === record.turn
+    ) {
+      ids.push(record.id);
+    }
+  }
+  return ids;
+}
+
+/** Ledger search over what a row shows plus the full recorded payload. */
 export function matchesQuery(record: TrajRecord, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (needle === "") return true;
+  const entry = record.entry;
   const haystack = [
     record.text,
     record.result ?? "",
-    record.entry?.kind === "assistant" ? record.entry.text : "",
-    record.entry?.kind === "assistant" ? record.entry.reasoning ?? "" : "",
-    record.entry?.kind === "tool" ? record.entry.args : "",
-    record.entry?.kind === "user" ? record.entry.text : "",
+    entry?.kind === "assistant" ? entry.text : "",
+    entry?.kind === "assistant" ? entry.reasoning ?? "" : "",
+    entry?.kind === "tool" ? entry.args : "",
+    entry?.kind === "tool" ? resultText(entry.result) ?? "" : "",
+    entry?.kind === "user" ? entry.text : "",
   ]
     .join("\n")
     .toLowerCase();
@@ -357,6 +442,7 @@ export function formatClock(timestamp: number | null | undefined): string {
     return t("agent.traj.notAvailable");
   }
   const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return t("agent.traj.notAvailable");
   const two = (value: number) => String(value).padStart(2, "0");
   const three = (value: number) => String(value).padStart(3, "0");
   return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(

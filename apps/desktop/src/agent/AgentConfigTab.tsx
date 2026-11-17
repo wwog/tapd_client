@@ -1,18 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { Check } from "lucide-react";
+import {
+  Boxes,
+  Check,
+  ScrollText,
+  Settings2,
+  SlidersHorizontal,
+  type LucideIcon,
+} from "lucide-react";
 
+import { Dialog } from "../components/Dialog";
 import { ScrollingName } from "../components/ScrollingName";
 import { useCoworkers } from "../components/CoworkerPicker";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui";
-import { t } from "../lib/i18n";
+import { t, type MessageKey } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
 import { ModelSettings } from "./ModelSettings";
-import { agentActions, agentStore } from "./store";
+import {
+  agentActions,
+  agentStore,
+  type AgentConfigSection,
+} from "./store";
 
 type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
+  onClose: () => void;
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -21,14 +34,28 @@ const clamp = (value: number, min: number, max: number): number =>
 /** Edit → pause before writing, so typing does not write the file per key. */
 const SAVE_DELAY_MS = 500;
 
+/** The three settings groups, in the dialog's left column. */
+type Section = AgentConfigSection;
+
+const NAV: Array<{ id: Section; label: MessageKey; icon: LucideIcon }> = [
+  { id: "general", label: "agent.config.nav.general", icon: SlidersHorizontal },
+  { id: "models", label: "agent.config.nav.models", icon: Boxes },
+  { id: "rules", label: "agent.config.nav.rules", icon: ScrollText },
+];
+
 /**
- * All agent settings, inside the Agent page. Every control applies on its own:
- * edits are written back after a short pause instead of behind a save button.
- * Projects are edited on the projects page and merged by the same command.
+ * All agent settings, in a dialog opened from the task column's footer. The
+ * left column groups them: 模型 (providers and catalog), 规则 (prompt and
+ * permission policy) and 常规 (execution, coworkers, runtime). Every control
+ * applies on its own: edits are written back after a short pause instead of
+ * behind a save button. Projects are edited on the projects page and merged by
+ * the same command.
  */
-export function AgentConfigTab({ toast }: Props) {
+export function AgentConfigTab({ toast, onClose }: Props) {
   const state = agentStore.use();
   const config = state.config;
+  // The dialog mounts per open, so the entry point's group is the initial one.
+  const [section, setSection] = useState<Section>(state.configSection);
   const [draft, setDraft] = useState<DshAgentConfig | null>(null);
   /** The permission mode saves on click, not with the form. */
   const [policySaving, setPolicySaving] = useState(false);
@@ -67,7 +94,7 @@ export function AgentConfigTab({ toast }: Props) {
       .catch((error) => toast("error", String(error)));
   }, [toast]);
 
-  // Write the last edit even if the tab unmounts right after it.
+  // Write the last edit even if the dialog unmounts right after it.
   const flushRef = useRef(flush);
   flushRef.current = flush;
   useEffect(() => () => flushRef.current(), []);
@@ -91,7 +118,7 @@ export function AgentConfigTab({ toast }: Props) {
 
   if (!config || !draft) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <ConfigDialog onClose={onClose}>
         <div className="mx-auto max-w-3xl">
           {state.configError ? (
             <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
@@ -113,7 +140,7 @@ export function AgentConfigTab({ toast }: Props) {
             </div>
           )}
         </div>
-      </div>
+      </ConfigDialog>
     );
   }
 
@@ -169,191 +196,287 @@ export function AgentConfigTab({ toast }: Props) {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
-      <div className="mx-auto max-w-4xl space-y-3 pb-2">
-        <ModelSettings
-          value={draft.dshModels}
-          onChange={(dshModels) => patchDraft({ dshModels })}
-        />
-
-        <section className={cardClass}>
-          <h2 className="text-ui-base text-slate-900" title={t("agent.config.promptHint")}>
-            {t("agent.config.prompt")}
-          </h2>
-          <textarea
-            rows={8}
-            value={draft.promptTemplate}
-            onChange={(event) => patchDraft({ promptTemplate: event.target.value })}
-            className={`${inputClass} mt-3 resize-y font-mono leading-5`}
-          />
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div
-              className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-              title={t("agent.config.worktreeHint")}
-            >
-              <span className="text-ui-sm text-slate-600">{t("agent.config.worktree")}</span>
-              <Switch
-                checked={draft.worktreeEnabled}
-                onChange={(value) => patchDraft({ worktreeEnabled: value })}
-              />
-            </div>
-            <div
-              className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-              title={t("agent.config.unitsHint")}
-            >
-              <span className="text-ui-sm text-slate-600">{t("agent.config.units")}</span>
-              <input
-                type="number"
-                min={1}
-                max={8}
-                disabled={!draft.worktreeEnabled}
-                value={draft.worktreeEnabled ? draft.executionUnits : 1}
-                onChange={(event) =>
-                  patchDraft({
-                    executionUnits: clamp(Number.parseInt(event.target.value, 10) || 1, 1, 8),
-                  })
-                }
-                className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition disabled:text-slate-400"
-              />
-            </div>
-          </div>
-        </section>
-
-        <section className={cardClass}>
-          <h2 className="text-ui-base text-slate-900" title={t("agent.config.permissionHint")}>
-            {t("agent.config.permission")}
-          </h2>
-          <div className="mt-3 flex flex-col gap-1">
-            {permissionModes.map((mode) => {
-              const selected = config.permissionMode === mode.value;
-              return (
-                <button
-                  key={mode.value}
-                  type="button"
-                  aria-pressed={selected}
-                  title={mode.hint}
-                  disabled={policySaving}
-                  onClick={() => void choosePermission(mode.value)}
-                  className={clsx(
-                    "flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition disabled:cursor-default disabled:opacity-60",
-                    selected
-                      ? "border-sky-200 bg-sky-50"
-                      : "border-border bg-surface hover:border-slate-300",
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
-                    {mode.label}
-                  </span>
-                  {selected ? <Check size={13} className="shrink-0 text-sky-600" /> : null}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className={cardClass}>
-          <div className="flex items-center gap-3">
-            <h2 className="text-ui-base text-slate-900" title={t("agent.config.coworkersHint")}>
-              {t("agent.config.coworkers")}
-            </h2>
-            {selection.loadError ? null : (
-              <Switch
-                className="ml-auto"
-                checked={coworkersOn}
-                disabled={selection.busy || selection.coworkers === null}
-                onChange={toggleCoworkers}
-                label={t("agent.config.coworkers")}
-              />
-            )}
-          </div>
-          {selection.loadError ? (
-            <div className="mt-3 flex items-center gap-3 text-ui-caption text-rose-600">
-              <span className="min-w-0 flex-1 truncate" title={selection.loadError}>
-                {selection.loadError}
-              </span>
-              <Button size="sm" onClick={() => void selection.reload()}>
-                {t("common.retry")}
-              </Button>
-            </div>
-          ) : null}
-        </section>
-
-        <section className={cardClass}>
-          <h2 className="text-ui-base text-slate-900" title={t("agent.config.runtimeHint")}>
-            {t("agent.config.runtime")}
-          </h2>
-          <div className="mt-3">
-            {state.status === null ? (
-              state.statusError ? (
-                <div className="flex items-center gap-3 text-ui-caption text-rose-600">
-                  <span className="min-w-0 flex-1 truncate" title={state.statusError}>
-                    {t("agent.runtime.stateFailed")}
-                  </span>
-                  <Button size="sm" onClick={() => void agentActions.refreshStatus()}>
-                    {t("common.retry")}
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-ui-caption text-slate-400">
-                  <Spinner />
-                  {t("common.loading")}
-                </div>
-              )
-            ) : state.status.phase === "stopped" ? (
-              <div className="text-ui-caption text-slate-400">{t("agent.runtime.stopped")}</div>
-            ) : state.status.phase === "starting" ? (
-              <div className="flex items-center gap-2 text-ui-caption text-slate-400">
-                <Spinner />
-                {t("agent.runtime.starting")}
-              </div>
-            ) : state.status.phase === "failed" ? (
-              <div className="break-all text-ui-caption text-rose-600" title={state.status.errorCode}>
-                {state.status.error ?? t("agent.runtime.failed")}
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                {state.status.payloadVersion ? (
-                  <Fact label={t("agent.config.payloadVersion")} value={state.status.payloadVersion} />
-                ) : null}
-                {state.status.nodeVersion ? (
-                  <Fact label={t("agent.config.node")} value={state.status.nodeVersion} mono />
-                ) : null}
-                {state.status.nodePath ? (
-                  <Fact label={t("agent.config.nodePath")} value={state.status.nodePath} mono />
-                ) : null}
-                {state.status.provider ? (
-                  <Fact label={t("agent.config.provider")} value={state.status.provider} />
-                ) : null}
-                {state.status.model ? (
-                  <Fact label={t("agent.config.currentModel")} value={state.status.model} />
-                ) : null}
-              </div>
-            )}
-          </div>
-          {state.status?.phase === "failed" ? (
-            <div className="mt-3 flex justify-end">
-              <Button size="sm" onClick={() => void agentActions.startRuntime()}>
-                {t("common.retry")}
-              </Button>
-            </div>
-          ) : state.status?.phase === "ready" ? (
-            <div className="mt-3 flex items-center justify-end gap-3">
-              {state.status.restartRequired ? (
-                <span className="min-w-0 flex-1 text-ui-xs text-amber-700">
-                  {t("agent.config.restartRequired")}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                loading={state.starting}
-                onClick={restart}
+    <ConfigDialog onClose={onClose}>
+      <div className="flex h-full min-h-0 overflow-hidden rounded-xl border border-border">
+        <nav
+          className="w-40 shrink-0 space-y-0.5 border-r border-border p-2"
+          aria-label={t("agent.tab.config")}
+        >
+          {NAV.map((item) => {
+            const Icon = item.icon;
+            const active = section === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                aria-current={active}
+                onClick={() => setSection(item.id)}
+                className={clsx(
+                  "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-ui-caption transition",
+                  active
+                    ? "bg-sky-50 text-sky-700"
+                    : "text-slate-600 hover:bg-overlay-soft",
+                )}
               >
-                {t("agent.config.restartRuntime")}
-              </Button>
+                <Icon
+                  size={13}
+                  className={clsx(
+                    "shrink-0",
+                    active ? "text-sky-600" : "text-slate-400",
+                  )}
+                />
+                {t(item.label)}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div
+          className={clsx(
+            "min-h-0 flex-1 p-4",
+            section === "models" ? "" : "overflow-y-auto overscroll-contain",
+          )}
+        >
+          {section === "models" ? (
+            <ModelSettings
+              fill
+              value={draft.dshModels}
+              onChange={(dshModels) => patchDraft({ dshModels })}
+            />
+          ) : (
+            <div className="mx-auto max-w-3xl space-y-3 pb-2">
+              {section === "rules" ? (
+                <section className={cardClass}>
+                  <h2
+                    className="text-ui-base text-slate-900"
+                    title={t("agent.config.promptHint")}
+                  >
+                    {t("agent.config.prompt")}
+                  </h2>
+                  <textarea
+                    rows={10}
+                    value={draft.promptTemplate}
+                    onChange={(event) => patchDraft({ promptTemplate: event.target.value })}
+                    className={`${inputClass} mt-3 resize-y font-mono leading-5`}
+                  />
+                </section>
+              ) : null}
+
+            {section === "general" ? (
+              <>
+                <section className={cardClass}>
+                  <h2 className="text-ui-base text-slate-900">
+                    {t("agent.config.execution")}
+                  </h2>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div
+                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
+                      title={t("agent.config.worktreeHint")}
+                    >
+                      <span className="text-ui-sm text-slate-600">
+                        {t("agent.config.worktree")}
+                      </span>
+                      <Switch
+                        checked={draft.worktreeEnabled}
+                        onChange={(value) => patchDraft({ worktreeEnabled: value })}
+                      />
+                    </div>
+                    <div
+                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
+                      title={t("agent.config.unitsHint")}
+                    >
+                      <span className="text-ui-sm text-slate-600">
+                        {t("agent.config.units")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        disabled={!draft.worktreeEnabled}
+                        value={draft.worktreeEnabled ? draft.executionUnits : 1}
+                        onChange={(event) =>
+                          patchDraft({
+                            executionUnits: clamp(
+                              Number.parseInt(event.target.value, 10) || 1,
+                              1,
+                              8,
+                            ),
+                          })
+                        }
+                        className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <section className={cardClass}>
+                  <h2
+                    className="text-ui-base text-slate-900"
+                    title={t("agent.config.permissionHint")}
+                  >
+                    {t("agent.config.permission")}
+                  </h2>
+                  <div className="mt-3 flex flex-col gap-1">
+                    {permissionModes.map((mode) => {
+                      const selected = config.permissionMode === mode.value;
+                      return (
+                        <button
+                          key={mode.value}
+                          type="button"
+                          aria-pressed={selected}
+                          title={mode.hint}
+                          disabled={policySaving}
+                          onClick={() => void choosePermission(mode.value)}
+                          className={clsx(
+                            "flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition disabled:cursor-default disabled:opacity-60",
+                            selected
+                              ? "border-sky-200 bg-sky-50"
+                              : "border-border bg-surface hover:border-slate-300",
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
+                            {mode.label}
+                          </span>
+                          {selected ? (
+                            <Check size={13} className="shrink-0 text-sky-600" />
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className={cardClass}>
+                  <div className="flex items-center gap-3">
+                    <h2
+                      className="text-ui-base text-slate-900"
+                      title={t("agent.config.coworkersHint")}
+                    >
+                      {t("agent.config.coworkers")}
+                    </h2>
+                    {selection.loadError ? null : (
+                      <Switch
+                        className="ml-auto"
+                        checked={coworkersOn}
+                        disabled={selection.busy || selection.coworkers === null}
+                        onChange={toggleCoworkers}
+                        label={t("agent.config.coworkers")}
+                      />
+                    )}
+                  </div>
+                  {selection.loadError ? (
+                    <div className="mt-3 flex items-center gap-3 text-ui-caption text-rose-600">
+                      <span className="min-w-0 flex-1 truncate" title={selection.loadError}>
+                        {selection.loadError}
+                      </span>
+                      <Button size="sm" onClick={() => void selection.reload()}>
+                        {t("common.retry")}
+                      </Button>
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className={cardClass}>
+                  <h2
+                    className="text-ui-base text-slate-900"
+                    title={t("agent.config.runtimeHint")}
+                  >
+                    {t("agent.config.runtime")}
+                  </h2>
+                  <div className="mt-3">
+                    {state.status === null ? (
+                      state.statusError ? (
+                        <div className="flex items-center gap-3 text-ui-caption text-rose-600">
+                          <span className="min-w-0 flex-1 truncate" title={state.statusError}>
+                            {t("agent.runtime.stateFailed")}
+                          </span>
+                          <Button size="sm" onClick={() => void agentActions.refreshStatus()}>
+                            {t("common.retry")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-ui-caption text-slate-400">
+                          <Spinner />
+                          {t("common.loading")}
+                        </div>
+                      )
+                    ) : state.status.phase === "stopped" ? (
+                      <div className="text-ui-caption text-slate-400">
+                        {t("agent.runtime.stopped")}
+                      </div>
+                    ) : state.status.phase === "starting" ? (
+                      <div className="flex items-center gap-2 text-ui-caption text-slate-400">
+                        <Spinner />
+                        {t("agent.runtime.starting")}
+                      </div>
+                    ) : state.status.phase === "failed" ? (
+                      <div
+                        className="break-all text-ui-caption text-rose-600"
+                        title={state.status.errorCode}
+                      >
+                        {state.status.error ?? t("agent.runtime.failed")}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {state.status.payloadVersion ? (
+                          <Fact
+                            label={t("agent.config.payloadVersion")}
+                            value={state.status.payloadVersion}
+                          />
+                        ) : null}
+                        {state.status.nodeVersion ? (
+                          <Fact
+                            label={t("agent.config.node")}
+                            value={state.status.nodeVersion}
+                            mono
+                          />
+                        ) : null}
+                        {state.status.nodePath ? (
+                          <Fact
+                            label={t("agent.config.nodePath")}
+                            value={state.status.nodePath}
+                            mono
+                          />
+                        ) : null}
+                        {state.status.provider ? (
+                          <Fact
+                            label={t("agent.config.provider")}
+                            value={state.status.provider}
+                          />
+                        ) : null}
+                        {state.status.model ? (
+                          <Fact
+                            label={t("agent.config.currentModel")}
+                            value={state.status.model}
+                          />
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                  {state.status?.phase === "failed" ? (
+                    <div className="mt-3 flex justify-end">
+                      <Button size="sm" onClick={() => void agentActions.startRuntime()}>
+                        {t("common.retry")}
+                      </Button>
+                    </div>
+                  ) : state.status?.phase === "ready" ? (
+                    <div className="mt-3 flex items-center justify-end gap-3">
+                      {state.status.restartRequired ? (
+                        <span className="min-w-0 flex-1 text-ui-xs text-amber-700">
+                          {t("agent.config.restartRequired")}
+                        </span>
+                      ) : null}
+                      <Button size="sm" loading={state.starting} onClick={restart}>
+                        {t("agent.config.restartRuntime")}
+                      </Button>
+                    </div>
+                  ) : null}
+                </section>
+              </>
+            ) : null}
             </div>
-          ) : null}
-        </section>
+          )}
+        </div>
       </div>
       {confirmRestart ? (
         <ConfirmDialog
@@ -366,7 +489,28 @@ export function AgentConfigTab({ toast }: Props) {
           }}
         />
       ) : null}
-    </div>
+    </ConfigDialog>
+  );
+}
+
+/** The dialog shell shared by the loaded and the still-reading state. */
+function ConfigDialog({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      title={t("agent.tab.config")}
+      icon={<Settings2 size={16} className="text-slate-400" />}
+      size="wide"
+      bodyScroll={false}
+      onClose={onClose}
+    >
+      {children}
+    </Dialog>
   );
 }
 

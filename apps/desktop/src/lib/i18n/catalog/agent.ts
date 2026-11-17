@@ -5,8 +5,7 @@
 import type { Catalog } from "../types";
 
 export const agent = {
-  // Tabs.
-  "agent.tab.tasks": ["任务", "Tasks"],
+  // Settings dialog (opened from the task column footer).
   "agent.tab.config": ["配置", "Configuration"],
 
   // Task list.
@@ -345,6 +344,10 @@ export const agent = {
   "agent.model.addLevel": ["添加等级", "Add level"],
   "agent.model.removeLevel": ["删除等级", "Remove level"],
   "agent.model.wirePlaceholder": ["发到线上的参数值", "Value sent upstream"],
+  "agent.config.nav.models": ["模型", "Models"],
+  "agent.config.nav.rules": ["规则", "Rules"],
+  "agent.config.nav.general": ["常规", "General"],
+  "agent.config.execution": ["执行", "Execution"],
   "agent.config.prompt": ["提示词模板", "Prompt template"],
   "agent.config.promptHint": [
     "附加到每一次任务。",

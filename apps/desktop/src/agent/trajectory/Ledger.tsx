@@ -22,7 +22,6 @@ import { t } from "../../lib/i18n";
 import { Button, Spinner } from "../../components/ui";
 import { ScrollingName } from "../../components/ScrollingName";
 import {
-  flatten,
   summarizeCalls,
   summarizeTurn,
   toolCallsAfter,
@@ -38,11 +37,12 @@ type LedgerRow = {
   record: TrajRecord;
   turnStart: boolean;
   groupStart: boolean;
-  turnEnd: boolean;
   /** Folded summary that replaces the rows below it. */
   summary?: string;
   /** What the folded row expands when clicked. */
   fold?: "turn" | "calls";
+  /** Records the summary replaced, so search and focus can judge the fold. */
+  folded?: readonly TrajRecord[];
 };
 
 /** Glyph per row kind; tool names refine the wrench into something readable. */
@@ -50,10 +50,7 @@ function KindIcon({ record }: { record: TrajRecord }) {
   const name = record.entry?.kind === "tool" ? record.entry.name : "";
   if (record.kind === "user") {
     return (
-      <span
-        className="h-3 w-3 shrink-0 rounded-full border border-sky-400"
-        aria-hidden="true"
-      />
+      <span className="h-3 w-3 shrink-0 rounded-full border border-sky-400" aria-hidden="true" />
     );
   }
   const Icon =
@@ -99,16 +96,7 @@ function buildRows(
   collapsedTurns: ReadonlySet<number>,
   collapsedAssistants: ReadonlySet<string>,
 ): LedgerRow[] {
-  type Draft = {
-    record: TrajRecord;
-    turn: number;
-    turnStart: boolean;
-    groupStart: boolean;
-    turnEnd: boolean;
-    summary?: string;
-    fold?: "turn" | "calls";
-  };
-  const drafts: Draft[] = [];
+  const drafts: { record: TrajRecord; turn: number; turnStart: boolean; groupStart: boolean }[] = [];
   for (const turn of turns) {
     let first = true;
     for (const group of turn.groups) {
@@ -118,69 +106,82 @@ function buildRows(
           turn: turn.turn,
           turnStart: first,
           groupStart: group.records[0] === record,
-          turnEnd: false,
         });
         first = false;
       }
     }
-    const last = drafts[drafts.length - 1];
-    if (last !== undefined) last.turnEnd = true;
   }
 
   // Turn fold: keep the opening row, replace the rest with one summary row.
-  const afterTurns: Draft[] = [];
+  const afterTurns: LedgerRow[] = [];
   for (const turn of turns) {
     const inTurn = drafts.filter((draft) => draft.turn === turn.turn);
     const first = inTurn[0];
-    const last = inTurn[inTurn.length - 1];
     if (first === undefined) continue;
     if (turn.turn > 0 && collapsedTurns.has(turn.turn) && inTurn.length > 1) {
-      afterTurns.push({ ...first, turnEnd: false });
       afterTurns.push({
-        ...first,
+        key: `turn-open:${turn.turn}`,
+        record: first.record,
+        turnStart: first.turnStart,
+        groupStart: first.groupStart,
+      });
+      afterTurns.push({
+        key: `fold:turn:${turn.turn}`,
+        record: first.record,
         turnStart: false,
         groupStart: false,
-        turnEnd: last?.turnEnd ?? true,
         summary: summarizeTurn(turn),
         fold: "turn",
+        folded: inTurn.slice(1).map((draft) => draft.record),
       });
       continue;
     }
-    afterTurns.push(...inTurn);
+    for (const draft of inTurn) {
+      afterTurns.push({
+        key: draft.record.id,
+        record: draft.record,
+        turnStart: draft.turnStart,
+        groupStart: draft.groupStart,
+      });
+    }
   }
 
-  // Call fold: an assistant's following tool rows become one summary row.
+  // Call fold: an assistant's own tool rows become one summary row. The scan
+  // stops at the step boundary — a tool-only step belongs to the next step.
   const out: LedgerRow[] = [];
   for (let cursor = 0; cursor < afterTurns.length; cursor += 1) {
-    const draft = afterTurns[cursor];
-    if (draft === undefined) continue;
-    const calls: Draft[] = [];
-    if (draft.record.kind === "assistant" && collapsedAssistants.has(draft.record.id)) {
+    const row = afterTurns[cursor];
+    if (row === undefined) continue;
+    const calls: TrajRecord[] = [];
+    if (
+      row.fold === undefined &&
+      row.record.kind === "assistant" &&
+      collapsedAssistants.has(row.record.id)
+    ) {
       for (let next = cursor + 1; next < afterTurns.length; next += 1) {
         const candidate = afterTurns[next];
-        if (candidate === undefined || candidate.record.kind !== "tool") break;
-        calls.push(candidate);
+        if (
+          candidate === undefined ||
+          candidate.fold !== undefined ||
+          candidate.record.kind !== "tool" ||
+          candidate.record.step !== row.record.step ||
+          candidate.record.turn !== row.record.turn
+        ) {
+          break;
+        }
+        calls.push(candidate.record);
       }
     }
-    out.push({
-      key: draft.summary === undefined ? draft.record.id : `fold:turn:${draft.turn}`,
-      record: draft.record,
-      turnStart: draft.turnStart,
-      groupStart: draft.groupStart,
-      turnEnd: calls.length > 0 ? false : draft.turnEnd,
-      ...(draft.summary === undefined ? {} : { summary: draft.summary }),
-      ...(draft.fold === undefined ? {} : { fold: draft.fold }),
-    });
+    out.push(row);
     if (calls.length === 0) continue;
-    const lastCall = calls[calls.length - 1];
     out.push({
-      key: `fold:calls:${draft.record.id}`,
-      record: draft.record,
+      key: `fold:calls:${row.record.id}`,
+      record: row.record,
       turnStart: false,
       groupStart: false,
-      turnEnd: lastCall?.turnEnd ?? false,
-      summary: summarizeCalls(calls.map((call) => call.record)),
+      summary: summarizeCalls(calls),
       fold: "calls",
+      folded: calls,
     });
     cursor += calls.length;
   }
@@ -197,6 +198,8 @@ type Props = {
   onClearSelection: () => void;
   /** Row the timeline asked to reveal without selecting it. */
   focusIndex?: number | null;
+  /** Changes on every focus gesture, so the same row scrolls again. */
+  focusNonce?: number;
   focusIndexes: ReadonlySet<number> | null;
   searchMatchIndexes: ReadonlySet<number> | null;
   collapsedTurns: ReadonlySet<number>;
@@ -215,6 +218,7 @@ export function TrajectoryLedger({
   onSelect,
   onClearSelection,
   focusIndex = null,
+  focusNonce = 0,
   focusIndexes,
   searchMatchIndexes,
   collapsedTurns,
@@ -228,7 +232,10 @@ export function TrajectoryLedger({
     () => buildRows(turns, collapsedTurns, collapsedAssistants),
     [turns, collapsedTurns, collapsedAssistants],
   );
-  const allRecords = useMemo(() => flatten(turns), [turns]);
+  const allRecords = useMemo(
+    () => turns.flatMap((turn) => turn.groups.flatMap((group) => group.records)),
+    [turns],
+  );
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -256,7 +263,7 @@ export function TrajectoryLedger({
       `[data-record-index="${focusIndex}"]`,
     );
     row?.scrollIntoView({ block: "nearest" });
-  }, [focusIndex]);
+  }, [focusIndex, focusNonce]);
 
   if (loading) {
     return (
@@ -312,25 +319,36 @@ export function TrajectoryLedger({
           {rows.map((row) => {
             const { record } = row;
             const folded = row.summary !== undefined;
-            const outside =
-              focusIndexes !== null && !folded && !focusIndexes.has(record.index);
-            const dimmed =
-              searchMatchIndexes !== null && !folded && !searchMatchIndexes.has(record.index);
             const selected = !folded && selectedIndex === record.index;
+            // A folded summary stands for the rows it replaced: it is dimmed
+            // when none of them is in the focus / match set.
+            const scope = row.folded ?? [record];
+            const outside =
+              !selected &&
+              focusIndexes !== null &&
+              !scope.some((candidate) => focusIndexes.has(candidate.index));
+            const dimmed =
+              !selected &&
+              searchMatchIndexes !== null &&
+              !scope.some((candidate) => searchMatchIndexes.has(candidate.index));
             return (
               <tr
                 key={row.key}
-                tabIndex={folded ? -1 : 0}
+                tabIndex={0}
                 aria-selected={selected}
                 data-record-index={folded ? undefined : record.index}
                 className={clsx(
                   "outline-none transition-[background-color,opacity] duration-100",
                   "hover:bg-overlay",
+                  "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-200",
                   selected && "bg-selected",
                   outside && "opacity-25",
                   dimmed && "opacity-15",
                 )}
-                onClick={() => {
+                onClick={(event) => {
+                  // A double click must not run the single-click action twice:
+                  // the first click already changed what the row means.
+                  if (event.detail > 1) return;
                   if (folded) {
                     expand(row);
                     return;
@@ -430,9 +448,7 @@ export function TrajectoryLedger({
                 >
                   {folded ? (
                     <span className="flex min-w-0 items-center text-slate-500">
-                      <span className="min-w-0 flex-1">
-                        <ScrollingName text={row.summary ?? ""} />
-                      </span>
+                      <ScrollingName text={row.summary ?? ""} />
                     </span>
                   ) : (
                     <span

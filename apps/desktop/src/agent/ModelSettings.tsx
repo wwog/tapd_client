@@ -84,13 +84,15 @@ function discoveredEntry(model: DshDiscoveredModel): DshModelEntry {
 type Props = {
   value: DshModelsConfig;
   onChange: (next: DshModelsConfig) => void;
+  /** Fills the dialog pane instead of the fixed 380px block. */
+  fill?: boolean;
 };
 
 /**
  * Providers on the left, the selected route on the right, its catalog below.
  * Edits stay in the caller's draft: the configuration tab owns the one save.
  */
-export function ModelSettings({ value, onChange }: Props) {
+export function ModelSettings({ value, onChange, fill = false }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editor, setEditor] = useState<{ providerId: string; index: number | null } | null>(
     null,
@@ -274,8 +276,8 @@ export function ModelSettings({ value, onChange }: Props) {
   const firstEnabledModel = selected?.models.find((model) => model.enabled)?.id ?? null;
 
   return (
-    <section className={cardClass}>
-      <div className="flex items-center gap-3">
+    <section className={clsx(cardClass, fill && "flex h-full min-h-0 flex-col")}>
+      <div className="flex shrink-0 items-center gap-3">
         <h2 className="text-ui-base text-slate-900" title={t("agent.config.modelHint")}>
           {t("agent.config.model")}
         </h2>
@@ -290,7 +292,7 @@ export function ModelSettings({ value, onChange }: Props) {
         </Button>
       </div>
 
-      <div className="mt-4 flex h-[380px]">
+      <div className={clsx("mt-4 flex", fill ? "min-h-0 flex-1" : "h-[380px]")}>
         <nav
           className="w-40 shrink-0 space-y-0.5 overflow-y-auto border-r border-border pr-3"
           aria-label={t("agent.model.providers")}

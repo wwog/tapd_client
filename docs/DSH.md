@@ -316,13 +316,19 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
              "cacheReadTokens": 256, "cacheWriteTokens": 0 },
   "pressure": { "contextWindow": 1000000, "pressureTokens": 11863,
                 "projectedTokens": 12060 },
-  "breakdown": { "systemTokens": 1800, "toolsTokens": 8800, "messageTokens": 1460 } }
+  "breakdown": { "systemTokens": 1800, "toolsTokens": 8800, "messageTokens": 1460 },
+  // dsh 自己的整段日志统计（sessionStats 投影），速度/TTFT 的唯一来源
+  "stats": { "turns": 3, "steps": 5, "llmMs": 21000, "toolMs": 4000,
+             "ttftMs": 9000, "ttftSteps": 5, "decodeMs": 20000, "decodeTokens": 1040 } }
 ```
 
-`usage` / `pressure` / `breakdown` 分别来自 dsh 的 `tokenUsage` / `contextPressure` /
-`contextBreakdown` 投影，任一投影缺失时该字段省略。Rust 只取 `pressure` 与
+`usage` / `pressure` / `breakdown` / `stats` 分别来自 dsh 的 `tokenUsage` / `contextPressure` /
+`contextBreakdown` / `sessionStats` 投影，任一投影缺失时该字段省略。Rust 只取 `pressure` 与
 `breakdown`（累计 token 由 transcript 自己算）；`projectedTokens` 是上下文占用的
-首选值，没有时退回 `pressureTokens`。
+首选值，没有时退回 `pressureTokens`。速度 `tokensPerSecond = decodeTokens ÷ decodeMs`，
+TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单条短消息不会算成四位数的假速度。
+`sessionStats` 不在 base/SDK bundle 里，`prepare_profile` 会往 profile 插一行
+`@deepseek-ai/dsh-session-stats`。
 
 `event`（单条事件）是保留类型：Rust 已能接收 `{type:"event",token,sessionId,event}`，
 当前插件不发（已提交事件走 SDK 的 `session.event`，两边共用同一个 ingest）。
@@ -410,8 +416,10 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
-  上一段生成速度 `tokensPerSecond`（`outputTokens ÷ (数据块首帧时间 → 消息落定)`）、
-  首 token 平均等待 `ttftMs`（`step/start → 数据块首帧`，多次请求取平均）、
+  生成速度 `tokensPerSecond`（**整段会话**的 `decodeTokens ÷ decodeMs`，来自 `sessionStats` 投影；
+  不再按单条消息算，否则一次 4ms 的短回复会除出 10,000 tok/s）、
+  首 token 平均等待 `ttftMs`（`ttftMs ÷ ttftSteps`，来自同一投影；投影前用
+  `step/start → 数据块首帧` 的本地平均兜底）、
   模型总用时 `modelMs`（`step/start → 消息落定` 累加）。
   状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用只用运行时的
   `contextUsedTokens`（`contextPressure` 投影）。会话累计 `totalTokens` 会随轮次无限增长，
@@ -498,7 +506,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_restart` | — | `DshStatus`；持同一把启动锁执行 stop → start，兜底用（模型/团队默认已热更新） |
 | `dsh_session_cancel` | `{ sessionId }` | `{ ok: true }`；只停当前回合，不改任务 workflow；同会话的 pending 请求一并结算 |
 | `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
-| `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时只返回 `seq > sinceSeq` 的行，手机轮询用它避免全量重下；`lastSeq` 小于本地值时说明运行时重启过，回退全量读） |
+| `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时返回**最后一次更新事件 seq > sinceSeq** 的行——`tool` 行保留 `tool/call` 的 seq，结果到达时原地更新，所以不能按行自身 seq 过滤，否则增量读取永远看不到工具结果；`lastSeq` 是已应用事件的最大 seq，小于本地值时说明运行时重启过，回退全量读） |
 | `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |

@@ -133,6 +133,15 @@ export type DshEntry =
       step: number;
       text: string;
       reasoning?: string;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+        totalTokens: number;
+      };
+      provider?: string;
+      model?: string;
       startedAtMs?: number;
       firstTokenAtMs?: number;
       completedAtMs?: number;
@@ -158,6 +167,7 @@ export type DshEntry =
       turn: number;
       state: "start" | "end";
       reason?: string;
+      error?: string;
     };
 
 /* -------------------------------------------------------------------------

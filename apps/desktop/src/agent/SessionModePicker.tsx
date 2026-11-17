@@ -168,14 +168,14 @@ export function SessionModePicker() {
                         aria-selected={selected}
                         onClick={() => pick(option.value)}
                         className={clsx(
-                          "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition",
+                          "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition",
                           selected ? "bg-sky-50" : "hover:bg-slate-50",
                         )}
                       >
                         <Icon
                           size={14}
                           className={clsx(
-                            "mt-0.5 shrink-0",
+                            "shrink-0",
                             selected ? "text-sky-600" : "text-slate-400",
                           )}
                         />
@@ -192,7 +192,7 @@ export function SessionModePicker() {
                             {t(option.hint)}
                           </span>
                         </span>
-                        <span className="mt-0.5 grid h-3 w-3 shrink-0 place-items-center">
+                        <span className="grid h-3 w-3 shrink-0 place-items-center">
                           {selected ? <Check size={12} className="text-sky-500" /> : null}
                         </span>
                       </button>
