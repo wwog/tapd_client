@@ -25,6 +25,7 @@ import {
 } from "react";
 
 import { ProjectOpenButton } from "../../components/ProjectOpenButton";
+import { ScrollingName } from "../../components/ScrollingName";
 import { dirname, fsApi, type FsEntry } from "../../lib/fs";
 import { t } from "../../lib/i18n";
 import { Breadcrumb } from "../explorer/Breadcrumb";
@@ -323,12 +324,10 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
         className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2"
         data-workbench-explorer="header"
       >
-        <span
-          className="min-w-0 flex-1 truncate text-ui-sm text-slate-700"
-          title={projectName}
-        >
-          {projectName}
-        </span>
+        <ScrollingName
+          text={projectName}
+          className="min-w-0 flex-1 text-ui-sm text-slate-700"
+        />
         <button
           type="button"
           aria-label={t("explorer.refresh")}

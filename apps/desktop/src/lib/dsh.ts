@@ -318,6 +318,10 @@ export const dshApi = {
   /** Stops one session's current turn; the task workflow is untouched. */
   cancelTurn: (sessionId: string) =>
     feature<{ ok: true }>("dsh_session_cancel", { sessionId }),
+  /** Continues the last failed turn in place: the prompt is not sent again, so
+   *  it never lands in the context twice. */
+  retryTurn: (sessionId: string) =>
+    feature<{ sessionId: string; ok: true }>("dsh_session_retry", { sessionId }),
   newSession: () => invoke<{ sessionId: string }>("dsh_new_session"),
   sessions: () => invoke<{ sessions: DshSessionRow[] }>("dsh_sessions"),
   pending: () => invoke<{ requests: DshPendingRequest[] }>("dsh_pending"),
@@ -377,6 +381,10 @@ export type DshFocusSessionEvent = { sessionId: string };
 type DshFeatureCommand =
   | "dsh_restart"
   | "dsh_session_cancel"
+  | "dsh_session_retry"
+  | "dsh_session_dir"
+  | "dsh_worktrees"
+  | "dsh_worktree_remove"
   | "dsh_session_mode_get"
   | "dsh_session_mode_set"
   | "dsh_models_discover"
@@ -433,9 +441,29 @@ export const dshTaskApi = {
     feature<{ diff: string; truncated: boolean }>("dsh_task_diff", { sessionId }),
   resume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
-  /** Chats only: removes the row, the log and the scratch workspace. */
+  /** Removes the row, its log and whatever directory the app made for it. */
   delete: (sessionId: string) =>
     feature<{ sessionId: string }>("dsh_task_delete", { sessionId }),
+  /** The directory a session works in, for "在 Finder 中打开". */
+  sessionDir: (sessionId: string) =>
+    feature<{ path: string; exists: boolean }>("dsh_session_dir", { sessionId }),
+};
+
+/** One leftover directory under the app's worktree root. */
+export type DshWorktree = {
+  sessionId: string;
+  path: string;
+  updatedAt: string;
+  title: string;
+  project: DshTask["project"];
+  repoPath: string;
+  /** No task row owns it any more. */
+  orphan: boolean;
+};
+
+export const dshWorktreeApi = {
+  list: () => feature<{ root: string; worktrees: DshWorktree[] }>("dsh_worktrees"),
+  remove: (path: string) => feature<{ path: string }>("dsh_worktree_remove", { path }),
 };
 
 export const dshPolicyApi = {

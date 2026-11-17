@@ -354,6 +354,16 @@ impl BridgeState {
             .copied()
     }
 
+    /// Asks the plugin to re-run the session's last turn. The plugin inserts the
+    /// engine's own empty `retry` user message, so the prompt is not repeated in
+    /// the model's context.
+    pub fn retry_session(&self, session_id: &str) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "retry",
+            "sessionId": session_id,
+        }))
+    }
+
     /// Requests plan mode for one session. The plugin queues the frame until
     /// the Agent exists; the engine writes `plan/mode` once it is applied.
     pub fn set_plan(&self, session_id: &str, active: bool) -> Result<(), String> {

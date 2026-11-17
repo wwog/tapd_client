@@ -137,6 +137,8 @@ export type AgentState = {
   teamViews: Record<string, AgentTeamView>;
   /** Transcript vs trajectory per session; absent means the transcript. */
   taskViews: Record<string, AgentTaskView>;
+  /** A transcript row asking the trajectory to open on one record. */
+  trajectoryFocus: { sessionId: string; recordId: string; nonce: number } | null;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -187,6 +189,7 @@ const initialState: AgentState = {
   teamErrors: {},
   teamViews: {},
   taskViews: {},
+  trajectoryFocus: null,
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -1100,10 +1103,10 @@ export const agentActions = {
     return task;
   },
 
-  /** Deletes a free conversation (row, log and scratch workspace). Errors are
-   *  surfaced through the page's error line; the list self-heals from the
-   *  backend's `dsh://tasks` event either way. */
-  deleteChat: async (sessionId: string): Promise<void> => {
+  /** Deletes one session: row, log, its directory and any worktree it made.
+   *  Errors are surfaced through the page's error line; the list self-heals from
+   *  the backend's `dsh://tasks` event either way. */
+  deleteSession: async (sessionId: string): Promise<void> => {
     try {
       await dshTaskApi.delete(sessionId);
     } catch (error) {
@@ -1161,6 +1164,23 @@ export const agentActions = {
     }
   },
 
+  /** Re-runs a failed turn without queuing its prompt again: the engine
+   *  records an empty retry message, so the context keeps one copy. */
+  retryTurn: async (sessionId: string): Promise<void> => {
+    try {
+      update((state) => ({
+        ...state,
+        // Same reset as a fresh prompt: the failed attempt's overlay is stale.
+        live: { ...state.live, [sessionId]: undefined },
+        committedAttempts: { ...state.committedAttempts, [sessionId]: undefined },
+        lastError: null,
+      }));
+      await dshApi.retryTurn(sessionId);
+    } catch (error) {
+      setError(error);
+    }
+  },
+
   setPermissionMode: async (mode: DshAgentConfig["permissionMode"]): Promise<void> => {
     const { mode: saved } = await dshPolicyApi.set(mode);
     update((state) =>
@@ -1182,6 +1202,19 @@ export const agentActions = {
     update((state) => ({
       ...state,
       taskViews: { ...state.taskViews, [sessionId]: view },
+    }));
+  },
+
+  /** Opens the trajectory on one record; a transcript tool row calls this. */
+  focusTrajectory: (sessionId: string, recordId: string): void => {
+    update((state) => ({
+      ...state,
+      taskViews: { ...state.taskViews, [sessionId]: "trajectory" },
+      trajectoryFocus: {
+        sessionId,
+        recordId,
+        nonce: (state.trajectoryFocus?.nonce ?? 0) + 1,
+      },
     }));
   },
 

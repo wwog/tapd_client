@@ -6,6 +6,8 @@ import {
   FONT_OPTIONS,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
+  ISLAND_OPACITY_MAX,
+  ISLAND_OPACITY_MIN,
   setAppearance,
   useAppearance,
   type IslandDisplayMode,
@@ -69,7 +71,15 @@ export function ThemePicker({ className }: { className?: string }) {
 /** Appearance card: theme mode, UI font and the shared base font size. */
 export function AppearanceCard() {
   const appearance = useAppearance();
-  const { island, islandDisplay, font, customFont, fontSize, locale } = appearance;
+  const {
+    island,
+    islandDisplay,
+    islandOpacity,
+    font,
+    customFont,
+    fontSize,
+    locale,
+  } = appearance;
 
   // Language names stay in their own script, the way OS pickers show them.
   const languages: Array<{ value: LocaleMode; label: string }> = [
@@ -209,6 +219,30 @@ export function AppearanceCard() {
             onChange={(value) => setAppearance({ islandDisplay: value })}
           />
         </div>
+        <label className="block">
+          <span
+            className="flex items-center justify-between gap-3 text-ui-xs font-normal text-slate-500"
+            title={t("settings.capsule.opacityTooltip")}
+          >
+            {t("settings.capsule.opacity")}
+            <span className="tabular-nums text-slate-400">
+              {Math.round(islandOpacity * 100)}%
+            </span>
+          </span>
+          <input
+            type="range"
+            min={Math.round(ISLAND_OPACITY_MIN * 100)}
+            max={Math.round(ISLAND_OPACITY_MAX * 100)}
+            step={1}
+            value={Math.round(islandOpacity * 100)}
+            aria-label={t("settings.capsule.opacity")}
+            aria-valuetext={`${Math.round(islandOpacity * 100)}%`}
+            onChange={(event) =>
+              setAppearance({ islandOpacity: Number(event.target.value) / 100 })
+            }
+            className="mt-2 h-1.5 w-full cursor-pointer accent-sky-500"
+          />
+        </label>
       </div>
 
     </section>

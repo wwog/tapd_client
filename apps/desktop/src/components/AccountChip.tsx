@@ -4,6 +4,7 @@ import { ChevronRight } from "lucide-react";
 import { avatarSrc } from "../lib/api";
 import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
+import { ScrollingName } from "./ScrollingName";
 
 type Props = {
   /** Signed-in avatar source (already resolved through `info.meAvatar`). */
@@ -78,10 +79,8 @@ export function AccountChip({
         <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-canvas bg-emerald-500" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-ui-caption font-normal text-slate-700">
-          {name}
-        </span>
-        <span className="block truncate text-ui-xs text-slate-400">{company}</span>
+        <ScrollingName text={name ?? ""} className="text-ui-caption font-normal text-slate-700" />
+        <ScrollingName text={company ?? ""} className="text-ui-xs text-slate-400" />
       </span>
       <ChevronRight
         size={13}

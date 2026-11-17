@@ -57,7 +57,13 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   }
 
   const shown = blocks.filter(
-    (block) => block.entries.length > 0 || block.key === activeKey,
+    (block) =>
+      block.entries.length > 0 ||
+      block.key === activeKey ||
+      // A retry has no prompt of its own (the engine records an empty message),
+      // so a second failure would otherwise have no row to show its reason on.
+      block.end?.reason === "error" ||
+      block.end?.reason === "blocked",
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -158,6 +164,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
               block={block}
               running={active}
               live={active ? liveTrace : undefined}
+              sessionId={sessionId ?? undefined}
             />
           );
         })}

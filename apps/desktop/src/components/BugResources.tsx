@@ -27,6 +27,7 @@ import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 import { MediaPreview, type PreviewItem } from "./MediaPreview";
 import { BugSectionTitle } from "./BugSectionTitle";
+import { ScrollingName } from "./ScrollingName";
 
 type Props = {
   open: boolean;
@@ -408,9 +409,10 @@ function AttachmentRow(props: {
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption font-normal text-slate-700" title={attachment.filename}>
-          {attachment.filename}
-        </div>
+        <ScrollingName
+          text={attachment.filename}
+          className="text-ui-caption font-normal text-slate-700"
+        />
         <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
           <span>{formatBytes(attachment.size)}</span>
           <span className="truncate">{attachment.contentType || attachment.filetype}</span>
@@ -465,9 +467,10 @@ function EmbeddedMediaRow(props: {
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption text-slate-700" title={media.filenameHint || media.url}>
-          {media.filenameHint || t("bugs.embeddedResource")}
-        </div>
+        <ScrollingName
+          text={media.filenameHint || t("bugs.embeddedResource")}
+          className="text-ui-caption text-slate-700"
+        />
         <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
           {media.size > 0 ? <span>{formatBytes(media.size)}</span> : null}
           <span className="truncate">{t("bugs.embeddedKind", { kind: kindLabel })}</span>

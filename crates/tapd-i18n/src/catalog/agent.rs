@@ -7,6 +7,21 @@ pub static MESSAGES: &[Message] = &[
     ("agent.attachment.file", "文件", "File"),
     ("agent.attachment.image", "图片", "Image"),
     ("agent.attachment.video", "视频", "Video"),
+    (
+        "agent.image.missing",
+        "图片文件不在了，无法预览",
+        "The image file is gone; nothing to preview",
+    ),
+    (
+        "agent.image.tooLarge",
+        "图片太大，不在这里预览",
+        "The image is too large to preview here",
+    ),
+    (
+        "agent.image.unsupported",
+        "这种图片格式不支持预览",
+        "This image format cannot be previewed here",
+    ),
     ("agent.prompt.attachment.line", "- {}：{}", "- {}: {}"),
     ("agent.prompt.attachments.header", "\n\n用户附加资源（本地路径，请直接读取）：\n", "\n\nUser attachments (local paths, read them directly):\n"),
     (

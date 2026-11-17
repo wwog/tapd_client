@@ -16,6 +16,7 @@ import clsx from "clsx";
 import { mediaSrc } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 
 export type PreviewItem = {
   url: string;
@@ -207,9 +208,7 @@ export function MediaPreview(props: Props) {
         className="relative flex shrink-0 items-center justify-center border-b border-white/10 px-4 py-2.5"
       >
         <div data-tauri-drag-region className="min-w-0 max-w-[min(60%,34rem)] text-center">
-          <div className="truncate text-ui-caption font-normal" title={current.label}>
-            {current.label}
-          </div>
+          <ScrollingName text={current.label} className="text-ui-caption font-normal" />
           <div className="text-ui-xs text-slate-400">
             {index + 1} / {items.length}
             {current.size ? ` · ${formatBytes(current.size)}` : ""}

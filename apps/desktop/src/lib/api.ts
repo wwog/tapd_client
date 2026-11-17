@@ -423,6 +423,10 @@ export const api = {
   exportCaptures: (targetDir?: string | null) =>
     invoke<string>("capture_export", { targetDir: targetDir ?? null }),
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  /** Opens the containing folder with the item selected (Finder reveal). */
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  /** One local image as a `data:` URL, for inline previews. */
+  imageDataUrl: (path: string) => invoke<string>("image_data_url", { path }),
   /** Opens a local file with the saved "打开方式" app for `kind`. */
   openFile: (path: string, kind?: string, target?: string) =>
     invoke<void>("open_file", {

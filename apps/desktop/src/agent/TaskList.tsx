@@ -1,14 +1,21 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { Plus, Settings2, Trash2 } from "lucide-react";
+import { ChevronRight, FolderOpen, Plus, Settings2, Trash2 } from "lucide-react";
 
-import { relativeTime } from "../lib/api";
+import { api, relativeTime } from "../lib/api";
 import { t, type MessageKey } from "../lib/i18n";
+import { showToast } from "../lib/toast";
 import type { DshSessionStatus, DshTask, DshTaskWorkflow } from "../lib/dsh";
+import { dshTaskApi } from "../lib/dsh";
+import { readPref, writePref } from "../lib/uiPrefs";
 import { Badge, Button, Spinner } from "../components/ui";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ContextMenu, ContextMenuItem } from "../components/ContextMenu";
 import { ScrollingName } from "../components/ScrollingName";
 import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./store";
+
+/** Which project groups are folded shut, by group key. */
+const COLLAPSED_PREF = "agent.collapsed-projects.v1";
 
 const WORKFLOW: Record<
   DshTaskWorkflow,
@@ -50,7 +57,29 @@ function groupTasks(tasks: DshTask[]): TaskGroup[] {
 export function TaskList() {
   const state = agentStore.use();
   const [deleting, setDeleting] = useState<DshTask | null>(null);
+  const [menu, setMenu] = useState<{ task: DshTask; x: number; y: number } | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    () => new Set(readPref<string[]>(COLLAPSED_PREF) ?? []),
+  );
   const tasks = state.tasks;
+
+  /** Opens the session's own directory (worktree, repo, or chat scratch dir). */
+  const reveal = async (task: DshTask) => {
+    try {
+      const { path, exists } = await dshTaskApi.sessionDir(task.id);
+      if (!exists) throw new Error(path);
+      await api.openPath(path);
+    } catch (error) {
+      showToast("error", t("agent.session.revealFailed", { error: String(error) }));
+    }
+  };
+
+  const toggleGroup = (key: string) => {
+    const next = new Set(collapsed);
+    if (!next.delete(key)) next.add(key);
+    setCollapsed(next);
+    writePref(COLLAPSED_PREF, [...next]);
+  };
   // Live facts win over the persisted copy: the task list only re-emits on
   // workflow transitions, while session status/activity stream continuously.
   const ordered = tasks
@@ -105,26 +134,48 @@ export function TaskList() {
             {t("agent.task.empty")}
           </div>
         ) : (
-          groupTasks(ordered ?? []).map((group) => (
-            <section key={group.key} className="mt-1 first:mt-0">
-              <h3 className="truncate px-1 py-1 text-ui-xs text-slate-400" title={group.name}>
-                {group.name}
-              </h3>
-              <div className="flex flex-col gap-0.5">
-                {group.tasks.map((task) => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    selected={task.id === state.selectedId}
-                    status={taskLiveStatus(state, task)}
-                    updatedAt={taskActivityAt(state, task)}
-                    pending={pending.get(task.id) ?? 0}
-                    onDelete={setDeleting}
+          groupTasks(ordered ?? []).map((group) => {
+            const folded = collapsed.has(group.key);
+            // The selected row stays visible when its group is folded: the pane
+            // on the right is still that task, so hiding it would be a lie.
+            const rows = folded
+              ? group.tasks.filter((task) => task.id === state.selectedId)
+              : group.tasks;
+            return (
+              <section key={group.key} className="mt-1 first:mt-0">
+                <button
+                  type="button"
+                  aria-expanded={!folded}
+                  onClick={() => toggleGroup(group.key)}
+                  className="flex w-full items-center gap-1 rounded px-1 py-1 text-left text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+                >
+                  <ChevronRight
+                    size={11}
+                    className={clsx("shrink-0 transition-transform", !folded && "rotate-90")}
                   />
-                ))}
-              </div>
-            </section>
-          ))
+                  <ScrollingName text={group.name} className="min-w-0 flex-1" />
+                  <span className="shrink-0 tabular-nums text-ui-2xs text-slate-300">
+                    {group.tasks.length}
+                  </span>
+                </button>
+                {rows.length > 0 ? (
+                  <div className="flex flex-col gap-0.5">
+                    {rows.map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        selected={task.id === state.selectedId}
+                        status={taskLiveStatus(state, task)}
+                        updatedAt={taskActivityAt(state, task)}
+                        pending={pending.get(task.id) ?? 0}
+                        onMenu={(target, x, y) => setMenu({ task: target, x, y })}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            );
+          })
         )}
       </div>
       {/* Settings are page-wide, not per session: the column footer is their
@@ -139,6 +190,36 @@ export function TaskList() {
           {t("agent.tab.config")}
         </button>
       </div>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          label={menu.task.title || t("agent.task.untitled")}
+          onClose={() => setMenu(null)}
+        >
+          {(close) => (
+            <>
+              <ContextMenuItem
+                label={t("agent.session.reveal")}
+                icon={<FolderOpen size={13} />}
+                onClick={() => {
+                  close();
+                  void reveal(menu.task);
+                }}
+              />
+              <ContextMenuItem
+                label={t("agent.session.delete")}
+                icon={<Trash2 size={13} />}
+                tone="danger"
+                onClick={() => {
+                  close();
+                  setDeleting(menu.task);
+                }}
+              />
+            </>
+          )}
+        </ContextMenu>
+      ) : null}
       {deleting ? (
         <ConfirmDialog
           title={t("agent.session.delete")}
@@ -149,7 +230,7 @@ export function TaskList() {
           onConfirm={() => {
             const target = deleting;
             setDeleting(null);
-            if (target) void agentActions.deleteChat(target.id);
+            if (target) void agentActions.deleteSession(target.id);
           }}
         />
       ) : null}
@@ -163,14 +244,14 @@ function TaskRow({
   status,
   updatedAt,
   pending,
-  onDelete,
+  onMenu,
 }: {
   task: DshTask;
   selected: boolean;
   status: DshSessionStatus;
   updatedAt: string;
   pending: number;
-  onDelete: (task: DshTask) => void;
+  onMenu: (task: DshTask, x: number, y: number) => void;
 }) {
   const workflow = WORKFLOW[task.workflow];
 
@@ -180,9 +261,12 @@ function TaskRow({
         type="button"
         aria-current={selected}
         onClick={() => agentActions.selectSession(task.id)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onMenu(task, event.clientX, event.clientY);
+        }}
         className={clsx(
           "w-full rounded-lg border px-2.5 py-1.5 text-left transition",
-          task.kind === "chat" && "pr-8",
           selected
             ? "border-sky-200 bg-sky-50"
             : "border-transparent hover:bg-slate-50",
@@ -220,20 +304,6 @@ function TaskRow({
           ) : null}
         </div>
       </button>
-      {task.kind === "chat" ? (
-        <button
-          type="button"
-          title={t("agent.session.delete")}
-          aria-label={t("agent.session.delete")}
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete(task);
-          }}
-          className="absolute right-1.5 top-1.5 hidden rounded-md p-1 text-slate-400 transition hover:bg-overlay hover:text-rose-600 group-hover:block"
-        >
-          <Trash2 size={12} />
-        </button>
-      ) : null}
     </div>
   );
 }

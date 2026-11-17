@@ -6,12 +6,13 @@
  * local view state, so switching to the conversation and back keeps the log
  * untouched.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Clock, Search } from "lucide-react";
 
 import { t } from "../../lib/i18n";
 import type { DshEntry } from "../../lib/dsh";
+import { agentStore } from "../store";
 import { TrajectoryInspector } from "./Inspector";
 import { TrajectoryLedger } from "./Ledger";
 import { TrajectoryTimeline } from "./Timeline";
@@ -32,6 +33,7 @@ import {
 } from "./projection";
 
 type Props = {
+  sessionId: string;
   entries: readonly DshEntry[];
   live: LiveTraceInput | undefined;
   loading: boolean;
@@ -68,7 +70,7 @@ function FoldButton({
   );
 }
 
-export function TrajectoryView({ entries, live, loading, failed, onRetry }: Props) {
+export function TrajectoryView({ sessionId, entries, live, loading, failed, onRetry }: Props) {
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(new Set());
   const [collapsedAssistants, setCollapsedAssistants] = useState<ReadonlySet<string>>(new Set());
   /** Selection is a record identity, not a position: a merged history page can
@@ -156,6 +158,18 @@ export function TrajectoryView({ entries, live, loading, failed, onRetry }: Prop
   const focusRecord = useCallback((index: number) => {
     setFocus((current) => ({ index, nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
+
+  // A tool row clicked in the transcript asks for its own ledger row. The
+  // nonce makes a repeated click on the same call select it again.
+  const request = agentStore.use().trajectoryFocus;
+  const handledRequest = useRef(0);
+  useEffect(() => {
+    if (!request || request.sessionId !== sessionId) return;
+    if (handledRequest.current === request.nonce) return;
+    handledRequest.current = request.nonce;
+    const record = records.find((candidate) => candidate.id === request.recordId);
+    if (record !== undefined) selectRecord(record);
+  }, [request, sessionId, records, selectRecord]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">

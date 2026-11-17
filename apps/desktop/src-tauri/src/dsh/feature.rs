@@ -181,6 +181,11 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     bridge(app)?.create_session(app, session_id);
     let state = runtime(app)?;
     state.ensure_ready(app).await?;
+    // A prompt on a finished or failed task makes it active again before the
+    // first event lands: the row must not say "已完成" while it works.
+    if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
+        tracing::warn!(%error, session = session_id, "task row was not reopened");
+    }
     // Free chats get their own scratch directory: a session with no project
     // must never read or write a repository the user did not choose. Tasks
     // assign their worktree right after this, so they are unaffected.
@@ -201,6 +206,35 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     state.prepare_session(app, session_id, !restored).await;
     let receipt = state.query(app, session_id, text).await?;
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
+}
+
+/// Re-runs a failed turn without sending its prompt a second time.
+///
+/// dsh's own retry shape is an empty user message tagged `source.kind = retry`:
+/// the turn runs again from the same context and the transcript skips the
+/// message, so the prompt never lands in the model's context twice. The SDK
+/// exposes no such call, so it travels over the bridge control channel the same
+/// way `cancel` does. A retry is new input, so a task that had settled as
+/// done/failed is working again.
+pub async fn retry_turn(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let bridge = bridge(app)?;
+    bridge.create_session(app, session_id);
+    let state = runtime(app)?;
+    state.ensure_ready(app).await?;
+    if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
+        tracing::warn!(%error, session = session_id, "task row was not reopened");
+    }
+    // A session restored from a previous run is not open in the runtime, and
+    // the bridge plugin drops a retry with no live Agent.
+    let restored = dsh_sessions_dir(app)
+        .and_then(|dir| super::session_log::path(&dir, session_id))
+        .is_some();
+    if restored {
+        state.resume_session(app, session_id).await?;
+    }
+    state.prepare_session(app, session_id, !restored).await;
+    bridge.retry_session(session_id)?;
+    Ok(json!({ "sessionId": session_id, "ok": true }))
 }
 
 /// Creates and queues the per-chat working directory. Best effort: the
@@ -381,6 +415,13 @@ struct SessionRequest {
     session_id: String,
 }
 
+/// One worktree directory under the app's own worktree root.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeRequest {
+    path: String,
+}
+
 /// One session-mode write. Both fields are optional so a plan toggle does not
 /// rewrite the permission mode; at least one must be present.
 #[derive(Deserialize)]
@@ -457,6 +498,10 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             let request: SessionRequest = parse(payload, "dsh_session_cancel")?;
             cancel_turn(app, &request.session_id).await
         }
+        "dsh_session_retry" => {
+            let request: SessionRequest = parse(payload, "dsh_session_retry")?;
+            retry_turn(app, &request.session_id).await
+        }
         "dsh_session_mode_get" => {
             let request: SessionRequest = parse(payload, "dsh_session_mode_get")?;
             session_mode(app, &request.session_id).await
@@ -470,6 +515,14 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
                 request.plan,
             )
             .await
+        }
+        "dsh_worktrees" => super::tasks::worktrees(app).await,
+        "dsh_session_dir" => {
+            let request: SessionRequest = parse(payload, "dsh_session_dir")?;
+            super::tasks::session_dir(app, &request.session_id).await
+        }        "dsh_worktree_remove" => {
+            let request: WorktreeRequest = parse(payload, "dsh_worktree_remove")?;
+            super::tasks::remove_worktree(app, &request.path).await
         }
         "dsh_sessions" => sessions(app),
         name if name.starts_with("dsh_team_") => super::team::command(app, name, payload).await,

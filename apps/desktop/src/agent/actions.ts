@@ -74,12 +74,13 @@ export function describeTool(name: string, argsJson: string): ToolAction {
   switch (name) {
     case "bash":
     case "pwsh": {
-      const description = firstLine(args.description);
+      // The command itself, not the model's summary: "what actually ran" is the
+      // question this row answers. It stays one line and slides on hover.
       const command = firstLine(args.command);
       return {
         kind: "bash",
         verb: t("agent.action.ran"),
-        target: description || command || name,
+        target: command || firstLine(args.description) || name,
       };
     }
     case "read":

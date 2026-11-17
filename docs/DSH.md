@@ -641,7 +641,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 
 | 模式 | 行为 | 判定 |
 | --- | --- | --- |
-| `auto`（默认） | 只在有风险时请求授权 | 命中「硬 / 软」规则 → `ask`；其余放行 |
+| `auto`（默认） | 只在有风险时请求授权 | 命中「硬 / 软」规则 → `ask`；路径类规则交给引擎沙箱 |
 | `notify` | 全部放行，执行前推一条通知 | 命中硬 / 软规则 → 通知（不阻塞） |
 | `full` | 除硬黑名单外全部放行 | 仅命中硬规则 → `ask` |
 
@@ -650,6 +650,12 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 - 硬规则：`rm -rf /`、`mkfs`、`dd` 写磁盘、`sudo`、`git push --force`、
   `DROP TABLE`、`curl … | sh`、写 `~/.ssh` / `~/.aws` / keychain、`chmod -R 777 /`。
 - 软规则：工作区外写入、删除工作区文件、安装依赖、`git push`、网络上传。
+- 写目标是按命令段取的：只有重定向的文件和写命令（`rm`/`cp`/`mv`/`tee`…）的路径参数算写入，
+  `2>/dev/null`、`ls`/`find` 的操作数、`/dev/*` 都不算。
+- 模式同时决定**引擎自己的沙箱**（`sandbox/mode` 事件，会话级、可重放）：`auto` 保留
+  `workspace-write`，路径类规则（工作区外写入、凭证路径）因此交给沙箱去拦——它本来就会为同一
+  次写入弹一次审批，我们也弹就是两张卡；`notify` / `full` 切到 `danger-full-access`，
+  否则「全部放行」仍会被引擎拦下。
 - 提示词只要求模型「改代码 + 跑测试」，明确不 commit、不 push、不写 TAPD：提交、合并与回写
   由宿主在审核后确定性地做。仍带 `tapd_add_bug_comment` / `tapd_update_bug_status` 等旧工具的
   模板会被判定为失效并替换成新默认模板（校验而非迁移）。
@@ -675,8 +681,8 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   「需要你选择 N 项」+「去处理」，主窗口打开对应会话的 QuestionSheet。
 - 胶囊卡的动作：默认挤在底部一行；`stack_actions` 的卡（提问选项，或 MCP
   动作带了 `description`）改成**每个动作一行、固定占满卡宽**，说明作第二行
-  小字。标签与说明都只占一行，放不下时靠 `ScrollingName` 在 hover 时按固定
-  步进滚到末尾；行数会带进胶囊高度（`island_window::geometry`）。
+  小字。标签与说明都只占一行，放不下时靠 `ScrollingName` 在鼠标停稳 0.5 秒
+  后按固定步进滚到末尾；行数会带进胶囊高度（`island_window::geometry`）。
 - 提问卡最后还有「其他答案」输入框（`allow_custom`）：胶囊平时不抢键盘
   （`canBecomeKeyWindow = NO`），输入框获得焦点时由 `set_answer_focus` 临时
   放开并激活应用，提交后把键盘交还之前的应用；回包是 `answer_item.custom`，

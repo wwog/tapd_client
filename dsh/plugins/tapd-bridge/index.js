@@ -16,6 +16,7 @@
  *
  *   assign → move a session to a working directory (task worktrees)
  *   cancel → stop one session's turn
+ *   retry → continue the last turn after a failure, without re-sending it
  *   mode / default-mode → session permission mode / runtime-wide default
  *   plan → enter or leave the engine's plan mode
  *   team → enable / disable Agent Teams for one root session
@@ -42,6 +43,7 @@
 
 import { createConnection } from 'node:net'
 import { isAbsolute } from 'node:path'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'tapd-bridge'
 // `sessions` is required for the snapshot; the stream is a core event.
@@ -93,6 +95,25 @@ export function apply(ctx) {
   }
 
   const messageOf = (error) => (error instanceof Error ? error.message : String(error))
+
+  /**
+   * The `kind` of the latest committed `turn/end`, or `undefined` when the log
+   * has none yet. `snapshotEvents()` is the only history read the pinned
+   * release exposes to plugins; one array for one user click is fine.
+   */
+  const lastTurnReason = (session) => {
+    let events
+    try {
+      events = session?.snapshotEvents?.() ?? []
+    } catch {
+      return undefined
+    }
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]
+      if (event?.type === 'turn/end') return event.data?.reason?.kind ?? 'completed'
+    }
+    return undefined
+  }
 
   // Listeners are the process's bus: they must never throw into dsh.
   ctx.on('agent/assistant-stream', ({ agent, frame } = {}) => {
@@ -362,6 +383,32 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * Re-runs the session's last turn after a failure.
+   *
+   * The engine's own retry shape is an *empty* user message tagged
+   * `source.kind = 'retry'`: the turn runs again and the transcript skips the
+   * message, so the prompt text is not appended to the model's context a second
+   * time. Re-sending the text would, which is what the app used to do.
+   */
+  const retrySession = (sessionId) => {
+    try {
+      const agent = ctx.agents.get(sessionId)
+      if (!agent) {
+        ctx.logger.info(`${name}: retry for ${sessionId} ignored, no live agent`)
+        return
+      }
+      const reason = lastTurnReason(agent.session)
+      if (reason !== 'error' && reason !== 'blocked') {
+        ctx.logger.info(`${name}: retry for ${sessionId} ignored, last turn ended ${reason ?? 'unknown'}`)
+        return
+      }
+      agent.followup(createUserMessage({ content: [], source: { kind: 'retry' } }))
+    } catch (error) {
+      warn(`retry ${sessionId}`, error)
+    }
+  }
+
   /** Replies to one Rust request; `error` is the engine's own diagnostic. */
   const reply = (type, requestId, body = {}) => {
     send({ type, token, requestId, ...body })
@@ -478,6 +525,8 @@ export function apply(ctx) {
       applyAssignment(sessionId, frame.cwd)
     } else if (frame.type === 'cancel') {
       cancelSession(sessionId)
+    } else if (frame.type === 'retry') {
+      retrySession(sessionId)
     } else if (frame.type === 'team' && typeof frame.enabled === 'boolean') {
       applyTeamMode(sessionId, frame.enabled)
     } else if (frame.type === 'mode' && typeof frame.mode === 'string') {

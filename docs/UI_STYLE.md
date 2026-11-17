@@ -26,7 +26,7 @@
 | `text-slate-500/400` | 次要文字、说明 |
 | `text-sky-*` / `bg-sky-50` | 选中、链接、焦点 |
 | `text-emerald/amber/rose-*` + 同色 `bg-*-50` | 状态、风险、结果 |
-| `bg-island` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转；固定 0.82 半透明，没有 hover 变体） |
+| `bg-island` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转；透明度由外观设置的 `--island-alpha` 决定，默认 0.82，没有 hover 变体） |
 | `border-island-line` | 胶囊描边 |
 | `text-island-ink` / `text-island-muted` | 胶囊主/次文字 |
 | `bg-island-soft` / `bg-island-soft-hover` | 胶囊内次级按钮、代码块、进度槽 |
@@ -158,6 +158,11 @@
 
 - 单栏内容流交给 `Dialog` 自己滚（默认）。
 - 列表 + 详情两栏时传 `bodyScroll={false}`，两栏各自 `overflow-y-auto overscroll-contain`：滚动列表不会带走右侧内容，标题栏也始终固定。
+
+长文本：
+
+- 单行放不下的标题 / 名称 / 标签统一用 `ScrollingName`（`components/ScrollingName.tsx`），不要用 `title` 兜底：鼠标停留 0.5 秒后按固定速度横向滚到末尾，移开立刻归位，悬停打字或者扫过列表都不会触发。
+- 允许多行的文本（缺陷详情标题、轨迹摘要、错误原因）保留换行或 `line-clamp`，不要塞进 `ScrollingName`。
 
 浮层动效：
 

@@ -12,6 +12,8 @@ import type { LocalProject } from "../lib/local";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { Button, cardClass, inputClass } from "./ui";
 import { FolderPicker } from "./FolderPicker";
+import { ScrollingName } from "./ScrollingName";
+import { WorktreeCard } from "./WorktreeCard";
 
 const emptyProject = (): ProjectAgentConfig => ({ repoPath: "", rule: "" });
 
@@ -216,12 +218,10 @@ export function ProjectSettings(props: {
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: workspace.logoColor || "#0ea5e9" }}
                   />
-                  <span
-                    className="min-w-0 flex-1 truncate text-ui-caption font-normal text-slate-800"
-                    title={workspace.name}
-                  >
-                    {workspace.name}
-                  </span>
+                  <ScrollingName
+                    text={workspace.name}
+                    className="min-w-0 flex-1 text-ui-caption font-normal text-slate-800"
+                  />
                   <button
                     type="button"
                     title={t("settings.projects.copyId")}
@@ -357,6 +357,8 @@ export function ProjectSettings(props: {
         />
       </section>
 
+      <WorktreeCard toast={toast} />
+
       <section className={`${cardClass} @container`}>
         <div className="flex items-center gap-2">
           <h2
@@ -408,11 +410,11 @@ export function ProjectSettings(props: {
                       type="button"
                       onClick={() => onSelectLocalProject(project.id)}
                       className={clsx(
-                        "min-w-0 flex-1 truncate text-left text-ui-caption transition hover:text-sky-700",
+                        "min-w-0 flex-1 text-left text-ui-caption transition hover:text-sky-700",
                         active ? "text-slate-900" : "text-slate-800",
                       )}
                     >
-                      {project.name}
+                      <ScrollingName text={project.name} />
                     </button>
                     {project.rule?.trim() ? (
                       <span

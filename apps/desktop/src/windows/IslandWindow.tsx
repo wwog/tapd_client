@@ -539,9 +539,10 @@ function AiCard(props: {
             className={clsx(meta.iconColor, payload.tone === "progress" && "animate-spin")}
           />
         </span>
-        <span className="truncate font-normal text-island-ink" title={payload.client || item.workspaceName}>
-          {payload.client || item.workspaceName || "AI"}
-        </span>
+        <ScrollingName
+          text={payload.client || item.workspaceName || "AI"}
+          className="min-w-0 font-normal text-island-ink"
+        />
         <span className={clsx("shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal", meta.badge)}>
           {t(meta.label)}
         </span>
@@ -769,9 +770,10 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
                     className="flex items-center justify-between gap-2 text-ui-xs leading-4"
                   >
                     <span className="shrink-0 text-island-muted">{field.label}</span>
-                    <span className="min-w-0 truncate text-right text-island-ink" title={field.value}>
-                      {field.value || "—"}
-                    </span>
+                    <ScrollingName
+                      text={field.value || "—"}
+                      className="min-w-0 text-right text-island-ink"
+                    />
                   </div>
                 ))}
               </div>

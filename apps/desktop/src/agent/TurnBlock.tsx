@@ -5,11 +5,13 @@ import { AlertTriangle, Brain, ChevronRight, Loader2, PencilLine } from "lucide-
 import type { DshEntry } from "../lib/dsh";
 import { t } from "../lib/i18n";
 import { Button } from "../components/ui";
+import { ScrollingName } from "../components/ScrollingName";
 import { agentActions, type LiveToolCall } from "./store";
 import type { TurnBlock as TurnBlockModel } from "./turns";
 import { describeTool, reasoningPreview, runningVerb } from "./actions";
 import { AnswerBlock, MessageMeta, UserBubble } from "./MessageParts";
-import { ActionIcon, ActionRow, TraceReasoning } from "./TraceRows";
+import { ActionIcon, ActionRow, ReasoningRow } from "./TraceRows";
+import { recordIdOf } from "./trajectory/model";
 import { duration } from "./usage/format";
 
 /** The live attempt overlaid on the running turn. */
@@ -94,13 +96,22 @@ export function TurnBlock({
   block,
   running,
   live,
+  sessionId,
 }: {
   block: TurnBlockModel;
   running: boolean;
   live?: LiveTrace;
+  /** The session this turn belongs to; retry is addressed to it. */
+  sessionId?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(running);
   const [retrying, setRetrying] = useState(false);
+  // A running turn shows its own activity; the moment it settles the whole flow
+  // folds into its summary line. The user can still open it again, and the next
+  // transition re-applies the default.
+  useEffect(() => {
+    setOpen(running);
+  }, [running]);
   const users = block.entries.filter((entry) => entry.kind === "user");
   const content = block.entries.filter((entry) => entry.kind !== "user");
   const end = block.end;
@@ -118,9 +129,11 @@ export function TurnBlock({
   const prompt = users[users.length - 1]?.text ?? "";
 
   const retry = async () => {
-    if (retrying || !prompt) return;
+    if (retrying || !sessionId) return;
     setRetrying(true);
-    await agentActions.sendPrompt(prompt);
+    // The engine re-runs the turn from its own log: the prompt is not sent
+    // again, so it stays a single message in the context.
+    await agentActions.retryTurn(sessionId);
     setRetrying(false);
   };
 
@@ -164,7 +177,9 @@ export function TurnBlock({
     running && !liveText && !action && liveReasoning
       ? reasoningPreview(liveReasoning)
       : "";
-  const summary = open ? traceSummary(trace, liveTools) : null;
+  // The flow's own statistics. A running flow has none — it is still deciding
+  // what it did; the settled flow folds into this line.
+  const summary = traceSummary(trace, liveTools);
 
   return (
     <div className="flex flex-col gap-2">
@@ -176,21 +191,24 @@ export function TurnBlock({
       ))}
 
       <div className="flex flex-col gap-1">
-        {thinking ? (
+        {/* The folded one-liner: only while the trace is closed, so an open
+            trace never repeats what its own rows already say. */}
+        {!open && thinking ? (
           <div className="flex min-w-0 items-center gap-2 text-ui-xs text-slate-400">
             <Brain size={12} className="shrink-0" />
             <span className="shrink-0">{t("agent.action.thinking")}</span>
-            <span className="min-w-0 truncate text-slate-300">{thinking}</span>
+            <ScrollingName text={thinking} className="min-w-0 flex-1 text-slate-300" />
           </div>
         ) : null}
 
-        {action ? (
+        {!open && action ? (
           <div className="flex min-w-0 items-center gap-2 text-ui-xs">
             <ActionIcon action={action} />
             <span className="shrink-0 text-slate-500">{runningVerb(action.kind)}</span>
-            <span className="min-w-0 truncate font-mono text-slate-600">
-              {action.target}
-            </span>
+            <ScrollingName
+              text={action.target}
+              className="min-w-0 flex-1 font-mono text-slate-600"
+            />
             {action.added ? (
               <span className="shrink-0 tabular-nums text-emerald-600">
                 +{action.added}
@@ -213,9 +231,19 @@ export function TurnBlock({
                 aria-expanded={open}
                 title={open ? t("agent.turn.collapse") : t("agent.turn.expand")}
                 onClick={() => setOpen((value) => !value)}
-                className="-ml-1 inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 transition hover:bg-overlay hover:text-slate-600"
+                className="-ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition hover:bg-overlay hover:text-slate-600"
               >
-                <span className="shrink-0 tabular-nums">{status}</span>
+                {/* Settled flows fold into their statistics; a running one has
+                    none yet, so it shows its clock instead. */}
+                {!running && summary ? (
+                  <>
+                    <PencilLine size={12} className="shrink-0 text-slate-400" />
+                    <ScrollingName text={summary} className="min-w-0 flex-1 text-slate-500" />
+                    <span className="shrink-0 tabular-nums text-slate-300">{status}</span>
+                  </>
+                ) : (
+                  <span className="shrink-0 tabular-nums">{status}</span>
+                )}
                 <ChevronRight
                   size={12}
                   className={clsx("shrink-0 transition-transform", open && "rotate-90")}
@@ -232,19 +260,20 @@ export function TurnBlock({
 
       {open && hasTrace ? (
         <div className="flex flex-col gap-2 border-l border-border pl-3">
-          {summary ? (
-            <div className="flex min-w-0 items-center gap-2 text-ui-xs text-slate-500">
-              <PencilLine size={12} className="shrink-0 text-slate-400" />
-              <span className="min-w-0 truncate" title={summary}>
-                {summary}
-              </span>
-            </div>
-          ) : null}
           {trace.map((entry) => (
-            <TraceEntry key={entryKey(entry)} entry={entry} />
+            <TraceEntry
+              key={entryKey(entry)}
+              entry={entry}
+              onOpenTrace={
+                sessionId
+                  ? () =>
+                      agentActions.focusTrajectory(sessionId, recordIdOf(entry))
+                  : undefined
+              }
+            />
           ))}
-          {answer?.reasoning ? <TraceReasoning text={answer.reasoning} /> : null}
-          {liveReasoning ? <TraceReasoning text={liveReasoning} /> : null}
+          {answer?.reasoning ? <ReasoningRow text={answer.reasoning} /> : null}
+          {liveReasoning ? <ReasoningRow text={liveReasoning} live /> : null}
           {liveTools.map((tool, index) => (
             <ActionRow
               key={`live-${tool.callId || index}`}
@@ -293,7 +322,13 @@ export function TurnBlock({
 }
 
 /** One committed row of the trace: an intermediate note or a tool call. */
-function TraceEntry({ entry }: { entry: DshEntry }) {
+function TraceEntry({
+  entry,
+  onOpenTrace,
+}: {
+  entry: DshEntry;
+  onOpenTrace?: () => void;
+}) {
   if (entry.kind === "tool") {
     return (
       <ActionRow
@@ -301,13 +336,14 @@ function TraceEntry({ entry }: { entry: DshEntry }) {
         args={entry.args}
         status={entry.status}
         result={entry.result}
+        onOpenTrace={onOpenTrace}
       />
     );
   }
   if (entry.kind === "assistant") {
     return (
       <>
-        {entry.reasoning ? <TraceReasoning text={entry.reasoning} /> : null}
+        {entry.reasoning ? <ReasoningRow text={entry.reasoning} /> : null}
         {entry.text ? <AnswerBlock text={entry.text} /> : null}
       </>
     );

@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { api, type DirListing } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useLayerClose } from "../hooks/useLayerClose";
+import { ScrollingName } from "./ScrollingName";
 import { Button, ModalDragStrip } from "./ui";
 
 /**
@@ -157,7 +158,7 @@ export function FolderPicker(props: {
                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-ui-caption text-slate-700 transition hover:bg-slate-50"
                   >
                     <Folder size={14} className="shrink-0 text-sky-500" />
-                    <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                    <ScrollingName text={entry.name} className="min-w-0 flex-1" />
                   </button>
                 </li>
               ))}

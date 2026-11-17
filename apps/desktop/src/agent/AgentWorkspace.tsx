@@ -100,6 +100,7 @@ function TrajectoryPane({ sessionId }: { sessionId: string }) {
 
   return (
     <TrajectoryView
+      sessionId={sessionId}
       entries={items}
       live={liveTrace}
       loading={history ? !history.loaded && items.length === 0 : true}

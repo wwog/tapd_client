@@ -9,11 +9,6 @@ pub static MESSAGES: &[Message] = &[
         "The conversation is still running; stop it before deleting",
     ),
     (
-        "dsh.chat.delete.task",
-        "只能删除自由会话",
-        "Only free conversations can be deleted",
-    ),
-    (
         "dsh.task.approve.busy",
         "模型还在运行，等这一轮结束后再审核",
         "The model is still running; approve after this turn ends",
@@ -123,6 +118,11 @@ pub static MESSAGES: &[Message] = &[
         "dsh.task.writeback.failed",
         "回写 TAPD 失败：{}",
         "Failed to write back to TAPD: {}",
+    ),
+    (
+        "dsh.worktree.outside",
+        "只能清理应用自己创建的 worktree",
+        "Only worktrees created by this app can be cleaned up here",
     ),
     // Team mode: guidance queued to the lead session when coworkers are enabled.
     (

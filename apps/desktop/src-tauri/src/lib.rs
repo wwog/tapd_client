@@ -130,6 +130,8 @@ pub fn run() {
             commands::capture_export,
             commands::clear_app_data,
             commands::open_path,
+            commands::reveal_path,
+            commands::image_data_url,
             commands::open_file,
             commands::open_directory,
             commands::open_media,

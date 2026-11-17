@@ -12,9 +12,11 @@ export const agent = {
   "agent.session.new": ["新建会话", "New session"],
   "agent.session.delete": ["删除会话", "Delete conversation"],
   "agent.session.deleteHint": [
-    "删除「{title}」及其对话记录？此操作无法撤销。",
-    "Delete “{title}” and its history? This cannot be undone.",
+    "删除「{title}」及其对话记录？它自己的 worktree 会一起删掉（未提交的改动也会丢失），仓库不受影响。",
+    "Delete “{title}” and its history? Its own worktree is removed too (uncommitted changes are lost); the repository itself is untouched.",
   ],
+  "agent.session.reveal": ["在 Finder 中打开", "Reveal in Finder"],
+  "agent.session.revealFailed": ["打不开这个目录：{error}", "Cannot open that folder: {error}"],
   "agent.task.noProject": ["未关联项目", "No project"],
   "agent.task.untitled": ["新会话", "New session"],
   "agent.task.empty": ["还没有任务", "No tasks yet"],
@@ -131,6 +133,8 @@ export const agent = {
   "agent.action.runningFetched": ["正在访问", "Fetching"],
   "agent.action.runningCalled": ["正在调用", "Calling"],
   "agent.action.failed": ["执行失败", "Failed"],
+  "agent.action.result": ["执行结果", "Output"],
+  "agent.action.openTrace": ["在轨迹中查看这次调用", "Open this call in the trajectory"],
   "agent.thinking": ["思考", "Reasoning"],
 
   // Token usage.

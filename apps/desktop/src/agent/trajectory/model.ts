@@ -12,6 +12,15 @@ import type { LiveToolCall } from "../store";
 
 export type TrajKind = "user" | "assistant" | "tool";
 
+/**
+ * Stable ledger id for one committed entry. The transcript uses it to open a
+ * tool call in the trajectory, so it must stay in step with [`flatten`].
+ */
+export function recordIdOf(entry: DshEntry): string {
+  if (entry.kind === "tool") return `tool:${entry.callId || entry.seq}`;
+  return `${entry.kind}:${entry.seq}`;
+}
+
 export type TrajState = "complete" | "running" | "error";
 
 /** One ledger row. Tool rows keep the call's seq; the result updates in place. */

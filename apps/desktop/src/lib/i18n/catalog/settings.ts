@@ -66,6 +66,11 @@ export const settings = {
   ],
   "settings.capsule.always": ["常驻", "Always"],
   "settings.capsule.activity": ["仅通知", "Alerts only"],
+  "settings.capsule.opacity": ["胶囊透明度", "Capsule opacity"],
+  "settings.capsule.opacityTooltip": [
+    "胶囊与通知卡的不透明度。越低越透，能看见后面的桌面；低到一定程度文字对比会变弱。",
+    "Opacity of the capsule and its cards. Lower shows more of the desktop behind it; very low values weaken contrast.",
+  ],
 
   // New bug notifications
   "settings.notify.title": ["新缺陷通知", "New bug notifications"],
@@ -492,6 +497,24 @@ export const settings = {
     "设置这个 TAPD 项目对应的本地仓库目录，Agent 会以它为工作目录；MCP 也按它把 AI 的根目录匹配到本项目。",
     "Set the local repository for this TAPD project; the agent uses it as its working directory and MCP matches the AI's root directory to it.",
   ],
+
+  // Worktrees the agent created (project settings)
+  "settings.worktrees.title": ["Worktree", "Worktrees"],
+  "settings.worktrees.hint": [
+    "任务用独立 worktree 隔离改动。删除会话会一起清理它自己的 worktree，这里列出的都是仍然占着目录的，可以随时打开或删掉。",
+    "Tasks isolate their changes in a worktree. Deleting a session removes its own; anything listed here still occupies a directory and can be opened or removed.",
+  ],
+  "settings.worktrees.root": ["默认目标目录", "Default target folder"],
+  "settings.worktrees.openRoot": ["打开目录", "Open folder"],
+  "settings.worktrees.open": ["打开这个 worktree", "Open this worktree"],
+  "settings.worktrees.remove": ["删除这个 worktree", "Remove this worktree"],
+  "settings.worktrees.orphan": ["残留", "Left over"],
+  "settings.worktrees.empty": ["还没有 worktree", "No worktrees yet"],
+  "settings.worktrees.removeHint": [
+    "删除「{title}」的 worktree？里面未提交的改动会丢失，仓库本身不受影响。",
+    "Remove the worktree for “{title}”? Uncommitted changes in it are lost; the repository is untouched.",
+  ],
+  "settings.worktrees.removeFailed": ["删除 worktree 失败：{error}", "Could not remove the worktree: {error}"],
 
   // Project sidebar
   "settings.sidebar.reading": ["正在读取项目…", "Loading projects…"],

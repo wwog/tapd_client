@@ -13,6 +13,17 @@
  *   notify            hard + soft → notice card, always allow
  *   full              hard → ask, everything else allowed
  *
+ * The mode also owns the engine's own sandbox (`sandbox/mode`), because two
+ * gates asking for one write is worse than one:
+ *
+ * - auto keeps `workspace-write`, so the engine enforces the session boundary.
+ *   Path-boundary rules (`outside_cwd`, `protected_path`) therefore defer to
+ *   it instead of asking a second time — the sandbox's own escalation card is
+ *   the one prompt for that write.
+ * - notify and full promise "it runs", so they switch the sandbox to
+ *   `danger-full-access`; otherwise the engine would keep asking for exactly
+ *   the writes those modes say are allowed.
+ *
  * Plan mode is a separate engine flag (not a permission mode): while it is
  * active, file-writing tools are denied so "plan first" is deterministic, and
  * the model leaves it through the engine's own `exit_plan_mode` review.
@@ -35,7 +46,7 @@ import { realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 
 export const name = 'tapd-policy'
-export const inject = ['tools']
+export const inject = ['tools', 'agents']
 
 const MODES = new Set(['auto', 'notify', 'full'])
 const MAX_TARGET = 160
@@ -45,6 +56,9 @@ const SHELL_TOOLS = new Set(['bash', 'pwsh', 'bash_persistent', 'pwsh_persistent
 
 /** Tools that write exactly the paths in their arguments. */
 const FILE_TOOLS = new Set(['write', 'edit', 'apply_patch', 'str_replace_editor'])
+
+/** Risky only because of *where* the write lands: the engine sandbox owns these. */
+const PATH_RULES = new Set(['outside_cwd', 'protected_path'])
 
 /** One-line descriptions for the SDK-side approval prompt (other clients). */
 const DESCRIPTIONS = {
@@ -89,21 +103,62 @@ export function apply(ctx) {
     return defaultMode
   }
 
+  // The engine's sandbox for each session, as this plugin last wrote it. A
+  // session's `sandbox/mode` event is durable, so the map only saves a repeated
+  // identical append (the desktop re-pushes the mode before every prompt).
+  const sandboxApplied = new Map()
+
+  /** `auto` keeps the engine's confinement; the "let it run" modes drop it. */
+  const sandboxFor = (mode) => (mode === 'auto' ? 'workspace-write' : 'danger-full-access')
+
+  const applySandbox = (session, mode) => {
+    if (!session?.id) return
+    const target = sandboxFor(mode)
+    if (sandboxApplied.get(session.id) === target) return
+    try {
+      // The write path `setSandboxMode()` uses: the switch *is* the event, and
+      // the last one wins. Inlined so this plugin keeps zero imports and stays
+      // unit-testable outside the payload tree.
+      session.append('sandbox/mode', { mode: target })
+      sandboxApplied.set(session.id, target)
+    } catch (error) {
+      // A session that cannot take the event keeps its composition default;
+      // the gate above still decides, so this must not break the call.
+      ctx.logger.warn(`${name}: sandbox mode for ${session.id} not set: ${String(error)}`)
+    }
+  }
+
+  const sandboxForSession = (session) => applySandbox(session, modeForSession(session))
+
   ctx.on('session/created', (session) => {
     const parent = session?.header?.parentSession
     if (session?.id && parent && session.header?.origin === 'subagent') {
       parentOf.set(session.id, parent)
     }
+    sandboxForSession(session)
   })
+
+  // A session may exist before its Agent: the Agent edge is when a resumed
+  // session gets its sandbox back.
+  ctx.on('agent/created', ({ agent } = {}) => sandboxForSession(agent?.session))
 
   ctx.provide('tapdPolicy', {
     setDefault(mode) {
       const next = known(mode)
-      if (next !== undefined) defaultMode = next
+      if (next === undefined) return
+      defaultMode = next
+      // Sessions without their own pick follow the default right away; the
+      // others keep theirs.
+      for (const agent of ctx.agents.list()) {
+        const session = agent?.session
+        if (session?.id && !sessionModes.has(session.id)) applySandbox(session, next)
+      }
     },
     setMode(sessionId, mode) {
       const next = known(mode)
-      if (sessionId && next !== undefined) sessionModes.set(sessionId, next)
+      if (!sessionId || next === undefined) return
+      sessionModes.set(sessionId, next)
+      applySandbox(ctx.agents.get(sessionId)?.session, next)
     },
   })
 
@@ -134,6 +189,11 @@ export function apply(ctx) {
       return next()
     }
     if (!hit.risk) return next()
+
+    // In auto the engine's sandbox is the boundary for path writes: it denies
+    // or escalates them itself, with its own card. Asking here as well would
+    // prompt twice for one write.
+    if (mode === 'auto' && PATH_RULES.has(hit.rule)) return next()
 
     if (mode === 'notify') {
       raiseNotice(ctx, exec, hit)
@@ -206,17 +266,17 @@ function classifyShell(command, { cwd, home }) {
   for (const [rule, matches] of HARD_SHELL) {
     if (matches(scan, home)) return { risk: 'hard', rule, target }
   }
-  const paths = shellPaths(text, cwd, home)
-  if (WRITE_VERB.test(scan) && paths.some((path) => isProtected(path, home))) {
+  // Only paths a command actually writes are write targets. An `ls`/`find`
+  // operand or a `2>/dev/null` is not — see `shellWriteTargets`.
+  const written = shellWriteTargets(text, cwd, home)
+  if (written.some((path) => isProtected(path, home))) {
     return { risk: 'hard', rule: 'protected_path', target }
   }
   for (const [rule, matches] of SOFT_SHELL) {
     if (matches(scan)) return { risk: 'soft', rule, target }
   }
-  if (WRITE_VERB.test(scan)) {
-    const outside = paths.find((path) => outsideOf(path, cwd))
-    if (outside) return { risk: 'soft', rule: 'outside_cwd', target: truncate(outside) }
-  }
+  const outside = written.find((path) => outsideOf(path, cwd))
+  if (outside) return { risk: 'soft', rule: 'outside_cwd', target: truncate(outside) }
   return { risk: null }
 }
 
@@ -257,7 +317,8 @@ const SOFT_SHELL = [
 ]
 
 /** Commands that create, replace, move or delete something on disk. */
-const WRITE_VERB = /\b(rm|rmdir|mv|cp|tee|dd|chmod|chown|ln|touch|mkdir|install|shred|truncate|unlink)\b|>>?/
+const WRITE_VERBS =
+  'rm|rmdir|mv|cp|tee|dd|chmod|chown|ln|touch|mkdir|install|shred|truncate|unlink'
 
 function deletesRoot(text) {
   const call = /\brm\s+([^;&|]*)/g
@@ -306,47 +367,66 @@ function writeTargets(tool, args) {
 }
 
 /**
- * Absolute-looking path tokens in a shell line. Quoted strings are ignored as
- * tokens on purpose: `echo "rm -rf /"` is text, not a command. Quoted *write
- * targets* are still collected below — a quoted redirection target is a real
- * write (`echo k > "$HOME/.ssh/authorized_keys"`).
+ * The paths one shell line actually writes.
+ *
+ * The line is split where a new command starts, and a segment contributes a
+ * write target only when it redirects to a real file or passes paths to a
+ * write verb. The previous version gated on "the line contains `>`" and then
+ * treated *every* absolute token on it as a write target, so `find … 2>/dev/null`
+ * asked to approve `/dev/null` and `ls /other/repo 2>/dev/null` asked to
+ * approve a directory it only listed.
  */
-function shellPaths(text, cwd, home) {
-  const tokens = text
-    .replace(/"[^"]*"|'[^']*'/g, ' ')
-    .split(/[\s;|&()<>]+/)
-    .map(stripQuotes)
-    .filter(Boolean)
-    .filter((token) => !token.startsWith('-'))
-    .filter(looksAbsolute)
-  const quoted = quotedWriteTargets(text).filter(looksAbsolute)
-  return [...tokens, ...quoted].map((token) => canonical(resolvePath(token, home, cwd)))
+function shellWriteTargets(text, cwd, home) {
+  const found = []
+  for (const segment of text.split(/\n|;|&&|\|\||\|/)) {
+    found.push(...redirectionTargets(segment), ...writeVerbTargets(segment))
+  }
+  return found
+    .map((token) => stripQuotes(token.trim()))
+    .filter((token) => token && !token.startsWith('&') && !isDevicePath(token))
+    .map((token) => canonical(resolvePath(token, home, cwd)))
 }
 
-/** Quoted path arguments of write commands and redirect targets. */
-function quotedWriteTargets(text) {
+/**
+ * `> file` and `>> file`, quoted or not. The `2>` of `2>/dev/null` is a file
+ * descriptor, not a target, and `>&1` duplicates one.
+ */
+function redirectionTargets(segment) {
   const found = []
-  const redirect = /(?:>>?)\s*["']([^"']+)["']/g
+  const redirect = /(?<![0-9&])>>?\s*("[^"]+"|'[^']+'|[^\s;&|()]+)/g
   let match
-  while ((match = redirect.exec(text)) !== null) found.push(match[1])
-  const verbs = /\b(cp|mv|ln|install|tee|touch|mkdir|rm|rmdir|chmod|chown|shred|truncate|unlink)\b([^;&|]*)/g
-  while ((match = verbs.exec(text)) !== null) {
-    const quoted = /["']([^"']+)["']/g
-    let inner
-    while ((inner = quoted.exec(match[2])) !== null) found.push(inner[1])
-  }
+  while ((match = redirect.exec(segment)) !== null) found.push(match[1])
   return found
 }
 
-function looksAbsolute(token) {
-  return (
-    token.startsWith('/') ||
-    token.startsWith('~') ||
-    token.startsWith('./') ||
-    token.startsWith('../') ||
-    token.startsWith('$HOME') ||
-    token.startsWith('${HOME}')
-  )
+/** The path operands of the first write verb in one command segment. */
+function writeVerbTargets(segment) {
+  const command = new RegExp(
+    `(?:^|[\\s;&|(])(?:sudo\\s+)?(?:${WRITE_VERBS})\\b([^;&|]*)`,
+  ).exec(segment)
+  if (!command) return []
+  return command[1]
+    .split(/\s+/)
+    .map((word) => stripQuotes(word))
+    // `dd of=/tmp/x` names its target with a prefix rather than positionally.
+    .map((word) => word.replace(/^[A-Za-z_]+=/, ''))
+    .filter((word) => word && !word.startsWith('-'))
+}
+
+/** Devices and pipes: writing them never touches the filesystem's state. */
+const DEVICE_PATHS = new Set([
+  '/dev/null',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/stdin',
+  '/dev/zero',
+  '/dev/random',
+  '/dev/urandom',
+  '/dev/tty',
+])
+
+function isDevicePath(path) {
+  return DEVICE_PATHS.has(path) || path.startsWith('/dev/fd/')
 }
 
 function resolvePath(path, home, cwd = '') {

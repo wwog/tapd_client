@@ -266,6 +266,22 @@ fn can_move(from: Workflow, to: Workflow) -> bool {
     }
 }
 
+/// A finished or failed task that receives a new user turn is active again.
+///
+/// This is deliberately *not* an edge in [`can_move`]: a log replay or a late
+/// event must never reopen a task. Only a path that accepted fresh input calls
+/// it, so "已完成" stops being true exactly when the user asks for more work.
+fn reopen_target(workflow: Workflow) -> Option<Workflow> {
+    matches!(workflow, Workflow::Done | Workflow::Failed).then_some(Workflow::Running)
+}
+
+/// Whether a turn end means the work itself did not finish. Reviewing the
+/// worktree after one of these reports "done" precisely because the model
+/// never got to touch it, which is the opposite of what happened.
+fn failed_turn(reason: Option<&str>) -> bool {
+    matches!(reason, Some("error") | Some("blocked"))
+}
+
 /// What a finished turn means for the task: any change at all (committed or
 /// still in the working tree) needs review; nothing means the task is done.
 fn review_outcome(summary: &ChangeSummary) -> (Workflow, Option<TaskChanges>) {
@@ -298,7 +314,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_task_cancel" => cancel(app, parse(payload, name)?).await,
         "dsh_task_diff" => diff(app, parse(payload, name)?).await,
         "dsh_task_resume" => resume(app, parse(payload, name)?).await,
-        "dsh_task_delete" => delete_chat(app, parse(payload, name)?).await,
+        "dsh_task_delete" => delete_session(app, parse(payload, name)?).await,
         other => Err(format!("unknown dsh task command: {other}")),
     }
 }
@@ -384,8 +400,10 @@ pub fn observe(app: &AppHandle, session_id: &str, entry: &DshEntry) {
     match entry {
         DshEntry::Turn {
             state: TurnState::End,
+            reason,
+            error,
             ..
-        } => on_turn_end(app, session_id, at),
+        } => on_turn_end(app, session_id, at, reason.as_deref(), error.as_deref()),
         // A chat starts untitled; the first human line names it in the list.
         DshEntry::User { text, .. } => retitle_chat(app, session_id, text, at),
         _ => {}
@@ -491,22 +509,29 @@ pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
 /// Deletes a free conversation: its list row, its normalized state and the
 /// files only it owns. Work handed over from a bug or a local item keeps its
 /// worktree and its history, so only chats qualify.
-async fn delete_chat(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+/// Removes one session: its row, its mode, its log and whatever directory the
+/// app created for it. The repository a task was opened from is never touched;
+/// a worktree is removed with `--force`, because the account that can delete a
+/// session is the one that owns its uncommitted changes.
+async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
     let state = shared(app)?;
     let cache = state.cache.clone();
     let id = request.session_id.clone();
     let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
         return Err(not_found(&request.session_id));
     };
-    if record.task.kind != TaskKind::Chat {
-        return Err(tr("dsh.chat.delete.task").to_string());
-    }
     let running = live_sessions(app)
         .get(&request.session_id)
         .is_some_and(|session| session.status == SessionStatus::Running);
     if running {
         return Err(tr("dsh.chat.delete.running").to_string());
     }
+    let worktree = record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty());
+    let repo = record.task.repo_path.clone();
 
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -546,24 +571,191 @@ async fn delete_chat(app: &AppHandle, request: SessionRequest) -> Result<Value, 
     })
     .await;
 
+    // Best effort: a repository that moved away must not keep a dead row in the
+    // list, and the project page still lists whatever directory is left over.
+    if let Some(path) = worktree {
+        let target = path.clone();
+        let removed = blocking(move || worktree::remove(&repo, &target)).await;
+        if let Err(error) = removed {
+            tracing::warn!(%error, %path, "failed to remove the deleted session's worktree");
+        }
+    }
+
     emit(app);
     Ok(json!({ "sessionId": request.session_id }))
 }
 
+/// The directory one session works in. Chats own a scratch dir; tasks report
+/// their worktree (or the repository they run in). Used by "在 Finder 中打开"
+/// on the session list, which must not guess these paths on its own.
+pub async fn session_dir(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = session_id.to_string();
+    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
+        return Err(not_found(session_id));
+    };
+    let path = match record.task.kind {
+        TaskKind::Chat => state
+            .paths
+            .data_dir
+            .join("dsh")
+            .join("chats")
+            .join(&record.task.id)
+            .to_string_lossy()
+            .to_string(),
+        _ => record
+            .task
+            .worktree_path
+            .clone()
+            .filter(|path| !path.trim().is_empty())
+            .unwrap_or_else(|| record.task.repo_path.clone()),
+    };
+    Ok(json!({
+        "path": path,
+        "exists": !path.is_empty() && std::path::Path::new(&path).is_dir(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Worktrees on disk (project settings)
+// ---------------------------------------------------------------------------
+
+/// Every directory under the app's worktree root, paired with the task that
+/// opened it (absent = a leftover from a session that is already gone).
+pub async fn worktrees(app: &AppHandle) -> Result<Value, String> {
+    let state = shared(app)?;
+    let root = state.paths.worktrees_dir.clone();
+    let root_display = root.to_string_lossy().to_string();
+    let root_path = root.clone();
+    let cache = state.cache.clone();
+    let rows = blocking(move || {
+        let mut rows: Vec<Value> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&root_path) else {
+            return Ok::<_, String>(rows);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let session_id = entry.file_name().to_string_lossy().to_string();
+            if session_id.starts_with('.') {
+                continue;
+            }
+            let record = task_store::load(&cache, &session_id)?;
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(|time| {
+                    let at: chrono::DateTime<chrono::Utc> = time.into();
+                    at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                })
+                .unwrap_or_default();
+            rows.push(json!({
+                "sessionId": session_id,
+                "path": path.to_string_lossy(),
+                "updatedAt": modified,
+                "title": record.as_ref().map(|row| row.task.title.clone()).unwrap_or_default(),
+                "project": record.as_ref().and_then(|row| row.task.project.clone()),
+                "repoPath": record.as_ref().map(|row| row.task.repo_path.clone()).unwrap_or_default(),
+                "orphan": record.is_none(),
+            }));
+        }
+        // Newest first: a leftover from yesterday is the one to look at.
+        rows.sort_by(|left, right| {
+            right["updatedAt"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(left["updatedAt"].as_str().unwrap_or(""))
+        });
+        Ok(rows)
+    })
+    .await?;
+    Ok(json!({ "root": root_display, "worktrees": rows }))
+}
+
+/// Removes one worktree directory. Only paths inside the app's own worktree
+/// root are accepted, so this can never be pointed at a user's repository.
+pub async fn remove_worktree(app: &AppHandle, path: &str) -> Result<Value, String> {
+    let state = shared(app)?;
+    let root = state.paths.worktrees_dir.clone();
+    let cache = state.cache.clone();
+    let target = std::path::Path::new(path).to_path_buf();
+    let removed = blocking(move || {
+        let root = root.canonicalize().unwrap_or(root);
+        let target = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if !target.starts_with(&root) || target == root {
+            return Err(tr("dsh.worktree.outside").to_string());
+        }
+        let session_id = target
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let record = task_store::load(&cache, &session_id)?;
+        let repo = record
+            .as_ref()
+            .map(|row| row.task.repo_path.clone())
+            .filter(|path| !path.trim().is_empty())
+            .unwrap_or_else(|| repo_of(&target).unwrap_or_default());
+        if repo.is_empty() {
+            // No task row and no `.git` link: a plain directory the app made.
+            return std::fs::remove_dir_all(&target).map_err(|error| error.to_string());
+        }
+        worktree::remove(&repo, &target.to_string_lossy())?;
+        if let Some(mut record) = record {
+            record.task.worktree_path = None;
+            let expected = record.task.workflow;
+            let _ = task_store::update_if(&cache, &record, expected);
+        }
+        Ok(())
+    })
+    .await;
+    removed?;
+    emit(app);
+    Ok(json!({ "path": path }))
+}
+
+/// The repository a worktree directory belongs to, from its `.git` link file
+/// (`gitdir: <repo>/.git/worktrees/<name>`).
+fn repo_of(worktree: &std::path::Path) -> Option<String> {
+    let link = std::fs::read_to_string(worktree.join(".git")).ok()?;
+    let gitdir = link.trim().strip_prefix("gitdir:")?.trim();
+    let gitdir = std::path::Path::new(gitdir);
+    // <repo>/.git/worktrees/<name> → <repo>
+    let repo = gitdir.ancestors().nth(3)?;
+    Some(repo.to_string_lossy().to_string())
+}
+
 /// Schedules the review of a finished turn. Idempotent: a task that already
 /// left `running` is ignored, so a replayed snapshot cannot restart the work.
-pub fn on_turn_end(app: &AppHandle, session_id: &str, at: &str) {
+pub fn on_turn_end(
+    app: &AppHandle,
+    session_id: &str,
+    at: &str,
+    reason: Option<&str>,
+    error: Option<&str>,
+) {
     let app = app.clone();
     let session_id = session_id.to_string();
     let at = at.to_string();
+    let reason = reason.map(str::to_string);
+    let error = error.map(str::to_string);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = finish_turn(&app, &session_id, &at).await {
-            tracing::warn!(%error, session = session_id, "failed to review a finished dsh turn");
+        if let Err(problem) = finish_turn(&app, &session_id, &at, reason.as_deref(), error.as_deref()).await {
+            tracing::warn!(%problem, session = session_id, "failed to review a finished dsh turn");
         }
     });
 }
 
-async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), String> {
+async fn finish_turn(
+    app: &AppHandle,
+    session_id: &str,
+    at: &str,
+    reason: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), String> {
     let state = shared(app)?;
     let cache = state.cache.clone();
     let id = session_id.to_string();
@@ -593,6 +785,12 @@ async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), 
         return Ok(());
     }
 
+    // A user stop is settled by the cancel command that owns `canceled` here;
+    // reviewing an aborted turn would race that transition.
+    if reason == Some("aborted") {
+        return Ok(());
+    }
+
     let workspace = workspace_for(&record);
     let summary = match blocking(move || {
         workspace
@@ -610,6 +808,15 @@ async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), 
             return Err(error);
         }
     };
+
+    // A failed turn on a clean tree did no work: reviewing it would report
+    // "done" precisely because the model never ran. `done` is terminal, which
+    // is how a task ticked "已完成" while its retry was still working. A failed
+    // turn that *did* change files still needs the review it earned.
+    if failed_turn(reason) && summary.file_count == 0 {
+        fail_task(app, session_id, error.unwrap_or("turn failed")).await;
+        return Ok(());
+    }
 
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -644,7 +851,7 @@ async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), 
 }
 
 async fn fail_task(app: &AppHandle, session_id: &str, reason: &str) {
-    tracing::warn!(session = session_id, %reason, "dsh task inspection failed");
+    tracing::warn!(session = session_id, %reason, "dsh task failed");
     let Ok(state) = shared(app) else {
         return;
     };
@@ -666,6 +873,35 @@ async fn fail_task(app: &AppHandle, session_id: &str, reason: &str) {
     if let Ok(true) = blocking(move || task_store::update_if(&cache, &record, expected)).await {
         emit(app);
     }
+}
+
+/// Reopens a finished or failed task for the turn about to start.
+///
+/// Called only from paths that just accepted new input (a prompt, a retry).
+/// Log replay and late events never reach it, so a restored session cannot
+/// resurrect a task it already settled.
+pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = session_id.to_string();
+    let reopened = blocking(move || {
+        let Some(mut record) = task_store::load(&cache, &id)? else {
+            return Ok::<_, String>(false);
+        };
+        let Some(next) = reopen_target(record.task.workflow) else {
+            return Ok(false);
+        };
+        let expected = record.task.workflow;
+        record.task.workflow = next;
+        // Deliberately not `touch()`: the new turn's own events carry the time,
+        // and reopening must not jump the row to the top by itself.
+        task_store::update_if(&cache, &record, expected)
+    })
+    .await?;
+    if reopened {
+        emit(app);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1750,6 +1986,28 @@ mod tests {
         assert!(transition(&mut back, Workflow::AwaitingReview).is_err());
         let mut reopen = record(Workflow::AwaitingReview);
         assert!(transition(&mut reopen, Workflow::Running).is_err());
+    }
+
+    #[test]
+    fn only_input_reopens_a_settled_task() {
+        // A new turn revives work that had settled either way; a canceled task
+        // stays canceled, and a live one has nothing to reopen.
+        assert_eq!(reopen_target(Workflow::Done), Some(Workflow::Running));
+        assert_eq!(reopen_target(Workflow::Failed), Some(Workflow::Running));
+        assert_eq!(reopen_target(Workflow::Canceled), None);
+        assert_eq!(reopen_target(Workflow::Running), None);
+        assert_eq!(reopen_target(Workflow::AwaitingReview), None);
+    }
+
+    #[test]
+    fn a_failed_turn_is_not_a_finished_task() {
+        // Reviewing the worktree after these reports "done" because the model
+        // never ran; a user stop is settled by `cancel` instead.
+        assert!(failed_turn(Some("error")));
+        assert!(failed_turn(Some("blocked")));
+        assert!(!failed_turn(Some("aborted")));
+        assert!(!failed_turn(Some("completed")));
+        assert!(!failed_turn(None));
     }
 
     #[test]
