@@ -25,6 +25,63 @@ pub enum SessionStatus {
     Failed,
 }
 
+/// One provider's token accounting. dsh reports it per assistant message, so
+/// any counter built from it can only move when a message settles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryUsage {
+    /// Input tokens that missed the provider's cache.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Running totals for one session, as the status line shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUsage {
+    /// Turns started in this session.
+    pub turns: u64,
+    /// Steps started in this session (one step = one model request).
+    pub steps: u64,
+    /// Sum over every assistant message.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    /// Provider and model of the most recent request.
+    pub provider: String,
+    pub model: String,
+    /// Context window of the most recent request; 0 when the session never
+    /// stated one.
+    pub context_window: u64,
+    /// Output tokens per second over the last message's generation.
+    pub tokens_per_second: u64,
+}
+
+impl SessionUsage {
+    /// Share of input tokens that came from the provider's cache, in percent.
+    pub fn cache_hit_percent(&self) -> u64 {
+        let input = self.input_tokens + self.cache_read_tokens;
+        if input == 0 {
+            return 0;
+        }
+        (self.cache_read_tokens * 100 + input / 2) / input
+    }
+
+    /// Context window used by the latest request, in percent.
+    pub fn context_percent(&self) -> u64 {
+        if self.context_window == 0 {
+            return 0;
+        }
+        ((self.total_tokens * 100 + self.context_window / 2) / self.context_window).min(100)
+    }
+}
+
 /// One session as the session list shows it. `title` is empty until a first
 /// user message arrives — the UI renders its own empty state rather than a
 /// fabricated title.
@@ -39,6 +96,9 @@ pub struct DshSession {
     pub status: SessionStatus,
     /// Committed user + assistant entries (tool calls and turn markers excluded).
     pub message_count: u64,
+    /// Token accounting and turn/step counters for the status line.
+    #[serde(default)]
+    pub usage: SessionUsage,
 }
 
 impl DshSession {
@@ -49,6 +109,7 @@ impl DshSession {
             updated_at: at.to_string(),
             status: SessionStatus::Idle,
             message_count: 0,
+            usage: SessionUsage::default(),
         }
     }
 }
@@ -86,6 +147,14 @@ pub enum DshEntry {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
+        /// What this one reply cost, straight from the provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<EntryUsage>,
+        /// Route the reply came from, for the usage popover.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     Tool {
         seq: u64,
@@ -176,6 +245,9 @@ struct SessionRecord {
     /// `callId` → index in `entries`, for merging `tool/result` into its call.
     calls: HashMap<String, usize>,
     first_user_seen: bool,
+    /// `step/start` time of the current step, used as the generation start
+    /// when a message carries no stream timing.
+    last_step_ms: Option<u64>,
 }
 
 /// The one owner of normalized session state.
@@ -200,6 +272,7 @@ impl Transcript {
                 seen: BTreeSet::new(),
                 calls: HashMap::new(),
                 first_user_seen: false,
+                last_step_ms: None,
             },
         );
         true
@@ -225,6 +298,8 @@ impl Transcript {
                 | "tool/result"
                 | "turn/start"
                 | "turn/end"
+                | "step/start"
+                | "request/context"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -245,6 +320,7 @@ impl Transcript {
             "tool/result" => record.merge_tool_result(seq, event),
             "turn/start" => {
                 record.meta.status = SessionStatus::Running;
+                record.meta.usage.turns += 1;
                 Some(record.push_turn(seq, at, TurnState::Start, None))
             }
             "turn/end" => {
@@ -257,6 +333,15 @@ impl Transcript {
                     _ => SessionStatus::Idle,
                 };
                 Some(record.push_turn(seq, at, TurnState::End, reason))
+            }
+            "step/start" => {
+                record.meta.usage.steps += 1;
+                record.last_step_ms = event.get("time").and_then(Value::as_u64);
+                None
+            }
+            "request/context" => {
+                record.record_route(event);
+                None
             }
             _ => None,
         };
@@ -377,14 +462,70 @@ impl SessionRecord {
             return None;
         }
         self.meta.message_count += 1;
+
+        let usage = read_usage(event);
+        let provider = event
+            .pointer("/data/message/source/provider")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let model = event
+            .pointer("/data/message/source/model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let (Some(provider), Some(model)) = (&provider, &model) {
+            self.meta.usage.provider = provider.clone();
+            self.meta.usage.model = model.clone();
+        }
+        if let Some(usage) = usage {
+            let totals = &mut self.meta.usage;
+            totals.input_tokens += usage.input_tokens;
+            totals.output_tokens += usage.output_tokens;
+            totals.cache_read_tokens += usage.cache_read_tokens;
+            totals.total_tokens += usage.total_tokens;
+            if usage.output_tokens > 0 {
+                // Generation-only speed: the stream's first chunk beats
+                // `step/start`, which also covers request setup and queueing.
+                let start = event
+                    .pointer("/data/stream/0/time")
+                    .and_then(Value::as_u64)
+                    .or(self.last_step_ms);
+                if let (Some(start), Some(end)) =
+                    (start, event.get("time").and_then(Value::as_u64))
+                {
+                    if end > start {
+                        let elapsed = (end - start) as f64 / 1000.0;
+                        totals.tokens_per_second =
+                            (usage.output_tokens as f64 / elapsed).round() as u64;
+                    }
+                }
+            }
+        }
+
         let entry = DshEntry::Assistant {
             seq,
             at: at.to_string(),
             text,
             reasoning,
+            usage,
+            provider,
+            model,
         };
         self.entries.push(entry.clone());
         Some(entry)
+    }
+
+    /// `request/context` states the route and window a request was built for.
+    fn record_route(&mut self, event: &Value) {
+        let usage = &mut self.meta.usage;
+        if let Some(provider) = event.pointer("/data/provider").and_then(Value::as_str) {
+            usage.provider = provider.to_string();
+        }
+        if let Some(model) = event.pointer("/data/model").and_then(Value::as_str) {
+            usage.model = model.to_string();
+        }
+        if let Some(window) = event.pointer("/data/contextWindow").and_then(Value::as_u64) {
+            usage.context_window = window;
+        }
     }
 
     fn push_tool(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
@@ -483,6 +624,25 @@ fn join_reasoning_blocks(content: Option<&Value>) -> Option<String> {
         .filter_map(|block| block.get("text").and_then(Value::as_str))
         .collect();
     (!joined.is_empty()).then_some(joined)
+}
+
+/// Token accounting for one assistant message. Logs written before the route
+/// reported usage simply have no `usage`, and a zero total is not a fact worth
+/// showing.
+fn read_usage(event: &Value) -> Option<EntryUsage> {
+    let usage = event.pointer("/data/usage")?;
+    let number = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let total_tokens = number("totalTokens");
+    if total_tokens == 0 {
+        return None;
+    }
+    Some(EntryUsage {
+        input_tokens: number("inputTokens"),
+        output_tokens: number("outputTokens"),
+        cache_read_tokens: number("cacheReadTokens"),
+        cache_write_tokens: number("cacheWriteTokens"),
+        total_tokens,
+    })
 }
 
 /// First line of the first user message, bounded to [`TITLE_MAX_CHARS`] chars.
@@ -716,11 +876,100 @@ mod tests {
     #[test]
     fn unknown_event_types_are_reported_once() {
         let mut transcript = Transcript::default();
-        let first = transcript.ingest("s1", &event("step/start", 0), "2026-11-16T00:00:00.000Z");
-        let second = transcript.ingest("s1", &event("step/start", 1), "2026-11-16T00:00:01.000Z");
-        assert_eq!(first.unknown.as_deref(), Some("step/start"));
+        let first = transcript.ingest("s1", &event("system/message", 0), "2026-11-16T00:00:00.000Z");
+        let second = transcript.ingest("s1", &event("system/message", 1), "2026-11-16T00:00:01.000Z");
+        assert_eq!(first.unknown.as_deref(), Some("system/message"));
         assert!(second.unknown.is_none());
         assert!(transcript.entries("s1").unwrap().is_empty());
+    }
+
+    fn assistant_with_usage(seq: u64, time: u64) -> Value {
+        json!({
+            "type": "assistant/message",
+            "seq": seq,
+            "time": time,
+            "data": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "hi" }],
+                    "source": { "kind": "model", "provider": "opencode-go", "model": "deepseek-v4.1-flash" },
+                },
+                "usage": {
+                    "inputTokens": 181,
+                    "outputTokens": 189,
+                    "totalTokens": 8306,
+                    "cacheReadTokens": 7936,
+                },
+                "stream": [{ "type": "chunk", "time": 1_000 }],
+            },
+        })
+    }
+
+    #[test]
+    fn usage_totals_and_speed_come_from_the_message() {
+        let mut transcript = Transcript::default();
+        transcript.ingest("s1", &event("turn/start", 0), "2026-11-16T00:00:00.000Z");
+        transcript.ingest("s1", &event("step/start", 1), "2026-11-16T00:00:00.000Z");
+        transcript.ingest("s1", &assistant_with_usage(2, 2_753), "2026-11-16T00:00:02.753Z");
+
+        let session = transcript.session("s1").unwrap();
+        assert_eq!(session.usage.turns, 1);
+        assert_eq!(session.usage.steps, 1);
+        assert_eq!(session.usage.total_tokens, 8_306);
+        assert_eq!(session.usage.cache_read_tokens, 7_936);
+        assert_eq!(session.usage.provider, "opencode-go");
+        assert_eq!(session.usage.model, "deepseek-v4.1-flash");
+        // 189 output tokens over 1.753s of streaming.
+        assert_eq!(session.usage.tokens_per_second, 108);
+        assert_eq!(session.usage.cache_hit_percent(), 98);
+
+        // The entry carries the same numbers so the popover needs no lookup.
+        let entries = transcript.entries("s1").expect("session exists");
+        let entry = entries
+            .iter()
+            .find(|entry| matches!(entry, DshEntry::Assistant { .. }))
+            .expect("assistant row");
+        let json = serde_json::to_value(entry).unwrap();
+        assert_eq!(json["usage"]["totalTokens"], 8_306);
+        assert_eq!(json["provider"], "opencode-go");
+    }
+
+    #[test]
+    fn route_context_sets_the_context_window() {
+        let mut transcript = Transcript::default();
+        transcript.ingest(
+            "s1",
+            &json!({
+                "type": "request/context",
+                "seq": 0,
+                "data": { "provider": "opencode-go", "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000 },
+            }),
+            "2026-11-16T00:00:00.000Z",
+        );
+        let session = transcript.session("s1").unwrap();
+        assert_eq!(session.usage.context_window, 1_000_000);
+        assert_eq!(session.usage.context_percent(), 0);
+
+        transcript.ingest("s1", &assistant_with_usage(1, 2_000), "2026-11-16T00:00:02.000Z");
+        // 8306 / 1,000,000 rounds to nothing at integer percent.
+        assert_eq!(transcript.session("s1").unwrap().usage.context_percent(), 1);
+    }
+
+    #[test]
+    fn a_repeated_snapshot_does_not_double_count() {
+        let mut transcript = Transcript::default();
+        let turn = event("turn/start", 0);
+        let step = event("step/start", 1);
+        let message = assistant_with_usage(2, 2_000);
+        for _ in 0..2 {
+            transcript.ingest("s1", &turn, "2026-11-16T00:00:00.000Z");
+            transcript.ingest("s1", &step, "2026-11-16T00:00:00.000Z");
+            transcript.ingest("s1", &message, "2026-11-16T00:00:02.000Z");
+        }
+        let usage = &transcript.session("s1").unwrap().usage;
+        assert_eq!(usage.turns, 1);
+        assert_eq!(usage.steps, 1);
+        assert_eq!(usage.total_tokens, 8_306);
     }
 
     #[test]

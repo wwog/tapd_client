@@ -11,9 +11,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   agentSettingsApi,
   type AgentConfig,
-  type DshModelConfig,
+  type DshModelEntry,
   type DshModelProtocol,
+  type DshModelsConfig,
   type DshPermissionMode,
+  type DshProvider,
+  type DshReasoningLevel,
+  type ReasoningEffort,
 } from "./agentSettings";
 
 export type DshPhase = "stopped" | "starting" | "ready" | "failed";
@@ -44,9 +48,55 @@ export type PayloadReport = {
 
 export type DshSessionStatus = "idle" | "running" | "failed";
 
+/** Token accounting for one reply, straight from the provider. */
+export type DshEntryUsage = {
+  /** Input tokens that missed the provider cache. */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+};
+
+/** Running totals the status line reads; the host derives the percentages. */
+export type DshSessionUsage = {
+  turns: number;
+  /** One step = one model request. */
+  steps: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  provider: string;
+  model: string;
+  /** Context window of the latest request; 0 when unknown. */
+  contextWindow: number;
+  /** Output tokens per second over the last message. */
+  tokensPerSecond: number;
+};
+
+/** One session row as the runtime reports it. */
+export type DshSessionRow = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  status: DshSessionStatus;
+  messageCount: number;
+  usage: DshSessionUsage;
+};
+
 export type DshEntry =
   | { kind: "user"; seq: number; at: string; text: string }
-  | { kind: "assistant"; seq: number; at: string; text: string; reasoning?: string }
+  | {
+      kind: "assistant";
+      seq: number;
+      at: string;
+      text: string;
+      reasoning?: string;
+      usage?: DshEntryUsage;
+      provider?: string;
+      model?: string;
+    }
   | {
       kind: "tool";
       seq: number;
@@ -112,7 +162,15 @@ export type DshAnswer = {
 
 export type DshApprovalOutcome = "allowed-once" | "rejected" | "cancelled";
 
-export type { DshModelConfig, DshModelProtocol, DshPermissionMode };
+export type {
+  DshModelEntry,
+  DshModelProtocol,
+  DshModelsConfig,
+  DshPermissionMode,
+  DshProvider,
+  DshReasoningLevel,
+  ReasoningEffort,
+};
 
 /** The settings shape the runtime reads; the model block is part of it. */
 export type DshAgentConfig = AgentConfig;
@@ -217,6 +275,7 @@ export const dshApi = {
   start: () => invoke<DshStatus>("dsh_start"),
   stop: () => invoke<DshStatus>("dsh_stop"),
   newSession: () => invoke<{ sessionId: string }>("dsh_new_session"),
+  sessions: () => invoke<{ sessions: DshSessionRow[] }>("dsh_sessions"),
   pending: () => invoke<{ requests: DshPendingRequest[] }>("dsh_pending"),
   sessionEntries: (sessionId: string) =>
     invoke<{ sessionId: string; known: boolean; entries: DshEntry[] }>(
@@ -233,6 +292,7 @@ export const dshApi = {
 
 /** Event payloads, kept next to the command types they mirror. */
 export type DshEntryEvent = { sessionId: string; entry: DshEntry };
+export type DshSessionsEvent = { sessions: DshSessionRow[] };
 export type DshSessionEvent = { sessionId: string; stream: DshStream };
 export type DshApprovalEvent = { rpcId: number; request: DshApprovalRequest };
 export type DshQuestionEvent = { rpcId: number; request: DshQuestionRequest };

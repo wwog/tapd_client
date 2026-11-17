@@ -8,7 +8,8 @@
 //!
 //! 旧的外置 CLI 流程里的运行时、可执行路径、默认模型、访问权限、TUI 就绪 /
 //! 静默阈值全部删除：内置 dsh 运行时的模型与权限在 `docs/DSH.md` 描述的
-//! profile / 会话层配置，不再落到这个文件。
+//! profile / 会话层配置，不再落到这个文件。模型供应商列表与模型目录留在这里，
+//! 因为每次启动运行时都要重新渲染成 profile。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -53,9 +54,12 @@ pub struct AgentConfig {
     /// 同时运行的任务数；仅在开启 worktree 时生效。
     #[serde(default = "default_execution_units")]
     pub execution_units: u32,
-    /// 自定义模型 API。内置运行时启动时渲染进 profile。
+    /// 自定义模型供应商与模型目录。内置运行时启动时渲染进 profile。
     #[serde(default)]
-    pub dsh_model: DshModelConfig,
+    pub dsh_models: DshModelsConfig,
+    /// 单供应商时代留下的配置，只在读取时迁移一次，不再写出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_model: Option<DshModelConfig>,
     /// 权限模式（P3）：自主 / 变更前通知 / 完全访问。运行时启动时生效。
     #[serde(default)]
     pub permission_mode: PermissionMode,
@@ -85,8 +89,8 @@ impl PermissionMode {
     }
 }
 
-/// 自定义模型提供商。只支持「自定义 API」这一种形态：
-/// Provider ID + 显示名 + Base URL + 协议 + 密钥 + 模型目录。
+/// 单供应商时代的模型配置。只在读取旧 `agent.json` 时出现，读入即迁移成
+/// [`DshModelsConfig`]，之后不再写出。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DshModelConfig {
@@ -120,51 +124,333 @@ impl Default for DshModelConfig {
     }
 }
 
-impl DshModelConfig {
-    /// 是否已经足够启动运行时。
-    pub fn is_configured(&self) -> bool {
-        !self.base_url.trim().is_empty() && !self.model.trim().is_empty()
-    }
+/// dsh `llm-pi-ai` 认的线上协议。数组顺序即界面里的展示顺序。
+const PROTOCOLS: [&str; 4] = [
+    "openai-completions",
+    "openai-responses",
+    "anthropic-messages",
+    "google-generative-ai",
+];
 
-    fn sanitized(mut self) -> Self {
-        self.provider_id = normalize_provider_id(&self.provider_id);
-        self.display_name = self.display_name.trim().to_string();
-        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
-        self.protocol = match self.protocol.trim() {
-            "anthropic" => "anthropic".to_string(),
-            "gemini" => "gemini".to_string(),
-            _ => "openai-completions".to_string(),
-        };
-        self.api_key = self.api_key.trim().to_string();
-        self.model = self.model.trim().to_string();
-        self.context_window = self.context_window.clamp(1_024, 4_000_000);
-        let mut seen: Vec<String> = Vec::new();
-        for model in std::mem::take(&mut self.models) {
-            let model = model.trim().to_string();
-            if model.is_empty() || seen.iter().any(|item| item == &model) {
-                continue;
-            }
-            seen.push(model);
+/// 当前 payload 声明的输入模态：只有文本与图片。
+const MODALITIES: [&str; 2] = ["text", "image"];
+
+/// 推理等级，从低到高。上游只认这一组。
+const REASONING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// 一个自定义模型供应商，渲染成 profile 里 `providers` 字典的一项。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DshProvider {
+    /// providers 字典键。界面不暴露：从名称派生，重名时加序号。
+    pub id: String,
+    pub name: String,
+    /// OpenAI 兼容 / Responses / Anthropic / Gemini 网关的基地址。
+    pub base_url: String,
+    /// 取值见 [`PROTOCOLS`]。
+    pub protocol: String,
+    pub api_key: String,
+    pub enabled: bool,
+    pub models: Vec<DshModelEntry>,
+}
+
+impl Default for DshProvider {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+            protocol: PROTOCOLS[0].to_string(),
+            api_key: String::new(),
+            enabled: true,
+            models: Vec::new(),
         }
-        self.models = seen;
-        self
     }
 }
 
-/// Providers are dictionary keys in the rendered YAML; keep them boring.
-fn normalize_provider_id(raw: &str) -> String {
+/// 供应商目录里的一个模型。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DshModelEntry {
+    pub id: String,
+    /// 上下文窗口，单位 token。
+    pub context_window: u64,
+    /// 单次回复上限；`None` 交给运行时默认值。
+    pub max_tokens: Option<u64>,
+    /// 输入模态，`text` 恒在。
+    pub input: Vec<String>,
+    /// 推理等级与线上参数，按等级从低到高排列；空表示不声明。
+    pub reasoning: Vec<ReasoningEffort>,
+    pub enabled: bool,
+}
+
+impl Default for DshModelEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            context_window: 128_000,
+            max_tokens: None,
+            input: vec![MODALITIES[0].to_string()],
+            reasoning: Vec::new(),
+            enabled: true,
+        }
+    }
+}
+
+/// 一个推理等级发到线上的参数值。`off` 允许留空。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningEffort {
+    pub level: String,
+    pub wire: String,
+}
+
+/// 模型设置的全部内容：供应商列表 + 当前使用的供应商与模型。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DshModelsConfig {
+    pub providers: Vec<DshProvider>,
+    pub active_provider_id: String,
+    pub active_model_id: String,
+}
+
+impl DshModelsConfig {
+    /// 当前使用的供应商与模型：两者都还在，并且都是启用状态。
+    pub fn active(&self) -> Option<(&DshProvider, &DshModelEntry)> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|item| item.id == self.active_provider_id && item.enabled)?;
+        let model = provider
+            .models
+            .iter()
+            .find(|item| item.id == self.active_model_id && item.enabled)?;
+        Some((provider, model))
+    }
+
+    /// 是否已经足够启动运行时。
+    pub fn is_configured(&self) -> bool {
+        self.active()
+            .is_some_and(|(provider, _)| !provider.base_url.trim().is_empty())
+    }
+
+    fn sanitized(mut self) -> Self {
+        let mut seen_ids: Vec<String> = Vec::new();
+        let mut providers: Vec<DshProvider> = Vec::new();
+        for (index, provider) in std::mem::take(&mut self.providers).into_iter().enumerate() {
+            let name = provider.name.trim().to_string();
+            let mut id = slug_id(&provider.id);
+            if id.is_empty() {
+                id = slug_id(&name);
+            }
+            if id.is_empty() {
+                id = format!("provider-{}", index + 1);
+            }
+            // providers 是字典，键必须唯一；重名时给后来的加序号。
+            let base_id = id.clone();
+            let mut suffix = 2;
+            while seen_ids.iter().any(|existing| existing == &id) {
+                id = format!("{base_id}-{suffix}");
+                suffix += 1;
+            }
+            seen_ids.push(id.clone());
+
+            let mut seen_models: Vec<String> = Vec::new();
+            let models = provider
+                .models
+                .into_iter()
+                .filter_map(sanitize_model)
+                .filter(|model| {
+                    if seen_models.iter().any(|existing| existing == &model.id) {
+                        return false;
+                    }
+                    seen_models.push(model.id.clone());
+                    true
+                })
+                .collect();
+
+            providers.push(DshProvider {
+                name: if name.is_empty() { id.clone() } else { name },
+                base_url: provider.base_url.trim().trim_end_matches('/').to_string(),
+                protocol: normalize_protocol(&provider.protocol),
+                api_key: provider.api_key.trim().to_string(),
+                enabled: provider.enabled,
+                models,
+                id,
+            });
+        }
+        self.providers = providers;
+        self.active_provider_id = self.active_provider_id.trim().to_string();
+        self.active_model_id = self.active_model_id.trim().to_string();
+        self.reselect_active();
+        self
+    }
+
+    /// 指针必须指向一个真正可用的模型；悬空时回落到第一个启用的。
+    fn reselect_active(&mut self) {
+        if self.active().is_some() {
+            return;
+        }
+        let picked = self
+            .providers
+            .iter()
+            .filter(|provider| provider.enabled)
+            .find_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .find(|model| model.enabled)
+                    .map(|model| (provider, model))
+            });
+        match picked {
+            Some((provider, model)) => {
+                self.active_provider_id = provider.id.clone();
+                self.active_model_id = model.id.clone();
+            }
+            // 没有可用模型时，只要供应商还在就把指针停在它身上，
+            // 「当前供应商」不会莫名跳到别处。
+            None => {
+                let known = self
+                    .providers
+                    .iter()
+                    .any(|provider| provider.id == self.active_provider_id);
+                self.active_model_id.clear();
+                if !known {
+                    self.active_provider_id.clear();
+                }
+            }
+        }
+    }
+
+    /// 单供应商时代的配置迁移：地址还在时保留成一个供应商。
+    fn from_legacy(legacy: DshModelConfig) -> Self {
+        let base_url = legacy.base_url.trim().to_string();
+        if base_url.is_empty() {
+            return Self::default();
+        }
+        let provider_id = slug_id(&legacy.provider_id);
+        let provider_id = if provider_id.is_empty() {
+            "custom".to_string()
+        } else {
+            provider_id
+        };
+        let active_model = legacy.model.trim().to_string();
+        let mut ids: Vec<String> = Vec::new();
+        for id in std::iter::once(&active_model).chain(legacy.models.iter()) {
+            let id = id.trim();
+            if id.is_empty() || ids.iter().any(|existing| existing == id) {
+                continue;
+            }
+            ids.push(id.to_string());
+        }
+        let models: Vec<DshModelEntry> = ids
+            .into_iter()
+            .map(|id| DshModelEntry {
+                id,
+                context_window: legacy.context_window,
+                ..Default::default()
+            })
+            .collect();
+        Self {
+            providers: vec![DshProvider {
+                id: provider_id.clone(),
+                name: legacy.display_name,
+                base_url,
+                protocol: legacy.protocol,
+                api_key: legacy.api_key,
+                enabled: true,
+                models,
+            }],
+            active_provider_id: provider_id,
+            active_model_id: active_model,
+        }
+    }
+}
+
+/// profiles are dictionary keys and credential refs; keep them boring. Only
+/// `[a-z0-9-]` survives so the per-provider environment variable stays
+/// injective (`-` is the one character that becomes `_`).
+fn slug_id(raw: &str) -> String {
     let mut out = String::new();
     for (index, ch) in raw.trim().chars().enumerate() {
-        let allowed = ch.is_ascii_alphanumeric() || ch == '-' || ch == '_';
+        let allowed = ch.is_ascii_alphanumeric() || ch == '-';
         if allowed && !(index == 0 && ch.is_ascii_digit()) {
             out.push(ch.to_ascii_lowercase());
         }
     }
-    if out.is_empty() {
-        "custom".to_string()
-    } else {
-        out
+    out
+}
+
+/// Whitelists the wire protocol; the two spellings the old form offered are
+/// accepted as aliases so a saved `anthropic` keeps working.
+fn normalize_protocol(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "openai-responses" | "responses" => "openai-responses",
+        "anthropic" | "anthropic-messages" => "anthropic-messages",
+        "gemini" | "google" | "google-generative-ai" => "google-generative-ai",
+        _ => "openai-completions",
     }
+    .to_string()
+}
+
+/// Normalizes one catalog entry; `None` drops an entry with no usable id.
+fn sanitize_model(mut entry: DshModelEntry) -> Option<DshModelEntry> {
+    let id = entry.id.trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+
+    let mut input: Vec<String> = Vec::new();
+    let declared: Vec<String> = std::mem::take(&mut entry.input)
+        .into_iter()
+        .map(|modality| modality.trim().to_ascii_lowercase())
+        .collect();
+    // Rebuilt from the whitelist so the order is stable and text leads; an
+    // empty list would read upstream as "not declared", not "text only".
+    for modality in MODALITIES {
+        let mandatory = modality == MODALITIES[0];
+        if mandatory || declared.iter().any(|item| item == modality) {
+            input.push(modality.to_string());
+        }
+    }
+
+    let mut reasoning: Vec<ReasoningEffort> = Vec::new();
+    for effort in std::mem::take(&mut entry.reasoning) {
+        let level = effort.level.trim().to_ascii_lowercase();
+        if !REASONING_LEVELS.iter().any(|item| *item == level) {
+            continue;
+        }
+        if reasoning.iter().any(|item| item.level == level) {
+            continue;
+        }
+        let wire = effort.wire.trim().to_string();
+        // Upstream rejects an empty wire value for every level but `off`.
+        if level != "off" && wire.is_empty() {
+            continue;
+        }
+        reasoning.push(ReasoningEffort { level, wire });
+    }
+    reasoning.sort_by_key(|effort| {
+        REASONING_LEVELS
+            .iter()
+            .position(|item| *item == effort.level)
+            .unwrap_or(usize::MAX)
+    });
+    // A ladder offering only `off` is rejected upstream; read it as undeclared.
+    if reasoning.len() == 1 && reasoning[0].level == "off" {
+        reasoning.clear();
+    }
+
+    Some(DshModelEntry {
+        id,
+        context_window: entry.context_window.clamp(1_024, 4_000_000),
+        max_tokens: entry
+            .max_tokens
+            .map(|tokens| tokens.clamp(1, 4_000_000)),
+        input,
+        reasoning,
+        enabled: entry.enabled,
+    })
 }
 
 /// Worktree 开启后默认并行两个任务：再多也不利于排查。
@@ -181,7 +467,8 @@ impl Default for AgentConfig {
             coworker_ids: Vec::new(),
             worktree_enabled: false,
             execution_units: default_execution_units(),
-            dsh_model: DshModelConfig::default(),
+            dsh_models: DshModelsConfig::default(),
+            dsh_model: None,
             permission_mode: PermissionMode::Auto,
         }
     }
@@ -197,7 +484,17 @@ impl AgentConfig {
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
         self.execution_units = self.execution_units.clamp(1, 8);
-        self.dsh_model = std::mem::take(&mut self.dsh_model).sanitized();
+
+        // One-time migration of the single-provider form; the field stops being
+        // written as soon as the provider list carries the same data.
+        let legacy = self.dsh_model.take();
+        let mut models = std::mem::take(&mut self.dsh_models);
+        if models.providers.is_empty() {
+            if let Some(legacy) = legacy {
+                models = DshModelsConfig::from_legacy(legacy);
+            }
+        }
+        self.dsh_models = models.sanitized();
 
         // Migrate the old id -> path map into per-project settings once.
         for (workspace_id, path) in std::mem::take(&mut self.repo_mappings) {
@@ -307,10 +604,10 @@ pub async fn agent_settings_set(
 
 /// `settings_agent_get` / `settings_agent_set` over `feature_command`.
 ///
-/// The phone may edit worktree isolation and execution units; the model API
-/// key, prompt template and project rules stay desktop-only. The response is a
-/// projection for exactly that reason: returning the whole config would put
-/// `dshModel.apiKey` on the paired wire.
+/// The phone may edit worktree isolation and execution units; the model
+/// providers (API keys included), prompt template and project rules stay
+/// desktop-only. The response is a projection for exactly that reason:
+/// returning the whole config would put every provider key on the paired wire.
 pub async fn command(
     app: &tauri::AppHandle,
     name: &str,
@@ -536,5 +833,250 @@ mod tests {
         let config = config.sanitized();
         assert_eq!(config.projects["ws"].repo_path, "/repo");
         assert!(config.repo_mappings.is_empty());
+    }
+
+    #[test]
+    fn legacy_single_provider_becomes_one_provider() {
+        let config = AgentConfig {
+            dsh_model: Some(DshModelConfig {
+                provider_id: "Acme Gateway".into(),
+                display_name: "Acme".into(),
+                base_url: " https://acme.example/v1/ ".into(),
+                protocol: "anthropic".into(),
+                api_key: " k ".into(),
+                model: "acme-think".into(),
+                context_window: 262_144,
+                models: vec!["acme-fast".into(), "acme-think".into()],
+            }),
+            ..Default::default()
+        }
+        .sanitized();
+
+        assert!(config.dsh_model.is_none());
+        let models = &config.dsh_models;
+        assert_eq!(models.providers.len(), 1);
+        let provider = &models.providers[0];
+        assert_eq!(provider.id, "acmegateway");
+        assert_eq!(provider.base_url, "https://acme.example/v1");
+        // The old form offered a spelling upstream rejects.
+        assert_eq!(provider.protocol, "anthropic-messages");
+        assert_eq!(provider.api_key, "k");
+        assert_eq!(
+            provider.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["acme-think", "acme-fast"]
+        );
+        assert_eq!(provider.models[0].context_window, 262_144);
+        assert_eq!(models.active_model_id, "acme-think");
+        assert!(models.is_configured());
+    }
+
+    #[test]
+    fn provider_ids_stay_unique_and_boring() {
+        let config = AgentConfig {
+            dsh_models: DshModelsConfig {
+                providers: vec![
+                    DshProvider {
+                        id: "Gateway".into(),
+                        name: "A".into(),
+                        base_url: "https://a".into(),
+                        models: vec![model("m")],
+                        ..Default::default()
+                    },
+                    DshProvider {
+                        id: "gateway".into(),
+                        name: "B".into(),
+                        base_url: "https://b".into(),
+                        models: vec![model("m")],
+                        ..Default::default()
+                    },
+                    DshProvider {
+                        id: String::new(),
+                        name: String::new(),
+                        base_url: "https://c".into(),
+                        models: vec![model("m")],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .sanitized();
+
+        let ids: Vec<&str> = config
+            .dsh_models
+            .providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["gateway", "gateway-2", "provider-3"]);
+        // An unnamed provider still renders as something readable.
+        assert_eq!(config.dsh_models.providers[2].name, "provider-3");
+        // No pointer was supplied, so the first usable model wins.
+        assert_eq!(config.dsh_models.active_provider_id, "gateway");
+        assert_eq!(config.dsh_models.active_model_id, "m");
+    }
+
+    #[test]
+    fn active_pointer_falls_back_to_a_usable_model() {
+        let mut config = DshModelsConfig {
+            providers: vec![DshProvider {
+                id: "gateway".into(),
+                name: "Gateway".into(),
+                base_url: "https://a".into(),
+                models: vec![
+                    DshModelEntry {
+                        id: "off".into(),
+                        enabled: false,
+                        ..Default::default()
+                    },
+                    model("on"),
+                ],
+                ..Default::default()
+            }],
+            active_provider_id: "gone".into(),
+            active_model_id: "off".into(),
+        }
+        .sanitized();
+        assert_eq!(config.active_provider_id, "gateway");
+        assert_eq!(config.active_model_id, "on");
+        assert!(config.is_configured());
+
+        // Disabling the provider leaves nothing to run.
+        config.providers[0].enabled = false;
+        let config = config.sanitized();
+        assert!(!config.is_configured());
+        assert_eq!(config.active_provider_id, "gateway");
+        assert!(config.active_model_id.is_empty());
+    }
+
+    #[test]
+    fn models_are_normalized_to_what_upstream_accepts() {
+        let config = DshModelsConfig {
+            providers: vec![DshProvider {
+                id: "gateway".into(),
+                name: "Gateway".into(),
+                base_url: "https://a/".into(),
+                models: vec![
+                    DshModelEntry {
+                        id: " vision ".into(),
+                        input: vec!["image".into(), "video".into(), "TEXT".into()],
+                        reasoning: vec![
+                            ReasoningEffort {
+                                level: "high".into(),
+                                wire: " high ".into(),
+                            },
+                            ReasoningEffort {
+                                level: "low".into(),
+                                wire: String::new(),
+                            },
+                            ReasoningEffort {
+                                level: "medium".into(),
+                                wire: "medium".into(),
+                            },
+                            ReasoningEffort {
+                                level: "bogus".into(),
+                                wire: "x".into(),
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    DshModelEntry {
+                        id: "  ".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .sanitized();
+
+        let entry = &config.providers[0].models[0];
+        assert_eq!(entry.id, "vision");
+        // Video is not a modality this payload serves; text is mandatory.
+        assert_eq!(entry.input, vec!["text", "image"]);
+        // `low` has no wire value and `bogus` is not a level.
+        assert_eq!(
+            entry
+                .reasoning
+                .iter()
+                .map(|effort| (effort.level.as_str(), effort.wire.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("medium", "medium"), ("high", "high")]
+        );
+        // Blank ids are dropped, not kept as empty rows.
+        assert_eq!(config.providers[0].models.len(), 1);
+    }
+
+    #[test]
+    fn a_lone_off_level_reads_as_undeclared() {
+        let entry = sanitize_model(DshModelEntry {
+            id: "plain".into(),
+            reasoning: vec![ReasoningEffort {
+                level: "off".into(),
+                wire: String::new(),
+            }],
+            ..Default::default()
+        })
+        .expect("model survives");
+        assert!(entry.reasoning.is_empty());
+    }
+
+    fn model(id: &str) -> DshModelEntry {
+        DshModelEntry {
+            id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The shape the configuration tab sends: camelCase keys, nullable
+    /// `maxTokens`, `input` as an array, reasoning as level/wire pairs.
+    #[test]
+    fn the_wire_shape_matches_the_frontend() {
+        let wire = serde_json::json!({
+            "dshModels": {
+                "providers": [{
+                    "id": "opencode-go",
+                    "name": "OpenCode Go",
+                    "baseUrl": "https://opencode.ai/zen/go/v1",
+                    "protocol": "anthropic-messages",
+                    "apiKey": "secret",
+                    "enabled": true,
+                    "models": [{
+                        "id": "deepseek-v4.1-flash",
+                        "contextWindow": 1_000_000,
+                        "maxTokens": null,
+                        "input": ["text", "image"],
+                        "reasoning": [{ "level": "low", "wire": "low" }],
+                        "enabled": true
+                    }]
+                }],
+                "activeProviderId": "opencode-go",
+                "activeModelId": "deepseek-v4.1-flash"
+            }
+        });
+
+        let config: AgentConfig = serde_json::from_value(wire).expect("frontend payload parses");
+        assert_eq!(
+            config
+                .dsh_models
+                .active()
+                .map(|(provider, model)| (provider.id.as_str(), model.id.as_str())),
+            Some(("opencode-go", "deepseek-v4.1-flash"))
+        );
+        assert!(config.dsh_models.is_configured());
+
+        // A null `maxTokens` means "runtime default", not zero.
+        let saved = serde_json::to_value(AgentConfig {
+            dsh_models: config.dsh_models,
+            ..Default::default()
+        })
+        .expect("config serializes");
+        assert!(saved.get("dshModel").is_none(), "legacy field must not be written");
+        assert_eq!(
+            saved["dshModels"]["providers"][0]["models"][0]["maxTokens"],
+            serde_json::Value::Null
+        );
     }
 }

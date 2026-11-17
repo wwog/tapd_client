@@ -27,13 +27,14 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::{
     bridge, payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_READY, EVENT_STATUS,
 };
-use crate::agent_settings::{self, DshModelConfig};
+use crate::agent_settings::{self, DshModelsConfig, DshProvider};
 use crate::shell_path;
 use tapd_i18n::{tr, tr_args};
 
-/// Environment variable carrying the custom provider key into the runtime.
-/// The profile references it by name; the secret never enters a config file.
-const API_KEY_ENV: &str = "TAPD_DSH_API_KEY";
+/// Environment variable each provider's key travels in. The profile references
+/// it by name, so the secret never enters a config file. Every enabled route
+/// lives in the same profile, so each one gets its own variable.
+const API_KEY_ENV_PREFIX: &str = "TAPD_DSH_API_KEY_";
 
 /// Sent when the user leaves the key empty. Hand-declared gateways (local
 /// vLLM/Ollama, proxies) usually ignore the header, but the credential seam
@@ -250,15 +251,22 @@ impl RuntimeState {
         };
 
         let config = agent_settings::config_for(app);
-        if !config.dsh_model.is_configured() {
+        if !config.dsh_models.is_configured() {
             return Err(self.fail(
                 app,
                 "model_missing",
                 tr("dsh.model.unconfigured"),
             ));
         }
+        // `is_configured` already proved this resolves; the ids are what the SDK
+        // initialize call names.
+        let Some((active_provider, active_model)) = config.dsh_models.active() else {
+            return Err(self.fail(app, "model_missing", tr("dsh.model.unconfigured")));
+        };
+        let provider = active_provider.id.clone();
+        let model = active_model.id.clone();
 
-        let layout = match prepare_profile(app, &payload, &config.dsh_model) {
+        let layout = match prepare_profile(app, &payload, &config) {
             Ok(layout) => layout,
             Err(error) => return Err(self.fail(app, "profile_failed", error)),
         };
@@ -272,7 +280,7 @@ impl RuntimeState {
         let mut child = match spawn_runtime(
             &node_path,
             &layout,
-            &config.dsh_model,
+            &config.dsh_models,
             &endpoint,
             config.permission_mode.as_env(),
         ) {
@@ -329,8 +337,6 @@ impl RuntimeState {
             runtime_dir: layout.runtime_dir.clone(),
         });
 
-        let provider = config.dsh_model.provider_id.clone();
-        let model = config.dsh_model.model.clone();
         let params = InitializeParams {
             cwd: layout.default_cwd.to_string_lossy().to_string(),
             provider: provider.clone(),
@@ -508,8 +514,9 @@ struct RuntimeLayout {
 fn prepare_profile(
     app: &AppHandle,
     payload: &payload::PayloadStatus,
-    model: &DshModelConfig,
+    config: &agent_settings::AgentConfig,
 ) -> Result<RuntimeLayout, String> {
+    let models = &config.dsh_models;
     let state = app
         .try_state::<Arc<crate::state::AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;
@@ -523,22 +530,17 @@ fn prepare_profile(
     }
 
     let plugins = plugin_rows(&runtime_dir);
-    let provider = ProviderConfig {
-        id: model.provider_id.clone(),
-        display_name: if model.display_name.is_empty() {
-            model.provider_id.clone()
-        } else {
-            model.display_name.clone()
-        },
-        api: model.protocol.clone(),
-        base_url: model.base_url.clone(),
-        api_key_env: Some(API_KEY_ENV.to_string()),
-        models: provider_models(model),
-    };
     let spec = ProfileSpec {
         plugins,
-        provider: Some(provider),
-        team_default_enabled: Some(false),
+        providers: models
+            .providers
+            .iter()
+            .filter(|provider| routable(provider))
+            .map(provider_config)
+            .collect(),
+        // The 同事 switch is the agent team: coworkers join the board, and no
+        // coworkers means a single agent.
+        team_default_enabled: Some(!config.coworker_ids.is_empty()),
     };
     spec.write(&profile_dir)
         .map_err(|error| format!("failed to write profile: {error}"))?;
@@ -549,6 +551,61 @@ fn prepare_profile(
         home,
         default_cwd: default_cwd(app),
     })
+}
+
+/// Only a route that can actually serve a request is worth writing: it needs an
+/// address and at least one enabled model.
+fn routable(provider: &DshProvider) -> bool {
+    provider.enabled
+        && !provider.base_url.trim().is_empty()
+        && provider.models.iter().any(|model| model.enabled)
+}
+
+fn provider_config(provider: &DshProvider) -> ProviderConfig {
+    ProviderConfig {
+        id: provider.id.clone(),
+        display_name: if provider.name.is_empty() {
+            provider.id.clone()
+        } else {
+            provider.name.clone()
+        },
+        api: provider.protocol.clone(),
+        base_url: provider.base_url.clone(),
+        api_key_env: Some(api_key_env(&provider.id)),
+        models: provider
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .map(|model| ProviderModel {
+                id: model.id.clone(),
+                name: model.id.clone(),
+                context_window: model.context_window,
+                max_tokens: model.max_tokens,
+                input: model.input.clone(),
+                reasoning: model
+                    .reasoning
+                    .iter()
+                    .map(|effort| (effort.level.clone(), effort.wire.clone()))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// Credential ref for one route: a POSIX shell identifier derived from the
+/// provider key, so two routes never share a secret.
+fn api_key_env(provider_id: &str) -> String {
+    let suffix: String = provider_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{API_KEY_ENV_PREFIX}{suffix}")
 }
 
 /// Every `@tapd/*` package in the payload becomes a mounted plugin row.
@@ -576,27 +633,6 @@ fn plugin_rows(runtime_dir: &Path) -> Vec<PluginRow> {
     rows
 }
 
-fn provider_models(model: &DshModelConfig) -> Vec<ProviderModel> {
-    let mut ids: Vec<String> = Vec::new();
-    if !model.model.trim().is_empty() {
-        ids.push(model.model.trim().to_string());
-    }
-    for id in &model.models {
-        let id = id.trim();
-        if id.is_empty() || ids.iter().any(|item| item == id) {
-            continue;
-        }
-        ids.push(id.to_string());
-    }
-    ids.into_iter()
-        .map(|id| ProviderModel {
-            name: id.clone(),
-            id,
-            context_window: model.context_window,
-        })
-        .collect()
-}
-
 /// Sessions inherit this directory unless the task later moves them.
 fn default_cwd(app: &AppHandle) -> PathBuf {
     let state = app
@@ -622,7 +658,7 @@ fn default_cwd(app: &AppHandle) -> PathBuf {
 fn spawn_runtime(
     node: &Path,
     layout: &RuntimeLayout,
-    model: &DshModelConfig,
+    models: &DshModelsConfig,
     bridge: &bridge::BridgeEndpoint,
     permission_mode: &str,
 ) -> Result<Child, String> {
@@ -643,12 +679,16 @@ fn spawn_runtime(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let key = if model.api_key.is_empty() {
-        NO_AUTH_PLACEHOLDER
-    } else {
-        model.api_key.as_str()
-    };
-    command.env(API_KEY_ENV, key);
+    for provider in models.providers.iter().filter(|provider| routable(provider)) {
+        // The credential seam fails closed on a reference that resolves to
+        // nothing, so a keyless route still carries a placeholder.
+        let key = if provider.api_key.is_empty() {
+            NO_AUTH_PLACEHOLDER
+        } else {
+            provider.api_key.as_str()
+        };
+        command.env(api_key_env(&provider.id), key);
+    }
     command.spawn().map_err(|error| {
         format!(
             "failed to start {} {}: {error}",
@@ -931,4 +971,146 @@ fn node_version(node: &Path) -> Result<String, String> {
         return Err(format!("{} --version failed", node.display()));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_settings::{DshModelEntry, ReasoningEffort};
+
+    fn entry(id: &str) -> DshModelEntry {
+        DshModelEntry {
+            id: id.into(),
+            context_window: 1_000_000,
+            max_tokens: Some(64_000),
+            input: vec!["text".into(), "image".into()],
+            reasoning: vec![
+                ReasoningEffort {
+                    level: "low".into(),
+                    wire: "low".into(),
+                },
+                ReasoningEffort {
+                    level: "high".into(),
+                    wire: "high".into(),
+                },
+            ],
+            enabled: true,
+        }
+    }
+
+    fn config() -> DshModelsConfig {
+        DshModelsConfig {
+            providers: vec![
+                DshProvider {
+                    id: "opencode-go".into(),
+                    name: "OpenCode Go".into(),
+                    base_url: "https://opencode.ai/zen/go/v1".into(),
+                    protocol: "openai-completions".into(),
+                    api_key: "secret".into(),
+                    enabled: true,
+                    models: vec![entry("deepseek-v4.1-flash")],
+                },
+                // Disabled routes never reach the profile, whatever they carry.
+                DshProvider {
+                    id: "off".into(),
+                    name: "Off".into(),
+                    base_url: "https://off.example".into(),
+                    protocol: "anthropic-messages".into(),
+                    api_key: String::new(),
+                    enabled: false,
+                    models: vec![entry("claude")],
+                },
+                // An address-less route has nothing to call.
+                DshProvider {
+                    id: "empty".into(),
+                    name: "Empty".into(),
+                    base_url: String::new(),
+                    protocol: "google-generative-ai".into(),
+                    api_key: String::new(),
+                    enabled: true,
+                    models: vec![entry("gemini")],
+                },
+                // A route with no enabled model cannot serve a request.
+                DshProvider {
+                    id: "idle".into(),
+                    name: "Idle".into(),
+                    base_url: "https://idle.example".into(),
+                    protocol: "openai-responses".into(),
+                    api_key: String::new(),
+                    enabled: true,
+                    models: vec![DshModelEntry {
+                        enabled: false,
+                        ..entry("gpt")
+                    }],
+                },
+            ],
+            active_provider_id: "opencode-go".into(),
+            active_model_id: "deepseek-v4.1-flash".into(),
+        }
+    }
+
+    #[test]
+    fn only_routable_providers_reach_the_profile() {
+        let models = config();
+        let providers: Vec<ProviderConfig> = models
+            .providers
+            .iter()
+            .filter(|provider| routable(provider))
+            .map(provider_config)
+            .collect();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "opencode-go");
+        assert_eq!(
+            providers[0].api_key_env.as_deref(),
+            Some("TAPD_DSH_API_KEY_OPENCODE_GO")
+        );
+        // Only the enabled model is written.
+        assert_eq!(providers[0].models.len(), 1);
+        let model = &providers[0].models[0];
+        assert_eq!(model.name, model.id);
+        assert_eq!(model.max_tokens, Some(64_000));
+        assert_eq!(model.input, vec!["text", "image"]);
+        assert_eq!(
+            model.reasoning,
+            vec![
+                ("low".to_string(), "low".to_string()),
+                ("high".to_string(), "high".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_rendered_profile_uses_the_protocols_dsh_accepts() {
+        let models = config();
+        let yaml = ProfileSpec {
+            plugins: Vec::new(),
+            providers: models
+                .providers
+                .iter()
+                .filter(|provider| routable(provider))
+                .map(provider_config)
+                .collect(),
+            team_default_enabled: Some(false),
+        }
+        .patch_yaml();
+
+        assert!(yaml.contains("        api: 'openai-completions'"));
+        assert!(yaml.contains("        baseURL: 'https://opencode.ai/zen/go/v1'"));
+        assert!(yaml.contains("        apiKeyEnv: 'TAPD_DSH_API_KEY_OPENCODE_GO'"));
+        assert!(yaml.contains("            maxTokens: 64000"));
+        assert!(yaml.contains("            reasoningEfforts:\n              low: 'low'\n              high: 'high'\n"));
+        // Nothing from the routes that cannot serve a request leaks in.
+        assert!(!yaml.contains("'off'"));
+        assert!(!yaml.contains("gemini"));
+        assert!(!yaml.contains("secret"));
+    }
+
+    #[test]
+    fn provider_keys_never_collide_across_routes() {
+        assert_eq!(api_key_env("a"), "TAPD_DSH_API_KEY_A");
+        assert_eq!(api_key_env("my-gateway"), "TAPD_DSH_API_KEY_MY_GATEWAY");
+        // `-` is the only character mapped to `_`, so the mapping stays injective.
+        assert_ne!(api_key_env("a-b"), api_key_env("ab"));
+    }
 }

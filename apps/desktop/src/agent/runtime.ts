@@ -2,6 +2,7 @@
  * One answer to "can the composer send right now", shared by the notice above
  * the composer and the configuration tab's runtime section.
  */
+import { modelsReady } from "../lib/agentSettings";
 import { t } from "../lib/i18n";
 import type { AgentState } from "./store";
 
@@ -32,8 +33,7 @@ export function runtimeBlock(state: AgentState): RuntimeBlock | null {
         return "failed";
     }
   }
-  const model = state.config?.dshModel;
-  if (state.config && model && (!model.baseUrl.trim() || !model.model.trim())) {
+  if (state.config && !modelsReady(state.config.dshModels)) {
     return "model";
   }
   return "stopped";

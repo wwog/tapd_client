@@ -40,14 +40,22 @@ pub struct ProviderModel {
     pub id: String,
     pub name: String,
     pub context_window: u64,
+    /// Per-request output cap. `None` keeps the installed catalog's default.
+    pub max_tokens: Option<u64>,
+    /// Modalities the model accepts (`text`, `image`). Empty keeps the default.
+    pub input: Vec<String>,
+    /// Reasoning levels in escalation order with their wire values. Empty keeps
+    /// the installed catalog's capability.
+    pub reasoning: Vec<(String, String)>,
 }
 
-/// The user's custom model API (settings → 模型).
+/// One custom model route (one settings provider), rendered into `providers`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub id: String,
     pub display_name: String,
-    /// `openai-completions` | `anthropic` | `gemini` (upstream `api` field).
+    /// `openai-completions` | `openai-responses` | `anthropic-messages` |
+    /// `google-generative-ai` (upstream `api` field).
     pub api: String,
     pub base_url: String,
     /// Env var name resolved through the harness credential seam; absent when
@@ -60,7 +68,7 @@ pub struct ProviderConfig {
 #[derive(Clone, Debug, Default)]
 pub struct ProfileSpec {
     pub plugins: Vec<PluginRow>,
-    pub provider: Option<ProviderConfig>,
+    pub providers: Vec<ProviderConfig>,
     /// `agent-team` default; `Some(false)` keeps Team mode off for new sessions.
     pub team_default_enabled: Option<bool>,
 }
@@ -115,21 +123,43 @@ impl ProfileSpec {
             let _ = writeln!(out, "- id: agent-team\n  config:\n    defaultEnabled: {enabled}");
         }
 
-        if let Some(provider) = &self.provider {
+        if !self.providers.is_empty() {
             out.push_str("- id: llm-pi-ai\n  config:\n    providers:\n");
-            let _ = writeln!(out, "      {}:", quote(&provider.id));
-            let _ = writeln!(out, "        displayName: {}", quote(&provider.display_name));
-            let _ = writeln!(out, "        api: {}", quote(&provider.api));
-            let _ = writeln!(out, "        baseURL: {}", quote(&provider.base_url));
-            if let Some(env) = &provider.api_key_env {
-                let _ = writeln!(out, "        apiKeyEnv: {}", quote(env));
-            }
-            if !provider.models.is_empty() {
-                out.push_str("        models:\n");
-                for model in &provider.models {
-                    let _ = writeln!(out, "          - id: {}", quote(&model.id));
-                    let _ = writeln!(out, "            name: {}", quote(&model.name));
-                    let _ = writeln!(out, "            contextWindow: {}", model.context_window);
+            for provider in &self.providers {
+                let _ = writeln!(out, "      {}:", quote(&provider.id));
+                let _ = writeln!(out, "        displayName: {}", quote(&provider.display_name));
+                let _ = writeln!(out, "        api: {}", quote(&provider.api));
+                let _ = writeln!(out, "        baseURL: {}", quote(&provider.base_url));
+                if let Some(env) = &provider.api_key_env {
+                    let _ = writeln!(out, "        apiKeyEnv: {}", quote(env));
+                }
+                if !provider.models.is_empty() {
+                    out.push_str("        models:\n");
+                    for model in &provider.models {
+                        let _ = writeln!(out, "          - id: {}", quote(&model.id));
+                        let _ = writeln!(out, "            name: {}", quote(&model.name));
+                        let _ = writeln!(out, "            contextWindow: {}", model.context_window);
+                        // Everything below is optional: leaving it out lets the
+                        // installed catalog answer instead.
+                        if let Some(max_tokens) = model.max_tokens {
+                            let _ = writeln!(out, "            maxTokens: {max_tokens}");
+                        }
+                        if !model.input.is_empty() {
+                            let list = model
+                                .input
+                                .iter()
+                                .map(|modality| format!("'{modality}'"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let _ = writeln!(out, "            input: [{list}]");
+                        }
+                        if !model.reasoning.is_empty() {
+                            out.push_str("            reasoningEfforts:\n");
+                            for (level, wire) in &model.reasoning {
+                                let _ = writeln!(out, "              {level}: {}", quote(wire));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -168,7 +198,7 @@ mod tests {
                 id: "tapd-tools".into(),
                 entry: "/Users/me/Library/Application Support/tapd/dsh/0.2.2-rc.3/node_modules/@tapd/plugin-tools/index.js".into(),
             }],
-            provider: Some(ProviderConfig {
+            providers: vec![ProviderConfig {
                 id: "acme-gateway".into(),
                 display_name: "Acme Gateway".into(),
                 api: "openai-completions".into(),
@@ -176,10 +206,13 @@ mod tests {
                 api_key_env: Some("ACME_API_KEY".into()),
                 models: vec![ProviderModel {
                     id: "acme-think".into(),
-                    name: "Acme Think".into(),
+                    name: "acme-think".into(),
                     context_window: 262_144,
+                    max_tokens: None,
+                    input: vec!["text".into()],
+                    reasoning: Vec::new(),
                 }],
-            }),
+            }],
             team_default_enabled: Some(false),
         }
     }
@@ -202,6 +235,48 @@ mod tests {
         assert!(yaml.contains("- id: agent-team\n  config:\n    defaultEnabled: false"));
         assert!(yaml.contains("        apiKeyEnv: 'ACME_API_KEY'"));
         assert!(yaml.contains("            contextWindow: 262144"));
+        assert!(yaml.contains("            input: ['text']"));
+    }
+
+    #[test]
+    fn every_enabled_route_lands_in_providers() {
+        let mut spec = spec();
+        spec.providers.push(ProviderConfig {
+            id: "second".into(),
+            display_name: "Second".into(),
+            api: "anthropic-messages".into(),
+            base_url: "https://second.example".into(),
+            api_key_env: None,
+            models: vec![ProviderModel {
+                id: "fast".into(),
+                name: "fast".into(),
+                context_window: 128_000,
+                max_tokens: Some(8_192),
+                input: vec!["text".into(), "image".into()],
+                reasoning: vec![
+                    ("low".into(), "low".into()),
+                    ("high".into(), "high".into()),
+                ],
+            }],
+        });
+        let yaml = spec.patch_yaml();
+        assert!(yaml.contains("      'acme-gateway':"));
+        assert!(yaml.contains("      'second':"));
+        assert!(yaml.contains("        api: 'anthropic-messages'"));
+        assert!(yaml.contains("            maxTokens: 8192"));
+        assert!(yaml.contains("            input: ['text', 'image']"));
+        assert!(yaml.contains(
+            "            reasoningEfforts:\n              low: 'low'\n              high: 'high'\n"
+        ));
+        // A route with no credential names none.
+        assert_eq!(yaml.matches("apiKeyEnv:").count(), 1);
+    }
+
+    #[test]
+    fn absent_per_model_fields_are_omitted() {
+        let yaml = spec().patch_yaml();
+        assert!(!yaml.contains("maxTokens:"));
+        assert!(!yaml.contains("reasoningEfforts:"));
     }
 
     #[test]

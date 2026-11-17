@@ -4,26 +4,68 @@ import { invoke } from "@tauri-apps/api/core";
  * Settings shared by the built-in agent and the MCP bridge.
  *
  * Only facts that survive the runtime change live here: per-project repository
- * paths, the prompt template, worktree isolation and the enabled coworkers.
- * Model, permission and runtime selection belong to the dsh profile.
+ * paths, the prompt template, worktree isolation, the enabled coworkers and the
+ * model providers rendered into the runtime profile.
  */
 export type ProjectAgentConfig = {
   repoPath: string;
   rule: string;
 };
 
-export type DshModelProtocol = "openai-completions" | "anthropic" | "gemini";
+/** Wire protocols dsh's `llm-pi-ai` accepts; the order is the form's order. */
+export type DshModelProtocol =
+  | "openai-completions"
+  | "openai-responses"
+  | "anthropic-messages"
+  | "google-generative-ai";
 
-/** Custom model API rendered into the runtime profile. */
-export type DshModelConfig = {
-  providerId: string;
-  displayName: string;
+/** Reasoning levels, in escalation order. */
+export const REASONING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type DshReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+/** One level paired with the value it sends upstream. `off` may stay empty. */
+export type ReasoningEffort = {
+  level: DshReasoningLevel;
+  wire: string;
+};
+
+/** One model in a provider's catalog. */
+export type DshModelEntry = {
+  id: string;
+  contextWindow: number;
+  /** Per-reply cap; `null` keeps the runtime default. */
+  maxTokens: number | null;
+  /** `text` is always present; `image` is opt-in. */
+  input: Array<"text" | "image">;
+  reasoning: ReasoningEffort[];
+  enabled: boolean;
+};
+
+export type DshProvider = {
+  /** Dictionary key in the rendered profile; not shown in the UI. */
+  id: string;
+  name: string;
   baseUrl: string;
   protocol: DshModelProtocol;
   apiKey: string;
-  model: string;
-  contextWindow: number;
-  models: string[];
+  enabled: boolean;
+  models: DshModelEntry[];
+};
+
+/** Providers plus the one provider/model pair the runtime starts with. */
+export type DshModelsConfig = {
+  providers: DshProvider[];
+  activeProviderId: string;
+  activeModelId: string;
 };
 
 export type DshPermissionMode = "auto" | "notify" | "full";
@@ -34,10 +76,48 @@ export type AgentConfig = {
   coworkerIds: string[];
   worktreeEnabled: boolean;
   executionUnits: number;
-  dshModel: DshModelConfig;
-  /** 自主 / 变更前通知 / 完全访问；运行时重启后生效。 */
+  /** 自定义供应商与模型目录;启动运行时渲染进 profile。 */
+  dshModels: DshModelsConfig;
+  /** 自主 / 变更前通知 / 完全访问;运行时重启后生效。 */
   permissionMode: DshPermissionMode;
 };
+
+/** The provider/model pair the runtime starts with; both must be enabled. */
+export function resolveActiveModel(
+  models: DshModelsConfig | null | undefined,
+): { provider: DshProvider; model: DshModelEntry } | null {
+  if (!models) return null;
+  const provider = models.providers.find(
+    (item) => item.id === models.activeProviderId && item.enabled,
+  );
+  if (!provider) return null;
+  const model = provider.models.find(
+    (item) => item.id === models.activeModelId && item.enabled,
+  );
+  if (!model) return null;
+  return { provider, model };
+}
+
+/** Whether the runtime has everything it needs to start. */
+export function modelsReady(models: DshModelsConfig | null | undefined): boolean {
+  const active = resolveActiveModel(models);
+  return active !== null && active.provider.baseUrl.trim().length > 0;
+}
+
+/**
+ * First provider/model worth pointing at, mirroring what the backend picks when
+ * the stored pointer no longer resolves.
+ */
+export function firstUsableModel(
+  providers: DshProvider[],
+): { providerId: string; modelId: string } {
+  for (const provider of providers) {
+    if (!provider.enabled) continue;
+    const model = provider.models.find((entry) => entry.enabled);
+    if (model) return { providerId: provider.id, modelId: model.id };
+  }
+  return { providerId: "", modelId: "" };
+}
 
 export const agentSettingsApi = {
   get: () => invoke<AgentConfig>("agent_settings_get"),

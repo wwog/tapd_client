@@ -24,6 +24,8 @@ import {
   type DshFocusSessionEvent,
   type DshQuestionEvent,
   type DshSessionEvent,
+  type DshSessionRow,
+  type DshSessionsEvent,
   type DshSettledEvent,
   type DshStatus,
   type DshStream,
@@ -80,7 +82,7 @@ export type PendingQuestion = {
  *  the permission mode are written through their own entry points. */
 export type AgentConfigDraft = Pick<
   DshAgentConfig,
-  "promptTemplate" | "worktreeEnabled" | "executionUnits" | "dshModel"
+  "promptTemplate" | "worktreeEnabled" | "executionUnits" | "dshModels"
 >;
 
 export type AgentState = {
@@ -98,6 +100,8 @@ export type AgentState = {
   pendingPrompts: Record<string, string[] | undefined>;
   approvals: PendingApproval[];
   questions: PendingQuestion[];
+  /** Session rows (usage, counters) keyed by id; the status line reads them. */
+  sessions: Record<string, DshSessionRow>;
   /** Team board per session; absent until read or pushed. */
   team: Record<string, DshTeam>;
   /** Sessions whose board was read once; `dsh://team` updates it afterwards. */
@@ -139,6 +143,7 @@ const initialState: AgentState = {
   pendingPrompts: {},
   approvals: [],
   questions: [],
+  sessions: {},
   team: {},
   teamLoaded: {},
   teamBusy: {},
@@ -239,6 +244,14 @@ function replaceTask(task: DshTask): void {
 }
 
 /** Installs a fresh list, keeping or repairing the selection. */
+/** Session rows are replaced wholesale; the map is small and id-keyed. */
+function applySessions(sessions: DshSessionRow[]): void {
+  update((state) => ({
+    ...state,
+    sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
+  }));
+}
+
 function adoptTasks(tasks: DshTask[]): void {
   const before = agentStore.get();
   const selectedId = nextSelection({ ...before, tasks }, before.selectedId);
@@ -620,6 +633,7 @@ export const agentActions = {
     await Promise.all([
       agentActions.refreshStatus(),
       agentActions.refreshTasks(),
+      agentActions.refreshSessions(),
       agentActions.loadConfig(),
       // A blocking ask can arrive before this page was ever opened; seed the
       // same reducers the live events use so the cards render on first paint.
@@ -668,6 +682,16 @@ export const agentActions = {
   },
 
   /** Re-reads the unified list and refreshes the selected history. */
+  /** Usage totals for the status line; cheap and safe to repeat. */
+  refreshSessions: async (): Promise<void> => {
+    try {
+      const { sessions } = await dshApi.sessions();
+      applySessions(sessions);
+    } catch {
+      // The status line is optional chrome; a failed read leaves it empty.
+    }
+  },
+
   refreshTasks: async (): Promise<void> => {
     const before = agentStore.get().selectedId;
     try {
@@ -958,6 +982,8 @@ export const agentEvents = {
   settled: (payload: DshSettledEvent): void => applySettled(payload),
   /** The list is authoritative; replace it and repair the selection. */
   tasks: (payload: DshTasksEvent): void => adoptTasks(payload.tasks),
+  /** Usage counters ride on the session rows; they change per entry. */
+  sessions: (payload: DshSessionsEvent): void => applySessions(payload.sessions),
   /** The board is authoritative for its session, including after a toggle. */
   team: (payload: DshTeamEvent): void => applyTeam(payload.sessionId, payload.team),
   /** The capsule asked for a session: show the task list on that task. */

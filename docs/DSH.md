@@ -75,10 +75,10 @@ P2b 的构建脚本按「必需集合 + 平台裁剪」生成 payload，并跑�
 启动子进程时**只**用绝对入口 + 显式 `DSH_HOME`，不 `source` 用户的 shell 配置、不写全局
 npm/pnpm 配置。`docs/DSH.md` 里所有配置都落在应用数据目录的 `agent.json` 与 `dsh/` 下。
 
-**密钥存储**：自定义模型 provider 的 API key 以**明文**写在应用数据目录的
-`agent.json`（`dshModel.apiKey`）里。这是本地单机应用，不接 Keychain、不做加密；启动运行时
-只通过环境变量 `TAPD_DSH_API_KEY` 交给子进程，profile 里写的是 `apiKeyEnv: TAPD_DSH_API_KEY`。
-密钥不进入 profile、不写进任何日志行。
+**密钥存储**：每个供应商的 API key 以**明文**写在应用数据目录的
+`agent.json`（`dshModels.providers[].apiKey`）里。这是本地单机应用，不接 Keychain、不做加密；
+启动运行时按供应商分别通过 `TAPD_DSH_API_KEY_<供应商 id 大写化>` 交给子进程，profile 里写的
+是对应的 `apiKeyEnv`。密钥不进入 profile、不写进任何日志行。
 
 ## 3. 三条通道
 
@@ -189,28 +189,41 @@ type AssistantStreamFrame =
 - root session 的投影 `agentTeam`：`{ enabled, tasks: TeamTaskView[], failure? }`。
 - `TeamTaskView`：`id(task-<n>) / revision / subject / description / status(pending|in_progress|completed|deleted)
   / blockedBy[] / writeScopes[] / ownerId? / ownerName? / ready / writeScopeWarnings[]`。
-- 开关：profile 里 `- id: agent-team config: { defaultEnabled: false }`，会话内可写 `team/mode`；
-  Web 侧方法名为 `remote.agentTeams.setEnabled`。默认关闭，符合我们的产品设定。
+- 开关：profile 里 `- id: agent-team config: { defaultEnabled: <有同事?> }` —— 由配置页的「同事」
+  开关决定（`coworker_ids` 非空即开），打开时同事随团队一起加入；会话内仍可写 `team/mode`，
+  Web 侧方法名为 `remote.agentTeams.setEnabled`。
 - 子 agent 提供者：`subagent-spawn-in-process` / `-fork-in-process` / `-acp` / `-codex` /
   `-claude-code` / `-dsh-sdk`。同事先用 in-process + 技能根；ACP 留给后续。
 
 ### 4.6 自定义模型 Provider
 
-`@deepseek-ai/dsh-llm-pi-ai` 的 `providers` 字典就是「自定义模型 API」：
+`@deepseek-ai/dsh-llm-pi-ai` 的 `providers` 字典就是「自定义模型 API」，可以并存多个：界面左侧
+供应商列表的一项对应一个键，启动时**所有启用且可用的**供应商都写进去，`initialize` 只把默认
+供应商 / 默认模型传给 SDK。
 
 ```yaml
-- name: '@deepseek-ai/dsh-llm-pi-ai'
+- id: llm-pi-ai
   config:
     providers:
-      acme-gateway:
-        displayName: Acme Gateway
-        apiKeyEnv: ACME_GATEWAY_API_KEY      # 走 dsh 的凭证服务，密钥不落配置文件
-        api: openai-completions              # openai-completions | anthropic | gemini
-        baseURL: https://gateway.example/v1
-        models: [{ id: acme-think, name: Acme Think, contextWindow: 262144 }]
+      'opencode-go':
+        displayName: 'OpenCode Go'
+        apiKeyEnv: 'TAPD_DSH_API_KEY_OPENCODE_GO'   # 走 dsh 的凭证服务，密钥不落配置文件
+        api: 'openai-completions'                   # openai-completions | openai-responses | anthropic-messages | google-generative-ai
+        baseURL: 'https://opencode.ai/zen/go/v1'
+        models:
+          - id: 'deepseek-v4.1-flash'
+            name: 'deepseek-v4.1-flash'
+            contextWindow: 1000000
+            maxTokens: 64000                        # 省略 = 走目录默认
+            input: ['text', 'image']                # 省略 = 走目录默认；此版本只有 text / image
+            reasoningEfforts:                       # 省略 = 走目录默认；等级按低到高
+              low: 'low'
+              high: 'high'
 ```
 
-模型目录可以留空（目录外 ID 直接发送），与截图二的形态一致。
+`api` 只认上面四个字符串（`anthropic` / `gemini` 会被上游 zod 拒绝，读旧配置时就地更正）。
+模型目录不能为空：目录外的 ID 必须列出来，运行时才解析得到；每个模型的 `contextWindow`、
+`maxTokens`、`input`、`reasoningEfforts` 都可以逐项覆盖目录默认值。
 
 ### 4.7 组合与插件安装
 

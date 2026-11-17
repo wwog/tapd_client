@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { Button } from "../components/ui";
+import { modelsReady } from "../lib/agentSettings";
 import { t } from "../lib/i18n";
 import { runtimeBlock, runtimeHint, runtimeLabel } from "./runtime";
 import { agentActions, agentStore, type AgentState } from "./store";
@@ -72,7 +73,7 @@ function RuntimeAction({ block, state }: { block: NonNullable<ReturnType<typeof 
           variant="primary"
           disabled={state.starting}
           title={
-            state.config && !state.config.dshModel.model.trim()
+            state.config && !modelsReady(state.config.dshModels)
               ? t("agent.runtime.modelMissingHint")
               : undefined
           }

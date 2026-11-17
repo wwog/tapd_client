@@ -51,7 +51,7 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm chec
 2. 扫码成功后隐藏 WebView 保留会话，客户端进入首启引导（可跳过）。
 3. 选择左侧项目，默认展示「我负责的」缺陷；可切换「全部」。
 4. 点击缺陷行打开详情；点击「导出」生成可交给 AI 的缺陷包（`bug.json` + `assets/`）。
-5. Agent 页 →「配置」填写内置模型 API（地址、模型、密钥）与当前项目仓库路径；权限模式三选一。
+5. Agent 页 →「配置」添加模型供应商（地址、协议、密钥）与模型、点模型行左侧圆圈设默认模型，并填写当前项目仓库路径；权限模式三选一。
 6. 设置 → 新缺陷通知：选择范围（我的 / 项目）与是否包含转移、重新打开。
 7. 打开 MCP tab →「接入 AI 客户端」，选择要用的客户端一键导入（opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code），并按需调整策略与审计开关；后续启动 Agent 会自动确保注入。
 8. Agent tab：统一任务列表（运行中 / 待审核 / 待合并 / 已完成同一个列表），在任务条上查看 diff、通过、合并或取消；审批 / 提问可在任务页或胶囊里回答。
@@ -92,7 +92,7 @@ opencode mcp list     # ✓ tapd connected
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
 - 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `notification_*` / `mcp_audit` / `dsh_tasks`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
 - 内置 Agent：`<数据目录>/dsh/<version>/`（payload 解压结果，可安全删除，下次启动重建）、`<数据目录>/dsh/home/`（`DSH_HOME`，dsh 自己的会话与 profile）
-- Agent 配置：`<数据目录>/agent.json`（项目仓库与规则、提示词模板、Worktree 与同事选择、模型 API 与密钥、权限模式）；会话 transcript 由 dsh 运行时自己保存
+- Agent 配置：`<数据目录>/agent.json`（项目仓库与规则、提示词模板、Worktree 与同事选择、模型供应商与模型目录、权限模式）；会话 transcript 由 dsh 运行时自己保存
 - 本地项目 / 事项：`<数据目录>/local.sqlite3` 的 `local_projects` / `local_work_items`（纯本机数据，与 TAPD 登录无关；schema v2，项目含 `rule`；本地事项交给 Agent 时导出 `quest.json`）
 - Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<session id>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`
