@@ -170,7 +170,7 @@ export function ModelEditorDialog(props: Props) {
       </button>
 
       {advanced ? (
-        <div className="mt-3 space-y-4 border-t border-slate-100 pt-3">
+        <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
           <div>
             <div className="text-ui-xs text-slate-400">{t("agent.model.inputTypes")}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

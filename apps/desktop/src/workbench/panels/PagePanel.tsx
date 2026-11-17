@@ -72,7 +72,7 @@ export function PagePanel({ panel }: PanelProps) {
       return (
         <div className="flex h-full min-h-0 flex-col">
           {host.contextError ? (
-            <div className="p-5">
+            <div className="p-4">
               <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
                 <div className="font-normal">{t("app.projects.loadFailed")}</div>
                 <div className="mt-1 break-all">{host.contextError}</div>
@@ -115,7 +115,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "projects":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <div className="mx-auto max-w-4xl">
             <ProjectSettings
               context={host.context}
@@ -143,7 +143,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "mcp":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <McpPage
             workspaces={host.context?.workspaces ?? []}
             onCopy={host.onCopy}
@@ -154,7 +154,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "account":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <AccountPage
             info={host.info}
             context={host.context}
@@ -168,7 +168,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     default:
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <SettingsPage
             info={host.info}
             onOpenPath={host.onOpenPath}

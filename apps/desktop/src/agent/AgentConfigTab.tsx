@@ -84,7 +84,7 @@ export function AgentConfigTab({ toast }: Props) {
 
   if (!config || !draft) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-3xl">
           {state.configError ? (
             <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
@@ -156,8 +156,8 @@ export function AgentConfigTab({ toast }: Props) {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">
-      <div className="mx-auto max-w-4xl space-y-4 pb-2">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+      <div className="mx-auto max-w-4xl space-y-3 pb-2">
         <ModelSettings
           value={draft.dshModels}
           onChange={(dshModels) => patchDraft({ dshModels })}

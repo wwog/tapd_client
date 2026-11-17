@@ -182,7 +182,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
 
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div className="mx-auto max-w-4xl space-y-3">
       <McpClientImport
         config={mcp}
         onCopy={onCopy}
@@ -267,7 +267,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
             {t("mcp.policyReading")}
           </div>
         ) : (
-          <div className="mt-4 space-y-4">
+          <div className="mt-4 space-y-3">
             <div className="space-y-3">
               <PolicyRow
                 title={t("mcp.allowWrites")}

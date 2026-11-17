@@ -30,7 +30,7 @@ export function AccountPage({
   const userId = context?.user.userId || "—";
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="mx-auto max-w-3xl space-y-3">
       <section className="relative overflow-hidden rounded-2xl border border-border bg-surface p-6 ">
         <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-sky-100/70 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-28 left-1/3 h-48 w-48 rounded-full bg-emerald-100/60 blur-3xl" />

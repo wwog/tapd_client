@@ -181,7 +181,7 @@ export function ProjectSettings(props: {
   const pickerProject = pickerFor ? projects[pickerFor] ?? emptyProject() : null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <section className={`${cardClass} @container`}>
         <h2
           className="flex items-center gap-2 text-ui-base text-slate-900"

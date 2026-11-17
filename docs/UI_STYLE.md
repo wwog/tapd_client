@@ -120,7 +120,7 @@
 卡片：
 
 ```tsx
-<section className="rounded-2xl border border-border bg-surface p-5">
+<section className="rounded-2xl border border-border bg-surface p-4">
   <h2 className="flex items-center gap-2 text-ui-base text-slate-900">标题</h2>
   {/* 内容 */}
 </section>

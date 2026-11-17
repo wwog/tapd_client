@@ -207,7 +207,7 @@ export function ModelSettings({ value, onChange }: Props) {
         </Button>
       </div>
 
-      <div className="mt-4 flex h-[520px]">
+      <div className="mt-4 flex h-[380px]">
         <nav
           className="w-40 shrink-0 space-y-0.5 overflow-y-auto border-r border-border pr-3"
           aria-label={t("agent.model.providers")}

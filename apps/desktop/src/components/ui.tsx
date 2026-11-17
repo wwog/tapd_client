@@ -96,7 +96,7 @@ export const inputClass =
 export const selectClass =
   "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
 
-export const cardClass = "rounded-2xl border border-border bg-surface p-5";
+export const cardClass = "rounded-2xl border border-border bg-surface p-4";
 
 /**
  * Transparent strip at the top of a modal overlay. The overlay covers the

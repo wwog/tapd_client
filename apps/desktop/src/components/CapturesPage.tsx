@@ -113,7 +113,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
         <div className="relative min-w-[220px] flex-1">
           <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />

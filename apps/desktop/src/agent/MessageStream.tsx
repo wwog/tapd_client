@@ -1,13 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, Copy, Loader2 } from "lucide-react";
 
 import { Button, Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
+import { copyText } from "../lib/desktop";
 import { t } from "../lib/i18n";
-import type { DshEntry } from "../lib/dsh";
+import type { DshEntry, DshEntryUsage } from "../lib/dsh";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { UsageChip } from "./UsageCard";
+import { clock } from "./usage";
 import { agentActions, agentStore } from "./store";
 
 /** Tool results arrive as a string or as the JSON value the host received. */
@@ -97,7 +100,19 @@ function Reasoning({ text }: { text: string }) {
   );
 }
 
-function AssistantBlock({ text, reasoning }: { text: string; reasoning?: string }) {
+function AssistantBlock({
+  text,
+  reasoning,
+  usage,
+  provider,
+  model,
+}: {
+  text: string;
+  reasoning?: string;
+  usage?: DshEntryUsage;
+  provider?: string;
+  model?: string;
+}) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       {reasoning ? <Reasoning text={reasoning} /> : null}
@@ -106,6 +121,7 @@ function AssistantBlock({ text, reasoning }: { text: string; reasoning?: string 
           {text}
         </div>
       ) : null}
+      {usage ? <UsageChip usage={usage} provider={provider} model={model} /> : null}
     </div>
   );
 }
@@ -114,6 +130,42 @@ function UserBubble({ text }: { text: string }) {
   return (
     <div className="ml-auto max-w-[80%] whitespace-pre-wrap break-words rounded-xl bg-slate-100 px-3 py-2 text-ui-caption leading-6 text-slate-800 select-text">
       {text}
+    </div>
+  );
+}
+
+/** Time and copy under a message. Copy confirms in place, never with a toast. */
+function MessageMeta({
+  at,
+  text,
+  align,
+}: {
+  at: string;
+  text: string;
+  align: "left" | "right";
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    if (!(await copyText(text))) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+  return (
+    <div
+      className={clsx(
+        "mt-1 flex items-center gap-1 text-ui-xs text-slate-400",
+        align === "right" ? "justify-end" : "justify-start",
+      )}
+    >
+      <span className="tabular-nums">{clock(at)}</span>
+      <button
+        type="button"
+        title={copied ? t("common.copied") : t("common.copy")}
+        onClick={() => void copy()}
+        className="grid h-5 w-5 place-items-center rounded text-slate-300 transition hover:bg-overlay hover:text-slate-600"
+      >
+        {copied ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+      </button>
     </div>
   );
 }
@@ -241,14 +293,24 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         {items.map((entry) => {
           switch (entry.kind) {
             case "user":
-              return <UserBubble key={entryKey(entry)} text={entry.text} />;
+              return (
+                <div key={entryKey(entry)} className="flex flex-col">
+                  <UserBubble text={entry.text} />
+                  <MessageMeta at={entry.at} text={entry.text} align="right" />
+                </div>
+              );
             case "assistant":
               return (
-                <AssistantBlock
-                  key={entryKey(entry)}
-                  text={entry.text}
-                  reasoning={entry.reasoning}
-                />
+                <div key={entryKey(entry)} className="flex flex-col">
+                  <AssistantBlock
+                    text={entry.text}
+                    reasoning={entry.reasoning}
+                    usage={entry.usage}
+                    provider={entry.provider}
+                    model={entry.model}
+                  />
+                  <MessageMeta at={entry.at} text={entry.text} align="left" />
+                </div>
               );
             case "tool":
               return (

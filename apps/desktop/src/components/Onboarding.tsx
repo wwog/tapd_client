@@ -353,7 +353,7 @@ export function Onboarding({ info, onDone }: Props) {
           ) : null}
 
           {step === 1 ? (
-            <div className="mx-auto w-full max-w-4xl space-y-4">
+            <div className="mx-auto w-full max-w-4xl space-y-3">
               <section className={cardClass}>
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="min-w-0 max-w-[260px]">

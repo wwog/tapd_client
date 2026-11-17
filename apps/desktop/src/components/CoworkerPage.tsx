@@ -24,7 +24,7 @@ export function CoworkerPage({ toast }: Props) {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div className="mx-auto max-w-5xl">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -98,7 +98,7 @@ export function CoworkerPage({ toast }: Props) {
           onToggle={selection.toggle}
         />
 
-        <section className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 p-5">
+        <section className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h3 className="flex items-center gap-1.5 text-ui-base text-slate-800">

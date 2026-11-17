@@ -81,7 +81,7 @@ export function SettingsPage(props: Props) {
     : t("common.notStarted");
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div className="mx-auto max-w-4xl space-y-3">
       <AppearanceCard />
 
       <NotificationSettings toast={toast} />
