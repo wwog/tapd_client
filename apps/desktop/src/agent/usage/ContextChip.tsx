@@ -55,7 +55,9 @@ export function ContextChip({ usage }: { usage: DshSessionUsage }) {
         </UsageRows>
       ) : (
         <div className="mt-2 text-ui-xs text-slate-400">
-          {t("agent.context.pending")}
+          {/* The total survives a restart (it is in the session log); the split
+              only exists for a request the runtime actually served. */}
+          {known ? t("agent.context.splitPending") : t("agent.context.pending")}
         </div>
       )}
     </UsagePopover>

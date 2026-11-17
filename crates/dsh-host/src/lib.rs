@@ -24,4 +24,7 @@ pub use node::{requirement as node_requirement, NodeRequirementError, NodeVersio
 pub use payload::PayloadManifest;
 pub use profile::{PluginRow, ProfileSpec, ProviderConfig, ProviderModel};
 pub use rpc::{Incoming, RpcError, RpcId};
-pub use transcript::{DshDelta, DshEntry, DshSession, DshStream, SessionStatus, ToolStatus, Transcript, TurnState};
+pub use transcript::{
+    DshDelta, DshEntry, DshSession, DshStream, ModelSelection, SessionStatus, ToolStatus,
+    Transcript, TurnState,
+};

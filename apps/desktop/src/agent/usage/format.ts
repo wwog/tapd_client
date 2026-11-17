@@ -29,10 +29,14 @@ export function contextPercent(used: number, contextWindow: number): number {
   return Math.min(100, Math.round((used * 100) / contextWindow));
 }
 
-/** `5500` → `5.5 秒`; a minute and up reads as `1 分 12 秒`. */
-export function duration(ms: number): string {
+/** `5500` → `5.5 秒` (or `6 秒` when rounded); a minute and up reads `1 分 12 秒`. */
+export function duration(ms: number, precise = false): string {
   const seconds = ms / 1000;
-  if (seconds < 60) return t("agent.stats.seconds", { seconds: seconds.toFixed(1) });
+  if (seconds < 60) {
+    return t("agent.stats.seconds", {
+      seconds: precise ? seconds.toFixed(1) : String(Math.round(seconds)),
+    });
+  }
   const whole = Math.round(seconds);
   return t("agent.stats.minutes", {
     minutes: Math.floor(whole / 60),

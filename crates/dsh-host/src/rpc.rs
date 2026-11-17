@@ -13,6 +13,7 @@ pub const METHOD_INITIALIZE: &str = "initialize";
 pub const METHOD_SESSION_QUERY: &str = "session/query";
 pub const METHOD_SESSION_WAIT: &str = "session/wait";
 pub const METHOD_SESSION_RESUME: &str = "session/resume";
+pub const METHOD_SESSION_WORKING_DIRECTORY_GET: &str = "session/working-directory/get";
 pub const METHOD_SESSION_WORKING_DIRECTORY_SET: &str = "session/working-directory/set";
 pub const METHOD_SHUTDOWN: &str = "shutdown";
 

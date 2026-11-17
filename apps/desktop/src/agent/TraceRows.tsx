@@ -1,8 +1,48 @@
 import clsx from "clsx";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import {
+  ChevronRight,
+  FileText,
+  Globe,
+  Image as ImageIcon,
+  PenLine,
+  Search,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 
-import { ScrollingName } from "../components/ScrollingName";
 import { t } from "../lib/i18n";
+import { describeTool, type ToolAction } from "./actions";
+
+/**
+ * Timeline icon for one action. Errors win over the tool's own glyph so a
+ * failed row reads at a glance; the running state is carried by the turn's
+ * spinner, not by every row.
+ */
+export function ActionIcon({
+  action,
+  failed = false,
+}: {
+  action: ToolAction;
+  failed?: boolean;
+}) {
+  const Icon = {
+    bash: Terminal,
+    read: FileText,
+    write: PenLine,
+    edit: PenLine,
+    search: Search,
+    web: Globe,
+    image: ImageIcon,
+    other: Wrench,
+  }[action.kind];
+
+  return (
+    <Icon
+      size={12}
+      className={clsx("shrink-0", failed ? "text-rose-500" : "text-slate-400")}
+    />
+  );
+}
 
 /** Tool results arrive as a string or as the JSON value the host received. */
 function resultText(result: unknown): string | undefined {
@@ -11,8 +51,12 @@ function resultText(result: unknown): string | undefined {
   return JSON.stringify(result, null, 2);
 }
 
-/** Tool call status tint: running spins, errors tint the row, done stays quiet. */
-export function ToolRow({
+/**
+ * One tool call as a timeline row: verb, target, line delta and outcome on a
+ * single line. The raw output is the row's own disclosure, so a long result
+ * never pushes the timeline apart.
+ */
+export function ActionRow({
   name,
   args,
   status,
@@ -23,55 +67,59 @@ export function ToolRow({
   status: "running" | "ok" | "error";
   result?: unknown;
 }) {
-  const oneLine = args.replace(/\s+/g, " ").trim();
+  const action = describeTool(name, args);
   const raw = resultText(result);
+  const failed = status === "error";
   const header = (
-    <span className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
-      {status === "running" ? (
-        <Loader2 size={12} className="shrink-0 animate-spin text-slate-400" />
-      ) : status === "error" ? (
-        <AlertTriangle size={12} className="shrink-0 text-rose-500" />
-      ) : (
-        <span className="grid h-3 w-3 shrink-0 place-items-center">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-        </span>
-      )}
+    <span className="flex min-w-0 items-center gap-2 py-0.5">
+      <ActionIcon action={action} failed={failed} />
+      <span className="shrink-0 text-ui-xs text-slate-500">{action.verb}</span>
       <span
         className={clsx(
-          "shrink-0 font-mono text-ui-xs",
-          status === "error" ? "text-rose-700" : "text-slate-700",
+          "min-w-0 truncate font-mono text-ui-xs",
+          failed ? "text-rose-700" : "text-slate-600",
         )}
-        title={
-          status === "running"
-            ? t("agent.tool.running")
-            : status === "error"
-              ? t("agent.tool.failed")
-              : undefined
-        }
+        title={action.target}
       >
-        {name || t("agent.tool.calling")}
+        {action.target}
       </span>
-      {oneLine ? (
-        <ScrollingName
-          text={oneLine}
-          className="min-w-0 flex-1 font-mono text-ui-xs text-slate-400"
+      {action.added ? (
+        <span className="shrink-0 tabular-nums text-ui-xs text-emerald-600">
+          +{action.added}
+        </span>
+      ) : null}
+      {action.removed ? (
+        <span className="shrink-0 tabular-nums text-ui-xs text-rose-500">
+          -{action.removed}
+        </span>
+      ) : null}
+      {failed ? (
+        <span className="shrink-0 text-ui-xs text-rose-600">
+          {t("agent.action.failed")}
+        </span>
+      ) : null}
+      {raw ? (
+        <ChevronRight
+          size={12}
+          className="shrink-0 text-slate-300 transition-transform group-open:rotate-90"
         />
       ) : null}
     </span>
   );
 
-  const tone =
-    status === "error"
-      ? "border-rose-200 bg-rose-50/40"
-      : "border-border bg-surface";
-
-  if (!raw) {
-    return <div className={clsx("rounded-lg border", tone)}>{header}</div>;
-  }
+  if (!raw) return <div className="min-w-0">{header}</div>;
   return (
-    <details className={clsx("rounded-lg border", tone)}>
-      <summary className="cursor-pointer">{header}</summary>
-      <pre className="max-h-64 select-text overflow-auto whitespace-pre-wrap break-all border-t border-border px-2.5 py-2 font-mono text-ui-xs leading-5 text-slate-600">
+    // A failed call opens itself: the reason is the point of the row.
+    <details className="group min-w-0" open={failed}>
+      <summary className="cursor-pointer list-none">{header}</summary>
+      <pre
+        className={clsx(
+          "mt-1 max-h-64 select-text overflow-auto whitespace-pre-wrap break-all rounded-lg border px-2.5 py-2 font-mono text-ui-xs leading-5",
+          failed
+            ? "border-rose-200 bg-rose-50/40 text-rose-700"
+            : "border-border bg-surface text-slate-600",
+        )}
+      >
         {raw}
       </pre>
     </details>

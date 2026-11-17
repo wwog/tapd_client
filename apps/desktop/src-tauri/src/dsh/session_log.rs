@@ -17,8 +17,12 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
+use tauri::{AppHandle, Manager};
+
+use super::bridge::BridgeState;
 
 /// Compressed log first (what current dsh writes), then the plain variant.
 const COMPRESSED: &str = "session.v4.jsonl.zstd";
@@ -27,6 +31,38 @@ const PLAIN: &str = "session.v4.jsonl";
 /// Ceiling for one decompressed log. A session that grew past this is not worth
 /// blocking a command on; the runtime path still covers it.
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where dsh keeps its own logs (`$DSH_HOME/sessions`).
+pub fn dir(app: &AppHandle) -> Option<PathBuf> {
+    app.try_state::<Arc<crate::state::AppState>>()
+        .map(|state| state.paths.data_dir.join("dsh").join("home").join("sessions"))
+}
+
+/// Keeps a session's own model choice before an SDK resume resets it to the
+/// runtime default. The choice lives in the session log, so this also works
+/// after an app restart; a pick made in this run already wins and is left
+/// untouched.
+pub fn preserve_selection(app: &AppHandle, session_id: &str) {
+    let Some(bridge) = app.try_state::<Arc<BridgeState>>() else {
+        return;
+    };
+    if bridge.pending_selection(session_id).is_some() {
+        return;
+    }
+    if let Some(selection) = bridge.recorded_selection(session_id) {
+        bridge.remember_selection(session_id, selection);
+        return;
+    }
+    let Some(sessions_dir) = dir(app) else {
+        return;
+    };
+    if !bridge.knows(session_id) && !bridge.hydrate_from_log(&sessions_dir, session_id) {
+        return;
+    }
+    if let Some(selection) = bridge.recorded_selection(session_id) {
+        bridge.remember_selection(session_id, selection);
+    }
+}
 
 /// Locates one session's log under `sessions_dir`.
 pub fn path(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {

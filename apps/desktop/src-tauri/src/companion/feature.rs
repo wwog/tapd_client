@@ -55,6 +55,7 @@ const ALLOWED_FEATURES: &[&str] = &[
     "dsh_pending",
     "dsh_new_session",
     "dsh_prompt",
+    "dsh_select_model",
     "dsh_approval_answer",
     "dsh_question_answer",
     // 任务工作流（P4）与权限模式（P3）
@@ -199,6 +200,7 @@ mod tests {
     "dsh_pending",
     "dsh_new_session",
     "dsh_prompt",
+    "dsh_select_model",
     "dsh_approval_answer",
     "dsh_question_answer",
     "dsh_tasks",

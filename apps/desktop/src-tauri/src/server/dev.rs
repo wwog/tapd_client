@@ -97,7 +97,7 @@ pub(super) async fn dev_dsh(
                     Err(error)
                 } else {
                     runtime
-                        .query(&session_id, &text)
+                        .query(&ctx.app, &session_id, &text)
                         .await
                         .map(|receipt| json!({ "sessionId": session_id, "receipt": receipt }))
                 }

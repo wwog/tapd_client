@@ -78,7 +78,8 @@ pub struct SessionUsage {
 /// One meter snapshot read from the runtime's projections. Every field is
 /// optional upstream, so an absent value keeps what the transcript already
 /// knows instead of zeroing it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionMeter {
     pub context_used_tokens: Option<u64>,
     pub context_window: Option<u64>,
@@ -149,6 +150,18 @@ impl SessionUsage {
     }
 }
 
+/// One session's current model route, as dsh records it on `model/selection`.
+/// The UI shows it as the session's model; an absent effort means the adapter
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSelection {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
 /// One session as the session list shows it. `title` is empty until a first
 /// user message arrives — the UI renders its own empty state rather than a
 /// fabricated title.
@@ -166,6 +179,10 @@ pub struct DshSession {
     /// Token accounting and turn/step counters for the status line.
     #[serde(default)]
     pub usage: SessionUsage,
+    /// The route the session will use next; absent until the first selection or
+    /// request records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ModelSelection>,
 }
 
 impl DshSession {
@@ -177,6 +194,7 @@ impl DshSession {
             status: SessionStatus::Idle,
             message_count: 0,
             usage: SessionUsage::default(),
+            selection: None,
         }
     }
 }
@@ -383,6 +401,7 @@ impl Transcript {
                 | "turn/end"
                 | "step/start"
                 | "request/context"
+                | "model/selection"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -424,6 +443,10 @@ impl Transcript {
             }
             "request/context" => {
                 record.record_route(event);
+                None
+            }
+            "model/selection" => {
+                record.record_selection(event);
                 None
             }
             _ => None,
@@ -490,6 +513,18 @@ impl Transcript {
         self.sessions
             .get(session_id)
             .map(|record| record.meta.clone())
+    }
+
+    /// The route dsh last recorded for this session, if any.
+    pub fn selection(&self, session_id: &str) -> Option<ModelSelection> {
+        self.sessions
+            .get(session_id)
+            .and_then(|record| record.meta.selection.clone())
+    }
+
+    /// Whether this process has seen the session (live or hydrated from its log).
+    pub fn knows(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
     }
 
     pub fn entries(&self, session_id: &str) -> Option<Vec<DshEntry>> {
@@ -631,6 +666,25 @@ impl SessionRecord {
         if let Some(window) = event.pointer("/data/contextWindow").and_then(Value::as_u64) {
             usage.context_window = window;
         }
+    }
+
+    /// `model/selection` is dsh's durable record of the route a session will
+    /// use from now on. It is the session's choice, not a request that already
+    /// ran, so it does not touch the usage counters.
+    fn record_selection(&mut self, event: &Value) {
+        let provider = event.pointer("/data/provider").and_then(Value::as_str);
+        let model = event.pointer("/data/model").and_then(Value::as_str);
+        let (Some(provider), Some(model)) = (provider, model) else {
+            return;
+        };
+        self.meta.selection = Some(ModelSelection {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            reasoning_effort: event
+                .pointer("/data/reasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
     }
 
     fn push_tool(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
@@ -1037,6 +1091,64 @@ mod tests {
         let json = serde_json::to_value(entry).unwrap();
         assert_eq!(json["usage"]["totalTokens"], 8_306);
         assert_eq!(json["provider"], "opencode-go");
+    }
+
+    #[test]
+    fn model_selection_updates_the_session_choice() {
+        let mut transcript = Transcript::default();
+        let ingested = transcript.ingest(
+            "s1",
+            &json!({
+                "type": "model/selection",
+                "seq": 0,
+                "data": {
+                    "provider": "opencode-go",
+                    "model": "deepseek-v4.1-flash",
+                    "reasoningEffort": "high",
+                },
+            }),
+            "2026-11-16T00:00:00.000Z",
+        );
+        // A selection is state, not a transcript row.
+        assert!(ingested.entry.is_none());
+        assert!(ingested.session_changed);
+
+        let session = transcript.session("s1").unwrap();
+        let selection = session.selection.expect("selection recorded");
+        assert_eq!(selection.provider, "opencode-go");
+        assert_eq!(selection.model, "deepseek-v4.1-flash");
+        assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+        // The choice is not a request, so the usage route stays untouched.
+        assert!(session.usage.model.is_empty());
+
+        // A repeated seq is deduped, just like every other event.
+        transcript.ingest(
+            "s1",
+            &json!({
+                "type": "model/selection",
+                "seq": 0,
+                "data": { "provider": "gone", "model": "gone" },
+            }),
+            "2026-11-16T00:00:01.000Z",
+        );
+        assert_eq!(
+            transcript.selection("s1").unwrap().provider,
+            "opencode-go"
+        );
+
+        // Switching again replaces the choice and drops an absent effort.
+        transcript.ingest(
+            "s1",
+            &json!({
+                "type": "model/selection",
+                "seq": 1,
+                "data": { "provider": "acme", "model": "fast" },
+            }),
+            "2026-11-16T00:00:02.000Z",
+        );
+        let selection = transcript.selection("s1").unwrap();
+        assert_eq!(selection.model, "fast");
+        assert!(selection.reasoning_effort.is_none());
     }
 
     #[test]

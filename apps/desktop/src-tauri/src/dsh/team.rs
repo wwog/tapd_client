@@ -277,7 +277,7 @@ async fn announce_coworkers(app: &AppHandle, runtime: &RuntimeState, session_id:
     } else {
         tr_args("dsh.team.roster", &[&section])
     };
-    if let Err(error) = runtime.query(session_id, &text).await {
+    if let Err(error) = runtime.query(app, session_id, &text).await {
         // Let the next enable retry the guidance.
         roster_sent()
             .lock()

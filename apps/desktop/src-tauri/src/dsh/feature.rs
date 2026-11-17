@@ -10,12 +10,13 @@
 use std::sync::Arc;
 
 use dsh_host::protocol::{AnswerItem, ApprovalOutcome, ApprovalRequestResult, UserQuestionResult};
+use dsh_host::transcript::ModelSelection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::bridge::BridgeState;
-use super::runtime::{DshStatus, RuntimeState};
+use super::runtime::{DshStatus, Phase, RuntimeState};
 use tapd_i18n::{tr, tr_args};
 
 fn runtime(app: &AppHandle) -> Result<Arc<RuntimeState>, String> {
@@ -79,8 +80,9 @@ pub fn session_entries(
         if !bridge.hydrate_from_log(&sessions_dir, session_id) {
             return None;
         }
-        // The log carries the usage counters too; publish them so the session
-        // row (and its token figures) survives a restart.
+        // The log carries token totals; the meter table carries the split.
+        bridge.restore_meter(app, session_id);
+        // Publish so the session row (and its figures) survives a restart.
         bridge.publish_sessions(app);
         bridge.entries_since(session_id, since)
     });
@@ -102,8 +104,7 @@ pub fn session_entries(
 
 /// Where dsh keeps its own session logs (`$DSH_HOME/sessions`).
 fn dsh_sessions_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.try_state::<std::sync::Arc<crate::state::AppState>>()
-        .map(|state| state.paths.data_dir.join("dsh").join("home").join("sessions"))
+    super::session_log::dir(app)
 }
 
 /// Allocates an id and its (empty) registry row. The runtime creates the real
@@ -126,13 +127,44 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     // A session restored from a previous run is not open in the runtime: the
     // SDK would answer with a fresh empty session under the same id. History
     // loads from the log, so the attach has to happen before the first send.
-    if let Some(dir) = dsh_sessions_dir(app) {
-        if super::session_log::path(&dir, session_id).is_some() {
-            state.resume_session(session_id).await?;
-        }
+    let restored = dsh_sessions_dir(app)
+        .and_then(|dir| super::session_log::path(&dir, session_id))
+        .is_some();
+    if restored {
+        state.resume_session(app, session_id).await?;
     }
-    let receipt = state.query(session_id, text).await?;
+    // Creates a new Agent before the prompt (and re-applies the route) so the
+    // very first step uses the session's chosen model.
+    state.prepare_session(app, session_id, !restored).await;
+    let receipt = state.query(app, session_id, text).await?;
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
+}
+
+/// Switches one session's model route. The choice is durable in that session's
+/// log (dsh records `model/selection`), and it is remembered for the next
+/// prompt even when the runtime is stopped.
+pub fn select_model(
+    app: &AppHandle,
+    session_id: &str,
+    selection: ModelSelection,
+) -> Result<Value, String> {
+    let bridge = bridge(app)?;
+    let runtime = runtime(app)?;
+    // Only a ready runtime has a fixed profile. A stopped one renders the
+    // current settings on the next start, so any configured route is accepted.
+    if runtime.status().phase == Phase::Ready {
+        if !runtime.route_available(&selection) {
+            return Err(tr("dsh.model.unavailable").to_string());
+        }
+        // A control frame can race the plugin's connect; the choice is already
+        // remembered and the next prompt retries it, so this stays best effort.
+        if let Err(error) = bridge.select_model(session_id, &selection) {
+            tracing::warn!(%error, session = session_id, "model selection was not queued");
+        }
+    } else {
+        bridge.remember_selection(session_id, selection);
+    }
+    Ok(json!({ "ok": true }))
 }
 
 /// Only `allowed-once` grants the operation.
@@ -195,6 +227,16 @@ struct PromptPayload {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SelectModelPayload {
+    session_id: String,
+    provider: String,
+    model: String,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApprovalPayload {
     rpc_id: u64,
     outcome: String,
@@ -232,6 +274,18 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_prompt" => {
             let request: PromptPayload = parse(payload, "dsh_prompt")?;
             prompt(app, &request.session_id, &request.text).await
+        }
+        "dsh_select_model" => {
+            let request: SelectModelPayload = parse(payload, "dsh_select_model")?;
+            select_model(
+                app,
+                &request.session_id,
+                ModelSelection {
+                    provider: request.provider,
+                    model: request.model,
+                    reasoning_effort: request.reasoning_effort,
+                },
+            )
         }
         "dsh_new_session" => new_session(app).await,
         "dsh_approval_answer" => {

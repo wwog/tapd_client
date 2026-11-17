@@ -24,6 +24,7 @@ pub static MESSAGES: &[Message] = &[
     ("dsh.args.invalid", "{} 参数无效：{}", "Invalid arguments for {}: {}"),
     ("dsh.bridge.unavailable", "内置 Agent 桥接状态不可用", "The built-in agent bridge is unavailable"),
     ("dsh.call.timeout", "{} 超时", "{} timed out"),
+    ("dsh.model.unavailable", "这个模型是在运行时启动之后才加入的，重启运行时后才能切换", "This model was added after the runtime started; restart the runtime to switch to it"),
     ("dsh.model.unconfigured", "还没有配置模型 API，请先在「Agent → 配置」填写 API 地址与模型", "No model API is configured yet; fill in the API address and model under Agent → Settings"),
     ("dsh.node.missing", "找不到 node。内置 Agent 需要系统安装 Node.js 24.9 或更新版本（不随 App 打包）", "node was not found. The built-in agent needs Node.js 24.9 or newer installed on the system (it is not bundled)"),
     ("dsh.node.tooOld", "{}。内置 Agent 需要 Node.js 24.9 或更新版本", "{}. The built-in agent needs Node.js 24.9 or newer"),

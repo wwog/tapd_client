@@ -282,8 +282,40 @@ impl DshModelsConfig {
         self.providers = providers;
         self.active_provider_id = self.active_provider_id.trim().to_string();
         self.active_model_id = self.active_model_id.trim().to_string();
+        self.sync_default();
         self.reselect_active();
         self
+    }
+
+    /// The provider list is the priority order: the first enabled provider
+    /// with an enabled model supplies the session default. Choosing another
+    /// default therefore means moving that provider to the front (the UI does
+    /// that for 「设为默认」); a pointer left elsewhere is repaired here.
+    fn sync_default(&mut self) {
+        let Some((provider, model)) = self
+            .providers
+            .iter()
+            .filter(|provider| provider.enabled)
+            .find_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .find(|model| model.enabled)
+                    .map(|model| (provider, model))
+            })
+        else {
+            return;
+        };
+        let keep = self.active_provider_id == provider.id
+            && provider
+                .models
+                .iter()
+                .any(|model| model.id == self.active_model_id && model.enabled);
+        if keep {
+            return;
+        }
+        self.active_provider_id = provider.id.clone();
+        self.active_model_id = model.id.clone();
     }
 
     /// 指针必须指向一个真正可用的模型；悬空时回落到第一个启用的。
@@ -958,6 +990,56 @@ mod tests {
         assert!(!config.is_configured());
         assert_eq!(config.active_provider_id, "gateway");
         assert!(config.active_model_id.is_empty());
+    }
+
+    #[test]
+    fn the_first_provider_supplies_the_default_model() {
+        let provider = |id: &str, models: Vec<DshModelEntry>| DshProvider {
+            id: id.into(),
+            name: id.into(),
+            base_url: format!("https://{id}.example/v1"),
+            models,
+            ..Default::default()
+        };
+        let mut config = DshModelsConfig {
+            providers: vec![
+                provider("first", vec![model("f1"), model("f2")]),
+                provider("second", vec![model("s1")]),
+            ],
+            // A pointer left on the second provider is repaired to the first.
+            active_provider_id: "second".into(),
+            active_model_id: "s1".into(),
+        }
+        .sanitized();
+        assert_eq!(config.active_provider_id, "first");
+        assert_eq!(config.active_model_id, "f1");
+
+        // A model chosen inside the first provider is kept.
+        config.active_model_id = "f2".into();
+        let mut config = config.sanitized();
+        assert_eq!(config.active_provider_id, "first");
+        assert_eq!(config.active_model_id, "f2");
+
+        // Disabling the first provider promotes the next one.
+        config.providers[0].enabled = false;
+        let config = config.sanitized();
+        assert_eq!(config.active_provider_id, "second");
+        assert_eq!(config.active_model_id, "s1");
+
+        // Reordering the list changes which provider is first, so the default
+        // follows the new order.
+        let mut reordered = DshModelsConfig {
+            providers: vec![
+                provider("second", vec![model("s1")]),
+                provider("first", vec![model("f1")]),
+            ],
+            active_provider_id: "second".into(),
+            active_model_id: "s1".into(),
+        };
+        reordered.providers.swap(0, 1);
+        let reordered = reordered.sanitized();
+        assert_eq!(reordered.active_provider_id, "first");
+        assert_eq!(reordered.active_model_id, "f1");
     }
 
     #[test]

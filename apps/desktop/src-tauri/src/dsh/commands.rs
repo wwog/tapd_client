@@ -5,6 +5,7 @@
 //! implementation means the desktop and the phone cannot drift apart.
 
 use dsh_host::protocol::AnswerItem;
+use dsh_host::transcript::ModelSelection;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::AppHandle;
@@ -118,6 +119,26 @@ pub async fn dsh_prompt(
     text: String,
 ) -> Result<Value, String> {
     feature::prompt(&app, &session_id, &text).await
+}
+
+/// Switches one session's model route; the choice is durable in its session log.
+#[tauri::command]
+pub async fn dsh_select_model(
+    app: AppHandle,
+    session_id: String,
+    provider: String,
+    model: String,
+    reasoning_effort: Option<String>,
+) -> Result<Value, String> {
+    feature::select_model(
+        &app,
+        &session_id,
+        ModelSelection {
+            provider,
+            model,
+            reasoning_effort,
+        },
+    )
 }
 
 /// Answers one approval request. Only `allowed-once` grants the operation.

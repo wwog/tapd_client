@@ -37,10 +37,10 @@ export function SessionStatsChip({ usage }: { usage: DshSessionUsage }) {
       <UsageRows>
         <UsageRow label={t("agent.stats.turnsLabel")}>{turns}</UsageRow>
         <UsageRow label={t("agent.stats.modelTime")}>
-          {usage.modelMs > 0 ? duration(usage.modelMs) : "—"}
+          {usage.modelMs > 0 ? duration(usage.modelMs, true) : "—"}
         </UsageRow>
         <UsageRow label={t("agent.stats.ttft")}>
-          {usage.ttftMs > 0 ? duration(usage.ttftMs) : "—"}
+          {usage.ttftMs > 0 ? duration(usage.ttftMs, true) : "—"}
         </UsageRow>
         <UsageRow label={t("agent.stats.tps")}>
           {usage.tokensPerSecond > 0

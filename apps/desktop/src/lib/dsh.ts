@@ -17,6 +17,7 @@ import {
   type DshPermissionMode,
   type DshProvider,
   type DshReasoningLevel,
+  type ModelSelection,
   type ReasoningEffort,
 } from "./agentSettings";
 
@@ -93,6 +94,8 @@ export type DshSessionRow = {
   status: DshSessionStatus;
   messageCount: number;
   usage: DshSessionUsage;
+  /** The route the session will use next; absent until one is recorded. */
+  selection?: ModelSelection;
 };
 
 export type DshEntry =
@@ -179,6 +182,7 @@ export type {
   DshPermissionMode,
   DshProvider,
   DshReasoningLevel,
+  ModelSelection,
   ReasoningEffort,
 };
 
@@ -294,6 +298,13 @@ export const dshApi = {
     ),
   prompt: (sessionId: string, text: string) =>
     invoke<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
+  selectModel: (sessionId: string, selection: ModelSelection) =>
+    invoke<{ ok: true }>("dsh_select_model", {
+      sessionId,
+      provider: selection.provider,
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort ?? null,
+    }),
   approvalAnswer: (rpcId: number, outcome: DshApprovalOutcome) =>
     invoke<void>("dsh_approval_answer", { rpcId, outcome }),
   questionAnswer: (rpcId: number, answers: DshAnswer[] | null) =>

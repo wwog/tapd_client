@@ -327,6 +327,23 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 `event`（单条事件）是保留类型：Rust 已能接收 `{type:"event",token,sessionId,event}`，
 当前插件不发（已提交事件走 SDK 的 `session.event`，两边共用同一个 ingest）。
 
+同一通道反向的**控制帧**（Rust → 插件，仍是一行一个 JSON，带 `token`）：
+
+```jsonc
+{ "type": "assign", "token": "<token>", "sessionId": "probe-1", "cwd": "/repo" }
+{ "type": "cancel", "token": "<token>", "sessionId": "probe-1" }
+{ "type": "team", "token": "<token>", "sessionId": "probe-1", "enabled": true }
+// 会话级模型切换；reasoningEffort 省略 = 适配器默认，不能传 null
+{ "type": "select-model", "token": "<token>", "sessionId": "probe-1",
+  "provider": "opencode-go", "model": "deepseek-v4.1-flash", "reasoningEffort": "high" }
+```
+
+`assign` / `team` / `select-model` 在目标 Agent 还不存在时会排队，等 `session/created`
+（Agent 发布后是 `agent/created`）再应用；`select-model` 走 `agent.model.select`，dsh 会把
+选择写成持久的 `model/selection` 事件。新会话在第一条 prompt 前会先用
+`session/working-directory/get` 建好 Agent（不触发 turn），应用选择并等到事件落定再发 prompt，
+避免第一步仍然用运行时默认模型。
+
 `start` / `end` / `usage` / `finish` 帧不产生增量，不向上转发；`end(committed)` 之后
 必然跟一条已提交的 `assistant/message` 行，前端据此把 live 文本换成持久行。
 
@@ -372,14 +389,21 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   快照重放靠 `seq` 去重，所以这些累计值不会重复计算。
 - `stats` 帧另外补上 `systemTokens` / `toolsTokens` / `messageTokens`（`contextBreakdown`
   投影），三者相加就是最近一次请求的上下文构成；缺失时保持 0，由 UI 显示等待态。
-- 未知事件类型（`step/start`、`request/header` 等）忽略，每种类型只记一条 debug 日志。
+- `model/selection` 只更新会话的当前路由（`DshSession.selection`），**不产生行**：它是
+  「下一步用什么模型」的选择，不是已经发生的请求，所以不动 `usage` 的累计值。切换模型后
+  dsh 会自动插入一条 `source.kind = "model-selection"` 的提示消息，按上面的规则也不会变成
+  用户气泡。
+- 未知事件类型（`request/header` 等）忽略，每种类型只记一条 debug 日志。
 - 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
 
 ### 8.4 会话 `DshSession`
 
 ```jsonc
 { "id": "probe-1", "title": "hello", "updatedAt": "2026-11-16T12:00:00.000Z",
-  "status": "idle", "messageCount": 1 }   // status: idle | running | failed
+  "status": "idle", "messageCount": 1,
+  // 可省略；还没有选择时为空，UI 退回 usage 或配置的默认模型
+  "selection": { "provider": "opencode-go", "model": "deepseek-v4.1-flash",
+                 "reasoningEffort": "high" } }   // status: idle | running | failed
 ```
 
 - `title`：第一条人类 user 行的首行，最多 60 字符（超长以 `…` 结尾）；还没有 user 行时为空串，
@@ -390,6 +414,9 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   `session.status(idle)` 是权威值，可把失败会话改回 `idle`（失败原因保留在 `turn` 行里）；
   运行时进程退出时，仍为 `running` 的会话改为 `failed`。
 - `updatedAt` 是固定宽度的 RFC3339（毫秒、UTC），字典序即时间序；列表按它降序。
+- `selection`：会话当前的模型选择（`model/selection` 事件的 `data`），不带 effort 表示适配器
+  默认。它是**会话级**的：切换只影响这一个会话，并随会话日志持久化；SDK 在 resume 时会把路由
+  重置成运行时默认，所以 Rust 在 resume 前先快照、下一次 prompt 前再恢复。
 
 ### 8.5 实时增量 `DshStream`
 
@@ -434,6 +461,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
+| `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；运行时已启动但 profile 里没有这个路由时报可读错误（需重启运行时） |
 | `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
 | `dsh_question_answer` | `{ rpcId, answers }`（`answers: null` = 取消） | `{ ok: true }` |
 

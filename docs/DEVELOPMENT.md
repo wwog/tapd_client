@@ -85,6 +85,31 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm chec
 - 历史与会话统计不依赖运行时是否已恢复某个会话:打开会话时按 `$DSH_HOME/sessions/` 的日志补历史,
   并把轮数 / token 一起发布给界面。
 
+### 2.4 UI 调试探针（仅调试构建）
+
+调试构建在回环 API 上额外挂了两组 `/dev/*` 路由（release 不注册）：一组打到隐藏的 TAPD 会话
+WebView（验证 TAPD 内部接口），一组打到应用自己的 `main` 窗口（看界面）。端口与 Bearer token 每次
+启动都变，统一从 `runtime.json` 读。
+
+| 路由 | 作用 |
+| --- | --- |
+| `POST /dev/eval`、`/dev/call`、`/dev/feature`、`/dev/dsh` | 在会话 WebView 里执行；`call` 会 await Promise |
+| `POST /dev/ui/eval` | 在 `main` 窗口执行同步表达式，返回 JSON |
+| `POST /dev/ui/call` | 同上，但 await Promise（点按、等待、IPC 调用用它） |
+| `GET /dev/ui/console` | 取走控制台 / 未捕获错误的环形缓冲（200 条，取走即清空） |
+| `POST /dev/ui/snapshot` | 截 `main` 窗口为 PNG，返回 `path`/`width`/`height` |
+| `GET /dev/ui/snapshot.png` | 同样的截图，直接返回 `image/png` |
+
+要点：
+
+- `el.click()` 就能触发 React 事件；改输入框要走原生 setter 再派发 `input`。`withConsole: true`
+  会顺带返回本次调用期间的 `console.*` 与未捕获错误。
+- 阅读界面优先 `eval` 取 DOM 文本，只有看布局 / 视觉时才截图：截图落在 `<数据目录>/screenshots/`，
+  长边默认缩到 1280（`maxWidth`，`0` 为原图），保留最近 50 张。窗口最小化或隐藏时截图直接报错。
+- 截图走 `screencapture -l <窗口号>`，需要系统「屏幕录制」权限；没有权限时只会得到空图。
+- 命令行封装：`node scripts/dev-probe.mjs eval '<expr>'`、`call`、`console`、`shot [maxWidth]`；
+  其他路由可以直接 `node scripts/dev-probe.mjs /dev/feature '{"name":"..."}'`。
+
 ## 3. 首次运行
 
 1. 启动后主窗口直接显示企业微信扫码登录页，不弹出独立登录窗口。
@@ -136,6 +161,7 @@ opencode mcp list     # ✓ tapd connected
 - 本地项目 / 事项：`<数据目录>/local.sqlite3` 的 `local_projects` / `local_work_items`（纯本机数据，与 TAPD 登录无关；schema v2，项目含 `rule`；本地事项交给 Agent 时导出 `quest.json`）
 - Agent worktree：开启 Worktree 隔离后，任务目录在 `<数据目录>/worktrees/<session id>`；成功后删除目录、保留分支
 - 抓包导出：`<数据目录>/captures/`
+- 调试截图：`<数据目录>/screenshots/`（`/dev/ui/snapshot` 写入，最多保留 50 张）
 - 缺陷导出：`~/Documents/TAPDClient/exports/<项目>-<id>/<短ID>[-<ASCII slug>]/`（目录名不含中文，完整标题在 `bug.json` 里）
 - 媒体缓存：`<数据目录>/media-cache/`（`<url 哈希>` 存字节、同名 `.json` 存 URL 与 content type、`open/` 是交给系统的带扩展名硬链接）；导出、媒体代理与打开原图共用，上限 2GB
 - `runtime.json`：本地 API 端口与 token（0600）

@@ -111,6 +111,7 @@ pub fn run() {
             dsh::commands::dsh_pending,
             dsh::commands::dsh_new_session,
             dsh::commands::dsh_prompt,
+            dsh::commands::dsh_select_model,
             dsh::commands::dsh_approval_answer,
             dsh::commands::dsh_question_answer,
             commands::mcp_audit_list,

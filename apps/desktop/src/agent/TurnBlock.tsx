@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { Brain, ChevronRight, Loader2, PencilLine } from "lucide-react";
 
 import type { DshEntry } from "../lib/dsh";
 import { t } from "../lib/i18n";
 import type { LiveToolCall } from "./store";
 import type { TurnBlock as TurnBlockModel } from "./turns";
+import { describeTool, reasoningPreview } from "./actions";
 import { AnswerBlock, MessageMeta, UserBubble } from "./MessageParts";
-import { ToolRow, TraceReasoning } from "./TraceRows";
+import { ActionIcon, ActionRow, TraceReasoning } from "./TraceRows";
 import { duration } from "./usage/format";
 
 /** The live attempt overlaid on the running turn. */
@@ -51,10 +52,39 @@ function useElapsed(block: TurnBlockModel, running: boolean): number | null {
 }
 
 /**
- * One turn, the way the reference agent UI reads: the prompt, a single "worked
- * for…" line, and the final answer. Everything the turn did on the way there —
- * reasoning, tool calls, intermediate notes — is the expandable trace, so a
- * long tool loop does not drown the answer.
+ * The trace's headline: what the turn did, by count. It reads like a work log
+ * ("read 4, ran 5 commands, changed 6 files"), so a long turn is legible
+ * without scrolling the whole timeline.
+ */
+function traceSummary(entries: DshEntry[], liveTools: LiveToolCall[]): string | null {
+  let reads = 0;
+  let commands = 0;
+  const files = new Set<string>();
+
+  const visit = (name: string, args: string) => {
+    const action = describeTool(name, args);
+    if (action.kind === "read" || action.kind === "image") reads += 1;
+    else if (action.kind === "bash") commands += 1;
+    else if (action.kind === "write" || action.kind === "edit") files.add(action.target);
+  };
+
+  for (const entry of entries) {
+    if (entry.kind === "tool") visit(entry.name, entry.args);
+  }
+  for (const tool of liveTools) visit(tool.name, tool.args);
+
+  const parts: string[] = [];
+  if (reads > 0) parts.push(t("agent.turn.reads", { count: reads }));
+  if (commands > 0) parts.push(t("agent.turn.commands", { count: commands }));
+  if (files.size > 0) parts.push(t("agent.turn.files", { count: files.size }));
+  return parts.length > 0 ? parts.join(t("agent.turn.summarySeparator")) : null;
+}
+
+/**
+ * One turn, the way the reference agent UI reads: the prompt, a live line for
+ * what the model is thinking or doing, a "working for…" timer, and the final
+ * answer. Everything the turn did on the way there — reasoning, tool calls,
+ * intermediate notes — is the expandable trace.
  */
 export function TurnBlock({
   block,
@@ -70,14 +100,11 @@ export function TurnBlock({
   const content = block.entries.filter((entry) => entry.kind !== "user");
   // The last committed answer of a settled turn; while running the streaming
   // text is the answer and every committed row is already trace.
-  const answer = running
-    ? undefined
-    : [...content].reverse().find(isAnswer);
+  const answer = running ? undefined : [...content].reverse().find(isAnswer);
   const trace = content.filter((entry) => entry !== answer);
   const liveText = running ? (live?.text ?? "") : "";
   const liveReasoning = running ? (live?.reasoning.trim() ?? "") : "";
   const liveTools = running ? (live?.tools ?? []) : [];
-  const currentTool = running ? liveTools[liveTools.length - 1]?.name : undefined;
 
   const hasTrace =
     trace.length > 0 ||
@@ -89,8 +116,8 @@ export function TurnBlock({
   const label = elapsed !== null ? duration(elapsed) : null;
   const status = running
     ? label
-      ? t("agent.turn.running", { duration: label })
-      : t("agent.turn.runningPlain")
+      ? t("agent.turn.working", { duration: label })
+      : t("agent.turn.workingPlain")
     : label
       ? t("agent.turn.worked", { duration: label })
       : t("agent.turn.trace");
@@ -98,8 +125,28 @@ export function TurnBlock({
   // gets no status line at all rather than a permanent "trace" label.
   const showStatus = running || hasTrace || elapsed !== null;
 
+  // One-line live commentary, in the reference UI's order: thinking above the
+  // action that is running, and both above the timer.
+  // One line of live commentary, like the reference UI: the running action
+  // wins over thinking, and the last committed action stays while the model
+  // is drafting the next step. While the answer streams, neither is shown.
+  const liveTool = liveTools[liveTools.length - 1];
+  const lastTool = [...trace]
+    .reverse()
+    .find((entry): entry is Extract<DshEntry, { kind: "tool" }> => entry.kind === "tool");
+  const current = liveTool ?? lastTool;
+  const action =
+    running && !liveText && current && current.name
+      ? describeTool(current.name, current.args)
+      : null;
+  const thinking =
+    running && !liveText && !action && liveReasoning
+      ? reasoningPreview(liveReasoning)
+      : "";
+  const summary = open ? traceSummary(trace, liveTools) : null;
+
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       {users.map((entry) => (
         <div key={entryKey(entry)} className="flex flex-col">
           <UserBubble text={entry.text} />
@@ -107,9 +154,38 @@ export function TurnBlock({
         </div>
       ))}
 
-      {showStatus ? (
-        <div className="flex items-center gap-1.5 text-ui-xs text-slate-400">
-          {running ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
+      <div className="flex flex-col gap-1">
+        {thinking ? (
+          <div className="flex min-w-0 items-center gap-2 text-ui-xs text-slate-400">
+            <Brain size={12} className="shrink-0" />
+            <span className="shrink-0">{t("agent.action.thinking")}</span>
+            <span className="min-w-0 truncate text-slate-300">{thinking}</span>
+          </div>
+        ) : null}
+
+        {action ? (
+          <div className="flex min-w-0 items-center gap-2 text-ui-xs">
+            <ActionIcon action={action} />
+            <span className="shrink-0 text-slate-500">{action.verb}</span>
+            <span className="min-w-0 truncate font-mono text-slate-600">
+              {action.target}
+            </span>
+            {action.added ? (
+              <span className="shrink-0 tabular-nums text-emerald-600">
+                +{action.added}
+              </span>
+            ) : null}
+            {action.removed ? (
+              <span className="shrink-0 tabular-nums text-rose-500">
+                -{action.removed}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {showStatus ? (
+          <div className="flex items-center gap-1.5 text-ui-xs text-slate-400">
+            {running ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
             {hasTrace ? (
               <button
                 type="button"
@@ -119,11 +195,6 @@ export function TurnBlock({
                 className="-ml-1 inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 transition hover:bg-overlay hover:text-slate-600"
               >
                 <span className="shrink-0 tabular-nums">{status}</span>
-                {currentTool ? (
-                  <span className="min-w-0 truncate font-mono text-slate-400">
-                    {currentTool}
-                  </span>
-                ) : null}
                 <ChevronRight
                   size={12}
                   className={clsx("shrink-0 transition-transform", open && "rotate-90")}
@@ -132,25 +203,29 @@ export function TurnBlock({
             ) : (
               <span className="inline-flex min-w-0 items-center gap-1.5 px-1">
                 <span className="shrink-0 tabular-nums">{status}</span>
-                {currentTool ? (
-                  <span className="min-w-0 truncate font-mono text-slate-400">
-                    {currentTool}
-                  </span>
-                ) : null}
               </span>
             )}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+      </div>
 
       {open && hasTrace ? (
         <div className="flex flex-col gap-2 border-l border-border pl-3">
+          {summary ? (
+            <div className="flex min-w-0 items-center gap-2 text-ui-xs text-slate-500">
+              <PencilLine size={12} className="shrink-0 text-slate-400" />
+              <span className="min-w-0 truncate" title={summary}>
+                {summary}
+              </span>
+            </div>
+          ) : null}
           {trace.map((entry) => (
             <TraceEntry key={entryKey(entry)} entry={entry} />
           ))}
           {answer?.reasoning ? <TraceReasoning text={answer.reasoning} /> : null}
           {liveReasoning ? <TraceReasoning text={liveReasoning} /> : null}
           {liveTools.map((tool, index) => (
-            <ToolRow
+            <ActionRow
               key={`live-${tool.callId || index}`}
               name={tool.name}
               args={tool.args}
@@ -183,7 +258,7 @@ export function TurnBlock({
 function TraceEntry({ entry }: { entry: DshEntry }) {
   if (entry.kind === "tool") {
     return (
-      <ToolRow
+      <ActionRow
         name={entry.name}
         args={entry.args}
         status={entry.status}

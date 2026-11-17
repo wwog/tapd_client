@@ -31,7 +31,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use dsh_host::rpc;
 use dsh_host::transcript::{DshEntry, DshSession, SessionStatus, TurnState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -938,8 +937,11 @@ async fn start_session(
 ) -> Result<(), String> {
     let runtime = runtime(app)?;
     runtime.ensure_ready(app).await?;
+    // Create the Agent and lock in the configured model before the first turn;
+    // the worktree assignment below then moves its directory.
+    runtime.prepare_session(app, session_id, true).await;
     assign_session_with_retry(app, session_id, work_dir).await?;
-    runtime.query(session_id, prompt).await?;
+    runtime.query(app, session_id, prompt).await?;
     Ok(())
 }
 
@@ -1424,18 +1426,10 @@ async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, Strin
 
     let runtime = runtime(app)?;
     runtime.ensure_ready(app).await?;
-    match runtime
-        .call(
-            rpc::METHOD_SESSION_RESUME,
-            json!({ "sessionId": request.session_id }),
-        )
-        .await
-    {
-        // The SDK reports an already-open session as an error; for a resume
-        // that is exactly the state we wanted.
-        Ok(_) => {}
-        Err(error) if error.contains("already open") => {}
-        Err(error) => return Err(tr_args("dsh.task.resume.failed", &[&error])),
+    // The shared helper also snapshots the session's model choice before the
+    // SDK resume resets it to the runtime default.
+    if let Err(error) = runtime.resume_session(app, &request.session_id).await {
+        return Err(tr_args("dsh.task.resume.failed", &[&error]));
     }
 
     // Re-attaching a persisted session is not activity: bumping `updated_at`

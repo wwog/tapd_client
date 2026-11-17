@@ -20,6 +20,9 @@ export type SidebarLayoutOptions = {
   /** Persisted width owned by the workbench layout. */
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
+  /** Persisted user collapse owned by the workbench layout. */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   /**
    * Width the layout area needs beside the side bar: primary group minimum
    * plus the secondary group's minimum when it has panels.
@@ -61,20 +64,21 @@ export type SidebarLayout = {
 
 /**
  * Project-list column: collapse, temporary peek, preferred width and the
- * derived auto-collapse used on narrow windows. The width itself is persisted
- * by the workbench layout; the drag is the shared `Sash` component.
+ * derived auto-collapse used on narrow windows. Width and the user's collapse
+ * are persisted by the workbench layout; the drag is the shared `Sash`.
  */
 export function useSidebarLayout({
   projectListHidden,
   sidebarWidth,
   setSidebarWidth,
+  sidebarCollapsed,
+  setSidebarCollapsed,
   contentMinWidth,
   pendingViewportWidth = null,
 }: SidebarLayoutOptions): SidebarLayout {
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 1280 : window.innerWidth,
   );
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   /** Temporarily reveals the project list even when the window is too narrow. */
   const [sidebarPeek, setSidebarPeek] = useState(false);
   const [resizingSidebar, setResizingSidebar] = useState(false);
@@ -147,8 +151,8 @@ export function useSidebarLayout({
 
   const toggle = useCallback(() => {
     if (autoCollapseRef.current) setSidebarPeek((current) => !current);
-    else setSidebarCollapsed((current) => !current);
-  }, []);
+    else setSidebarCollapsed(!collapsedRef.current);
+  }, [setSidebarCollapsed]);
 
   const getEffectiveWidth = useCallback(() => effectiveWidthRef.current, []);
 
@@ -159,7 +163,7 @@ export function useSidebarLayout({
       ? MIN_SIDEBAR_WIDTH
       : effectiveWidthRef.current;
     dragWidthRef.current = startWidthRef.current;
-  }, []);
+  }, [setSidebarCollapsed]);
 
   const resize = useCallback(
     (delta: number) => {
@@ -177,7 +181,7 @@ export function useSidebarLayout({
       dragWidthRef.current = next;
       setSidebarWidth(next);
     },
-    [setSidebarWidth],
+    [setSidebarWidth, setSidebarCollapsed],
   );
 
   const endResize = useCallback(() => {
@@ -187,13 +191,13 @@ export function useSidebarLayout({
       return;
     }
     setSidebarWidth(dragWidthRef.current);
-  }, [setSidebarWidth]);
+  }, [setSidebarWidth, setSidebarCollapsed]);
 
   const resetWidth = useCallback(() => {
     setSidebarCollapsed(false);
     setSidebarPeek(false);
     setSidebarWidth(defaultSidebarWidth(viewportRef.current));
-  }, [setSidebarWidth]);
+  }, [setSidebarWidth, setSidebarCollapsed]);
 
   return {
     viewportWidth,

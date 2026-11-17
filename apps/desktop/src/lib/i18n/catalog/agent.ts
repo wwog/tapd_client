@@ -91,16 +91,30 @@ export const agent = {
     "Describe the task below; Enter sends it.",
   ],
   "agent.stream.loadFailed": ["会话记录读取失败", "Could not load the conversation"],
-  "agent.turn.running": ["运行中 · {duration}", "Running · {duration}"],
-  "agent.turn.runningPlain": ["运行中", "Running"],
+  "agent.turn.working": ["工作中 {duration}", "Working for {duration}"],
+  "agent.turn.workingPlain": ["工作中", "Working"],
   "agent.turn.worked": ["已工作 {duration}", "Worked for {duration}"],
   "agent.turn.trace": ["轨迹", "Trace"],
   "agent.turn.expand": ["展开这一轮的轨迹", "Show the trace of this turn"],
   "agent.turn.collapse": ["收起这一轮的轨迹", "Hide the trace of this turn"],
+  "agent.turn.reads": ["查阅 {count} 项", "{count} reads"],
+  "agent.turn.commands": ["执行 {count} 命令", "{count} commands"],
+  "agent.turn.files": ["修改 {count} 文件", "{count} files"],
+  "agent.turn.summarySeparator": ["，", ", "],
+
+  // One tool call as one timeline row.
+  "agent.action.thinking": ["正在思考", "Thinking"],
+  "agent.action.ran": ["已执行", "Ran"],
+  "agent.action.read": ["已读取", "Read"],
+  "agent.action.viewed": ["已查看", "Viewed"],
+  "agent.action.wrote": ["已写入", "Wrote"],
+  "agent.action.edited": ["已编辑", "Edited"],
+  "agent.action.searched": ["已搜索", "Searched"],
+  "agent.action.searchedWeb": ["已搜索网页", "Searched the web"],
+  "agent.action.fetched": ["已获取", "Fetched"],
+  "agent.action.called": ["调用了", "Called"],
+  "agent.action.failed": ["执行失败", "Failed"],
   "agent.thinking": ["思考", "Reasoning"],
-  "agent.tool.calling": ["工具调用", "Tool call"],
-  "agent.tool.running": ["运行中", "Running"],
-  "agent.tool.failed": ["工具执行失败", "Tool failed"],
 
   // Token usage.
   "agent.usage.chip": ["用量 {tokens} tok", "Usage {tokens} tok"],
@@ -153,6 +167,11 @@ export const agent = {
   "agent.context.pending": [
     "等待运行时的用量统计…",
     "Waiting for the runtime's meter…",
+  ],
+  // The split only exists for a live request; history keeps the totals.
+  "agent.context.splitPending": [
+    "这几项的占比在下一次请求后更新",
+    "The split updates with the next request",
   ],
 
   // Composer.
@@ -260,6 +279,16 @@ export const agent = {
   ],
   "agent.model.default": ["默认", "Default"],
   "agent.model.setDefault": ["设为默认模型", "Use as the default model"],
+  "agent.model.pick": ["选择模型", "Select model"],
+  "agent.model.pickTitle": ["模型", "Model"],
+  "agent.model.manage": ["管理模型", "Manage models"],
+  "agent.model.noAvailable": ["还没有可用模型", "No model available yet"],
+  "agent.model.orderHint": [
+    "拖动调整顺序;第一个供应商的默认模型用于新会话",
+    "Drag to reorder; the first provider's default model starts new sessions",
+  ],
+  "agent.model.reasoningEffort": ["思考强度", "Reasoning effort"],
+  "agent.model.reasoningAuto": ["自动", "Auto"],
   "agent.model.edit": ["编辑", "Edit"],
   "agent.model.reasoning": ["推理", "Reasoning"],
   "agent.model.inputText": ["文本", "Text"],

@@ -68,6 +68,13 @@ export type DshModelsConfig = {
   activeModelId: string;
 };
 
+/** One session's model route; `reasoningEffort` absent means the adapter default. */
+export type ModelSelection = {
+  provider: string;
+  model: string;
+  reasoningEffort?: string;
+};
+
 export type DshPermissionMode = "auto" | "notify" | "full";
 
 export type AgentConfig = {
@@ -117,6 +124,39 @@ export function firstUsableModel(
     if (model) return { providerId: provider.id, modelId: model.id };
   }
   return { providerId: "", modelId: "" };
+}
+
+/**
+ * Mirrors the backend's default rule: the provider list is the priority order,
+ * so the first enabled provider with an enabled model supplies the session
+ * default. Choosing another provider's model means moving that provider to the
+ * front and then calling this.
+ */
+export function withDefaultSelection(models: DshModelsConfig): DshModelsConfig {
+  const provider = models.providers.find(
+    (item) => item.enabled && item.models.some((model) => model.enabled),
+  );
+  if (!provider) return models;
+  const keep =
+    provider.id === models.activeProviderId &&
+    provider.models.some((model) => model.id === models.activeModelId && model.enabled);
+  if (keep) return models;
+  const model = provider.models.find((entry) => entry.enabled);
+  return {
+    ...models,
+    activeProviderId: provider.id,
+    activeModelId: model?.id ?? "",
+  };
+}
+
+/** `128K` / `1M`: catalog labels stay short enough to sit on one row. */
+export function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
 }
 
 export const agentSettingsApi = {

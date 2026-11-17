@@ -221,7 +221,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         for table in [
             "snapshots",
             "bugs",
@@ -281,7 +281,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let snapshots: i64 = conn
             .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
             .expect("snapshots");

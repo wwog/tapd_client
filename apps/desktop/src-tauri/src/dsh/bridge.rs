@@ -27,7 +27,8 @@ use std::sync::Arc;
 
 use chrono::{SecondsFormat, Utc};
 use dsh_host::transcript::{
-    DshDelta, DshEntry, DshSession, DshStream, Ingested, SessionMeter, SessionStatus, Transcript,
+    DshDelta, DshEntry, DshSession, DshStream, Ingested, ModelSelection, SessionMeter,
+    SessionStatus, Transcript,
 };
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -67,6 +68,10 @@ pub struct BridgeState {
     /// Last team board per session (P5). Owned by inbound `team` frames and
     /// cleared with the runtime, so a restart never shows the old board.
     teams: std::sync::Mutex<HashMap<String, DshTeam>>,
+    /// Model choices made in this app run, keyed by session. They survive a
+    /// runtime restart (unlike the live agents) and cover sessions that do not
+    /// exist yet, so the next prompt can force the route the user picked.
+    selections: std::sync::Mutex<HashMap<String, ModelSelection>>,
     /// Per-connection identity, see [`Control`].
     connections: AtomicU64,
 }
@@ -138,6 +143,73 @@ impl BridgeState {
             "sessionId": session_id,
             "enabled": enabled,
         }))
+    }
+
+    /// Points one session at a model route and queues the frame for the plugin.
+    /// The plugin applies it immediately for a live Agent and queues it until
+    /// `agent/created` otherwise, so calling this before the session exists is
+    /// safe. The choice is remembered even when the plugin is offline: the next
+    /// prompt calls this again once the runtime is up.
+    pub fn select_model(&self, session_id: &str, selection: &ModelSelection) -> Result<(), String> {
+        self.remember_selection(session_id, selection.clone());
+        // `reasoningEffort` must be absent, not null: dsh validates it as a
+        // non-empty string when present and an explicit null fails that check.
+        let mut frame = json!({
+            "type": "select-model",
+            "sessionId": session_id,
+            "provider": selection.provider,
+            "model": selection.model,
+        });
+        if let Some(effort) = &selection.reasoning_effort {
+            frame["reasoningEffort"] = Value::from(effort.clone());
+        }
+        self.send_control(frame)
+    }
+
+    /// Keeps a choice for this app run (also used to preserve a session's own
+    /// route across an SDK resume, which re-selects the runtime default).
+    pub fn remember_selection(&self, session_id: &str, selection: ModelSelection) {
+        self.selections
+            .lock()
+            .expect("dsh selection lock")
+            .insert(session_id.to_string(), selection);
+    }
+
+    /// A choice made in this app run, if any.
+    pub fn pending_selection(&self, session_id: &str) -> Option<ModelSelection> {
+        self.selections
+            .lock()
+            .expect("dsh selection lock")
+            .get(session_id)
+            .cloned()
+    }
+
+    /// The route dsh itself recorded for this session (`model/selection`).
+    pub fn recorded_selection(&self, session_id: &str) -> Option<ModelSelection> {
+        self.transcript
+            .lock()
+            .expect("dsh transcript lock")
+            .selection(session_id)
+    }
+
+    /// The route a prompt should force: this app run's choice, else the route
+    /// in the session log, else the configured default.
+    pub fn desired_selection(
+        &self,
+        session_id: &str,
+        default: Option<ModelSelection>,
+    ) -> Option<ModelSelection> {
+        self.pending_selection(session_id)
+            .or_else(|| self.recorded_selection(session_id))
+            .or(default)
+    }
+
+    /// Whether this process has seen the session (live or hydrated from log).
+    pub fn knows(&self, session_id: &str) -> bool {
+        self.transcript
+            .lock()
+            .expect("dsh transcript lock")
+            .knows(session_id)
     }
 
     /// The board the plugin last reported for this session. `None` means the
@@ -259,11 +331,26 @@ impl BridgeState {
         let Some(events) = super::session_log::events(sessions_dir, session_id) else {
             return false;
         };
-        let mut transcript = self.transcript.lock().expect("dsh transcript lock");
-        for event in &events {
-            transcript.ingest(session_id, event, &event_at(event));
+        {
+            let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+            for event in &events {
+                transcript.ingest(session_id, event, &event_at(event));
+            }
         }
         true
+    }
+
+    /// Puts the stored context meter back on a hydrated session. The log holds
+    /// token totals; only the meter table remembers how a request was split.
+    pub fn restore_meter(&self, app: &AppHandle, session_id: &str) {
+        let Some(cache) = cache_of(app) else {
+            return;
+        };
+        let Ok(Some(stored)) = super::meter_store::load(&cache, session_id) else {
+            return;
+        };
+        let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+        transcript.set_meter(session_id, &stored.meter, &stored.at);
     }
 
     /// Applies one NDJSON message from the plugin.
@@ -344,10 +431,15 @@ impl BridgeState {
             return;
         };
         let meter = normalize_meter(message);
+        tracing::debug!(session = session_id, ?meter, "dsh stats frame");
+        let at = now();
         let changed = {
             let mut transcript = self.transcript.lock().expect("dsh transcript lock");
-            transcript.set_meter(session_id, &meter, &now())
+            transcript.set_meter(session_id, &meter, &at)
         };
+        // dsh keeps this in memory only: without the row a restarted app knows
+        // a session's token totals but not what filled the window.
+        persist_meter(app, session_id, &at, &meter);
         if changed {
             self.emit_sessions(app);
         }
@@ -530,6 +622,33 @@ fn normalize_stream(session_id: &str, frame: &Value) -> Option<DshStream> {
 
 fn text_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The offline cache handle, when the app is in a state that has one.
+fn cache_of(app: &AppHandle) -> Option<std::sync::Arc<crate::cache::Cache>> {
+    app.try_state::<std::sync::Arc<crate::state::AppState>>()
+        .map(|state| state.cache.clone())
+}
+
+/// Writes the meter in the background: a frame must never wait on SQLite.
+fn persist_meter(app: &AppHandle, session_id: &str, at: &str, meter: &SessionMeter) {
+    let Some(cache) = cache_of(app) else {
+        return;
+    };
+    let session_id = session_id.to_string();
+    let at = at.to_string();
+    let meter = meter.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            super::meter_store::save(&cache, &session_id, &at, &meter)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "failed to persist a context meter"),
+            Err(error) => tracing::warn!(%error, "context meter write panicked"),
+        }
+    });
 }
 
 /// Reads one `stats` frame. `projectedTokens` is the runtime's forward-looking
@@ -737,6 +856,46 @@ mod tests {
 
         let frame: Value = serde_json::from_str(&new_rx.recv().await.unwrap()).unwrap();
         assert_eq!(frame["type"], "assign");
+    }
+
+    #[tokio::test]
+    async fn model_selection_is_queued_and_remembered() {
+        let bridge = BridgeState::default();
+        let selection = ModelSelection {
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            reasoning_effort: Some("high".into()),
+        };
+        // No plugin yet: the choice is remembered for the next prompt instead
+        // of failing the picker.
+        assert!(bridge.select_model("s1", &selection).is_err());
+        assert_eq!(bridge.pending_selection("s1"), Some(selection.clone()));
+        assert_eq!(bridge.recorded_selection("s1"), None);
+
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge.select_model("s1", &selection).expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "select-model");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["provider"], "opencode-go");
+        assert_eq!(frame["model"], "deepseek-v4.1-flash");
+        assert_eq!(frame["reasoningEffort"], "high");
+
+        // An absent effort omits the key entirely; an explicit null would fail
+        // dsh's non-empty-string validation.
+        let plain = ModelSelection {
+            provider: "acme".into(),
+            model: "fast".into(),
+            reasoning_effort: None,
+        };
+        bridge.select_model("s1", &plain).expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert!(frame.get("reasoningEffort").is_none());
+        assert_eq!(bridge.desired_selection("s1", None), Some(plain));
     }
 
     #[tokio::test]

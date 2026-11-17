@@ -17,6 +17,7 @@ use dsh_host::protocol::{
     UserQuestionRequest,
 };
 use dsh_host::rpc::{self, Incoming, RpcId};
+use dsh_host::transcript::ModelSelection;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -132,6 +133,10 @@ pub struct RuntimeState {
     /// back before writing the frame.
     server_ids: std::sync::Mutex<HashMap<u64, RpcId>>,
     aliases: AtomicU64,
+    /// The model catalog written into the profile of the running process.
+    /// Models added after the start are not routable until the next start, so
+    /// a session switch validates against this snapshot instead of the file.
+    started_models: std::sync::Mutex<Option<DshModelsConfig>>,
 }
 
 /// A question or approval the runtime is blocked on. `request` is the typed
@@ -161,6 +166,7 @@ impl Default for RuntimeState {
             pending: std::sync::Mutex::new(Vec::new()),
             server_ids: std::sync::Mutex::new(HashMap::new()),
             aliases: AtomicU64::new(0),
+            started_models: std::sync::Mutex::new(None),
         }
     }
 }
@@ -219,10 +225,132 @@ impl RuntimeState {
     }
 
     fn fail(&self, app: &AppHandle, code: &str, message: impl Into<String>) -> String {
+        // A failed start (or a dead runtime) has no routable catalog any more.
+        self.clear_started_models();
         let message = message.into();
         self.set_status(app, DshStatus::failed(code, message.clone()));
         let _ = app.emit(EVENT_ERROR, json!({ "code": code, "message": message }));
         message
+    }
+
+    fn clear_started_models(&self) {
+        *self
+            .started_models
+            .lock()
+            .expect("dsh started models lock") = None;
+    }
+
+    /// Whether the running process can route this provider/model pair. While
+    /// the runtime is stopped the profile will be rendered from the current
+    /// settings on the next start, so anything configured there is accepted.
+    pub fn route_available(&self, selection: &ModelSelection) -> bool {
+        let models = self
+            .started_models
+            .lock()
+            .expect("dsh started models lock");
+        let Some(models) = models.as_ref() else {
+            return true;
+        };
+        models.providers.iter().any(|provider| {
+            provider.id == selection.provider
+                && provider.enabled
+                && !provider.base_url.trim().is_empty()
+                && provider
+                    .models
+                    .iter()
+                    .any(|model| model.id == selection.model && model.enabled)
+        })
+    }
+
+    /// Points the session at the route it should use before the next prompt.
+    ///
+    /// The plugin applies the frame immediately for a live Agent and queues it
+    /// until `agent/created` otherwise, so this also covers a session the SDK
+    /// creates on the prompt that follows. A route the running profile does not
+    /// know is skipped (the runtime default stays) instead of failing the send.
+    fn apply_session_selection(&self, app: &AppHandle, session_id: &str) {
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return;
+        };
+        let Some(selection) = session_selection(app, session_id) else {
+            return;
+        };
+        if !self.route_available(&selection) {
+            tracing::warn!(
+                session = session_id,
+                provider = %selection.provider,
+                model = %selection.model,
+                "session model is not in the running profile; keeping the runtime default"
+            );
+            return;
+        }
+        if bridge.recorded_selection(session_id).as_ref() == Some(&selection) {
+            return;
+        }
+        if let Err(error) = bridge.select_model(session_id, &selection) {
+            // Best effort: a prompt must not fail because the preference could
+            // not be queued; the next prompt retries it.
+            tracing::warn!(%error, session = session_id, "model selection was not queued");
+        }
+    }
+
+    /// Makes the session live and forces its route **before** the prompt.
+    ///
+    /// dsh fixes a step's route when the turn starts, so a control frame that
+    /// reaches the plugin after `turn/start` would only apply from the second
+    /// step. A new session is created with `session/working-directory/get`
+    /// (which creates the Agent without a turn), the choice is applied, and the
+    /// caller waits until dsh records it. A failed setup degrades to the normal
+    /// prompt path instead of blocking the send.
+    pub async fn prepare_session(&self, app: &AppHandle, session_id: &str, fresh: bool) {
+        if fresh {
+            if let Err(error) = self
+                .call(
+                    rpc::METHOD_SESSION_WORKING_DIRECTORY_GET,
+                    json!({ "sessionId": session_id }),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    session = session_id,
+                    "session could not be created ahead of the prompt"
+                );
+            }
+        }
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return;
+        };
+        let Some(selection) = session_selection(app, session_id) else {
+            return;
+        };
+        if !self.route_available(&selection) {
+            return;
+        }
+        if bridge.recorded_selection(session_id).as_ref() == Some(&selection) {
+            return;
+        }
+        if let Err(error) = bridge.select_model(session_id, &selection) {
+            tracing::warn!(%error, session = session_id, "model selection was not queued");
+            return;
+        }
+        // The event travels plugin → dsh log → SDK notification → this registry.
+        // A few milliseconds is normal; the bound only keeps a lost frame from
+        // delaying the prompt forever.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            if bridge.recorded_selection(session_id).as_ref() == Some(&selection) {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    session = session_id,
+                    "model selection was not recorded before the prompt"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Ensures the payload is extracted and the runtime is running and
@@ -378,6 +506,12 @@ impl RuntimeState {
             error_code: None,
             error: None,
         };
+        // Remember the catalog this process was actually started with; a later
+        // session switch validates against it, not the edited file.
+        *self
+            .started_models
+            .lock()
+            .expect("dsh started models lock") = Some(config.dsh_models.clone());
         let status = self.set_status(app, status);
         let _ = app.emit(EVENT_READY, &status);
         Ok(status)
@@ -451,7 +585,11 @@ impl RuntimeState {
 
     /// Re-attaches a session dsh persisted in an earlier run. Idempotent: an
     /// already-open session reports an error we treat as success.
-    pub async fn resume_session(&self, session_id: &str) -> Result<(), String> {
+    ///
+    /// The SDK re-selects the runtime default while resuming, so the session's
+    /// own choice is snapshotted first; the prompt path then restores it.
+    pub async fn resume_session(&self, app: &AppHandle, session_id: &str) -> Result<(), String> {
+        super::session_log::preserve_selection(app, session_id);
         match self
             .call(
                 rpc::METHOD_SESSION_RESUME,
@@ -465,8 +603,16 @@ impl RuntimeState {
         }
     }
 
-    /// Queues one prompt on a session, creating it on first use.
-    pub async fn query(&self, session_id: &str, text: &str) -> Result<Value, String> {
+    /// Queues one prompt on a session, creating it on first use. The session's
+    /// model route is forced first so a resumed session is not reset to the
+    /// runtime default.
+    pub async fn query(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        text: &str,
+    ) -> Result<Value, String> {
+        self.apply_session_selection(app, session_id);
         let params = SessionQueryParams {
             session_id: session_id.to_string(),
             content_blocks: vec![dsh_host::protocol::ContentBlock::Text {
@@ -488,6 +634,7 @@ impl RuntimeState {
             let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
         }
         self.clear_pending();
+        self.clear_started_models();
         let mut guard = self.running.lock().await;
         let Some(mut running) = guard.take() else {
             bridge::shutdown(app).await;
@@ -517,6 +664,21 @@ impl RuntimeState {
         self.set_status(app, DshStatus::default());
         Ok(())
     }
+}
+
+/// The route a prompt should force: this app run's pick, else the session
+/// log's recorded choice, else the configured default.
+fn session_selection(app: &AppHandle, session_id: &str) -> Option<ModelSelection> {
+    let bridge = app.try_state::<Arc<bridge::BridgeState>>()?;
+    let configured = agent_settings::config_for(app)
+        .dsh_models
+        .active()
+        .map(|(provider, model)| ModelSelection {
+            provider: provider.id.clone(),
+            model: model.id.clone(),
+            reasoning_effort: None,
+        });
+    bridge.desired_selection(session_id, configured)
 }
 
 /// Composed paths for one runtime.
@@ -766,6 +928,7 @@ fn spawn_reader(
                 let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
             }
             state.clear_pending();
+            state.clear_started_models();
             let status = state.status();
             if status.phase != Phase::Stopped {
                 state.set_status(&app, DshStatus::failed("exited", tr("dsh.runtime.exited")));

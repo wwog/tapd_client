@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { Circle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Circle, GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ScrollingName } from "../components/ScrollingName";
 import { Badge, Button, Switch, cardClass, inputClass, selectClass } from "../components/ui";
 import {
+  compactTokens,
   firstUsableModel,
+  withDefaultSelection,
   type DshModelEntry,
   type DshModelProtocol,
   type DshModelsConfig,
@@ -33,16 +35,6 @@ function protocolLabel(protocol: DshModelProtocol): string {
     case "google-generative-ai":
       return t("agent.model.protocolGoogle");
   }
-}
-
-/** `128K` / `1M`: catalog badges stay short enough to sit on one row. */
-function compactTokens(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
-  }
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
-  return String(tokens);
 }
 
 /** The profile key of a new provider; renamed names keep their original key. */
@@ -81,12 +73,17 @@ export function ModelSettings({ value, onChange }: Props) {
     null,
   );
   const [removing, setRemoving] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
 
   const providers = value.providers;
   const selected = providers.find((provider) => provider.id === selectedId) ?? providers[0] ?? null;
 
+  /** Every edit keeps the backend's "first provider is the default" rule. */
+  const commit = (next: DshModelsConfig) => onChange(withDefaultSelection(next));
+
   const patchProvider = (id: string, patch: Partial<DshProvider>) =>
-    onChange({
+    commit({
       ...value,
       providers: providers.map((provider) =>
         provider.id === id ? { ...provider, ...patch } : provider,
@@ -103,7 +100,7 @@ export function ModelSettings({ value, onChange }: Props) {
       enabled: true,
       models: [],
     };
-    onChange({ ...value, providers: [...providers, provider] });
+    commit({ ...value, providers: [...providers, provider] });
     setSelectedId(provider.id);
   };
 
@@ -116,7 +113,7 @@ export function ModelSettings({ value, onChange }: Props) {
             providerId: value.activeProviderId,
             modelId: value.activeModelId,
           };
-    onChange({
+    commit({
       providers: remaining,
       activeProviderId: pointer.providerId,
       activeModelId: pointer.modelId,
@@ -159,7 +156,7 @@ export function ModelSettings({ value, onChange }: Props) {
       // The default model was renamed in place.
       activeModelId = model.id;
     }
-    onChange({ providers: nextProviders, activeProviderId, activeModelId });
+    commit({ providers: nextProviders, activeProviderId, activeModelId });
   };
 
   const removeModel = (providerId: string, index: number) => {
@@ -175,10 +172,35 @@ export function ModelSettings({ value, onChange }: Props) {
     const pointer = dropActive
       ? firstUsableModel(nextProviders)
       : { providerId: value.activeProviderId, modelId: value.activeModelId };
-    onChange({
+    commit({
       providers: nextProviders,
       activeProviderId: pointer.providerId,
       activeModelId: pointer.modelId,
+    });
+  };
+
+  /** Drag reorder; `commit` then moves the default to the new first provider. */
+  const moveProvider = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const from = providers.findIndex((provider) => provider.id === fromId);
+    const to = providers.findIndex((provider) => provider.id === toId);
+    if (from < 0 || to < 0) return;
+    const next = providers.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    commit({ ...value, providers: next });
+  };
+
+  /** Choosing a default promotes its provider: the first one is the default. */
+  const setDefault = (providerId: string, modelId: string) => {
+    const provider = providers.find((item) => item.id === providerId);
+    if (!provider) return;
+    const next = [provider, ...providers.filter((item) => item.id !== providerId)];
+    commit({
+      ...value,
+      providers: next,
+      activeProviderId: providerId,
+      activeModelId: modelId,
     });
   };
 
@@ -211,6 +233,7 @@ export function ModelSettings({ value, onChange }: Props) {
         <nav
           className="w-40 shrink-0 space-y-0.5 overflow-y-auto border-r border-border pr-3"
           aria-label={t("agent.model.providers")}
+          title={t("agent.model.orderHint")}
         >
           {providers.length === 0 ? (
             <div className="px-2 py-1.5 text-ui-caption text-slate-400">
@@ -224,12 +247,42 @@ export function ModelSettings({ value, onChange }: Props) {
                   key={provider.id}
                   type="button"
                   aria-current={active}
+                  data-provider-id={provider.id}
+                  draggable
                   onClick={() => setSelectedId(provider.id)}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", provider.id);
+                    setDragging(provider.id);
+                  }}
+                  onDragEnd={() => {
+                    setDragging(null);
+                    setOver(null);
+                  }}
+                  onDragOver={(event) => {
+                    // React state can lag the first dragover; the payload type
+                    // keeps the drop target active in that window.
+                    if (!dragging && !event.dataTransfer.types.includes("text/plain")) return;
+                    if (dragging === provider.id) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setOver(provider.id);
+                  }}
+                  onDragLeave={() => setOver((current) => (current === provider.id ? null : current))}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const from = dragging || event.dataTransfer.getData("text/plain");
+                    setDragging(null);
+                    setOver(null);
+                    if (from) moveProvider(from, provider.id);
+                  }}
                   className={clsx(
-                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition",
+                    "group flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left transition active:cursor-grabbing",
                     active
                       ? "bg-sky-50 text-sky-700"
                       : "text-slate-600 hover:bg-overlay-soft",
+                    dragging === provider.id && "opacity-40",
+                    over === provider.id && "bg-sky-50",
                   )}
                 >
                   <span
@@ -245,6 +298,10 @@ export function ModelSettings({ value, onChange }: Props) {
                   <ScrollingName
                     text={provider.name || provider.id}
                     className="flex-1 text-ui-caption"
+                  />
+                  <GripVertical
+                    size={11}
+                    className="shrink-0 text-slate-300 opacity-0 transition group-hover:opacity-100"
                   />
                 </button>
               );
@@ -387,13 +444,7 @@ export function ModelSettings({ value, onChange }: Props) {
                           <button
                             type="button"
                             title={t("agent.model.setDefault")}
-                            onClick={() =>
-                              onChange({
-                                ...value,
-                                activeProviderId: selected.id,
-                                activeModelId: model.id,
-                              })
-                            }
+                            onClick={() => setDefault(selected.id, model.id)}
                             className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-300 transition hover:bg-overlay hover:text-sky-600"
                           >
                             <Circle size={11} />

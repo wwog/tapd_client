@@ -17,11 +17,12 @@
  *   assign → move a session to a working directory (task worktrees)
  *   cancel → stop one session's turn
  *   team   → enable / disable Agent Teams for one root session
+ *   select-model → switch one session's model route (durable in its log)
  *
  * Assignments that arrive before the session exists are remembered and applied
  * when the session is created, so the task flow can queue a worktree without
- * racing session creation. The same applies to a Team toggle, which needs the
- * live Agent that owns the session.
+ * racing session creation. The same applies to a Team toggle and a model pick:
+ * both need the live Agent that owns the session.
  *
  * The Rust side owns normalization and deduplication, so this plugin holds no
  * transcript state. Reconnecting re-sends snapshots; the receiver dedupes by
@@ -62,6 +63,8 @@ export function apply(ctx) {
   const assignments = new Map()
   /** sessionId → enabled, for Team toggles that arrived before the Agent existed. */
   const teamModes = new Map()
+  /** sessionId → { provider, model, reasoningEffort? }, for model picks that arrived early. */
+  const modelSelections = new Map()
   /** sessionId → pending debounce timer for that session's board/stats frame. */
   const settleTimers = new Map()
 
@@ -272,11 +275,36 @@ export function apply(ctx) {
     )
   }
 
+  /**
+   * Applies one session's model route. dsh records the choice as a durable
+   * `model/selection` event, so it survives reloads and the Rust transcript
+   * sees it without another read. A pick for an Agent that does not exist yet
+   * waits for `agent/created`.
+   */
+  const applyModelSelection = (sessionId, selection) => {
+    const agent = ctx.agents.get(sessionId)
+    if (!agent?.model) {
+      modelSelections.set(sessionId, selection)
+      return
+    }
+    modelSelections.delete(sessionId)
+    try {
+      agent.model.select(selection)
+      ctx.logger.info(
+        `${name}: session ${sessionId} model → ${selection.provider}/${selection.model}`,
+      )
+    } catch (error) {
+      warn(`model ${sessionId}`, error)
+    }
+  }
+
   const applyPending = (sessionId) => {
     const cwd = assignments.get(sessionId)
     if (cwd !== undefined) applyAssignment(sessionId, cwd)
     const enabled = teamModes.get(sessionId)
     if (enabled !== undefined) applyTeamMode(sessionId, enabled)
+    const selection = modelSelections.get(sessionId)
+    if (selection !== undefined) applyModelSelection(sessionId, selection)
   }
 
   // A created Session exists before its Agent is published; both edges flush,
@@ -319,6 +347,18 @@ export function apply(ctx) {
       cancelSession(sessionId)
     } else if (frame.type === 'team' && typeof frame.enabled === 'boolean') {
       applyTeamMode(sessionId, frame.enabled)
+    } else if (
+      frame.type === 'select-model' &&
+      typeof frame.provider === 'string' &&
+      frame.provider &&
+      typeof frame.model === 'string' &&
+      frame.model
+    ) {
+      const selection = { provider: frame.provider, model: frame.model }
+      if (typeof frame.reasoningEffort === 'string' && frame.reasoningEffort) {
+        selection.reasoningEffort = frame.reasoningEffort
+      }
+      applyModelSelection(sessionId, selection)
     }
   }
 

@@ -6,14 +6,16 @@
 //! v8 removes the external-agent queue/chat tables. The cache is disposable and
 //! the built-in agent keeps its sessions in the dsh store, so those tables are
 //! dropped instead of migrated. v9 adds `dsh_tasks`, the task workflow rows
-//! (metadata only; the transcript still lives in the dsh store).
+//! (metadata only; the transcript still lives in the dsh store). v10 adds
+//! `dsh_session_meters`, the last context meter per session — dsh keeps it in
+//! memory only, so without it a restart loses the prompt composition.
 
 use rusqlite::Connection;
 
 /// Schema version. Bumped only when the stored shape changes; fresh and
 /// pre-release databases are rebuilt from scratch, while shipped shapes are
 /// upgraded in place.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -51,6 +53,7 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
                 DROP TABLE IF EXISTS chat_messages;
                 DROP TABLE IF EXISTS chat_sessions;
                 DROP TABLE IF EXISTS dsh_tasks;
+                DROP TABLE IF EXISTS dsh_session_meters;
                 "#,
             )
             .map_err(|error| error.to_string())?;
@@ -167,6 +170,14 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS dsh_tasks_updated ON dsh_tasks(updated_at DESC);
         CREATE INDEX IF NOT EXISTS dsh_tasks_workflow ON dsh_tasks(workflow);
+
+        -- Last context meter per session: prompt-side occupancy and its split.
+        -- One row per session, replaced on every request, so it stays tiny.
+        CREATE TABLE IF NOT EXISTS dsh_session_meters (
+            session_id TEXT PRIMARY KEY,
+            updated_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|error| error.to_string())

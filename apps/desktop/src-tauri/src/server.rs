@@ -3,11 +3,14 @@
 //! The server binds an ephemeral port on `127.0.0.1` and publishes it (plus a
 //! bearer token) through the runtime file. Routes:
 //! - `/healthz`, `/mcp/call`, `/media`, `/file` — shipped.
-//! - `/dev/*` — debug builds only (`dev` module).
+//! - `/dev/*` — debug builds only (`dev` module for the hidden session webview,
+//!   `dev_ui` for the app's own UI window).
 
 mod auth;
 #[cfg(debug_assertions)]
 mod dev;
+#[cfg(debug_assertions)]
+mod dev_ui;
 mod proxy;
 
 use axum::{
@@ -85,6 +88,13 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/dsh", post(dev::dev_dsh))
         .route("/dev/companion", get(dev::dev_companion))
         .route("/dev/companion/pairing", post(dev::dev_companion_pairing))
+        // Debug-only bridge into the app's own UI window: evaluate JS, read the
+        // console and capture PNGs without driving the OS.
+        .route("/dev/ui/eval", post(dev_ui::dev_ui_eval))
+        .route("/dev/ui/call", post(dev_ui::dev_ui_call))
+        .route("/dev/ui/console", get(dev_ui::dev_ui_console))
+        .route("/dev/ui/snapshot", post(dev_ui::dev_ui_snapshot))
+        .route("/dev/ui/snapshot.png", get(dev_ui::dev_ui_snapshot_png))
         // Fake model provider for the built-in agent; debug builds only.
         .route(
             "/test-agent/v1/chat/completions",

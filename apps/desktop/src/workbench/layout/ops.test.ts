@@ -823,12 +823,25 @@ test("persistence round-trips a normalized layout", () => {
     version: 1 as const,
     layout: defaultLayout(),
     sidebarWidth: 208,
+    sidebarCollapsed: true,
   };
   savePrefs(prefs);
   const loaded = loadPrefs();
   assert.ok(loaded);
   assert.deepEqual(loaded.layout, prefs.layout);
   assert.equal(loaded.sidebarWidth, 208);
+  assert.equal(loaded.sidebarCollapsed, true);
+});
+
+test("loadPrefs defaults the collapse flag on envelopes that predate it", () => {
+  writePref(LAYOUT_PREF, {
+    version: 1,
+    layout: defaultLayout(),
+    sidebarWidth: 200,
+  });
+  const loaded = loadPrefs();
+  assert.ok(loaded);
+  assert.equal(loaded.sidebarCollapsed, false);
 });
 
 test("loadPrefs keeps valid panels and drops unknown ones", () => {

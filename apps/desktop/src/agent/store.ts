@@ -33,6 +33,7 @@ import {
   type DshTasksEvent,
   type DshTeam,
   type DshTeamEvent,
+  type ModelSelection,
 } from "../lib/dsh";
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
@@ -98,6 +99,8 @@ export type AgentState = {
   live: Record<string, LiveRun | undefined>;
   /** Prompts accepted by the runtime but not yet echoed as a user entry. */
   pendingPrompts: Record<string, string[] | undefined>;
+  /** Model picked before a session exists; applied to the next allocation. */
+  draftSelection: ModelSelection | null;
   approvals: PendingApproval[];
   questions: PendingQuestion[];
   /** Session rows (usage, counters) keyed by id; the status line reads them. */
@@ -141,6 +144,7 @@ const initialState: AgentState = {
   entries: {},
   live: {},
   pendingPrompts: {},
+  draftSelection: null,
   approvals: [],
   questions: [],
   sessions: {},
@@ -250,6 +254,18 @@ function applySessions(sessions: DshSessionRow[]): void {
     ...state,
     sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
   }));
+}
+
+/** Optimistic selection echo; the `model/selection` event confirms it. */
+function applySelection(sessionId: string, selection: ModelSelection | undefined): void {
+  update((state) => {
+    const row = state.sessions[sessionId];
+    if (!row) return state;
+    return {
+      ...state,
+      sessions: { ...state.sessions, [sessionId]: { ...row, selection } },
+    };
+  });
 }
 
 function adoptTasks(tasks: DshTask[]): void {
@@ -629,6 +645,23 @@ async function allocateSession(): Promise<string> {
   return sessionId;
 }
 
+/**
+ * Applies a model picked before the session existed. The picker updates its
+ * own draft when there is no selection, so this is the only place that has to
+ * hand it to a freshly allocated session.
+ */
+async function applyDraftSelection(sessionId: string): Promise<void> {
+  const selection = agentStore.get().draftSelection;
+  if (!selection) return;
+  update((state) => ({ ...state, draftSelection: null }));
+  applySelection(sessionId, selection);
+  try {
+    await dshApi.selectModel(sessionId, selection);
+  } catch (error) {
+    setError(error);
+  }
+}
+
 export const agentActions = {
   /** Re-reads status, tasks and settings; called when the page mounts. */
   bootstrap: async (): Promise<void> => {
@@ -680,8 +713,29 @@ export const agentActions = {
 
   newSession: async (): Promise<void> => {
     try {
-      await allocateSession();
+      const sessionId = await allocateSession();
+      await applyDraftSelection(sessionId);
     } catch (error) {
+      setError(error);
+    }
+  },
+
+  /** Switches one session's model. With no session yet the pick is kept for
+   *  the next allocation instead. */
+  selectModel: async (
+    sessionId: string | null,
+    selection: ModelSelection,
+  ): Promise<void> => {
+    if (!sessionId) {
+      update((state) => ({ ...state, draftSelection: selection }));
+      return;
+    }
+    const before = agentStore.get().sessions[sessionId]?.selection;
+    applySelection(sessionId, selection);
+    try {
+      await dshApi.selectModel(sessionId, selection);
+    } catch (error) {
+      applySelection(sessionId, before);
       setError(error);
     }
   },
@@ -884,7 +938,10 @@ export const agentActions = {
     const existing = agentStore.get().selectedId;
     let sessionId: string | null = existing;
     try {
-      if (!sessionId) sessionId = await allocateSession();
+      if (!sessionId) {
+        sessionId = await allocateSession();
+        await applyDraftSelection(sessionId);
+      }
       const targetId = sessionId;
       update((state) => ({
         ...state,

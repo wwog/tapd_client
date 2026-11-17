@@ -129,10 +129,16 @@ type PanelDefinition = {
 `uiPrefs["workbench.layout.v1"]`：
 
 ```ts
-type LayoutPrefs = { version: 1; layout: LayoutState; sidebarWidth: number };
+type LayoutPrefs = {
+  version: 1;
+  layout: LayoutState;
+  sidebarWidth: number;
+  sidebarCollapsed: boolean;
+};
 ```
 
-- 启动先读该键；缺失/损坏 → `defaultLayout()`。
+- 启动先读该键；缺失/损坏 → `defaultLayout()`。旧信封没有 `sidebarCollapsed` 时按未收起处理。
+- `sidebarCollapsed` 只记用户主动收起；窗口太窄的自动收起仍是派生态，不落盘。
 - 旧 `terminal.panel.v1`（`{ open, height }`）迁移：`open` 为真时生成一个终端面板放进底组。
 - 归一化：未知面板丢弃、非 role 空组删除、单子 split 提升、比例重新配平、active 指针修复。
 - 资源管理器展开目录存 `uiPrefs["explorer.tree.v1"]`（`{ [workspaceId]: string[] }`）。

@@ -35,7 +35,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { createReadStream } from "node:fs";
@@ -253,6 +253,25 @@ function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
+/**
+ * Fingerprint of `dsh/plugins/**`. The extracted runtime is reused while the
+ * dsh version stays the same, so an edited plugin would otherwise keep running
+ * from a stale copy inside the payload — `--check` fails instead.
+ */
+function pluginsDigest() {
+  if (!existsSync(pluginsDir)) return "none";
+  const hash = createHash("sha256");
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) hash.update(relative(pluginsDir, path)).update("\0").update(readFileSync(path));
+    }
+  };
+  walk(pluginsDir);
+  return hash.digest("hex");
+}
+
 async function pack() {
   const tarPath = join(vendorDir, "payload.tar");
   rmSync(tarPath, { force: true });
@@ -287,6 +306,11 @@ function checkPayload() {
   }
   if (!existsSync(join(outDir, manifest.file))) {
     throw new Error(`payload archive ${manifest.file} is missing; run \`pnpm prepare:dsh\``);
+  }
+  // The archive bakes in `dsh/plugins/*`; a source edit that never reached it
+  // would silently run the old code inside the extracted runtime.
+  if (manifest.pluginsDigest !== pluginsDigest()) {
+    throw new Error("dsh/plugins changed since the payload was built; run `pnpm prepare:dsh`");
   }
   log(`payload ok: ${manifest.version} ${manifest.packedLabel ?? ""}`.trim());
 }
@@ -344,6 +368,7 @@ async function main() {
     sha256: sha256(archive.path),
     files: size.files,
     unpackedBytes: size.bytes,
+    pluginsDigest: pluginsDigest(),
     builtAt: new Date().toISOString(),
   };
   writeFileSync(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

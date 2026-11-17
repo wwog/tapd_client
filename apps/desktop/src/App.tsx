@@ -338,6 +338,8 @@ export default function App() {
     projectListHidden,
     sidebarWidth: layoutApi.sidebarWidth,
     setSidebarWidth: layoutApi.setSidebarWidth,
+    sidebarCollapsed: layoutApi.sidebarCollapsed,
+    setSidebarCollapsed: layoutApi.setSidebarCollapsed,
     contentMinWidth,
     pendingViewportWidth,
   });
