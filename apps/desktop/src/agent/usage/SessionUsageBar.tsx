@@ -29,9 +29,9 @@ export const EMPTY_USAGE: DshSessionUsage = {
 };
 
 /**
- * The quiet line under the composer. Every figure is a button: the counts open
- * the session timings, the token total opens the cost breakdown, and the ring
- * opens what fills the context window.
+ * The quiet instruments on the composer's toolbar. Every figure is a button:
+ * the counts open the session timings, the token total opens the cost
+ * breakdown, and the ring opens what fills the context window.
  */
 export function SessionUsageBar({ usage }: { usage?: DshSessionUsage }) {
   const value = usage ?? EMPTY_USAGE;

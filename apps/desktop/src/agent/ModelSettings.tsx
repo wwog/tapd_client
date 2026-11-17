@@ -1,10 +1,17 @@
 import { useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { Circle, GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ScrollingName } from "../components/ScrollingName";
-import { Badge, Button, Switch, cardClass, inputClass, selectClass } from "../components/ui";
+import {
+  Badge,
+  Button,
+  Switch,
+  cardClass,
+  inputClass,
+  selectClass,
+} from "../components/ui";
 import {
   compactTokens,
   firstUsableModel,
@@ -14,7 +21,9 @@ import {
   type DshModelsConfig,
   type DshProvider,
 } from "../lib/agentSettings";
+import { dshModelApi, type DshDiscoveredModel } from "../lib/dsh";
 import { t } from "../lib/i18n";
+import { useReorder } from "../hooks/useReorder";
 import { ModelEditorDialog } from "./ModelEditorDialog";
 
 const PROTOCOLS: DshModelProtocol[] = [
@@ -58,6 +67,20 @@ function providerState(provider: DshProvider): "ready" | "incomplete" | "off" {
   return ready ? "ready" : "incomplete";
 }
 
+/** Catalog entry for a discovered model; existing rows are never overwritten. */
+function discoveredEntry(model: DshDiscoveredModel): DshModelEntry {
+  return {
+    id: model.id,
+    contextWindow: model.contextWindow ?? 128_000,
+    maxTokens: model.maxTokens ?? null,
+    input: model.inputModalities?.includes("image") ? ["text", "image"] : ["text"],
+    // Unknown levels would be rejected upstream; the ladder stays undeclared
+    // until the user maps one, which means "off" only in the picker.
+    reasoning: [],
+    enabled: true,
+  };
+}
+
 type Props = {
   value: DshModelsConfig;
   onChange: (next: DshModelsConfig) => void;
@@ -73,13 +96,14 @@ export function ModelSettings({ value, onChange }: Props) {
     null,
   );
   const [removing, setRemoving] = useState<string | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
-  const [over, setOver] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  /** Outcome of the last 获取模型 on the selected provider. */
+  const [fetchNote, setFetchNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   const providers = value.providers;
   const selected = providers.find((provider) => provider.id === selectedId) ?? providers[0] ?? null;
 
-  /** Every edit keeps the backend's "first provider is the default" rule. */
+  /** Every edit keeps the backend's "first provider/model is the default" rule. */
   const commit = (next: DshModelsConfig) => onChange(withDefaultSelection(next));
 
   const patchProvider = (id: string, patch: Partial<DshProvider>) =>
@@ -101,7 +125,7 @@ export function ModelSettings({ value, onChange }: Props) {
       models: [],
     };
     commit({ ...value, providers: [...providers, provider] });
-    setSelectedId(provider.id);
+    selectProvider(provider.id);
   };
 
   const removeProvider = (id: string) => {
@@ -114,6 +138,7 @@ export function ModelSettings({ value, onChange }: Props) {
             modelId: value.activeModelId,
           };
     commit({
+      ...value,
       providers: remaining,
       activeProviderId: pointer.providerId,
       activeModelId: pointer.modelId,
@@ -143,43 +168,31 @@ export function ModelSettings({ value, onChange }: Props) {
 
     let activeProviderId = value.activeProviderId;
     let activeModelId = value.activeModelId;
-    if (!activeModelId) {
-      // Nothing is selected yet: the first model added becomes the default.
-      activeProviderId = providerId;
-      activeModelId = model.id;
-    } else if (
+    // The default follows the order, so a rename in place must not leave the
+    // pointer on an id that no longer exists.
+    if (
       previous &&
       activeProviderId === providerId &&
       activeModelId === previous.id &&
       model.id !== previous.id
     ) {
-      // The default model was renamed in place.
       activeModelId = model.id;
     }
-    commit({ providers: nextProviders, activeProviderId, activeModelId });
+    commit({ ...value, providers: nextProviders, activeProviderId, activeModelId });
   };
 
   const removeModel = (providerId: string, index: number) => {
     const provider = providers.find((item) => item.id === providerId);
-    const removed = provider?.models[index];
-    if (!removed) return;
+    if (!provider?.models[index]) return;
     const nextProviders = providers.map((item) =>
       item.id === providerId
         ? { ...item, models: item.models.filter((_, position) => position !== index) }
         : item,
     );
-    const dropActive = value.activeProviderId === providerId && value.activeModelId === removed.id;
-    const pointer = dropActive
-      ? firstUsableModel(nextProviders)
-      : { providerId: value.activeProviderId, modelId: value.activeModelId };
-    commit({
-      providers: nextProviders,
-      activeProviderId: pointer.providerId,
-      activeModelId: pointer.modelId,
-    });
+    commit({ ...value, providers: nextProviders });
   };
 
-  /** Drag reorder; `commit` then moves the default to the new first provider. */
+  /** Drag reorder; `commit` then moves the default to the new first entry. */
   const moveProvider = (fromId: string, toId: string) => {
     if (fromId === toId) return;
     const from = providers.findIndex((provider) => provider.id === fromId);
@@ -191,17 +204,64 @@ export function ModelSettings({ value, onChange }: Props) {
     commit({ ...value, providers: next });
   };
 
-  /** Choosing a default promotes its provider: the first one is the default. */
-  const setDefault = (providerId: string, modelId: string) => {
+  /** Same rule one level down: the first enabled model is the provider's default. */
+  const moveModel = (providerId: string, fromId: string, toId: string) => {
     const provider = providers.find((item) => item.id === providerId);
-    if (!provider) return;
-    const next = [provider, ...providers.filter((item) => item.id !== providerId)];
-    commit({
-      ...value,
-      providers: next,
-      activeProviderId: providerId,
-      activeModelId: modelId,
-    });
+    if (!provider || fromId === toId) return;
+    const from = provider.models.findIndex((model) => model.id === fromId);
+    const to = provider.models.findIndex((model) => model.id === toId);
+    if (from < 0 || to < 0) return;
+    const models = provider.models.slice();
+    const [moved] = models.splice(from, 1);
+    models.splice(to, 0, moved);
+    patchProvider(providerId, { models });
+  };
+
+  const providerDrag = useReorder("providers", moveProvider);
+  const modelDrag = useReorder("models", (from, to) => {
+    if (selected) moveModel(selected.id, from, to);
+  });
+
+  const selectProvider = (id: string) => {
+    setSelectedId(id);
+    setFetchNote(null);
+  };
+
+  /**
+   * Reads the endpoint's advertised models and appends the ones the catalog
+   * does not have yet. Existing rows keep their hand-tuned settings.
+   */
+  const fetchModels = async () => {
+    if (!selected || fetching) return;
+    const provider = selected;
+    setFetching(true);
+    setFetchNote(null);
+    try {
+      const { models: found } = await dshModelApi.discover({
+        provider: provider.id,
+        baseUrl: provider.baseUrl,
+        api: provider.protocol,
+        ...(provider.apiKey.trim() ? { apiKey: provider.apiKey.trim() } : {}),
+      });
+      const existing = new Set(provider.models.map((model) => model.id));
+      const added = found
+        .filter((model) => model.id && !existing.has(model.id))
+        .map(discoveredEntry);
+      if (added.length > 0) {
+        patchProvider(provider.id, { models: [...provider.models, ...added] });
+      }
+      setFetchNote({
+        ok: true,
+        text:
+          added.length > 0
+            ? t("agent.model.fetchAdded", { count: added.length })
+            : t("agent.model.fetchNone"),
+      });
+    } catch (error) {
+      setFetchNote({ ok: false, text: String(error) });
+    } finally {
+      setFetching(false);
+    }
   };
 
   const editingProvider = editor
@@ -211,6 +271,7 @@ export function ModelSettings({ value, onChange }: Props) {
     editor && editingProvider && editor.index !== null
       ? editingProvider.models[editor.index] ?? null
       : null;
+  const firstEnabledModel = selected?.models.find((model) => model.enabled)?.id ?? null;
 
   return (
     <section className={cardClass}>
@@ -243,46 +304,28 @@ export function ModelSettings({ value, onChange }: Props) {
             providers.map((provider) => {
               const active = selected?.id === provider.id;
               return (
-                <button
+                <div
                   key={provider.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   aria-current={active}
-                  data-provider-id={provider.id}
-                  draggable
-                  onClick={() => setSelectedId(provider.id)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", provider.id);
-                    setDragging(provider.id);
-                  }}
-                  onDragEnd={() => {
-                    setDragging(null);
-                    setOver(null);
-                  }}
-                  onDragOver={(event) => {
-                    // React state can lag the first dragover; the payload type
-                    // keeps the drop target active in that window.
-                    if (!dragging && !event.dataTransfer.types.includes("text/plain")) return;
-                    if (dragging === provider.id) return;
+                  data-reorder-list="providers"
+                  data-reorder-id={provider.id}
+                  onClick={() => selectProvider(provider.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    setOver(provider.id);
-                  }}
-                  onDragLeave={() => setOver((current) => (current === provider.id ? null : current))}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const from = dragging || event.dataTransfer.getData("text/plain");
-                    setDragging(null);
-                    setOver(null);
-                    if (from) moveProvider(from, provider.id);
+                    selectProvider(provider.id);
                   }}
                   className={clsx(
-                    "group flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left transition active:cursor-grabbing",
+                    "group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition",
                     active
                       ? "bg-sky-50 text-sky-700"
                       : "text-slate-600 hover:bg-overlay-soft",
-                    dragging === provider.id && "opacity-40",
-                    over === provider.id && "bg-sky-50",
+                    providerDrag.dragId === provider.id && "opacity-40",
+                    providerDrag.overId === provider.id &&
+                      providerDrag.dragId !== provider.id &&
+                      "bg-sky-50",
                   )}
                 >
                   <span
@@ -299,11 +342,15 @@ export function ModelSettings({ value, onChange }: Props) {
                     text={provider.name || provider.id}
                     className="flex-1 text-ui-caption"
                   />
-                  <GripVertical
-                    size={11}
-                    className="shrink-0 text-slate-300 opacity-0 transition group-hover:opacity-100"
-                  />
-                </button>
+                  <span
+                    role="presentation"
+                    title={t("agent.model.reorderHint")}
+                    onPointerDown={providerDrag.startDrag(provider.id)}
+                    className="shrink-0 cursor-grab touch-none text-slate-300 opacity-40 transition group-hover:opacity-100 active:cursor-grabbing"
+                  >
+                    <GripVertical size={11} />
+                  </span>
+                </div>
               );
             })
           )}
@@ -395,16 +442,43 @@ export function ModelSettings({ value, onChange }: Props) {
 
               <div className="mt-4 flex items-center gap-2">
                 <span className="text-ui-sm text-slate-600">{t("agent.model.models")}</span>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="ml-auto"
-                  icon={<Plus size={13} />}
-                  onClick={() => setEditor({ providerId: selected.id, index: null })}
-                >
-                  {t("agent.model.addModel")}
-                </Button>
+                <span className="ml-auto flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<RefreshCw size={13} />}
+                    loading={fetching}
+                    title={
+                      selected.baseUrl.trim()
+                        ? t("agent.model.fetchHint")
+                        : t("agent.config.baseUrlHint")
+                    }
+                    onClick={() => void fetchModels()}
+                  >
+                    {fetching ? t("agent.model.fetching") : t("agent.model.fetchModels")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<Plus size={13} />}
+                    onClick={() => setEditor({ providerId: selected.id, index: null })}
+                  >
+                    {t("agent.model.addModel")}
+                  </Button>
+                </span>
               </div>
+
+              {fetchNote ? (
+                <p
+                  className={clsx(
+                    "mt-2 break-all text-ui-xs",
+                    fetchNote.ok ? "text-slate-500" : "text-rose-600",
+                  )}
+                  title={fetchNote.text}
+                >
+                  {fetchNote.text}
+                </p>
+              ) : null}
 
               {selected.models.length === 0 ? (
                 <div
@@ -416,13 +490,30 @@ export function ModelSettings({ value, onChange }: Props) {
               ) : (
                 <ul className="mt-1 divide-y divide-slate-100">
                   {selected.models.map((model, index) => {
-                    // The badge states what the runtime will use, so it follows
-                    // the saved pointer rather than guessing a first row.
-                    const isDefault =
-                      value.activeProviderId === selected.id &&
-                      value.activeModelId === model.id;
+                    // The default is positional, so the badge follows the first
+                    // enabled row rather than an independently stored pointer.
+                    const isDefault = model.id === firstEnabledModel;
                     return (
-                      <li key={model.id} className="flex items-center gap-2 py-1.5">
+                      <li
+                        key={model.id}
+                        data-reorder-list="models"
+                        data-reorder-id={model.id}
+                        className={clsx(
+                          "flex items-center gap-2 py-1.5 transition",
+                          modelDrag.dragId === model.id && "opacity-40",
+                          modelDrag.overId === model.id &&
+                            modelDrag.dragId !== model.id &&
+                            "bg-sky-50",
+                        )}
+                      >
+                        <span
+                          role="presentation"
+                          title={t("agent.model.reorderHint")}
+                          onPointerDown={modelDrag.startDrag(model.id)}
+                          className="shrink-0 cursor-grab touch-none text-slate-300 opacity-40 transition hover:opacity-100 active:cursor-grabbing"
+                        >
+                          <GripVertical size={11} />
+                        </span>
                         <ScrollingName
                           text={model.id}
                           className="flex-1 font-mono text-ui-caption text-slate-700"
@@ -432,7 +523,7 @@ export function ModelSettings({ value, onChange }: Props) {
                           {model.input.includes("image") ? (
                             <Badge tone="cyan">{t("agent.model.inputImage")}</Badge>
                           ) : null}
-                          {model.reasoning.length > 0 ? (
+                          {model.reasoning.some((effort) => effort.level !== "off") ? (
                             <Badge tone="blue">{t("agent.model.reasoning")}</Badge>
                           ) : null}
                         </div>
@@ -440,16 +531,7 @@ export function ModelSettings({ value, onChange }: Props) {
                           <Badge tone="blue" className="shrink-0">
                             {t("agent.model.default")}
                           </Badge>
-                        ) : (
-                          <button
-                            type="button"
-                            title={t("agent.model.setDefault")}
-                            onClick={() => setDefault(selected.id, model.id)}
-                            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-300 transition hover:bg-overlay hover:text-sky-600"
-                          >
-                            <Circle size={11} />
-                          </button>
-                        )}
+                        ) : null}
                         <button
                           type="button"
                           title={t("agent.model.edit")}

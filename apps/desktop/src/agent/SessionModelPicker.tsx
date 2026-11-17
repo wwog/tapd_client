@@ -17,6 +17,8 @@ import { ScrollingName } from "../components/ScrollingName";
 import { useDismiss } from "../hooks/useDismiss";
 import {
   compactTokens,
+  effortStops,
+  rememberedEffort,
   resolveActiveModel,
   type DshModelEntry,
   type DshModelsConfig,
@@ -85,12 +87,14 @@ export function SessionModelPicker() {
     (!state.selectedId ? state.draftSelection : null) ??
     configured;
   const route = routeOf(models, chosen);
-  // An effort left over from another model is not a choice this model offers.
-  const effort =
-    route && chosen?.reasoningEffort &&
-    route.model.reasoning.some((item) => item.level === chosen.reasoningEffort)
+  // The session's own level wins; otherwise the level this model was last used
+  // with. `off` is the floor, so a new model never silently thinks.
+  const effort = route
+    ? chosen?.reasoningEffort &&
+      effortStops(route.model).includes(chosen.reasoningEffort)
       ? chosen.reasoningEffort
-      : undefined;
+      : rememberedEffort(models, route.provider.id, route.model.id)
+    : undefined;
 
   const groups = (models?.providers ?? [])
     .filter((provider) => provider.enabled && provider.baseUrl.trim())
@@ -100,10 +104,8 @@ export function SessionModelPicker() {
     }))
     .filter((group) => group.models.length > 0);
 
-  /** `null` means "the adapter default": the composer sends no effort at all. */
-  const effortStops: Array<string | undefined> = route
-    ? [undefined, ...route.model.reasoning.map((item) => item.level)]
-    : [];
+  /** `off` first, then every level the model declares. */
+  const stops: string[] = route ? effortStops(route.model) : [];
 
   const toggle = () => {
     if (open) {
@@ -125,26 +127,22 @@ export function SessionModelPicker() {
     setOpen(true);
   };
 
-  /** Keeps the current effort only when the target model declares it. */
+  /** A new route starts at the level that model last used. */
   const pick = (provider: DshProvider, model: DshModelEntry) => {
-    const keep =
-      effort && model.reasoning.some((item) => item.level === effort)
-        ? effort
-        : undefined;
     void agentActions.selectModel(state.selectedId, {
       provider: provider.id,
       model: model.id,
-      ...(keep ? { reasoningEffort: keep } : {}),
+      reasoningEffort: rememberedEffort(models, provider.id, model.id),
     });
     close();
   };
 
-  const pickEffort = (level: string | undefined) => {
+  const pickEffort = (level: string) => {
     if (!route) return;
     void agentActions.selectModel(state.selectedId, {
       provider: route.provider.id,
       model: route.model.id,
-      ...(level ? { reasoningEffort: level } : {}),
+      reasoningEffort: level,
     });
   };
 
@@ -161,8 +159,8 @@ export function SessionModelPicker() {
 
   const providerLabel = route?.provider.name || route?.provider.id || chosen?.provider || "";
   const modelLabel = route?.model.id ?? chosen?.model ?? t("agent.model.pick");
-  const effortLabel = effort ?? t("agent.model.reasoningAuto");
-  const showsEffort = effortStops.length > 1;
+  const effortLabel = effort ?? t("agent.model.reasoningOff");
+  const showsEffort = stops.length > 1;
 
   const currentGroup = groups.find((group) => group.provider.id === providerId);
   const defaultDifferent =
@@ -284,11 +282,7 @@ export function SessionModelPicker() {
                     </div>
 
                     {showsEffort ? (
-                      <ReasoningSlider
-                        stops={effortStops}
-                        value={effort}
-                        onChange={pickEffort}
-                      />
+                      <ReasoningSlider stops={stops} value={effort} onChange={pickEffort} />
                     ) : null}
 
                     <div className="shrink-0 border-t border-slate-100 p-1">
@@ -386,17 +380,17 @@ export function SessionModelPicker() {
 }
 
 /**
- * Reasoning effort as a slider: the leftmost stop is "auto" (no effort sent at
- * all), then every level the model declares, in escalation order.
+ * Reasoning effort as a slider: the leftmost stop turns reasoning off, then
+ * every level the model declares, in escalation order.
  */
 function ReasoningSlider(props: {
-  stops: Array<string | undefined>;
+  stops: string[];
   value: string | undefined;
-  onChange: (level: string | undefined) => void;
+  onChange: (level: string) => void;
 }) {
   const { stops, value, onChange } = props;
-  const index = Math.max(0, stops.indexOf(value));
-  const label = value ?? t("agent.model.reasoningAuto");
+  const index = Math.max(0, stops.indexOf(value ?? "off"));
+  const label = value ?? t("agent.model.reasoningOff");
 
   return (
     <div className="shrink-0 border-t border-slate-100 px-3 py-2">
@@ -418,13 +412,13 @@ function ReasoningSlider(props: {
       <div className="mt-1 flex justify-between gap-1 text-ui-2xs">
         {stops.map((stop, position) => (
           <span
-            key={stop ?? "auto"}
+            key={stop}
             className={clsx(
               "min-w-0 truncate",
               position === index ? "text-slate-600" : "text-slate-400",
             )}
           >
-            {stop ?? t("agent.model.reasoningAuto")}
+            {stop}
           </span>
         ))}
       </div>

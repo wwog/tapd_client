@@ -154,10 +154,7 @@ export function SessionModePicker() {
                 }}
                 className="fixed z-[120] flex flex-col overflow-hidden rounded-xl border border-border bg-surface"
               >
-                <div className="flex shrink-0 items-baseline justify-between gap-3 border-b border-slate-100 px-3 py-2">
-                  <span className="text-ui-sm text-slate-700">{t("agent.mode.title")}</span>
-                  <span className="text-ui-xs text-slate-400">{t("agent.mode.hint")}</span>
-                </div>
+
 
                 <div role="listbox" className="min-h-0 flex-1 overflow-y-auto p-1">
                   {OPTIONS.map((option) => {

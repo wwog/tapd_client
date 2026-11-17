@@ -25,12 +25,11 @@
   --color-primary-foreground: #ffffff;
 
   /* Floating island capsule. Neutral chip (like a macOS widget button): a flat
-     tinted fill with a hairline edge, never an inner shadow/highlight. Nearly
-     opaque on purpose — the window behind it is transparent, so a lighter fill
-     let whatever app sat beneath decide how solid the capsule looked. Its own
-     palette instead of the inverted slate ramp. */
-  --color-island: rgb(232 232 236 / 0.94);
-  --color-island-hover: rgb(240 240 244 / 0.97);
+     tinted fill with a hairline edge, never an inner shadow/highlight. One
+     opacity, no hover state: the window behind it is transparent, so a hover
+     tint read as "sometimes solid, sometimes see-through". Its own palette
+     instead of the inverted slate ramp. */
+  --color-island: rgb(226 226 230 / 0.72);
   --color-island-line: rgb(255 255 255 / 0.55);
   --color-island-ink: #404046;
   --color-island-muted: #6f6f77;
@@ -729,8 +728,7 @@ select:focus,
   --color-primary-hover: #1e293b;
   --color-primary-foreground: #ffffff;
 
-  --color-island: rgb(232 232 236 / 0.94);
-  --color-island-hover: rgb(240 240 244 / 0.97);
+  --color-island: rgb(226 226 230 / 0.72);
   --color-island-line: rgb(255 255 255 / 0.55);
   --color-island-ink: #404046;
   --color-island-muted: #6f6f77;
@@ -837,8 +835,7 @@ select:focus,
   --color-primary-foreground: #0f172a;
 
   /* Same neutral glass, inverted: graphite instead of navy, soft gray ink. */
-  --color-island: rgb(54 54 59 / 0.94);
-  --color-island-hover: rgb(66 66 72 / 0.97);
+  --color-island: rgb(56 56 61 / 0.72);
   --color-island-line: rgb(255 255 255 / 0.14);
   --color-island-ink: #e6e6eb;
   --color-island-muted: #a6a6af;

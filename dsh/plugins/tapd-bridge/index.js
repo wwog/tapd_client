@@ -20,6 +20,12 @@
  *   plan → enter or leave the engine's plan mode
  *   team → enable / disable Agent Teams for one root session
  *   select-model → switch one session's model route (durable in its log)
+ *   models → adopt a model catalog, Team default and credentials live
+ *   discover-models → ask the engine which models a draft endpoint advertises
+ *
+ * `models` and `discover-models` are requests: the same socket carries the
+ * reply (`models-applied` / `models-discovered`) tagged with the caller's
+ * `requestId`, so the app can tell a settled reconcile from a slow one.
  *
  * Assignments that arrive before the session exists are remembered and applied
  * when the session is created, so the task flow can queue a worktree without
@@ -85,6 +91,8 @@ export function apply(ctx) {
   const warn = (scope, error) => {
     ctx.logger.warn(`${name}: ${scope}: ${String(error)}`)
   }
+
+  const messageOf = (error) => (error instanceof Error ? error.message : String(error))
 
   // Listeners are the process's bus: they must never throw into dsh.
   ctx.on('agent/assistant-stream', ({ agent, frame } = {}) => {
@@ -348,6 +356,88 @@ export function apply(ctx) {
     }
   }
 
+  /** Replies to one Rust request; `error` is the engine's own diagnostic. */
+  const reply = (type, requestId, body = {}) => {
+    send({ type, token, requestId, ...body })
+  }
+
+  /**
+   * Adopts a new model catalog through the engine's own config editor. The
+   * editor validates the rows, rewrites the profile patch and reconciles the
+   * Loader, so routes register live; the reply is sent only after that settled.
+   * An absent `providers` keeps the running catalog and only refreshes the
+   * managed credentials — what a start uses to overwrite a key that an earlier
+   * run stored under the same reference, because a stored credential outranks
+   * the process environment.
+   */
+  const applyModels = async (frame) => {
+    const requestId = frame.requestId
+    try {
+      const credentials = ctx.get('credentials')
+      const keys = frame.keys && typeof frame.keys === 'object' ? frame.keys : {}
+      for (const [ref, value] of Object.entries(keys)) {
+        if (!ref || typeof value !== 'string' || value.length === 0) continue
+        if (credentials) await credentials.set(ref, value)
+      }
+      for (const ref of Array.isArray(frame.dropKeys) ? frame.dropKeys : []) {
+        if (typeof ref === 'string' && ref) await credentials?.unset(ref)
+      }
+      const wantsCatalog = frame.providers !== undefined
+      const wantsTeam = typeof frame.teamDefaultEnabled === 'boolean'
+      if (wantsCatalog || wantsTeam) {
+        const editor = ctx.get('configEditor')
+        if (!editor) throw new Error('the config editor is not composed')
+        const find = (id) => editor.entries().find((entry) => entry.options.id === id)
+        if (wantsCatalog) {
+          const llm = find('llm-pi-ai')
+          if (!llm) throw new Error('the llm-pi-ai row is not composed')
+          await editor.edit(llm, (current) => ({
+            ...current,
+            providers: frame.providers,
+          }))
+        }
+        if (wantsTeam) {
+          const team = find('agent-team')
+          if (!team) throw new Error('the agent-team row is not composed')
+          await editor.edit(team, (current) => ({
+            ...current,
+            defaultEnabled: frame.teamDefaultEnabled,
+          }))
+        }
+      }
+      reply('models-applied', requestId)
+    } catch (error) {
+      warn('models', error)
+      reply('models-applied', requestId, { error: messageOf(error) })
+    }
+  }
+
+  /**
+   * Answers "which models does this endpoint advertise?". The engine's own
+   * discovery serves catalog routes from its installed catalog and every other
+   * route from the endpoint's listing — the same answer its Models page gets.
+   */
+  const discoverModels = async (frame) => {
+    const requestId = frame.requestId
+    try {
+      const llm = ctx.get('llm')
+      if (!llm?.discoverModels) throw new Error('model discovery is not available')
+      const request = {
+        provider: typeof frame.provider === 'string' ? frame.provider : '',
+        baseURL: typeof frame.baseURL === 'string' ? frame.baseURL : '',
+        ...(typeof frame.api === 'string' && frame.api ? { api: frame.api } : {}),
+        ...(typeof frame.apiKey === 'string' && frame.apiKey ? { apiKey: frame.apiKey } : {}),
+      }
+      const models = await llm.discoverModels('llm-pi-ai', request)
+      reply('models-discovered', requestId, {
+        models: Array.isArray(models) ? models : [],
+      })
+    } catch (error) {
+      warn('discover-models', error)
+      reply('models-discovered', requestId, { error: messageOf(error) })
+    }
+  }
+
   const handleControlLine = (line) => {
     let frame
     try {
@@ -361,6 +451,15 @@ export function apply(ctx) {
     // The runtime-wide default has no session; handle it before the id guard.
     if (frame.type === 'default-mode' && typeof frame.mode === 'string') {
       ctx.get('tapdPolicy')?.setDefault(frame.mode)
+      return
+    }
+    // Catalog requests carry no session either.
+    if (frame.type === 'models' && typeof frame.requestId === 'number') {
+      void applyModels(frame)
+      return
+    }
+    if (frame.type === 'discover-models' && typeof frame.requestId === 'number') {
+      void discoverModels(frame)
       return
     }
     const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''

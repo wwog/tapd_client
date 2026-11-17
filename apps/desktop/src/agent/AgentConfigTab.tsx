@@ -72,8 +72,8 @@ export function AgentConfigTab({ toast }: Props) {
   flushRef.current = flush;
   useEffect(() => () => flushRef.current(), []);
 
-  // The coworker roster is a startup-only setting too: refresh the drift flag
-  // after a committed change, not while the write is still in flight.
+  // Coworker changes and catalog edits both apply to the running runtime; this
+  // re-reads the drift flag after a committed change, not mid-write.
   useEffect(() => {
     if (!selection.busy) void agentActions.refreshStatus();
   }, [selection.busy]);

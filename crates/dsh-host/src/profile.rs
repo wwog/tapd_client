@@ -156,7 +156,14 @@ impl ProfileSpec {
                         if !model.reasoning.is_empty() {
                             out.push_str("            reasoningEfforts:\n");
                             for (level, wire) in &model.reasoning {
-                                let _ = writeln!(out, "              {level}: {}", quote(wire));
+                                // Only `off` may stay valueless: YAML null is the
+                                // documented spelling, while '' is rejected.
+                                if wire.is_empty() {
+                                    let _ = writeln!(out, "              {level}:");
+                                } else {
+                                    let _ =
+                                        writeln!(out, "              {level}: {}", quote(wire));
+                                }
                             }
                         }
                     }

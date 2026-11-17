@@ -223,17 +223,26 @@ pub enum TurnState {
 /// from, so a UI keys rows by `seq` and a repeated snapshot replaces instead of
 /// duplicating. A tool row keeps the `tool/call` seq; its `tool/result` update
 /// arrives as another `dsh://entry` with the same `seq`.
+///
+/// `turn`/`step` are dsh's own 1-based counters (a step is one model request),
+/// so the trajectory view groups rows without re-deriving them. The timing
+/// fields are epoch milliseconds taken from the session events: a reply's step
+/// start, first streamed token and settle time; a tool's call and result time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum DshEntry {
     User {
         seq: u64,
         at: String,
+        turn: u64,
+        step: u64,
         text: String,
     },
     Assistant {
         seq: u64,
         at: String,
+        turn: u64,
+        step: u64,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
@@ -245,10 +254,21 @@ pub enum DshEntry {
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// `step/start` of the request this reply answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
+        /// First streamed chunk; absent when the log carried no stream timing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_token_at_ms: Option<u64>,
+        /// The `assistant/message` event time (the reply settled).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completed_at_ms: Option<u64>,
     },
     Tool {
         seq: u64,
         at: String,
+        turn: u64,
+        step: u64,
         call_id: String,
         name: String,
         /// Raw JSON string exactly as the model produced it; the consumer
@@ -259,10 +279,17 @@ pub enum DshEntry {
         /// shows it verbatim; richer previews are a later concern.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result: Option<String>,
+        /// The `tool/call` event time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
+        /// The `tool/result` event time; absent while the call is running.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at_ms: Option<u64>,
     },
     Turn {
         seq: u64,
         at: String,
+        turn: u64,
         state: TurnState,
         /// `TurnEndReason.kind` (`completed`, `error`, `aborted`, …).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +377,10 @@ struct SessionRecord {
     /// `callId` → index in `entries`, for merging `tool/result` into its call.
     calls: HashMap<String, usize>,
     first_user_seen: bool,
+    /// dsh's current 1-based turn and step. Assistant/tool events carry both;
+    /// `user/message` does not, so it takes the counters as they stand.
+    turn: u64,
+    step: u64,
     /// `step/start` time of the current step, used as the generation start
     /// when a message carries no stream timing.
     last_step_ms: Option<u64>,
@@ -380,6 +411,8 @@ impl Transcript {
                 seen: BTreeSet::new(),
                 calls: HashMap::new(),
                 first_user_seen: false,
+                turn: 0,
+                step: 0,
                 last_step_ms: None,
                 ttft_total_ms: 0,
                 ttft_samples: 0,
@@ -429,11 +462,19 @@ impl Transcript {
             "user/message" => record.push_user(seq, at, event),
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
-            "tool/result" => record.merge_tool_result(seq, event),
+            "tool/result" => record.merge_tool_result(event),
             "turn/start" => {
                 record.meta.status = SessionStatus::Running;
                 record.meta.usage.turns += 1;
-                Some(record.push_turn(seq, at, TurnState::Start, None, None))
+                // dsh states the turn; the counter is only a fallback for a
+                // log whose turn marker lost its payload.
+                record.turn = event
+                    .pointer("/data/turn")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(record.turn + 1);
+                record.step = 0;
+                let turn = record.turn;
+                Some(record.push_turn(seq, at, turn, TurnState::Start, None, None))
             }
             "turn/end" => {
                 let reason = event
@@ -450,10 +491,15 @@ impl Transcript {
                     Some("error") | Some("blocked") => SessionStatus::Failed,
                     _ => SessionStatus::Idle,
                 };
-                Some(record.push_turn(seq, at, TurnState::End, reason, error))
+                let turn = record.turn;
+                Some(record.push_turn(seq, at, turn, TurnState::End, reason, error))
             }
             "step/start" => {
                 record.meta.usage.steps += 1;
+                record.step = event
+                    .pointer("/data/step")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(record.step + 1);
                 record.last_step_ms = event.get("time").and_then(Value::as_u64);
                 None
             }
@@ -619,6 +665,8 @@ impl SessionRecord {
         let entry = DshEntry::User {
             seq,
             at: at.to_string(),
+            turn: self.turn,
+            step: self.step,
             text,
         };
         self.entries.push(entry.clone());
@@ -688,14 +736,35 @@ impl SessionRecord {
         let entry = DshEntry::Assistant {
             seq,
             at: at.to_string(),
+            turn: self.event_turn(event),
+            step: self.event_step(event),
             text,
             reasoning,
             usage,
             provider,
             model,
+            started_at_ms: self.last_step_ms,
+            first_token_at_ms: event.pointer("/data/stream/0/time").and_then(Value::as_u64),
+            completed_at_ms: event.get("time").and_then(Value::as_u64),
         };
         self.entries.push(entry.clone());
         Some(entry)
+    }
+
+    /// dsh stamps `turn`/`step` on assistant and tool events; the tracked
+    /// counters cover a log that lost them.
+    fn event_turn(&self, event: &Value) -> u64 {
+        event
+            .pointer("/data/turn")
+            .and_then(Value::as_u64)
+            .unwrap_or(self.turn)
+    }
+
+    fn event_step(&self, event: &Value) -> u64 {
+        event
+            .pointer("/data/step")
+            .and_then(Value::as_u64)
+            .unwrap_or(self.step)
     }
 
     /// `request/context` states the route and window a request was built for.
@@ -750,11 +819,15 @@ impl SessionRecord {
         let entry = DshEntry::Tool {
             seq,
             at: at.to_string(),
+            turn: self.event_turn(event),
+            step: self.event_step(event),
             call_id,
             name,
             args,
             status: ToolStatus::Running,
             result: None,
+            started_at_ms: event.get("time").and_then(Value::as_u64),
+            ended_at_ms: None,
         };
         if let DshEntry::Tool { call_id, .. } = &entry {
             self.calls.insert(call_id.clone(), self.entries.len());
@@ -766,7 +839,7 @@ impl SessionRecord {
     /// Merges a result into its call row and re-publishes that row with the
     /// call's seq. A result whose call was never seen is dropped loudly; with a
     /// snapshot starting at seq 0 this only happens on a malformed feed.
-    fn merge_tool_result(&mut self, _seq: u64, event: &Value) -> Option<DshEntry> {
+    fn merge_tool_result(&mut self, event: &Value) -> Option<DshEntry> {
         let call_id = event
             .pointer("/data/message/toolCallId")
             .or_else(|| event.pointer("/data/message/source/callId"))
@@ -780,12 +853,17 @@ impl SessionRecord {
             .and_then(|value| value.get("isError"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let ended_at_ms = event.get("time").and_then(Value::as_u64);
         let entry = match self.entries.get_mut(index) {
             Some(DshEntry::Tool {
-                status, result, ..
+                status,
+                result,
+                ended_at_ms: ended,
+                ..
             }) => {
                 *status = if failed { ToolStatus::Error } else { ToolStatus::Ok };
                 *result = Some(text);
+                *ended = ended_at_ms;
                 self.entries[index].clone()
             }
             // The call row was replaced (new revision); keep the log honest.
@@ -798,6 +876,7 @@ impl SessionRecord {
         &mut self,
         seq: u64,
         at: &str,
+        turn: u64,
         state: TurnState,
         reason: Option<String>,
         error: Option<String>,
@@ -805,6 +884,7 @@ impl SessionRecord {
         let entry = DshEntry::Turn {
             seq,
             at: at.to_string(),
+            turn,
             state,
             reason,
             error,
@@ -911,29 +991,40 @@ mod tests {
         let user = serde_json::to_value(DshEntry::User {
             seq: 3,
             at: "2026-11-16T00:00:00.000Z".into(),
+            turn: 1,
+            step: 1,
             text: "hello".into(),
         })
         .unwrap();
         assert_eq!(
             user,
-            json!({ "kind": "user", "seq": 3, "at": "2026-11-16T00:00:00.000Z", "text": "hello" })
+            json!({
+                "kind": "user", "seq": 3, "at": "2026-11-16T00:00:00.000Z",
+                "turn": 1, "step": 1, "text": "hello"
+            })
         );
 
         let tool = serde_json::to_value(DshEntry::Tool {
             seq: 5,
             at: "2026-11-16T00:00:00.000Z".into(),
+            turn: 1,
+            step: 1,
             call_id: "c1".into(),
             name: "bash".into(),
             args: r#"{"cmd":"ls"}"#.into(),
             status: ToolStatus::Running,
             result: None,
+            started_at_ms: Some(1_700_000_000_000),
+            ended_at_ms: None,
         })
         .unwrap();
         assert_eq!(tool["kind"], "tool");
         assert_eq!(tool["callId"], "c1");
         assert_eq!(tool["args"], r#"{"cmd":"ls"}"#);
         assert_eq!(tool["status"], "running");
+        assert_eq!(tool["startedAtMs"], 1_700_000_000_000u64);
         assert!(tool.get("result").is_none());
+        assert!(tool.get("endedAtMs").is_none());
 
         let stream = serde_json::to_value(DshStream {
             session_id: "s1".into(),
@@ -1024,6 +1115,90 @@ mod tests {
             other => panic!("unexpected entry: {other:?}"),
         }
         assert_eq!(transcript.entries("s1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rows_carry_turn_step_and_operation_timing() {
+        let mut transcript = Transcript::default();
+        let mut start = event("turn/start", 0);
+        start["data"] = json!({ "turn": 1 });
+        transcript.ingest("s1", &start, "2026-11-16T00:00:00.000Z");
+        let mut step = event("step/start", 1);
+        step["data"] = json!({ "turn": 1, "step": 1 });
+        step["time"] = json!(1_700_000_000_000u64);
+        transcript.ingest("s1", &step, "2026-11-16T00:00:00.000Z");
+
+        // `user/message` carries no counters; it inherits the current step.
+        let asked = transcript
+            .ingest("s1", &user(2, "hi"), "2026-11-16T00:00:01.000Z")
+            .entry
+            .unwrap();
+        match asked {
+            DshEntry::User { turn, step, .. } => {
+                assert_eq!((turn, step), (1, 1));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+
+        let mut reply = assistant(3, "done", "");
+        reply["data"]["stream"] = json!([{ "type": "chunk", "time": 1_700_000_000_250u64 }]);
+        reply["time"] = json!(1_700_000_000_900u64);
+        let entry = transcript
+            .ingest("s1", &reply, "2026-11-16T00:00:00.900Z")
+            .entry
+            .unwrap();
+        match entry {
+            DshEntry::Assistant {
+                turn,
+                step,
+                started_at_ms,
+                first_token_at_ms,
+                completed_at_ms,
+                ..
+            } => {
+                assert_eq!((turn, step), (1, 1));
+                assert_eq!(started_at_ms, Some(1_700_000_000_000));
+                assert_eq!(first_token_at_ms, Some(1_700_000_000_250));
+                assert_eq!(completed_at_ms, Some(1_700_000_000_900));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
+
+        let mut call = event("tool/call", 4);
+        call["time"] = json!(1_700_000_001_000u64);
+        call["data"] = json!({
+            "turn": 1, "step": 2, "callId": "c1", "name": "bash",
+            "arguments": "{\"cmd\":\"ls\"}"
+        });
+        transcript.ingest("s1", &call, "2026-11-16T00:00:01.000Z");
+        let mut result = event("tool/result", 6);
+        result["time"] = json!(1_700_000_001_026u64);
+        result["data"] = json!({
+            "turn": 1, "step": 2,
+            "message": {
+                "id": "t1", "role": "tool", "toolCallId": "c1", "isError": false,
+                "content": [{ "type": "text", "text": "file.txt" }],
+                "source": { "kind": "tool", "callId": "c1" }
+            }
+        });
+        let entry = transcript
+            .ingest("s1", &result, "2026-11-16T00:00:01.026Z")
+            .entry
+            .unwrap();
+        match entry {
+            DshEntry::Tool {
+                turn,
+                step,
+                started_at_ms,
+                ended_at_ms,
+                ..
+            } => {
+                assert_eq!((turn, step), (1, 2));
+                assert_eq!(started_at_ms, Some(1_700_000_001_000));
+                assert_eq!(ended_at_ms, Some(1_700_000_001_026));
+            }
+            other => panic!("unexpected entry: {other:?}"),
+        }
     }
 
     #[test]

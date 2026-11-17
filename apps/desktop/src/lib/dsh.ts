@@ -102,9 +102,12 @@ export type DshSessionRow = {
   planActive?: boolean;
 };
 
+/** dsh's 1-based turn/step counters; a step is one model request. */
+type DshEntryPosition = { turn: number; step: number };
+
 export type DshEntry =
-  | { kind: "user"; seq: number; at: string; text: string }
-  | {
+  | ({ kind: "user"; seq: number; at: string; text: string } & DshEntryPosition)
+  | ({
       kind: "assistant";
       seq: number;
       at: string;
@@ -113,8 +116,14 @@ export type DshEntry =
       usage?: DshEntryUsage;
       provider?: string;
       model?: string;
-    }
-  | {
+      /** `step/start` of the request this reply answered (epoch ms). */
+      startedAtMs?: number;
+      /** First streamed chunk (epoch ms). */
+      firstTokenAtMs?: number;
+      /** The `assistant/message` settle time (epoch ms). */
+      completedAtMs?: number;
+    } & DshEntryPosition)
+  | ({
       kind: "tool";
       seq: number;
       at: string;
@@ -125,8 +134,20 @@ export type DshEntry =
       /** Raw result. The contract documents a string; the host forwards the
        *  JSON value it received, so the view normalizes either shape. */
       result?: unknown;
-    }
-  | { kind: "turn"; seq: number; at: string; state: "start" | "end"; reason?: string; error?: string };
+      /** `tool/call` time (epoch ms). */
+      startedAtMs?: number;
+      /** `tool/result` time (epoch ms); absent while running. */
+      endedAtMs?: number;
+    } & DshEntryPosition)
+  | {
+      kind: "turn";
+      seq: number;
+      at: string;
+      turn: number;
+      state: "start" | "end";
+      reason?: string;
+      error?: string;
+    };
 
 export type DshStreamDelta =
   | { type: "text"; text: string }
@@ -358,6 +379,7 @@ type DshFeatureCommand =
   | "dsh_session_cancel"
   | "dsh_session_mode_get"
   | "dsh_session_mode_set"
+  | "dsh_models_discover"
   | "dsh_tasks"
   | "dsh_task_enqueue_bug"
   | "dsh_task_enqueue_local"
@@ -420,6 +442,28 @@ export const dshPolicyApi = {
   /** The mode is part of `agent_settings_get`; only writes go through policy. */
   set: (mode: DshPermissionMode) =>
     feature<{ mode: DshPermissionMode }>("dsh_policy_set", { mode }),
+};
+
+/** One model a provider endpoint or the engine's catalog advertises. */
+export type DshDiscoveredModel = {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  inputModalities?: string[];
+};
+
+export const dshModelApi = {
+  /**
+   * Asks the running engine for a draft endpoint's model list. Catalog routes
+   * are answered from the installed catalog, everything else from its listing.
+   */
+  discover: (request: {
+    provider: string;
+    baseUrl: string;
+    api: DshModelProtocol;
+    apiKey?: string;
+  }) => feature<{ models: DshDiscoveredModel[] }>("dsh_models_discover", request),
 };
 
 export const dshTeamApi = {

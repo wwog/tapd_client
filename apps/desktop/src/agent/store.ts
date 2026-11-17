@@ -39,11 +39,15 @@ import {
 } from "../lib/dsh";
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
+import { agentSettingsApi, defaultSelection } from "../lib/agentSettings";
 
 export type AgentTab = "tasks" | "config";
 
 /** Which pane the task header shows; the transcript is the fallback. */
 export type AgentTeamView = "chat" | "board";
+
+/** The session's second view: the transcript or the trajectory ledger. */
+export type AgentTaskView = "chat" | "trajectory";
 
 export type LiveToolCall = {
   callId: string;
@@ -128,6 +132,8 @@ export type AgentState = {
   teamErrors: Record<string, string | null>;
   /** Explicit transcript/board choice; absent means "derive from team mode". */
   teamViews: Record<string, AgentTeamView>;
+  /** Transcript vs trajectory per session; absent means the transcript. */
+  taskViews: Record<string, AgentTaskView>;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -176,6 +182,7 @@ const initialState: AgentState = {
   teamBusy: {},
   teamErrors: {},
   teamViews: {},
+  taskViews: {},
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -465,6 +472,12 @@ function hasTeamUi(state: AgentState, sessionId: string): boolean {
 export function agentTeamView(state: AgentState, sessionId: string | null): AgentTeamView {
   if (!sessionId) return "chat";
   return state.teamViews[sessionId] ?? (state.team[sessionId]?.enabled ? "board" : "chat");
+}
+
+/** The session's pane choice; the transcript unless the user opened the ledger. */
+export function agentTaskView(state: AgentState, sessionId: string | null): AgentTaskView {
+  if (!sessionId) return "chat";
+  return state.taskViews[sessionId] ?? "chat";
 }
 
 function applyTeam(sessionId: string, team: DshTeam): void {
@@ -816,18 +829,74 @@ async function allocateSession(): Promise<string> {
 /**
  * Applies a model picked before the session existed. The picker updates its
  * own draft when there is no selection, so this is the only place that has to
- * hand it to a freshly allocated session.
+ * hand it to a freshly allocated session. With no pick at all the session
+ * starts on the configured default route, including the level that model last
+ * used — the runtime's own boot default knows neither the current catalog nor
+ * the remembered level.
  */
 async function applyDraftSelection(sessionId: string): Promise<void> {
-  const selection = agentStore.get().draftSelection;
+  const state = agentStore.get();
+  const draft = state.draftSelection;
+  const selection = draft ?? defaultSelection(state.config?.dshModels);
   if (!selection) return;
-  update((state) => ({ ...state, draftSelection: null }));
+  if (draft) update((current) => ({ ...current, draftSelection: null }));
   applySelection(sessionId, selection);
   try {
     await dshApi.selectModel(sessionId, selection);
   } catch (error) {
     setError(error);
   }
+}
+
+/** Slider drags fire many picks; the file write waits for the last one. */
+const EFFORT_SAVE_DELAY_MS = 400;
+let effortSaveTimer: number | null = null;
+let effortPending: { provider: string; model: string; level: string } | null = null;
+
+async function flushEffort(): Promise<void> {
+  if (effortSaveTimer !== null) {
+    window.clearTimeout(effortSaveTimer);
+    effortSaveTimer = null;
+  }
+  const pending = effortPending;
+  effortPending = null;
+  if (!pending) return;
+  try {
+    const config = await agentSettingsApi.setEffort(
+      pending.provider,
+      pending.model,
+      pending.level,
+    );
+    update((state) => ({ ...state, config }));
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** Local echo + debounced write of one model's level. */
+function rememberEffort(selection: ModelSelection): void {
+  const level = selection.reasoningEffort?.trim();
+  if (!level) return;
+  effortPending = { provider: selection.provider, model: selection.model, level };
+  update((state) => {
+    if (!state.config) return state;
+    const models = state.config.dshModels;
+    return {
+      ...state,
+      config: {
+        ...state.config,
+        dshModels: {
+          ...models,
+          modelEfforts: {
+            ...(models.modelEfforts ?? {}),
+            [`${selection.provider}/${selection.model}`]: level,
+          },
+        },
+      },
+    };
+  });
+  if (effortSaveTimer !== null) window.clearTimeout(effortSaveTimer);
+  effortSaveTimer = window.setTimeout(() => void flushEffort(), EFFORT_SAVE_DELAY_MS);
 }
 
 export const agentActions = {
@@ -896,6 +965,9 @@ export const agentActions = {
     sessionId: string | null,
     selection: ModelSelection,
   ): Promise<void> => {
+    // Every pick also records the level this model now runs at, so the next
+    // session that starts on it keeps the same effort.
+    rememberEffort(selection);
     if (!sessionId) {
       update((state) => ({ ...state, draftSelection: selection }));
       return;
@@ -1099,6 +1171,14 @@ export const agentActions = {
     }));
   },
 
+  /** Switches the session pane between the transcript and the trajectory. */
+  setTaskView: (sessionId: string, view: AgentTaskView): void => {
+    update((state) => ({
+      ...state,
+      taskViews: { ...state.taskViews, [sessionId]: view },
+    }));
+  },
+
   /** Retries a failed board read; the toggle itself never bypasses this. */
   refreshTeam: (sessionId: string): void => {
     void readTeam(sessionId);
@@ -1224,11 +1304,21 @@ export const agentActions = {
 
   saveConfig: async (draft: AgentConfigDraft): Promise<DshAgentConfig> => {
     // Read right before writing: repositories and the permission mode are
-    // edited elsewhere and must not be overwritten by a stale copy.
+    // edited elsewhere and must not be overwritten by a stale copy. The
+    // remembered levels are written by the composer, not by this draft, so the
+    // freshest map wins over the copy the tab loaded with.
     const latest = await dshSettingsApi.get();
-    const saved = await dshSettingsApi.save({ ...latest, ...draft });
+    const saved = await dshSettingsApi.save({
+      ...latest,
+      ...draft,
+      dshModels: {
+        ...draft.dshModels,
+        modelEfforts: latest.dshModels.modelEfforts ?? {},
+      },
+    });
     update((state) => ({ ...state, config: saved, configError: null }));
-    // Model edits are startup-only; the runtime reports the drift from here.
+    // A catalog edit applies live; the status read either clears the drift flag
+    // or keeps the restart button when the runtime could not adopt it.
     void agentActions.refreshStatus();
     return saved;
   },

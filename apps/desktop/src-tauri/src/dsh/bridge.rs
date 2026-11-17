@@ -24,6 +24,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use dsh_host::transcript::{
@@ -41,6 +42,11 @@ use super::team::{normalize_team, DshTeam};
 use super::{EVENT_ENTRY, EVENT_SESSIONS, EVENT_STREAM};
 use crate::agent_settings::PermissionMode;
 use tapd_i18n::tr;
+
+/// How long a config apply or a discovery may take. Both run inside the
+/// runtime (a profile rewrite plus a Loader reconcile, or one HTTP listing), so
+/// a slow answer is normal; an unanswered one must still free the caller.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What the child needs to reach this listener.
 #[derive(Clone, Debug)]
@@ -84,6 +90,12 @@ pub struct BridgeState {
     /// The runtime-wide default last written. Replayed on every plugin connect
     /// so a config change that missed the socket is not silently lost.
     default_mode: std::sync::Mutex<Option<PermissionMode>>,
+    /// Callers waiting for a reply on the same socket, keyed by request id. The
+    /// plugin answers a catalog apply (`models-applied`) or a discovery
+    /// (`models-discovered`); closing the runtime drops every sender.
+    replies: std::sync::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>,
+    /// Next request id handed out.
+    requests: AtomicU64,
     /// Per-connection identity, see [`Control`].
     connections: AtomicU64,
 }
@@ -128,6 +140,50 @@ impl BridgeState {
         *self.control.lock().expect("dsh bridge control lock") = None;
         *self.token.lock().expect("dsh bridge token lock") = None;
         self.teams.lock().expect("dsh team lock").clear();
+        // Waiting callers learn the runtime is gone instead of hanging.
+        self.replies.lock().expect("dsh bridge reply lock").clear();
+    }
+
+    /// Sends one request and waits for the plugin's matching reply. The reply
+    /// carries `requestId`; a non-empty `error` string is returned as the
+    /// failure so the caller can show the engine's own diagnostic.
+    pub async fn request(
+        &self,
+        frame: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value, String> {
+        let id = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.replies
+            .lock()
+            .expect("dsh bridge reply lock")
+            .insert(id, tx);
+        let mut frame = frame;
+        frame["requestId"] = json!(id);
+        if let Err(error) = self.send_control(frame) {
+            self.replies
+                .lock()
+                .expect("dsh bridge reply lock")
+                .remove(&id);
+            return Err(error);
+        }
+        let reply = tokio::time::timeout(timeout, rx).await;
+        let reply = match reply {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(_)) => return Err(tr("dsh.runtime.exited").to_string()),
+            Err(_) => {
+                self.replies
+                    .lock()
+                    .expect("dsh bridge reply lock")
+                    .remove(&id);
+                let method = "models";
+                return Err(tapd_i18n::tr_args("dsh.call.timeout", &[&method]));
+            }
+        };
+        match reply.get("error").and_then(Value::as_str) {
+            Some(error) if !error.is_empty() => Err(error.to_string()),
+            _ => Ok(reply),
+        }
     }
 
     /// Moves one session to `cwd` (used to point a task at its worktree). The
@@ -155,6 +211,59 @@ impl BridgeState {
             "sessionId": session_id,
             "enabled": enabled,
         }))
+    }
+
+    /// Replaces the running profile's model catalog (and the Team default)
+    /// without a restart. The plugin writes the rows through the engine's own
+    /// config editor and answers once the Loader reconciled them, so a caller
+    /// that returns here can trust the new routes are live.
+    ///
+    /// `providers: None` keeps the running catalog untouched and only refreshes
+    /// the managed credentials — what a start does, because the profile it just
+    /// rendered is current while a credential the engine stored in an earlier
+    /// run would otherwise outrank the key this process was spawned with.
+    pub async fn apply_catalog(
+        &self,
+        providers: Option<Value>,
+        team_default: Option<bool>,
+        keys: Value,
+        drop_keys: Vec<String>,
+    ) -> Result<(), String> {
+        let mut frame = json!({
+            "type": "models",
+            "keys": keys,
+            "dropKeys": drop_keys,
+        });
+        if let Some(providers) = providers {
+            frame["providers"] = providers;
+        }
+        if let Some(team_default) = team_default {
+            frame["teamDefaultEnabled"] = json!(team_default);
+        }
+        self.request(frame, REPLY_TIMEOUT).await.map(|_| ())
+    }
+
+    /// Asks the runtime which models a draft provider endpoint advertises.
+    /// The engine answers from its installed catalog for routes it ships and
+    /// from the endpoint itself otherwise, exactly like its own Models page.
+    pub async fn discover_models(
+        &self,
+        provider: &str,
+        base_url: &str,
+        api: &str,
+        api_key: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut frame = json!({
+            "type": "discover-models",
+            "provider": provider,
+            "baseURL": base_url,
+            "api": api,
+        });
+        if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+            frame["apiKey"] = json!(key);
+        }
+        let reply = self.request(frame, REPLY_TIMEOUT).await?;
+        Ok(reply.get("models").cloned().unwrap_or_else(|| json!([])))
     }
 
     /// Points one session at a model route and queues the frame for the plugin.
@@ -505,8 +614,28 @@ impl BridgeState {
             Some("stats") => self.ingest_stats(app, message),
             Some("team") => self.ingest_team(app, message),
             Some("notice") => super::policy::notice(message),
+            Some("models-applied") | Some("models-discovered") => {
+                self.resolve_reply(message)
+            }
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
             None => tracing::warn!("agent bridge: frame without a type"),
+        }
+    }
+
+    /// Hands one plugin reply to the caller waiting on its `requestId`.
+    fn resolve_reply(&self, message: &Value) {
+        let Some(id) = message.get("requestId").and_then(Value::as_u64) else {
+            tracing::warn!("agent bridge: reply frame without a request id");
+            return;
+        };
+        let sender = self
+            .replies
+            .lock()
+            .expect("dsh bridge reply lock")
+            .remove(&id);
+        // The channel carries one value; a duplicate reply finds no waiter.
+        if let Some(sender) = sender {
+            let _ = sender.send(message.clone());
         }
     }
 
@@ -931,6 +1060,7 @@ mod tests {
         let entry = DshEntry::Turn {
             seq: 1,
             at: "2026-11-16T00:00:00.000Z".into(),
+            turn: 1,
             state: TurnState::Start,
             reason: None,
             error: None,

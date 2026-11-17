@@ -224,6 +224,8 @@ pub struct DshModelsConfig {
     pub providers: Vec<DshProvider>,
     pub active_provider_id: String,
     pub active_model_id: String,
+    /// 每个模型上次使用的思考强度，键为 `provider/model`。新会话沿用记录值。
+    pub model_efforts: BTreeMap<String, String>,
 }
 
 impl DshModelsConfig {
@@ -238,6 +240,26 @@ impl DshModelsConfig {
             .iter()
             .find(|item| item.id == self.active_model_id && item.enabled)?;
         Some((provider, model))
+    }
+
+    /// 某个模型上次使用的思考强度；没有记录或记录已失效时为 `off`。
+    pub fn effort_for(&self, provider_id: &str, model_id: &str) -> String {
+        let key = format!("{provider_id}/{model_id}");
+        let some = self.model_efforts.get(&key).cloned().unwrap_or_default();
+        if some == "off" {
+            return some;
+        }
+        let declared = self
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .and_then(|provider| provider.models.iter().find(|model| model.id == model_id))
+            .is_some_and(|model| model.reasoning.iter().any(|effort| effort.level == some));
+        if !some.is_empty() && declared {
+            some
+        } else {
+            "off".to_string()
+        }
     }
 
     /// 是否已经足够启动运行时。
@@ -296,13 +318,48 @@ impl DshModelsConfig {
         self.active_model_id = self.active_model_id.trim().to_string();
         self.sync_default();
         self.reselect_active();
+        self.sanitize_efforts();
         self
     }
 
-    /// The provider list is the priority order: the first enabled provider
-    /// with an enabled model supplies the session default. Choosing another
-    /// default therefore means moving that provider to the front (the UI does
-    /// that for 「设为默认」); a pointer left elsewhere is repaired here.
+    /// Drops remembered levels for models that no longer exist and levels a
+    /// model does not declare. A stale entry would otherwise silently pick a
+    /// level the route rejects.
+    fn sanitize_efforts(&mut self) {
+        let known: Vec<(String, Vec<String>)> = self
+            .providers
+            .iter()
+            .map(|provider| {
+                (
+                    provider.id.clone(),
+                    provider
+                        .models
+                        .iter()
+                        .filter(|model| model.enabled)
+                        .map(|model| model.id.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        self.model_efforts = std::mem::take(&mut self.model_efforts)
+            .into_iter()
+            .filter(|(key, level)| {
+                if !REASONING_LEVELS.iter().any(|item| *item == level) {
+                    return false;
+                }
+                key.split_once('/').is_some_and(|(provider_id, model_id)| {
+                    known.iter().any(|(id, models)| {
+                        id == provider_id && models.iter().any(|model| model == model_id)
+                    })
+                })
+            })
+            .collect();
+    }
+
+    /// The provider list is the priority order and so is each provider's model
+    /// list: the first enabled provider's first enabled model is the default.
+    /// Reordering either list is how a default is chosen, so the pointer is
+    /// always derived here instead of being kept from an older layout.
     fn sync_default(&mut self) {
         let Some((provider, model)) = self
             .providers
@@ -318,14 +375,6 @@ impl DshModelsConfig {
         else {
             return;
         };
-        let keep = self.active_provider_id == provider.id
-            && provider
-                .models
-                .iter()
-                .any(|model| model.id == self.active_model_id && model.enabled);
-        if keep {
-            return;
-        }
         self.active_provider_id = provider.id.clone();
         self.active_model_id = model.id.clone();
     }
@@ -407,6 +456,7 @@ impl DshModelsConfig {
             }],
             active_provider_id: provider_id,
             active_model_id: active_model,
+            model_efforts: BTreeMap::new(),
         }
     }
 }
@@ -483,6 +533,18 @@ fn sanitize_model(mut entry: DshModelEntry) -> Option<DshModelEntry> {
     // A ladder offering only `off` is rejected upstream; read it as undeclared.
     if reasoning.len() == 1 && reasoning[0].level == "off" {
         reasoning.clear();
+    }
+    // Every declared ladder offers `off`: pi-ai only accepts a level the map
+    // declares, and the picker's floor is "no reasoning". An empty wire is the
+    // documented way to declare it without sending a parameter.
+    if !reasoning.is_empty() && reasoning[0].level != "off" {
+        reasoning.insert(
+            0,
+            ReasoningEffort {
+                level: "off".to_string(),
+                wire: String::new(),
+            },
+        );
     }
 
     Some(DshModelEntry {
@@ -643,12 +705,45 @@ pub async fn agent_settings_get(app: tauri::AppHandle) -> Result<AgentConfig, St
 }
 
 /// Replaces the settings. The saved value is sanitized (legacy prompt
-/// contracts, empty project entries, unit bounds).
+/// contracts, empty project entries, unit bounds). A running runtime adopts a
+/// changed catalog immediately; a stopped one renders it at its next start.
 #[tauri::command]
 pub async fn agent_settings_set(
     app: tauri::AppHandle,
     config: AgentConfig,
 ) -> Result<AgentConfig, String> {
+    let saved = save_for(&app, &config)?;
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<std::sync::Arc<crate::dsh::runtime::RuntimeState>>() {
+        // A failed live apply is not a failed save: the drift flag then keeps
+        // the restart button on screen, which is the honest fallback.
+        if let Err(error) = state.sync_catalog(&app, &saved).await {
+            tracing::warn!(%error, "model catalog was not applied to the running runtime");
+        }
+    }
+    Ok(saved)
+}
+
+/// Remembers the reasoning level one model was last used with. Kept apart from
+/// the whole-settings write so a slider pick cannot race a catalog edit: only
+/// this one entry changes.
+#[tauri::command]
+pub async fn agent_model_effort_set(
+    app: tauri::AppHandle,
+    provider_id: String,
+    model_id: String,
+    level: Option<String>,
+) -> Result<AgentConfig, String> {
+    let mut config = config_for(&app);
+    let key = format!("{provider_id}/{model_id}");
+    match level.map(|level| level.trim().to_string()) {
+        Some(level) if !level.is_empty() => {
+            config.dsh_models.model_efforts.insert(key, level);
+        }
+        _ => {
+            config.dsh_models.model_efforts.remove(&key);
+        }
+    }
     save_for(&app, &config)
 }
 
@@ -990,6 +1085,7 @@ mod tests {
             }],
             active_provider_id: "gone".into(),
             active_model_id: "off".into(),
+            ..Default::default()
         }
         .sanitized();
         assert_eq!(config.active_provider_id, "gateway");
@@ -1021,16 +1117,18 @@ mod tests {
             // A pointer left on the second provider is repaired to the first.
             active_provider_id: "second".into(),
             active_model_id: "s1".into(),
+            ..Default::default()
         }
         .sanitized();
         assert_eq!(config.active_provider_id, "first");
         assert_eq!(config.active_model_id, "f1");
 
-        // A model chosen inside the first provider is kept.
+        // A pointer naming another model is repaired too: the first enabled
+        // model of the first enabled provider is the default.
         config.active_model_id = "f2".into();
         let mut config = config.sanitized();
         assert_eq!(config.active_provider_id, "first");
-        assert_eq!(config.active_model_id, "f2");
+        assert_eq!(config.active_model_id, "f1");
 
         // Disabling the first provider promotes the next one.
         config.providers[0].enabled = false;
@@ -1047,6 +1145,7 @@ mod tests {
             ],
             active_provider_id: "second".into(),
             active_model_id: "s1".into(),
+            ..Default::default()
         };
         reordered.providers.swap(0, 1);
         let reordered = reordered.sanitized();
@@ -1100,14 +1199,15 @@ mod tests {
         assert_eq!(entry.id, "vision");
         // Video is not a modality this payload serves; text is mandatory.
         assert_eq!(entry.input, vec!["text", "image"]);
-        // `low` has no wire value and `bogus` is not a level.
+        // `low` has no wire value and `bogus` is not a level; `off` is declared
+        // for every ladder so the picker can turn reasoning off.
         assert_eq!(
             entry
                 .reasoning
                 .iter()
                 .map(|effort| (effort.level.as_str(), effort.wire.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("medium", "medium"), ("high", "high")]
+            vec![("off", ""), ("medium", "medium"), ("high", "high")]
         );
         // Blank ids are dropped, not kept as empty rows.
         assert_eq!(config.providers[0].models.len(), 1);

@@ -629,6 +629,16 @@ pub async fn command(
             let mut config = agent_settings::config_for(app);
             config.coworker_ids = selected;
             let config = agent_settings::save_for(app, &config)?;
+            // The roster is read per prompt, but "has coworkers" also sets the
+            // Team default of new sessions. That is a profile row, so a running
+            // runtime adopts it live instead of asking for a restart.
+            if let Some(state) =
+                app.try_state::<std::sync::Arc<crate::dsh::runtime::RuntimeState>>()
+            {
+                if let Err(error) = state.sync_catalog(app, &config).await {
+                    tracing::warn!(%error, "team default was not applied to the running runtime");
+                }
+            }
             let prompt_section = registry.prompt_section(&config.coworker_ids);
             Ok(json!({
                 "selectedIds": config.coworker_ids,

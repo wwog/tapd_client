@@ -336,7 +336,25 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 // 会话级模型切换；reasoningEffort 省略 = 适配器默认，不能传 null
 { "type": "select-model", "token": "<token>", "sessionId": "probe-1",
   "provider": "opencode-go", "model": "deepseek-v4.1-flash", "reasoningEffort": "high" }
+// 热更新模型目录 / 团队默认 / 托管凭据；requestId 用于回执
+{ "type": "models", "token": "<token>", "requestId": 1,
+  "providers": { "opencode-go": { /* 与 profile 同样的字段 */ } },
+  "teamDefaultEnabled": true,
+  "keys": { "TAPD_DSH_API_KEY_OPENCODE_GO": "<key>" },
+  "dropKeys": [] }
+// 询问一个草稿供应商能提供哪些模型
+{ "type": "discover-models", "token": "<token>", "requestId": 2,
+  "provider": "opencode-go", "baseURL": "https://…/v1", "api": "openai-completions",
+  "apiKey": "…" }
 ```
+
+`models` / `discover-models` 是请求帧，回复走同一通道：
+`{type:"models-applied"|"models-discovered", token, requestId, error?, models?}`。
+插件用引擎自己的 `configEditor` 改 `llm-pi-ai` / `agent-team` 两行并等 Loader 落定，
+所以新供应商、模型与团队默认都在**运行中生效**，不需要重启；`providers` 省略表示只刷新
+托管凭据（启动初始化后做一次，覆盖早先运行留在 `.credentials.yaml` 里的旧 key）。
+`discover-models` 走引擎的 `ctx.llm.discoverModels`：目录内的路由直接由 pi-ai 目录作答，
+其它路由读端点自己的模型列表。
 
 `assign` / `team` / `select-model` 在目标 Agent 还不存在时会排队，等 `session/created`
 （Agent 发布后是 `agent/created`）再应用；`select-model` 走 `agent.model.select`，dsh 会把
@@ -350,24 +368,34 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 ### 8.3 持久行 `DshEntry`
 
 按 `seq` 唯一；`at` 是事件自带 `time`（epoch ms）转成的 RFC3339 UTC（毫秒精度）。
-`kind` 四种：
+`turn` / `step` 是 dsh 自己的 1 基计数（一步 = 一次模型请求），轨迹面板直接按它们分组，
+不再从事件流里反推；`user/message` 本身不带这两个字段，取当时的计数。
+计时字段都是事件自带的 epoch ms，缺哪个就省略哪个。
 
 ```jsonc
-{ "kind": "user", "seq": 3, "at": "2026-11-16T12:00:00.000Z", "text": "hello" }
+{ "kind": "user", "seq": 3, "at": "2026-11-16T12:00:00.000Z",
+  "turn": 1, "step": 1, "text": "hello" }
 
-{ "kind": "assistant", "seq": 5, "at": "…", "text": "…", "reasoning": "…",
+{ "kind": "assistant", "seq": 5, "at": "…", "turn": 1, "step": 1,
+  "text": "…", "reasoning": "…",
   // 可省略。dsh 按消息上报用量，所以任何计数只会在一条回复落定时跳一次：
   "usage": { "inputTokens": 181, "outputTokens": 189, "totalTokens": 8306,
              "cacheReadTokens": 7936, "cacheWriteTokens": 0 },
-  "provider": "opencode-go", "model": "deepseek-v4.1-flash" }
+  "provider": "opencode-go", "model": "deepseek-v4.1-flash",
+  "startedAtMs": 1700000000000,     // 该次请求的 step/start
+  "firstTokenAtMs": 1700000000250,  // 首个流式数据块
+  "completedAtMs": 1700000000900 }  // assistant/message 落定
 
-{ "kind": "tool", "seq": 6, "at": "…", "callId": "call_1", "name": "bash",
+{ "kind": "tool", "seq": 6, "at": "…", "turn": 1, "step": 2,
+  "callId": "call_1", "name": "bash",
   "args": "{\"cmd\":\"ls\"}",          // 模型产出的原始 JSON 字符串，由前端解析
   "status": "running",                 // running | ok | error
-  "result": "file.txt" }               // ok/error 后出现，字符串（工具结果的文本）
+  "result": "file.txt",                // ok/error 后出现，字符串（工具结果的文本）
+  "startedAtMs": 1700000001000,        // tool/call
+  "endedAtMs": 1700000001026 }         // tool/result，运行中省略
 
-{ "kind": "turn", "seq": 0, "at": "…", "state": "start" }   // state: start | end
-{ "kind": "turn", "seq": 9, "at": "…", "state": "end", "reason": "error",
+{ "kind": "turn", "seq": 0, "at": "…", "turn": 1, "state": "start" }   // state: start | end
+{ "kind": "turn", "seq": 9, "at": "…", "turn": 1, "state": "end", "reason": "error",
   "error": "HTTP 500: upstream unavailable" } // reason = TurnEndReason.kind，error = reason.error.message
 ```
 
@@ -465,16 +493,17 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 | 名称 | 入参 | 返回 |
 | --- | --- | --- |
-| `dsh_status` | — | `DshStatus`（`restartRequired: boolean` = 启动类配置已改动，需重启运行时） |
+| `dsh_status` | — | `DshStatus`（`restartRequired: boolean` = 运行时没能热更新启动类配置，兜底提示重启） |
 | `dsh_start` / `dsh_stop` | — | `DshStatus` |
-| `dsh_restart` | — | `DshStatus`；持同一把启动锁执行 stop → start，让权限/模型/同事等启动期配置立即生效 |
+| `dsh_restart` | — | `DshStatus`；持同一把启动锁执行 stop → start，兜底用（模型/团队默认已热更新） |
 | `dsh_session_cancel` | `{ sessionId }` | `{ ok: true }`；只停当前回合，不改任务 workflow；同会话的 pending 请求一并结算 |
 | `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
 | `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时只返回 `seq > sinceSeq` 的行，手机轮询用它避免全量重下；`lastSeq` 小于本地值时说明运行时重启过，回退全量读） |
 | `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
-| `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；运行时已启动但 profile 里没有这个路由时报可读错误（需重启运行时） |
+| `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
+| `dsh_models_discover` | `{ provider, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens?, inputModalities? }] }`；读端点的模型列表（catalog 路由由引擎目录直接作答），运行时要先就绪 |
 | `dsh_session_mode_get` | `{ sessionId }` | `{ sessionId, mode }`；`mode: null` = 继承默认；读 `dsh_session_modes` |
 | `dsh_session_mode_set` | `{ sessionId, mode?, plan? }` | `{ sessionId, mode, plan }`；`mode` 写库并推 `mode` 帧，`plan` 推 `plan` 帧；两者都在下一次工具调用/下一步生效，不需要重启 |
 | `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
@@ -624,8 +653,9 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   退出由 `exit_plan_mode` 的 review 提问卡批准；plan 激活期间 `tapd-policy` 额外拒绝
   `write` / `edit` / `apply_patch` / `str_replace_editor`，bash 不拦（引擎本身是提示级约束）。
   `plan/mode` 事件进 `DshSession.planActive`，选择器据此回显。
-- 默认模式改动通过 `default-mode` 帧立即作用于没有会话覆盖的会话；模型目录与同事名单仍
-  只读启动快照，改动后由「重启运行时」生效。
+- 默认模式改动通过 `default-mode` 帧立即作用于没有会话覆盖的会话；模型目录与
+  「有没有同事」也通过上表的 `models` 帧热更新（`configEditor` 改写 profile 行），
+  改动后不需要重启运行时；`restartRequired` 只在运行时没接住热更新时作为兜底提示。
 - 不做模型审查：规则是确定性的，零 token，可单测。若以后要模型审查，
   再挂上游 `dsh-experimental-auto-review` 作为 `auto` 的一层。
 

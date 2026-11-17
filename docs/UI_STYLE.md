@@ -26,7 +26,7 @@
 | `text-slate-500/400` | 次要文字、说明 |
 | `text-sky-*` / `bg-sky-50` | 选中、链接、焦点 |
 | `text-emerald/amber/rose-*` + 同色 `bg-*-50` | 状态、风险、结果 |
-| `bg-island` / `bg-island-hover` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转） |
+| `bg-island` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转；固定 0.72 半透明，没有 hover 变体） |
 | `border-island-line` | 胶囊描边 |
 | `text-island-ink` / `text-island-muted` | 胶囊主/次文字 |
 | `bg-island-soft` / `bg-island-soft-hover` | 胶囊内次级按钮、代码块、进度槽 |

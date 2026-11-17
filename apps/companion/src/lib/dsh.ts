@@ -124,19 +124,41 @@ export type DshTeam = {
 
 /** One rendered transcript row; `seq` is unique and monotonic per session. */
 export type DshEntry =
-  | { kind: "user"; seq: number; at: string; text: string }
-  | { kind: "assistant"; seq: number; at: string; text: string; reasoning?: string }
+  | { kind: "user"; seq: number; at: string; turn: number; step: number; text: string }
+  | {
+      kind: "assistant";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      text: string;
+      reasoning?: string;
+      startedAtMs?: number;
+      firstTokenAtMs?: number;
+      completedAtMs?: number;
+    }
   | {
       kind: "tool";
       seq: number;
       at: string;
+      turn: number;
+      step: number;
       callId: string;
       name: string;
       args: string;
       status: DshToolStatus;
       result?: string;
+      startedAtMs?: number;
+      endedAtMs?: number;
     }
-  | { kind: "turn"; seq: number; at: string; state: "start" | "end"; reason?: string };
+  | {
+      kind: "turn";
+      seq: number;
+      at: string;
+      turn: number;
+      state: "start" | "end";
+      reason?: string;
+    };
 
 /* -------------------------------------------------------------------------
    Blocking requests: approvals and user questions (docs/DSH.md §4.4, §8.7)

@@ -26,6 +26,7 @@ export type View =
 
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
+  agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
   coworker: "rail-users-wave",
   mcp: "rail-plug-rise",

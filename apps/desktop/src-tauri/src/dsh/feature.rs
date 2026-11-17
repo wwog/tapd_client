@@ -425,6 +425,19 @@ struct QuestionPayload {
     answers: Option<Vec<AnswerItem>>,
 }
 
+/// One draft provider the settings page wants the model list for.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoverPayload {
+    provider: String,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    api: String,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
 fn parse<T: for<'de> Deserialize<'de>>(payload: Value, name: &str) -> Result<T, String> {
     serde_json::from_value(payload)
         .map_err(|error| tr_args("dsh.args.invalid", &[&name, &error]))
@@ -484,6 +497,18 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             )
         }
         "dsh_new_session" => new_session(app).await,
+        "dsh_models_discover" => {
+            let request: DiscoverPayload = parse(payload, "dsh_models_discover")?;
+            runtime(app)?
+                .discover_models(
+                    app,
+                    &request.provider,
+                    &request.base_url,
+                    &request.api,
+                    request.api_key.as_deref(),
+                )
+                .await
+        }
         "dsh_approval_answer" => {
             let request: ApprovalPayload = parse(payload, "dsh_approval_answer")?;
             approval_answer(app, request.rpc_id, &request.outcome).await?;

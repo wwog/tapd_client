@@ -27,7 +27,6 @@ import {
   formatNotificationTime,
   NOTIFICATION_KIND_LABELS,
   notificationApi,
-  onIslandHover,
   onIslandLayout,
   onNotificationShow,
   pendingItems,
@@ -79,12 +78,6 @@ export function IslandWindow() {
   const [layout, setLayout] = useState<IslandLayout>(PILL_LAYOUT);
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
-  /** Pointer on the capsule: reported by AppKit (`island://hover`), because the
-   *  window never becomes key and WebKit only tracks hover for that one. */
-  const [nativeHover, setNativeHover] = useState(false);
-  /** DOM hover, kept for platforms without the native tracking above. */
-  const [domHover, setDomHover] = useState(false);
-  const hovered = nativeHover || domHover;
   /** Hovering the collapsed capsule asks Rust to grow the Agent summary card. */
   const [peeking, setPeeking] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
@@ -135,7 +128,6 @@ export function IslandWindow() {
   );
 
   useTauriSubscription(() => onIslandLayout(setLayout), []);
-  useTauriSubscription(() => onIslandHover(setNativeHover), []);
 
   // The main window broadcasts appearance changes; the island applies them so
   // the capsule follows light/dark without a reload.
@@ -259,17 +251,10 @@ export function IslandWindow() {
 
   if (!layout.expanded) {
     return (
-      <div
-        className="flex h-full w-full flex-col items-center overflow-hidden"
-        // The card sits inside the same window: leaving it closes the peek,
-        // moving from the pill down into the card keeps it open. macOS reports
-        // this natively; the DOM events only cover the platforms without it.
-        onMouseLeave={() => setDomHover(false)}
-      >
-        <div className="flex h-[34px] shrink-0 items-center">
+      <div className="flex h-full w-full flex-col items-center overflow-hidden">
+        <div className="flex h-8.5 shrink-0 items-center">
           <button
             type="button"
-            onMouseEnter={() => setDomHover(true)}
             onMouseDown={(event) => {
               if (event.button === 0) dragStart.current = { x: event.clientX, y: event.clientY };
             }}
@@ -315,12 +300,7 @@ export function IslandWindow() {
                   ? t("app.island.tipNotifications")
                   : t("app.island.tipOpen")
             }
-            className={clsx(
-              "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line transition active:cursor-grabbing",
-              // `hover:` only fires in a key window; the native hover state does
-              // not, so it picks the same background itself.
-              hovered ? "bg-island-hover" : "bg-island hover:bg-island-hover",
-            )}
+            className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line active:cursor-grabbing"
           >
             <StatusDot tone={tone} />
             <span className="font-normal text-island-ink">TAPD</span>
@@ -766,7 +746,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
             return (
               <p
                 key={index}
-                className="line-clamp-2 whitespace-pre-wrap break-words text-ui-sm leading-4 text-island-muted"
+                className="line-clamp-2 whitespace-pre-wrap wrap-break-word text-ui-sm leading-4 text-island-muted"
               >
                 {block.text}
               </p>

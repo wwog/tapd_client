@@ -145,6 +145,10 @@ pub struct RuntimeState {
     /// mismatch with the current file is what "restart required" means; the
     /// comparison lives here so the UI never has to duplicate the rule.
     boot_config: std::sync::Mutex<Option<String>>,
+    /// Team default the running profile was composed with. The catalog sync
+    /// carries a changed one, so the likewise start-only setting needs no
+    /// restart either.
+    boot_team_default: std::sync::Mutex<Option<bool>>,
     /// Monotonic generation of the child process. A reader from an older
     /// process must never shut down the bridge or reset the status of a newer
     /// one: a restart stops and starts back to back.
@@ -180,6 +184,7 @@ impl Default for RuntimeState {
             aliases: AtomicU64::new(0),
             started_models: std::sync::Mutex::new(None),
             boot_config: std::sync::Mutex::new(None),
+            boot_team_default: std::sync::Mutex::new(None),
             run_id: AtomicU64::new(0),
         }
     }
@@ -289,10 +294,136 @@ impl RuntimeState {
     fn remember_boot_config(&self, config: &AgentConfig) {
         *self.boot_config.lock().expect("dsh boot config lock") =
             Some(boot_fingerprint(config));
+        *self
+            .boot_team_default
+            .lock()
+            .expect("dsh boot team lock") = Some(!config.coworker_ids.is_empty());
     }
 
     fn clear_boot_config(&self) {
         *self.boot_config.lock().expect("dsh boot config lock") = None;
+        *self
+            .boot_team_default
+            .lock()
+            .expect("dsh boot team lock") = None;
+    }
+
+    /// Pushes the current catalog (and Team default) into a running runtime.
+    ///
+    /// Both are otherwise start-only facts. The plugin rewrites the profile
+    /// rows through the engine's own config editor, which reconciles the
+    /// Loader without a restart, and answers once that settled. A runtime that
+    /// is not running needs nothing: its next start renders the same settings.
+    pub async fn sync_catalog(
+        &self,
+        app: &AppHandle,
+        config: &AgentConfig,
+    ) -> Result<(), String> {
+        if self.status().phase != Phase::Ready {
+            return Ok(());
+        }
+        let started = self
+            .started_models
+            .lock()
+            .expect("dsh started models lock")
+            .clone();
+        let boot_team = *self
+            .boot_team_default
+            .lock()
+            .expect("dsh boot team lock");
+        let team_default = !config.coworker_ids.is_empty();
+        let models_changed = started
+            .as_ref()
+            .map(|started| catalog_json(started) != catalog_json(&config.dsh_models))
+            .unwrap_or(true);
+        // A key edit is a live change too: it travels through the managed
+        // credentials, not the rendered profile.
+        let keys_changed = started
+            .as_ref()
+            .map(|started| credential_keys(started) != credential_keys(&config.dsh_models))
+            .unwrap_or(true);
+        if !models_changed && !keys_changed && boot_team == Some(team_default) {
+            return Ok(());
+        }
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return Err("agent bridge unavailable".to_string());
+        };
+
+        // A route that left the catalog must not keep a stored secret behind.
+        let mut drop_keys: Vec<String> = Vec::new();
+        if let Some(started) = started.as_ref() {
+            for provider in started.providers.iter().filter(|provider| routable(provider)) {
+                let still = config
+                    .dsh_models
+                    .providers
+                    .iter()
+                    .any(|item| item.id == provider.id);
+                if !still {
+                    drop_keys.push(api_key_env(&provider.id));
+                }
+            }
+        }
+
+        bridge
+            .apply_catalog(
+                models_changed.then(|| catalog_json(&config.dsh_models)),
+                (boot_team != Some(team_default)).then_some(team_default),
+                credential_keys(&config.dsh_models),
+                drop_keys,
+            )
+            .await?;
+
+        // The running profile now serves exactly this catalog, so session
+        // switches validate against it and no restart is outstanding.
+        *self
+            .started_models
+            .lock()
+            .expect("dsh started models lock") = Some(config.dsh_models.clone());
+        self.remember_boot_config(config);
+        let mut status = self.status();
+        status.restart_required = false;
+        self.set_status(app, status);
+        Ok(())
+    }
+
+    /// Rewrites the engine's managed credentials from settings. A start does
+    /// this once initialized: the engine resolves a stored credential before
+    /// the environment, so a key it stored in an earlier run would otherwise
+    /// outrank the key this process was spawned with. The catalog is left
+    /// alone — the profile a start just rendered is current.
+    pub async fn refresh_credentials(&self, app: &AppHandle, models: &DshModelsConfig) {
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return;
+        };
+        if let Err(error) = bridge
+            .apply_catalog(None, None, credential_keys(models), Vec::new())
+            .await
+        {
+            tracing::warn!(%error, "managed credentials were not refreshed");
+        }
+    }
+
+    /// Asks the running engine which models a draft endpoint advertises.
+    /// Reusing the engine keeps catalog routes answered from the installed
+    /// catalog and everything else from the endpoint's own listing.
+    pub async fn discover_models(
+        &self,
+        app: &AppHandle,
+        provider: &str,
+        base_url: &str,
+        api: &str,
+        api_key: Option<&str>,
+    ) -> Result<Value, String> {
+        if self.status().phase != Phase::Ready {
+            return Err(tr("dsh.runtime.notStarted").to_string());
+        }
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return Err("agent bridge unavailable".to_string());
+        };
+        let models = bridge
+            .discover_models(provider, base_url, api, api_key)
+            .await?;
+        Ok(json!({ "models": models }))
     }
 
     /// Claims a generation before spawning a reader. Called under `start_lock`.
@@ -659,6 +790,10 @@ impl RuntimeState {
         // Same idea for every startup-only setting: this is the baseline the
         // "restart required" flag compares the file against.
         self.remember_boot_config(&config);
+        // A credential the engine stored in an earlier run outranks the
+        // environment, so the keys this start was spawned with must be written
+        // into the managed document before the first request.
+        self.refresh_credentials(app, &config.dsh_models).await;
         let status = self.set_status(app, status);
         let _ = app.emit(EVENT_READY, &status);
         Ok(status)
@@ -828,14 +963,14 @@ impl RuntimeState {
 /// log's recorded choice, else the configured default.
 fn session_selection(app: &AppHandle, session_id: &str) -> Option<ModelSelection> {
     let bridge = app.try_state::<Arc<bridge::BridgeState>>()?;
-    let configured = agent_settings::config_for(app)
-        .dsh_models
-        .active()
-        .map(|(provider, model)| ModelSelection {
-            provider: provider.id.clone(),
-            model: model.id.clone(),
-            reasoning_effort: None,
-        });
+    let models = agent_settings::config_for(app).dsh_models;
+    // The configured default carries the level that model last used, so a new
+    // session starts exactly where the picker says it will.
+    let configured = models.active().map(|(provider, model)| ModelSelection {
+        provider: provider.id.clone(),
+        model: model.id.clone(),
+        reasoning_effort: Some(models.effort_for(&provider.id, &model.id)),
+    });
     bridge.desired_selection(session_id, configured)
 }
 
@@ -956,6 +1091,22 @@ fn api_key_env(provider_id: &str) -> String {
     format!("{API_KEY_ENV_PREFIX}{suffix}")
 }
 
+/// Each enabled route's key under its own reference. A keyless route still
+/// states the placeholder, so the managed store never falls back to a key this
+/// app no longer uses.
+fn credential_keys(models: &DshModelsConfig) -> Value {
+    let mut keys = serde_json::Map::new();
+    for provider in models.providers.iter().filter(|provider| routable(provider)) {
+        let key = if provider.api_key.is_empty() {
+            NO_AUTH_PLACEHOLDER
+        } else {
+            provider.api_key.as_str()
+        };
+        keys.insert(api_key_env(&provider.id), Value::from(key));
+    }
+    Value::Object(keys)
+}
+
 /// Every `@tapd/*` package in the payload becomes a mounted plugin row.
 fn plugin_rows(runtime_dir: &Path) -> Vec<PluginRow> {
     let scope = runtime_dir.join("node_modules/@tapd");
@@ -1001,11 +1152,71 @@ fn default_cwd(app: &AppHandle) -> PathBuf {
 /// is pushed per session and can change live, so it is not part of the
 /// baseline; prompts and per-task settings are read live too.
 fn boot_fingerprint(config: &AgentConfig) -> String {
-    serde_json::to_string(&json!({
-        "models": config.dsh_models,
-        "coworkers": config.coworker_ids,
-    }))
-    .unwrap_or_default()
+    // Only the rendered catalog is start-only now: the Team default travels
+    // with a catalog sync, and a permission mode is already a live frame. The
+    // active pointer and remembered levels are not profile content, so editing
+    // them must not claim a restart is outstanding.
+    catalog_json(&config.dsh_models).to_string()
+}
+
+/// The provider catalog in the wire shape `llm-pi-ai` accepts: a dict keyed by
+/// route, camelCase fields, and a level → wire map where a valueless `off` is
+/// null. This is the same catalog `prepare_profile` renders into YAML, sent
+/// over the bridge so a running engine can adopt it without a restart.
+fn catalog_json(models: &DshModelsConfig) -> Value {
+    let mut providers = serde_json::Map::new();
+    for provider in models.providers.iter().filter(|provider| routable(provider)) {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "displayName".into(),
+            Value::from(if provider.name.is_empty() {
+                provider.id.clone()
+            } else {
+                provider.name.clone()
+            }),
+        );
+        entry.insert("api".into(), Value::from(provider.protocol.clone()));
+        entry.insert("baseURL".into(), Value::from(provider.base_url.clone()));
+        entry.insert(
+            "apiKeyEnv".into(),
+            Value::from(api_key_env(&provider.id)),
+        );
+        let list: Vec<Value> = provider
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .map(|model| {
+                let mut row = serde_json::Map::new();
+                row.insert("id".into(), Value::from(model.id.clone()));
+                row.insert("name".into(), Value::from(model.id.clone()));
+                row.insert("contextWindow".into(), Value::from(model.context_window));
+                if let Some(max_tokens) = model.max_tokens {
+                    row.insert("maxTokens".into(), Value::from(max_tokens));
+                }
+                if !model.input.is_empty() {
+                    row.insert("input".into(), json!(model.input));
+                }
+                if !model.reasoning.is_empty() {
+                    let mut efforts = serde_json::Map::new();
+                    for effort in &model.reasoning {
+                        efforts.insert(
+                            effort.level.clone(),
+                            if effort.wire.is_empty() {
+                                Value::Null
+                            } else {
+                                Value::from(effort.wire.clone())
+                            },
+                        );
+                    }
+                    row.insert("reasoningEfforts".into(), Value::Object(efforts));
+                }
+                Value::Object(row)
+            })
+            .collect();
+        entry.insert("models".into(), Value::Array(list));
+        providers.insert(provider.id.clone(), Value::Object(entry));
+    }
+    Value::Object(providers)
 }
 
 fn spawn_runtime(
@@ -1438,6 +1649,7 @@ mod tests {
             ],
             active_provider_id: "opencode-go".into(),
             active_model_id: "deepseek-v4.1-flash".into(),
+            ..Default::default()
         }
     }
 
@@ -1511,15 +1723,23 @@ mod tests {
         let mut agent = AgentConfig::default();
         let booted = boot_fingerprint(&agent);
 
-        // Prompt, per-task settings and the permission mode are live: changing
-        // them must not ask for a restart.
+        // Prompt, per-task settings, the permission mode and the coworker
+        // roster are live: changing them must not ask for a restart.
         agent.prompt_template.push_str("\nmore");
         agent.worktree_enabled = true;
         agent.permission_mode = PermissionMode::Full;
+        agent.coworker_ids.push("author".into());
         assert_eq!(booted, boot_fingerprint(&agent));
 
-        // Model catalog and coworkers are frozen at start.
-        agent.coworker_ids.push("author".into());
+        // The rendered catalog is the one start-only fact.
+        agent.dsh_models = config();
         assert_ne!(booted, boot_fingerprint(&agent));
+
+        // The active pointer and remembered levels are not profile content.
+        let mut eff = agent.clone();
+        eff.dsh_models
+            .model_efforts
+            .insert("opencode-go/deepseek-v4.1-flash".into(), "high".into());
+        assert_eq!(boot_fingerprint(&agent), boot_fingerprint(&eff));
     }
 }

@@ -66,6 +66,12 @@ export type DshModelsConfig = {
   providers: DshProvider[];
   activeProviderId: string;
   activeModelId: string;
+  /**
+   * The reasoning level last used with each model, keyed by `provider/model`.
+   * A new session starts on the default model with that model's remembered
+   * level instead of the adapter default.
+   */
+  modelEfforts: Record<string, string>;
 };
 
 /** One session's model route; `reasoningEffort` absent means the adapter default. */
@@ -128,26 +134,77 @@ export function firstUsableModel(
 
 /**
  * Mirrors the backend's default rule: the provider list is the priority order,
- * so the first enabled provider with an enabled model supplies the session
- * default. Choosing another provider's model means moving that provider to the
- * front and then calling this.
+ * so the first enabled provider's first enabled model is the default. Reordering
+ * either list is how a default is chosen; a stored pointer is repaired here.
  */
 export function withDefaultSelection(models: DshModelsConfig): DshModelsConfig {
   const provider = models.providers.find(
     (item) => item.enabled && item.models.some((model) => model.enabled),
   );
   if (!provider) return models;
-  const keep =
-    provider.id === models.activeProviderId &&
-    provider.models.some((model) => model.id === models.activeModelId && model.enabled);
-  if (keep) return models;
   const model = provider.models.find((entry) => entry.enabled);
+  if (
+    provider.id === models.activeProviderId &&
+    model?.id === models.activeModelId
+  ) {
+    return models;
+  }
   return {
     ...models,
     activeProviderId: provider.id,
     activeModelId: model?.id ?? "",
   };
 }
+
+/** Stable key of one model's remembered reasoning level. */
+export function effortKey(providerId: string, modelId: string): string {
+  return `${providerId}/${modelId}`;
+}
+
+/** The reasoning levels this model offers: `off` first, then its declared ladder. */
+export function effortStops(model: DshModelEntry): string[] {
+  const declared = model.reasoning
+    .map((effort) => effort.level)
+    .filter((level) => level !== "off");
+  return ["off", ...declared];
+}
+
+/**
+ * The level a model runs at unless the user picks another: the level it last
+ * used, or `off` when it has never been used. An undeclared level is ignored,
+ * because upstream rejects an effort the route does not offer.
+ */
+export function rememberedEffort(
+  models: DshModelsConfig | null | undefined,
+  providerId: string,
+  modelId: string,
+): string {
+  const model = models?.providers
+    .find((item) => item.id === providerId)
+    ?.models.find((item) => item.id === modelId);
+  const level = models?.modelEfforts?.[effortKey(providerId, modelId)];
+  if (!level || !model) return "off";
+  return effortStops(model).includes(level) ? level : "off";
+}
+
+/**
+ * The route a brand-new session starts on: the default provider's first enabled
+ * model with its remembered reasoning level. The runtime boots with a fixed
+ * default, so the app names this route explicitly when it allocates a session.
+ */
+export function defaultSelection(
+  models: DshModelsConfig | null | undefined,
+): ModelSelection | null {
+  const active = resolveActiveModel(models);
+  if (!active) return null;
+  const level = rememberedEffort(models, active.provider.id, active.model.id);
+  return {
+    provider: active.provider.id,
+    model: active.model.id,
+    ...(level ? { reasoningEffort: level } : {}),
+  };
+}
+
 
 /** `128K` / `1M`: catalog labels stay short enough to sit on one row. */
 export function compactTokens(tokens: number): string {
@@ -162,4 +219,7 @@ export function compactTokens(tokens: number): string {
 export const agentSettingsApi = {
   get: () => invoke<AgentConfig>("agent_settings_get"),
   set: (config: AgentConfig) => invoke<AgentConfig>("agent_settings_set", { config }),
+  /** Records one model's last reasoning level; only that entry is rewritten. */
+  setEffort: (providerId: string, modelId: string, level: string) =>
+    invoke<AgentConfig>("agent_model_effort_set", { providerId, modelId, level }),
 };
