@@ -7,6 +7,10 @@ const CARD_WIDTH: f64 = 384.0;
 /// Room for a two-line title, the metadata row and the two action buttons.
 const CARD_BASE_HEIGHT: f64 = 160.0;
 const CARD_ROW_HEIGHT: f64 = 148.0;
+/// Agent question options are listed one per row (label over its description).
+/// One row replaces the shared action row counted in `CARD_BASE_HEIGHT`.
+const CARD_OPTION_ROW_HEIGHT: f64 = 48.0;
+const CARD_ACTION_ROW_HEIGHT: f64 = 30.0;
 pub(super) const ISLAND_TOP_MARGIN: f64 = 6.0;
 /// Hover peek: the collapsed capsule widens a little and grows a summary card
 /// underneath, without moving the pill (it stays centred on the anchor).
@@ -19,14 +23,18 @@ pub(super) const PEEK_HEIGHT: f64 = PILL_HEIGHT + PEEK_GAP + PEEK_CARD_HEIGHT;
 pub(super) const UPDATE_WIDTH: f64 = PILL_WIDTH * 3.0;
 pub(super) const UPDATE_HEIGHT: f64 = PILL_HEIGHT * 3.0;
 
-pub(super) fn island_size(expanded: bool, count: usize) -> (f64, f64) {
+/// `option_rows` is the longest list of stacked option rows across the cards;
+/// zero keeps the plain card size.
+pub(super) fn island_size(expanded: bool, count: usize, option_rows: usize) -> (f64, f64) {
     if !expanded {
         return (PILL_WIDTH, PILL_HEIGHT);
     }
     let rows = count.clamp(1, 5) as f64;
+    let options = option_rows.min(4) as f64;
+    let options_extra = (options * CARD_OPTION_ROW_HEIGHT - CARD_ACTION_ROW_HEIGHT).max(0.0);
     (
         CARD_WIDTH,
-        CARD_BASE_HEIGHT + (rows - 1.0) * CARD_ROW_HEIGHT,
+        CARD_BASE_HEIGHT + (rows - 1.0) * CARD_ROW_HEIGHT + options_extra,
     )
 }
 
@@ -72,6 +80,20 @@ mod tests {
         // Dragged to the right edge at y=120 while collapsed.
         let (x, y) = place_island(Some((1500, 120)), AREA.0, AREA.1, AREA.2, 210, MARGIN);
         assert_eq!((x, y), (1395, 120));
+    }
+
+    #[test]
+    fn option_rows_grow_a_single_card() {
+        assert_eq!(island_size(false, 3, 3).0, PILL_WIDTH);
+        let plain = island_size(true, 1, 0);
+        let one = island_size(true, 1, 1);
+        let two = island_size(true, 1, 2);
+        let three = island_size(true, 1, 3);
+        assert!(one.1 > plain.1);
+        assert!(two.1 > one.1);
+        assert!(three.1 > two.1);
+        // Extra cards still stack on top of the option height.
+        assert_eq!(island_size(true, 2, 3).1, three.1 + CARD_ROW_HEIGHT);
     }
 
     #[test]

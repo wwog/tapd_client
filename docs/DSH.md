@@ -367,7 +367,8 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   "result": "file.txt" }               // ok/error 后出现，字符串（工具结果的文本）
 
 { "kind": "turn", "seq": 0, "at": "…", "state": "start" }   // state: start | end
-{ "kind": "turn", "seq": 9, "at": "…", "state": "end", "reason": "error" } // reason = TurnEndReason.kind
+{ "kind": "turn", "seq": 9, "at": "…", "state": "end", "reason": "error",
+  "error": "HTTP 500: upstream unavailable" } // reason = TurnEndReason.kind，error = reason.error.message
 ```
 
 规则（实现见 `crates/dsh-host/src/transcript.rs`）：
@@ -384,8 +385,9 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   上一段生成速度 `tokensPerSecond`（`outputTokens ÷ (数据块首帧时间 → 消息落定)`）、
   首 token 平均等待 `ttftMs`（`step/start → 数据块首帧`，多次请求取平均）、
   模型总用时 `modelMs`（`step/start → 消息落定` 累加）。
-  状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用优先用运行时的
-  `contextUsedTokens`（`contextPressure` 投影），未上报时退回 `totalTokens ÷ contextWindow`。
+  状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用只用运行时的
+  `contextUsedTokens`（`contextPressure` 投影）。会话累计 `totalTokens` 会随轮次无限增长，
+  不能当作占用估计；运行时未上报时显示待统计。
   快照重放靠 `seq` 去重，所以这些累计值不会重复计算。
 - `stats` 帧另外补上 `systemTokens` / `toolsTokens` / `messageTokens`（`contextBreakdown`
   投影），三者相加就是最近一次请求的上下文构成；缺失时保持 0，由 UI 显示等待态。
@@ -412,7 +414,9 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - `status`：`turn/start` 或 `session.status(running)` → `running`；`turn/end` 且
   `reason.kind` 为 `error` / `blocked` → `failed`，其余 → `idle`；随后到达的
   `session.status(idle)` 是权威值，可把失败会话改回 `idle`（失败原因保留在 `turn` 行里）；
-  运行时进程退出时，仍为 `running` 的会话改为 `failed`。
+  运行时进程退出时，仍为 `running` 的会话改为 `failed`。从磁盘日志恢复（hydration）的
+  会话不可能是运行中：未闭合的 `turn/start` 是崩溃残留，恢复后统一置 `idle`，否则 UI 会
+  按几天前的时间戳一直计时。
 - `updatedAt` 是固定宽度的 RFC3339（毫秒、UTC），字典序即时间序；列表按它降序。
 - `selection`：会话当前的模型选择（`model/selection` 事件的 `data`），不带 effort 表示适配器
   默认。它是**会话级**的：切换只影响这一个会话，并随会话日志持久化；SDK 在 resume 时会把路由
@@ -433,7 +437,11 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - **不持久**：只用于流式渲染。live 文本按 `(sessionId, attemptId)` 分组并**追加**；
   `revision` 是每帧递增的序号，同一次尝试内持续变大，不能作为"替换"的信号。
   真正的新尝试是 `attemptId` 变化（`<sessionId>:<attempt>`），此时先清空再追加。
-- 已提交的 `assistant` 行到达后丢弃对应的 live 文本；`turn/end` 到达后清空该会话所有 live。
+- 已提交的 `assistant` 行到达后丢弃对应的 live 文本，并记住该 `attemptId` 已结算；之后迟到的
+  同 attempt delta（流走 TCP、提交走 stdio，跨通道可能乱序）直接丢弃，不能重建 live。
+  `turn/end` 到达后清空该会话所有 live。
+- live 对**所有会话**累积，不只当前选中的会话：切换任务再切回来时，已经流过的文本仍然在。
+- 工具的 `tool` 行提交后，按 `callId` 把它从 live 的工具列表里移除；轨迹展开时同一个调用只留一行。
 - 插件不合并 delta（每帧一行）；Rust 也不合并，`index` 保留上游含义。
 
 ### 8.6 Tauri 事件与命令
@@ -454,8 +462,10 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 | 名称 | 入参 | 返回 |
 | --- | --- | --- |
-| `dsh_status` | — | `DshStatus` |
+| `dsh_status` | — | `DshStatus`（`restartRequired: boolean` = 启动类配置已改动，需重启运行时） |
 | `dsh_start` / `dsh_stop` | — | `DshStatus` |
+| `dsh_restart` | — | `DshStatus`；持同一把启动锁执行 stop → start，让权限/模型/同事等启动期配置立即生效 |
+| `dsh_session_cancel` | `{ sessionId }` | `{ ok: true }`；只停当前回合，不改任务 workflow；同会话的 pending 请求一并结算 |
 | `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
 | `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时只返回 `seq > sinceSeq` 的行，手机轮询用它避免全量重下；`lastSeq` 小于本地值时说明运行时重启过，回退全量读） |
 | `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
@@ -464,6 +474,14 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；运行时已启动但 profile 里没有这个路由时报可读错误（需重启运行时） |
 | `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
 | `dsh_question_answer` | `{ rpcId, answers }`（`answers: null` = 取消） | `{ ok: true }` |
+
+补充：
+
+- `dsh_prompt` 对 `kind: "chat"` 的会话先创建并 assign 独立目录
+  `<data>/dsh/chats/<sessionId>`；没有项目的自由会话不读写任何真实仓库。运行时进程的默认
+  cwd 也是 `<data>/dsh/workspace`。
+- `dsh_restart` / `dsh_session_cancel` / `dsh_task_delete` 只开放给桌面端，不在手机
+  白名单里。
 
 ### 8.7 阻塞请求快照 `dsh_pending`
 
@@ -480,6 +498,9 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 - 唯一 owner 是 `RuntimeState.pending`：请求到达时登记、`dsh_approval_answer` /
   `dsh_question_answer` 成功时移除、运行时退出或 `dsh_stop` 时清空。
+- `user-question.cancelled` 是运行时撤回问题：按 `requestId` 从 pending 移除并发
+  `dsh://request-settled`，否则主窗口/手机会一直挂着已经失效的问题卡片。
+- `dsh_session_cancel` 停止某会话的回合时，该会话的 pending 请求一并结算。
 - 桌面在 Agent 页 bootstrap 时拉一次并喂给与实时事件相同的 reducer；手机在每次会话轮询时拉取。
 - 顺序：先登记再发事件，所以事件到达后立刻查快照也能看到同一条。
 
@@ -528,7 +549,12 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 自由会话同样进这个列表：`kind: "chat"`、`project: null`，`workflow` 保持 `running`
 （列表不显示 chip，只显示实时状态点），标题取第一条人类消息的首行（≤60 字）。
-它在回合结束后不做 worktree / 审核判定——没有仓库可审。
+它在回合结束后不做 worktree / 审核判定——没有仓库可审，但仍会更新 `messageCount` /
+`updatedAt`，列表排序与时间不会停在第一条消息。
+
+`status` 是运行时覆盖后的实时值；`workflow` 只是任务生命周期。UI 判断「是否在运行 / 能否停止」
+必须读 `dsh://sessions` 里的会话状态，不能读 `workflow`：任务第二轮、第三轮运行时
+workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和排序都用会话行的覆盖值。
 
 迁移规则（单一入口，终态防回退）：
 
@@ -561,6 +587,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }` |
 | `dsh_task_diff` | `{ sessionId, file? }` | `{ diff }`（统一 diff 文本） |
 | `dsh_task_resume` | `{ sessionId }` | `{ task }`（恢复 dsh 持久化会话） |
+| `dsh_task_delete` | `{ sessionId }` | `{ sessionId }`；仅 `kind: "chat"` 且不在运行；删行、日志目录与 chat scratch 目录 |
 | `dsh_policy_get` / `dsh_policy_set` | `{ mode }` | `{ mode }` |
 
 事件：`dsh://tasks { tasks }`（列表变化），其余沿用第 8 节。
@@ -595,6 +622,10 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   回执走 `dsh_approval_answer`；超时/关闭不放行。
 - 提问：单问题单选 → 直接在胶囊作答；多问题/多选 → 胶囊只提示
   「需要你选择 N 项」+「去处理」，主窗口打开对应会话的 QuestionSheet。
+- 胶囊卡的动作：默认挤在底部一行；`stack_actions` 的卡（提问选项，或 MCP
+  动作带了 `description`）改成**每个动作一行、固定占满卡宽**，说明作第二行
+  小字。标签与说明都只占一行，放不下时靠 `ScrollingName` 在 hover 时按固定
+  步进滚到末尾；行数会带进胶囊高度（`island_window::geometry`）。
 - `notify` 模式：每次写/执行前推一张非阻塞通知卡（不等待）。
 - 手机：任务页可回答审批与提问（`dsh_approval_answer` / `dsh_question_answer`），
   Agent tab 用角标显示待处理数量；PWA 没有系统推送，进程内轮询为准。

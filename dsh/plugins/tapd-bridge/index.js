@@ -65,6 +65,8 @@ export function apply(ctx) {
   const teamModes = new Map()
   /** sessionId → { provider, model, reasoningEffort? }, for model picks that arrived early. */
   const modelSelections = new Map()
+  /** sessionId → active, for plan-mode toggles that arrived before the Agent existed. */
+  const planModes = new Map()
   /** sessionId → pending debounce timer for that session's board/stats frame. */
   const settleTimers = new Map()
 
@@ -298,6 +300,23 @@ export function apply(ctx) {
     }
   }
 
+  const applyPlan = (sessionId, active) => {
+    const planMode = ctx.get('planMode')
+    const agent = ctx.agents.get(sessionId)
+    if (!planMode || !agent) {
+      // The engine reads plan state per agent; queue until both exist.
+      planModes.set(sessionId, active)
+      return
+    }
+    try {
+      planMode.set(agent, active)
+      planModes.delete(sessionId)
+    } catch (error) {
+      planModes.set(sessionId, active)
+      warn(`plan ${sessionId}`, error)
+    }
+  }
+
   const applyPending = (sessionId) => {
     const cwd = assignments.get(sessionId)
     if (cwd !== undefined) applyAssignment(sessionId, cwd)
@@ -305,6 +324,8 @@ export function apply(ctx) {
     if (enabled !== undefined) applyTeamMode(sessionId, enabled)
     const selection = modelSelections.get(sessionId)
     if (selection !== undefined) applyModelSelection(sessionId, selection)
+    const plan = planModes.get(sessionId)
+    if (plan !== undefined) applyPlan(sessionId, plan)
   }
 
   // A created Session exists before its Agent is published; both edges flush,
@@ -335,6 +356,11 @@ export function apply(ctx) {
       return
     }
     if (!frame || frame.token !== token) return
+    // The runtime-wide default has no session; handle it before the id guard.
+    if (frame.type === 'default-mode' && typeof frame.mode === 'string') {
+      ctx.get('tapdPolicy')?.setDefault(frame.mode)
+      return
+    }
     const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''
     if (!sessionId) return
     if (frame.type === 'assign' && typeof frame.cwd === 'string') {
@@ -347,6 +373,11 @@ export function apply(ctx) {
       cancelSession(sessionId)
     } else if (frame.type === 'team' && typeof frame.enabled === 'boolean') {
       applyTeamMode(sessionId, frame.enabled)
+    } else if (frame.type === 'mode' && typeof frame.mode === 'string') {
+      // Session permission mode: takes effect on the next tool call.
+      ctx.get('tapdPolicy')?.setMode(sessionId, frame.mode)
+    } else if (frame.type === 'plan' && typeof frame.active === 'boolean') {
+      applyPlan(sessionId, frame.active)
     } else if (
       frame.type === 'select-model' &&
       typeof frame.provider === 'string' &&

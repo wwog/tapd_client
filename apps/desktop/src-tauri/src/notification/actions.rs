@@ -77,7 +77,14 @@ pub async fn command(
             let (items, _quiet) = service.pending_payload();
             let count = items.len();
             let expanded = expanded && count > 0;
-            crate::island_window::apply_island(app, state, expanded, count, true);
+            crate::island_window::apply_island(
+                app,
+                state,
+                expanded,
+                count,
+                super::option_rows(&items),
+                true,
+            );
             Ok(json!({ "ok": true, "expanded": expanded, "count": count }))
         }
         "notification_island_peek" => {
@@ -101,13 +108,24 @@ pub async fn command(
                 .unwrap_or(true);
             crate::island_window::set_collapsed_visible(visible);
             if visible {
-                let (expanded, count) = service()
+                let (expanded, count, option_rows) = service()
                     .map(|service| {
                         let (items, quiet) = service.pending_payload();
-                        (!items.is_empty() && !quiet, items.len())
+                        (
+                            !items.is_empty() && !quiet,
+                            items.len(),
+                            super::option_rows(&items),
+                        )
                     })
-                    .unwrap_or((false, 0));
-                crate::island_window::apply_island(app, state, expanded, count, false);
+                    .unwrap_or((false, 0, 0));
+                crate::island_window::apply_island(
+                    app,
+                    state,
+                    expanded,
+                    count,
+                    option_rows,
+                    false,
+                );
             } else {
                 crate::island_window::hide_collapsed(app);
             }

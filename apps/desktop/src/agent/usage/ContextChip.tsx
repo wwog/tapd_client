@@ -5,12 +5,13 @@ import { compactCount, contextPercent } from "./format";
 
 /**
  * How full the context window is and what fills it. `contextUsedTokens` is the
- * runtime's own prompt-side meter; until it reports, the cumulative total is
- * the best available estimate.
+ * runtime's own prompt-side meter — the only figure that describes the current
+ * request. Session-cumulative totals kept growing across turns and read as a
+ * permanently full window, so they are never used as an occupancy estimate.
  */
 export function ContextChip({ usage }: { usage: DshSessionUsage }) {
-  const known = usage.contextWindow > 0;
-  const used = usage.contextUsedTokens > 0 ? usage.contextUsedTokens : usage.totalTokens;
+  const used = usage.contextUsedTokens;
+  const known = usage.contextWindow > 0 && used > 0;
   const percent = contextPercent(used, usage.contextWindow);
   const composition = usage.systemTokens + usage.toolsTokens + usage.messageTokens;
   const hasBreakdown = composition > 0;
@@ -25,7 +26,7 @@ export function ContextChip({ usage }: { usage: DshSessionUsage }) {
               used: `~${compactCount(used)}`,
               window: compactCount(usage.contextWindow),
             })
-          : "—"
+          : t("agent.context.unknown")
       }
       minWidth={272}
       fullHeight={214}
@@ -33,7 +34,7 @@ export function ContextChip({ usage }: { usage: DshSessionUsage }) {
         <>
           {known ? <ContextRing percent={percent} /> : <span className="h-3 w-3" />}
           <span className="tabular-nums">
-            {known ? t("agent.stats.percent", { percent }) : "—"}
+            {known ? t("agent.stats.percent", { percent }) : t("agent.context.unknown")}
           </span>
         </>
       }

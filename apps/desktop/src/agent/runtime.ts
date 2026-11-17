@@ -21,6 +21,9 @@ export function runtimeBlock(state: AgentState): RuntimeBlock | null {
   if (!state.status) return state.statusError ? "status" : "checking";
   if (state.starting || state.preparingSince !== null) return "starting";
   if (state.status.phase === "ready") return null;
+  // The process itself reports `starting` while it boots; treating that as
+  // "stopped" showed a dead end during every launch and payload extraction.
+  if (state.status.phase === "starting") return "starting";
   if (state.status.phase === "failed") {
     switch (state.status.errorCode) {
       case "node_missing":

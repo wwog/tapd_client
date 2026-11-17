@@ -306,11 +306,15 @@ fn anchor_is_on_screen(app: &AppHandle, anchor: (i32, i32)) -> bool {
 
 /// Places the island at the top centre of the screen. `animated` interpolates
 /// the resize so the card grows out of the capsule (Dynamic Island style).
+///
+/// `option_rows` is how many agent question options the tallest card lists, so
+/// the card can grow past the shared action row (see `geometry`).
 pub(crate) fn apply_island(
     app: &AppHandle,
     state: &SharedState,
     expanded: bool,
     count: usize,
+    option_rows: usize,
     animated: bool,
 ) {
     // An update owns the capsule: polling, notification expansion and user
@@ -326,7 +330,7 @@ pub(crate) fn apply_island(
     let (width, height) = if !expanded && PEEK.load(Ordering::SeqCst) {
         (PEEK_WIDTH, PEEK_HEIGHT)
     } else {
-        island_size(expanded, count)
+        island_size(expanded, count, option_rows)
     };
     apply_island_sized(app, state, width, height, expanded, count, animated);
 }

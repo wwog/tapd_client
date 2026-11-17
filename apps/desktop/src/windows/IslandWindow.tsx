@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
+import { ScrollingName } from "../components/ScrollingName";
 import { formatBytes } from "../lib/format";
 import { bugTitle } from "../lib/bug";
 import {
@@ -522,6 +523,13 @@ function AiCard(props: {
   const meta = AI_TONE_META[payload.tone] ?? AI_TONE_META.info;
   const Icon = meta.icon;
   const dismissBusy = busyAction === "ignore";
+  /** Agent question options: one full-width row each, label over description.
+   *  Older payloads have no flag, so a hint alone also means "list". A single
+   *  action never stacks (it already fills the row). */
+  const stacked =
+    payload.actions.length > 1 &&
+    (payload.stackActions ??
+      payload.actions.some((action) => action.description));
 
   return (
     <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
@@ -563,7 +571,12 @@ function AiCard(props: {
 
       <AiBlocks blocks={payload.blocks} />
 
-      <div className="mt-auto flex items-center gap-1.5 pt-2">
+      <div
+        className={clsx(
+          "mt-auto flex pt-2",
+          stacked ? "min-h-0 flex-1 flex-col gap-1" : "items-center gap-1.5",
+        )}
+      >
         {payload.actions.length === 0 ? (
           <button
             type="button"
@@ -574,6 +587,16 @@ function AiCard(props: {
             {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             {t("common.gotIt")}
           </button>
+        ) : stacked ? (
+          payload.actions.map((action) => (
+            <AiOptionRow
+              key={action.id}
+              action={action}
+              busy={busyAction === `ai:${action.id}`}
+              disabled={Boolean(busyAction)}
+              onClick={() => onAction(action.id)}
+            />
+          ))
         ) : (
           payload.actions.map((action) => (
             <AiActionButton
@@ -613,8 +636,45 @@ function AiActionButton(props: {
         AI_ACTION_CLASS[action.style ?? "secondary"] ?? AI_ACTION_CLASS.secondary,
       )}
     >
-      {busy ? <Loader2 size={12} className="animate-spin" /> : null}
-      {action.label}
+      {busy ? <Loader2 size={12} className="shrink-0 animate-spin" /> : null}
+      {/* Centred while it fits, scrolls in place when it does not. */}
+      <ScrollingName text={action.label} className="flex-1 text-center" />
+    </button>
+  );
+}
+
+/**
+ * Agent question option: a full-width row with the label over its description,
+ * both kept to one line. Too-long text scrolls on hover at a constant pace
+ * (same as a bug title) instead of wrapping the button into a second line.
+ */
+function AiOptionRow(props: {
+  action: AiAction;
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const { action, busy, disabled, onClick } = props;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={clsx(
+        "flex min-h-0 flex-1 flex-col justify-center gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
+        AI_ACTION_CLASS[action.style ?? "secondary"] ?? AI_ACTION_CLASS.secondary,
+      )}
+    >
+      <span className="flex items-center gap-1 text-ui-sm font-normal">
+        {busy ? <Loader2 size={12} className="shrink-0 animate-spin" /> : null}
+        <ScrollingName text={action.label} className="flex-1" />
+      </span>
+      {action.description ? (
+        <ScrollingName
+          text={action.description}
+          className="text-ui-2xs font-normal opacity-80"
+        />
+      ) : null}
     </button>
   );
 }

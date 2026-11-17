@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::{
     bridge, payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_READY, EVENT_STATUS,
 };
-use crate::agent_settings::{self, DshModelsConfig, DshProvider};
+use crate::agent_settings::{self, AgentConfig, DshModelsConfig, DshProvider, PermissionMode};
 use crate::shell_path;
 use tapd_i18n::{tr, tr_args};
 
@@ -70,6 +70,9 @@ pub struct DshStatus {
     /// `spawn_failed`, `initialize_failed`, `exited`).
     pub error_code: Option<String>,
     pub error: Option<String>,
+    /// Startup-only settings were edited since this process booted (permission
+    /// mode, model catalog, coworkers). The UI offers one restart.
+    pub restart_required: bool,
 }
 
 impl Default for DshStatus {
@@ -83,6 +86,7 @@ impl Default for DshStatus {
             model: None,
             error_code: None,
             error: None,
+            restart_required: false,
         }
     }
 }
@@ -137,6 +141,14 @@ pub struct RuntimeState {
     /// Models added after the start are not routable until the next start, so
     /// a session switch validates against this snapshot instead of the file.
     started_models: std::sync::Mutex<Option<DshModelsConfig>>,
+    /// Fingerprint of the startup-only settings this process booted with. A
+    /// mismatch with the current file is what "restart required" means; the
+    /// comparison lives here so the UI never has to duplicate the rule.
+    boot_config: std::sync::Mutex<Option<String>>,
+    /// Monotonic generation of the child process. A reader from an older
+    /// process must never shut down the bridge or reset the status of a newer
+    /// one: a restart stops and starts back to back.
+    run_id: AtomicU64,
 }
 
 /// A question or approval the runtime is blocked on. `request` is the typed
@@ -167,6 +179,8 @@ impl Default for RuntimeState {
             server_ids: std::sync::Mutex::new(HashMap::new()),
             aliases: AtomicU64::new(0),
             started_models: std::sync::Mutex::new(None),
+            boot_config: std::sync::Mutex::new(None),
+            run_id: AtomicU64::new(0),
         }
     }
 }
@@ -179,6 +193,17 @@ impl RuntimeState {
     /// Requests the runtime is still waiting on, oldest first.
     pub fn pending(&self) -> Vec<PendingRequest> {
         self.pending.lock().expect("dsh pending lock").clone()
+    }
+
+    /// Blocking requests one session owns; a canceled turn settles these.
+    pub fn pending_for_session(&self, session_id: &str) -> Vec<PendingRequest> {
+        self.pending
+            .lock()
+            .expect("dsh pending lock")
+            .iter()
+            .filter(|request| request.session_id == session_id)
+            .cloned()
+            .collect()
     }
 
     fn remember_pending(&self, request: PendingRequest) {
@@ -202,6 +227,23 @@ impl RuntimeState {
             .retain(|item| item.rpc_id != rpc_id);
     }
 
+    /// One `user-question.cancelled` notification: the runtime withdrew a
+    /// question, so its card must go on every surface. Returns the numeric id
+    /// the UI knows, when the request was still registered.
+    pub fn settle_request(&self, request_id: &str) -> Option<u64> {
+        let mut pending = self.pending.lock().expect("dsh pending lock");
+        let index = pending.iter().position(|item| {
+            item.request.get("requestId").and_then(Value::as_str) == Some(request_id)
+        })?;
+        let request = pending.remove(index);
+        drop(pending);
+        self.server_ids
+            .lock()
+            .expect("dsh server id lock")
+            .remove(&request.rpc_id);
+        Some(request.rpc_id)
+    }
+
     /// Numeric id the UI answers with. A server-owned `req_<uuid>` id gets a
     /// fresh alias so the documented numeric `rpcId` contract stays intact.
     fn alias_for(&self, id: RpcId) -> u64 {
@@ -218,10 +260,49 @@ impl RuntimeState {
         }
     }
 
-    fn set_status(&self, app: &AppHandle, status: DshStatus) -> DshStatus {
+    fn set_status(&self, app: &AppHandle, mut status: DshStatus) -> DshStatus {
+        status.restart_required = status.phase == Phase::Ready && self.config_drifted(app);
         *self.status.lock().expect("dsh status lock") = status.clone();
         let _ = app.emit(EVENT_STATUS, &status);
         status
+    }
+
+    /// The status as the UI should read it right now: the stored phase plus a
+    /// freshly computed drift flag, because settings are edited while the
+    /// runtime keeps running and no status event fires for that.
+    pub fn status_for(&self, app: &AppHandle) -> DshStatus {
+        let mut status = self.status();
+        status.restart_required = status.phase == Phase::Ready && self.config_drifted(app);
+        status
+    }
+
+    /// Startup-only settings differ from what this process booted with.
+    fn config_drifted(&self, app: &AppHandle) -> bool {
+        let booted = self
+            .boot_config
+            .lock()
+            .expect("dsh boot config lock")
+            .clone();
+        booted.is_some_and(|booted| booted != boot_fingerprint(&agent_settings::config_for(app)))
+    }
+
+    fn remember_boot_config(&self, config: &AgentConfig) {
+        *self.boot_config.lock().expect("dsh boot config lock") =
+            Some(boot_fingerprint(config));
+    }
+
+    fn clear_boot_config(&self) {
+        *self.boot_config.lock().expect("dsh boot config lock") = None;
+    }
+
+    /// Claims a generation before spawning a reader. Called under `start_lock`.
+    fn next_run_id(&self) -> u64 {
+        self.run_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether `run_id` still names the process this state belongs to.
+    fn is_current_run(&self, run_id: u64) -> bool {
+        self.run_id.load(Ordering::SeqCst) == run_id
     }
 
     fn fail(&self, app: &AppHandle, code: &str, message: impl Into<String>) -> String {
@@ -294,6 +375,41 @@ impl RuntimeState {
         }
     }
 
+    /// Pushes the session's permission mode before the next tool call. The
+    /// durable copy is the mode table; the bridge cache avoids a read per
+    /// prompt. A session with no row inherits the plugin default and needs no
+    /// frame at all.
+    async fn apply_session_mode(&self, app: &AppHandle, session_id: &str) {
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return;
+        };
+        let mode = match bridge.pending_mode(session_id) {
+            Some(mode) => Some(mode),
+            None => persisted_mode(app, session_id).await,
+        };
+        let Some(mode) = mode else {
+            return;
+        };
+        if let Err(error) = bridge.set_session_mode(session_id, mode) {
+            tracing::debug!(%error, session = session_id, "session mode was not queued");
+        }
+    }
+
+    /// Replays a plan choice that has not reached the engine yet. The engine's
+    /// `plan/mode` event clears it; a resumed session already carries its own
+    /// state, so nothing is pushed without a pending choice.
+    fn apply_session_plan(&self, app: &AppHandle, session_id: &str) {
+        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
+            return;
+        };
+        let Some(active) = bridge.pending_plan(session_id) else {
+            return;
+        };
+        if let Err(error) = bridge.set_plan(session_id, active) {
+            tracing::debug!(%error, session = session_id, "plan mode was not queued");
+        }
+    }
+
     /// Makes the session live and forces its route **before** the prompt.
     ///
     /// dsh fixes a step's route when the turn starts, so a control frame that
@@ -303,6 +419,11 @@ impl RuntimeState {
     /// caller waits until dsh records it. A failed setup degrades to the normal
     /// prompt path instead of blocking the send.
     pub async fn prepare_session(&self, app: &AppHandle, session_id: &str, fresh: bool) {
+        // The policy gate reads the mode per tool call, and the bridge queues a
+        // plan frame for a session whose Agent does not exist yet: both can be
+        // pushed before the creation below.
+        self.apply_session_mode(app, session_id).await;
+        self.apply_session_plan(app, session_id);
         if fresh {
             if let Err(error) = self
                 .call(
@@ -357,9 +478,23 @@ impl RuntimeState {
     /// initialized. Safe to call repeatedly; concurrent callers serialise.
     pub async fn ensure_ready(&self, app: &AppHandle) -> Result<DshStatus, String> {
         let _guard = self.start_lock.lock().await;
+        self.start_locked(app).await
+    }
+
+    /// Restarts the process so startup-only settings take effect. Both halves
+    /// run under the same start lock, so no prompt can slip in between a stop
+    /// and the next start and find a half-configured runtime.
+    pub async fn restart(&self, app: &AppHandle) -> Result<DshStatus, String> {
+        let _guard = self.start_lock.lock().await;
+        self.stop_runtime(app).await?;
+        self.start_locked(app).await
+    }
+
+    /// Caller holds `start_lock`.
+    async fn start_locked(&self, app: &AppHandle) -> Result<DshStatus, String> {
         if let Some(running) = self.running.lock().await.as_mut() {
             if running.child.try_wait().ok().flatten().is_none() {
-                return Ok(self.status());
+                return Ok(self.status_for(app));
             }
         }
         // Reaped (or never started): drop the stale handle. The lock is taken a
@@ -455,7 +590,10 @@ impl RuntimeState {
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, rpc::RpcError>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let ids = Arc::new(AtomicU64::new(0));
-        spawn_reader(app.clone(), stdout, pending.clone());
+        // Claim the generation before the reader can report anything: a
+        // restart's stop path may still have a reader draining.
+        let run_id = self.next_run_id();
+        spawn_reader(app.clone(), stdout, pending.clone(), run_id);
 
         *self.running.lock().await = Some(Running {
             stdin: tx,
@@ -505,6 +643,7 @@ impl RuntimeState {
             model: Some(model),
             error_code: None,
             error: None,
+            restart_required: false,
         };
         // Remember the catalog this process was actually started with; a later
         // session switch validates against it, not the edited file.
@@ -512,6 +651,9 @@ impl RuntimeState {
             .started_models
             .lock()
             .expect("dsh started models lock") = Some(config.dsh_models.clone());
+        // Same idea for every startup-only setting: this is the baseline the
+        // "restart required" flag compares the file against.
+        self.remember_boot_config(&config);
         let status = self.set_status(app, status);
         let _ = app.emit(EVENT_READY, &status);
         Ok(status)
@@ -612,6 +754,10 @@ impl RuntimeState {
         session_id: &str,
         text: &str,
     ) -> Result<Value, String> {
+        // The last host-controlled point before a turn: every prompt path
+        // (chat, task, team, dev) goes through here.
+        self.apply_session_mode(app, session_id).await;
+        self.apply_session_plan(app, session_id);
         self.apply_session_selection(app, session_id);
         let params = SessionQueryParams {
             session_id: session_id.to_string(),
@@ -627,6 +773,12 @@ impl RuntimeState {
     }
 
     pub async fn stop(&self, app: &AppHandle) -> Result<(), String> {
+        self.stop_runtime(app).await
+    }
+
+    /// The stop path itself takes no start lock: a failed start calls it from
+    /// inside [`Self::start_locked`], and `restart` already holds the lock.
+    async fn stop_runtime(&self, app: &AppHandle) -> Result<(), String> {
         // Cards must disappear with their requests: the webview and the phone
         // render from the approval/question events and have no other way to
         // learn that a stop cleared the queue.
@@ -635,6 +787,7 @@ impl RuntimeState {
         }
         self.clear_pending();
         self.clear_started_models();
+        self.clear_boot_config();
         let mut guard = self.running.lock().await;
         let Some(mut running) = guard.take() else {
             bridge::shutdown(app).await;
@@ -679,6 +832,18 @@ fn session_selection(app: &AppHandle, session_id: &str) -> Option<ModelSelection
             reasoning_effort: None,
         });
     bridge.desired_selection(session_id, configured)
+}
+
+/// The mode persisted for one session; `None` means "inherit the default".
+async fn persisted_mode(app: &AppHandle, session_id: &str) -> Option<PermissionMode> {
+    let state = app.try_state::<Arc<crate::state::AppState>>()?;
+    let cache = state.inner().cache.clone();
+    let id = session_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || super::mode_store::load(&cache, &id))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
 }
 
 /// Composed paths for one runtime.
@@ -811,26 +976,31 @@ fn plugin_rows(runtime_dir: &Path) -> Vec<PluginRow> {
     rows
 }
 
-/// Sessions inherit this directory unless the task later moves them.
+/// Sessions inherit this directory unless the task later moves them. It is a
+/// neutral scratch area, not a user repository: a free chat that never chose a
+/// project must not read or write one.
 fn default_cwd(app: &AppHandle) -> PathBuf {
-    let state = app
+    let data_dir = app
         .try_state::<Arc<crate::state::AppState>>()
         .map(|state| state.paths.data_dir.clone());
-    let config = agent_settings::config_for(app);
-    let workspace = state
-        .as_ref()
-        .and_then(|_| config.projects.values().find(|project| !project.repo_path.is_empty()));
-    if let Some(project) = workspace {
-        let path = PathBuf::from(&project.repo_path);
-        if path.is_dir() {
-            return path;
-        }
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_dir())
-        .or(state)
-        .unwrap_or_else(|| PathBuf::from("/"))
+    let Some(data_dir) = data_dir else {
+        return std::env::temp_dir();
+    };
+    let workspace = data_dir.join("dsh").join("workspace");
+    let _ = std::fs::create_dir_all(&workspace);
+    workspace
+}
+
+/// Fingerprint of everything a running process freezes at start: the model
+/// catalog and the coworker roster (which decides team mode). Permission mode
+/// is pushed per session and can change live, so it is not part of the
+/// baseline; prompts and per-task settings are read live too.
+fn boot_fingerprint(config: &AgentConfig) -> String {
+    serde_json::to_string(&json!({
+        "models": config.dsh_models,
+        "coworkers": config.coworker_ids,
+    }))
+    .unwrap_or_default()
 }
 
 fn spawn_runtime(
@@ -876,17 +1046,27 @@ fn spawn_runtime(
     })
 }
 
-/// Reads stdout line by line and dispatches frames.
+/// Reads stdout line by line and dispatches frames. `run_id` ties this reader
+/// to one child process: once a newer process owns the state, the old reader
+/// must not dispatch frames, shut the bridge down or overwrite the status.
 fn spawn_reader(
     app: AppHandle,
     stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, rpc::RpcError>>>>>,
+    run_id: u64,
 ) {
     tauri::async_runtime::spawn(async move {
+        let current = || {
+            app.try_state::<Arc<RuntimeState>>()
+                .is_some_and(|state| state.is_current_run(run_id))
+        };
         let mut lines = BufReader::new(stdout).lines();
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
+                    if !current() {
+                        break;
+                    }
                     match rpc::decode(&line) {
                         Ok(Some(Incoming::Response { id, result })) => {
                             // Responses echo our own numeric request ids.
@@ -920,19 +1100,26 @@ fn spawn_reader(
 
         // The process ended: fail every request still waiting for an answer.
         pending.lock().await.clear();
+        let Some(state) = app.try_state::<Arc<RuntimeState>>().map(|state| state.inner().clone())
+        else {
+            return;
+        };
+        // A newer child already owns the bridge and the status; this reader
+        // belongs to a process that was replaced (restart, fast respawn).
+        if !state.is_current_run(run_id) {
+            return;
+        }
         // No live turn can outlive its process.
         bridge::shutdown(&app).await;
-        if let Some(state) = app.try_state::<Arc<RuntimeState>>() {
-            // Stale cards must not outlive the runtime that asked the question.
-            for request in state.pending() {
-                let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
-            }
-            state.clear_pending();
-            state.clear_started_models();
-            let status = state.status();
-            if status.phase != Phase::Stopped {
-                state.set_status(&app, DshStatus::failed("exited", tr("dsh.runtime.exited")));
-            }
+        // Stale cards must not outlive the runtime that asked the question.
+        for request in state.pending() {
+            let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
+        }
+        state.clear_pending();
+        state.clear_started_models();
+        let status = state.status();
+        if status.phase != Phase::Stopped {
+            state.set_status(&app, DshStatus::failed("exited", tr("dsh.runtime.exited")));
         }
     });
 }
@@ -966,7 +1153,6 @@ fn forward_request(app: &AppHandle, id: RpcId, method: &str, params: Value) {
         other => {
             tracing::warn!(method = other, "unhandled dsh request");
             let _ = app.emit(EVENT_ERROR, json!({ "code": "unhandled_request", "message": other }));
-            let _ = app.emit(EVENT_STATUS, ());
         }
     }
 }
@@ -1024,14 +1210,36 @@ fn forward_notification(app: &AppHandle, method: &str, params: Value) {
         rpc::METHOD_SESSION_QUERY_COMPLETED => {
             let _ = app.emit("dsh://query-completed", params);
         }
+        rpc::METHOD_USER_QUESTION_CANCELLED => {
+            settle_cancelled(app, &params);
+            let _ = app.emit(
+                "dsh://notification",
+                json!({ "method": method, "params": params }),
+            );
+        }
         other => {
-            // subagent.*, user-question.cancelled: forwarded verbatim so the UI
-            // can pick up anything the runtime adds.
+            // subagent.*: forwarded verbatim so the UI can pick up anything the
+            // runtime adds.
             let _ = app.emit(
                 "dsh://notification",
                 json!({ "method": other, "params": params }),
             );
         }
+    }
+}
+
+/// A withdrawn question (`user-question.cancelled`) leaves the runtime's own
+/// queue, so every surface must drop that card — the capsule has its own
+/// listener, but the webview and the phone only read `dsh://request-settled`.
+fn settle_cancelled(app: &AppHandle, params: &Value) {
+    let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(state) = app.try_state::<Arc<RuntimeState>>() else {
+        return;
+    };
+    if let Some(rpc_id) = state.inner().settle_request(request_id) {
+        let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": rpc_id }));
     }
 }
 
@@ -1291,5 +1499,22 @@ mod tests {
         assert_eq!(api_key_env("my-gateway"), "TAPD_DSH_API_KEY_MY_GATEWAY");
         // `-` is the only character mapped to `_`, so the mapping stays injective.
         assert_ne!(api_key_env("a-b"), api_key_env("ab"));
+    }
+
+    #[test]
+    fn the_boot_fingerprint_only_covers_startup_settings() {
+        let mut agent = AgentConfig::default();
+        let booted = boot_fingerprint(&agent);
+
+        // Prompt, per-task settings and the permission mode are live: changing
+        // them must not ask for a restart.
+        agent.prompt_template.push_str("\nmore");
+        agent.worktree_enabled = true;
+        agent.permission_mode = PermissionMode::Full;
+        assert_eq!(booted, boot_fingerprint(&agent));
+
+        // Model catalog and coworkers are frozen at start.
+        agent.coworker_ids.push("author".into());
+        assert_ne!(booted, boot_fingerprint(&agent));
     }
 }

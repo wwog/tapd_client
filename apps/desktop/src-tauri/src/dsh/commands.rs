@@ -95,7 +95,7 @@ pub async fn dsh_session_entries(
     session_id: String,
     since_seq: Option<u64>,
 ) -> Result<Value, String> {
-    feature::session_entries(&app, &session_id, since_seq)
+    feature::session_entries(&app, &session_id, since_seq).await
 }
 
 /// Approvals and questions the runtime is blocked on.

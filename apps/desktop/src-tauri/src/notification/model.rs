@@ -229,6 +229,10 @@ pub struct AiAction {
     pub label: String,
     /// `primary` / `secondary` / `danger`; unknown values render as secondary.
     pub style: String,
+    /// Hint shown under the label. Options with one get a second line; the
+    /// label itself never wraps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -251,10 +255,26 @@ pub struct AiPayload {
     pub client: String,
     pub blocks: Vec<AiBlock>,
     pub actions: Vec<AiAction>,
+    /// Actions are listed one per row (agent question options) instead of
+    /// sharing one row; the capsule grows to fit them.
+    #[serde(default)]
+    pub stack_actions: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<AiResolution>,
+}
+
+impl AiPayload {
+    /// Rows the stacked action list needs. A single action never stacks, so it
+    /// keeps the shared action row and no extra height.
+    pub fn option_rows(&self) -> usize {
+        if self.stack_actions && self.actions.len() > 1 {
+            self.actions.len()
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

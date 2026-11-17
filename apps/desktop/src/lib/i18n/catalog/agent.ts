@@ -11,6 +11,11 @@ export const agent = {
 
   // Task list.
   "agent.session.new": ["新建会话", "New session"],
+  "agent.session.delete": ["删除会话", "Delete conversation"],
+  "agent.session.deleteHint": [
+    "删除「{title}」及其对话记录？此操作无法撤销。",
+    "Delete “{title}” and its history? This cannot be undone.",
+  ],
   "agent.task.noProject": ["未关联项目", "No project"],
   "agent.task.untitled": ["新会话", "New session"],
   "agent.task.empty": ["还没有任务", "No tasks yet"],
@@ -26,6 +31,7 @@ export const agent = {
   "agent.task.workflowFailed": ["失败", "Failed"],
   "agent.task.workflowCanceled": ["已取消", "Canceled"],
   "agent.task.live": ["运行中", "Running"],
+  "agent.task.needsInput": ["{count} 项待处理", "{count} waiting for you"],
 
   // Task actions.
   "agent.task.fix": ["修复", "Fix"],
@@ -99,8 +105,12 @@ export const agent = {
   "agent.turn.collapse": ["收起这一轮的轨迹", "Hide the trace of this turn"],
   "agent.turn.reads": ["查阅 {count} 项", "{count} reads"],
   "agent.turn.commands": ["执行 {count} 命令", "{count} commands"],
+  "agent.turn.searches": ["搜索 {count} 次", "{count} searches"],
   "agent.turn.files": ["修改 {count} 文件", "{count} files"],
   "agent.turn.summarySeparator": ["，", ", "],
+  "agent.turn.failed": ["本轮失败", "This turn failed"],
+  "agent.turn.blocked": ["本轮被策略拦截", "This turn was blocked"],
+  "agent.turn.aborted": ["已停止这一轮", "This turn was stopped"],
 
   // One tool call as one timeline row.
   "agent.action.thinking": ["正在思考", "Thinking"],
@@ -113,6 +123,14 @@ export const agent = {
   "agent.action.searchedWeb": ["已搜索网页", "Searched the web"],
   "agent.action.fetched": ["已获取", "Fetched"],
   "agent.action.called": ["调用了", "Called"],
+  "agent.action.runningBash": ["正在执行", "Running"],
+  "agent.action.runningRead": ["正在读取", "Reading"],
+  "agent.action.runningViewed": ["正在查看", "Viewing"],
+  "agent.action.runningWrote": ["正在写入", "Writing"],
+  "agent.action.runningEdited": ["正在编辑", "Editing"],
+  "agent.action.runningSearched": ["正在搜索", "Searching"],
+  "agent.action.runningFetched": ["正在访问", "Fetching"],
+  "agent.action.runningCalled": ["正在调用", "Calling"],
   "agent.action.failed": ["执行失败", "Failed"],
   "agent.thinking": ["思考", "Reasoning"],
 
@@ -168,6 +186,7 @@ export const agent = {
     "等待运行时的用量统计…",
     "Waiting for the runtime's meter…",
   ],
+  "agent.context.unknown": ["待统计", "Not measured"],
   // The split only exists for a live request; history keeps the totals.
   "agent.context.splitPending": [
     "这几项的占比在下一次请求后更新",
@@ -343,9 +362,14 @@ export const agent = {
     "除硬黑名单外全部放行。",
     "Everything except the hard blocklist is allowed.",
   ],
-  "agent.config.permissionRestart": [
-    "重启运行时后生效",
-    "Takes effect after the runtime restarts",
+  "agent.config.restartRequired": [
+    "配置已修改，重启运行时后生效",
+    "Settings changed; takes effect after a runtime restart",
+  ],
+  "agent.config.restartRuntime": ["重启运行时", "Restart runtime"],
+  "agent.config.restartBusy": [
+    "重启会中断正在运行的会话，之后需要重新发送。确定继续？",
+    "Restarting interrupts running conversations; you will need to resend. Continue?",
   ],
   "agent.config.coworkers": ["同事", "Coworkers"],
   "agent.config.coworkersHint": [

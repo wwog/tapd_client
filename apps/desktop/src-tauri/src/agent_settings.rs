@@ -87,6 +87,18 @@ impl PermissionMode {
             Self::Full => "full",
         }
     }
+
+    /// Parses the wire value shared by the environment variable, the settings
+    /// file and the per-session store. Unknown values are rejected, not
+    /// defaulted: a typo must not silently pick a weaker mode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" => Some(Self::Auto),
+            "notify" => Some(Self::Notify),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
 }
 
 /// 单供应商时代的模型配置。只在读取旧 `agent.json` 时出现，读入即迁移成
@@ -1124,6 +1136,18 @@ mod tests {
 
     /// The shape the configuration tab sends: camelCase keys, nullable
     /// `maxTokens`, `input` as an array, reasoning as level/wire pairs.
+    #[test]
+    fn a_test_agent_pointer_survives_sanitizing() {
+        let mut config = AgentConfig::default();
+        crate::dsh::test_agent::inject(&mut config, 1234);
+        config.dsh_models.active_provider_id = "test-agent".into();
+        config.dsh_models.active_model_id = "TestAgent".into();
+        let config = config.sanitized();
+        assert_eq!(config.dsh_models.active_provider_id, "test-agent");
+        assert_eq!(config.dsh_models.active_model_id, "TestAgent");
+        assert!(config.dsh_models.is_configured());
+    }
+
     #[test]
     fn the_wire_shape_matches_the_frontend() {
         let wire = serde_json::json!({

@@ -8,6 +8,7 @@ import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
 import { TeamBar } from "./TeamBar";
 import { TeamBoard } from "./TeamBoard";
+import { TurnStop } from "./TurnStop";
 import { agentActions, agentStore, agentTeamView } from "./store";
 
 type Props = {
@@ -54,6 +55,7 @@ export function AgentWorkspace({ toast }: Props) {
             {selected && selected.kind !== "chat" ? (
               <TaskActions key={selected.id} task={selected} />
             ) : null}
+            <TurnStop />
             {showBoard ? <TeamBoard /> : null}
             <MessageStream
               key={state.selectedId ?? "draft"}

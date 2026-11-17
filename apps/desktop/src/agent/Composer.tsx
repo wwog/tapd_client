@@ -7,22 +7,35 @@ import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { SessionUsageBar } from "./usage/SessionUsageBar";
 import { agentActions, agentStore } from "./store";
+
+/** Draft key before any session exists; the text follows the first one. */
+const NEW_SESSION_KEY = "__new";
+
 /**
  * Enter sends, Shift+Enter adds a line. The send button is disabled while the
  * runtime is not ready; the notice above states why and offers the action.
+ * Drafts are per session: typing half a prompt and switching tasks must not
+ * leave the text pointed at the other conversation.
  */
 export function Composer() {
   const state = agentStore.use();
-  const [text, setText] = useState("");
+  const sessionId = state.selectedId ?? NEW_SESSION_KEY;
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
+  const text = drafts[sessionId] ?? "";
+  const setText = (value: string) =>
+    setDrafts((current) => ({ ...current, [sessionId]: value }));
   const block = runtimeBlock(state);
   const disabled = block !== null || sending;
 
   const send = async () => {
     if (disabled || !text.trim()) return;
+    const draftKey = sessionId;
     setSending(true);
     const accepted = await agentActions.sendPrompt(text);
-    if (accepted) setText("");
+    if (accepted) {
+      setDrafts((current) => ({ ...current, [draftKey]: "" }));
+    }
     setSending(false);
   };
 

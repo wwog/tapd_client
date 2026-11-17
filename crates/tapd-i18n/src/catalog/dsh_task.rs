@@ -4,6 +4,16 @@ use crate::Message;
 
 pub static MESSAGES: &[Message] = &[
     (
+        "dsh.chat.delete.running",
+        "会话还在运行，先停止再删除",
+        "The conversation is still running; stop it before deleting",
+    ),
+    (
+        "dsh.chat.delete.task",
+        "只能删除自由会话",
+        "Only free conversations can be deleted",
+    ),
+    (
         "dsh.task.approve.busy",
         "模型还在运行，等这一轮结束后再审核",
         "The model is still running; approve after this turn ends",

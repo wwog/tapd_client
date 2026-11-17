@@ -8,7 +8,7 @@ import { QuestionCard } from "./QuestionCard";
 import { UserBubble } from "./MessageParts";
 import { TurnBlock } from "./TurnBlock";
 import { groupTurns } from "./turns";
-import { agentActions, agentStore } from "./store";
+import { agentActions, agentStore, isSessionRunning } from "./store";
 
 /**
  * Committed history plus the live attempt on top, grouped per turn. The page
@@ -33,12 +33,15 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     (tool) => !tool.callId || !committedCalls.has(tool.callId),
   );
   const liveHasContent = Boolean(live?.text || live?.reasoning) || liveTools.length > 0;
+  // Only in-flight calls reach the turn: the store already drops a call when
+  // its row commits, and this filter also covers deltas that never carried a
+  // callId. Passing the raw overlay painted every call twice.
+  const liveTrace = live
+    ? { text: live.text, reasoning: live.reasoning, tools: liveTools }
+    : undefined;
 
   const blocks = groupTurns(items);
-  const running = Boolean(
-    sessionId &&
-      (state.sessions[sessionId]?.status === "running" || liveHasContent),
-  );
+  const running = isSessionRunning(state, sessionId);
 
   // The live stream belongs to the turn whose `turn/end` has not landed yet;
   // before its `turn/start` commits, a synthetic block keeps the text visible.
@@ -154,7 +157,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
               key={block.key}
               block={block}
               running={active}
-              live={active ? live : undefined}
+              live={active ? liveTrace : undefined}
             />
           );
         })}

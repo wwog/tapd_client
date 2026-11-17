@@ -59,16 +59,62 @@ const DESCRIPTIONS = {
 
 export function apply(ctx) {
   const raw = process.env.TAPD_DSH_PERMISSION_MODE
-  const mode = MODES.has(raw) ? raw : 'auto'
+  let defaultMode = MODES.has(raw) ? raw : 'auto'
   if (raw !== undefined && !MODES.has(raw)) {
     ctx.logger.warn(`${name}: unknown TAPD_DSH_PERMISSION_MODE "${raw}", using auto`)
   }
+
+  // Session overrides. The desktop pushes these over the bridge control
+  // channel; they take effect on the next tool call, no runtime restart.
+  const sessionModes = new Map()
+  // A subagent inherits the session it was delegated from. The root is resolved
+  // at call time so a mode change on the root reaches running children too.
+  const parentOf = new Map()
+
+  const known = (mode) => (MODES.has(mode) ? mode : undefined)
+
+  const modeForSession = (session) => {
+    let id = session?.id
+    for (let depth = 0; id && depth < 8; depth += 1) {
+      const override = sessionModes.get(id)
+      if (override !== undefined) return override
+      id = parentOf.get(id)
+    }
+    return defaultMode
+  }
+
+  ctx.on('session/created', (session) => {
+    const parent = session?.header?.parentSession
+    if (session?.id && parent && session.header?.origin === 'subagent') {
+      parentOf.set(session.id, parent)
+    }
+  })
+
+  ctx.provide('tapdPolicy', {
+    setDefault(mode) {
+      const next = known(mode)
+      if (next !== undefined) defaultMode = next
+    },
+    setMode(sessionId, mode) {
+      const next = known(mode)
+      if (sessionId && next !== undefined) sessionModes.set(sessionId, next)
+    },
+  })
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     // The field name differs between the execution contract (`name`) and the
     // SDK approval request (`toolName`); accept both so a rename upstream does
     // not silently disable the gate.
     const tool = String(exec?.toolName ?? exec?.name ?? '')
+    // Plan mode is prompt-enforced upstream; this gate makes the file-writing
+    // half deterministic so picking 计划模式 actually means "plan first".
+    if (FILE_TOOLS.has(tool) && planActive(ctx, exec?.agent?.session)) {
+      return {
+        kind: 'deny',
+        reason: `plan mode: files cannot be modified before the plan is approved; call exit_plan_mode with the plan first (${tool})`,
+      }
+    }
+    const mode = modeForSession(exec?.agent?.session)
     let hit
     try {
       hit = classifyCall({
@@ -98,6 +144,20 @@ export function apply(ctx) {
       },
     }
   })
+}
+
+/**
+ * Whether the session is in the engine's plan mode. The projection throws while
+ * the plugin is not activated yet; treating that as "not planning" keeps the
+ * gate open rather than breaking every tool call.
+ */
+function planActive(ctx, session) {
+  if (!session) return false
+  try {
+    return ctx.get('planMode')?.selectedActive(session) === true
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------

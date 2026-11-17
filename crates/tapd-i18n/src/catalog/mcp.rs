@@ -44,6 +44,7 @@ pub static MESSAGES: &[Message] = &[
     ("mcp.arg.actions", "可点击按钮；用户点击后调用方会收到对应的 actionId。不传时只显示「知道了」", "Clickable buttons; the caller receives the matching actionId when clicked. Without them only \"Got it\" is shown."),
     ("mcp.arg.actionid", "回传给你的动作标识，如 confirm / cancel / retry", "Action id returned to you, such as confirm / cancel / retry."),
     ("mcp.arg.actionlabel", "按钮文案，建议不超过 6 字", "Button label; 6 characters or fewer recommended."),
+    ("mcp.arg.actiondesc", "可选；按钮下方的补充说明，显示在第二行", "Optional; a hint under the button label, shown on a second line."),
     ("mcp.arg.tag", "可选；相同 tag 的待处理通知会被替换，适合进度类更新", "Optional; a pending notification with the same tag is replaced, which suits progress updates."),
     ("mcp.arg.waitseconds", "等待用户操作的秒数；0 = 立即返回。最长 120 秒", "Seconds to wait for user action; 0 returns immediately. Maximum 120 seconds."),
     ("mcp.arg.notificationid", "tapd_notify_user 返回的通知 id", "Notification id returned by tapd_notify_user."),

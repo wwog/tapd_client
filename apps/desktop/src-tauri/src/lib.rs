@@ -181,6 +181,16 @@ pub fn run() {
             // payload is reported where it can be fixed.
             let agent_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
+                // Debug builds inject the fake provider while loading settings,
+                // and that entry needs the local API port. Starting before the
+                // server binds would silently fall back to another provider.
+                #[cfg(debug_assertions)]
+                for _ in 0..100 {
+                    if dsh::test_agent::port().is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
                 match dsh::feature::start(&agent_handle).await {
                     Ok(status) => {
                         tracing::info!(phase = ?status.phase, "built-in agent runtime started")

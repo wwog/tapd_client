@@ -7,9 +7,12 @@
 //!
 //! `command` is the feature surface both windows and the paired phone use.
 
-use serde_json::{json, Value};
-use tauri::AppHandle;
+use std::sync::Arc;
 
+use serde_json::{json, Value};
+use tauri::{AppHandle, Manager};
+
+use super::bridge::BridgeState;
 use crate::agent_settings::{self, PermissionMode};
 use tapd_i18n::tr_args;
 
@@ -17,7 +20,7 @@ use tapd_i18n::tr_args;
 pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Value, String> {
     match name {
         "dsh_policy_get" => Ok(mode_json(agent_settings::config_for(app).permission_mode)),
-        "dsh_policy_set" => set(app, &payload),
+        "dsh_policy_set" => set(app, &payload).await,
         other => Err(format!("unknown dsh policy command: {other}")),
     }
 }
@@ -27,26 +30,35 @@ fn mode_json(mode: PermissionMode) -> Value {
     json!({ "mode": mode })
 }
 
-/// Validates and writes the mode.
+/// Validates, writes and pushes the runtime-wide default.
 ///
-/// A running runtime keeps the gate it booted with, so the caller is expected to
-/// say that a restart is needed; silently restarting would interrupt turns.
-fn set(app: &AppHandle, payload: &Value) -> Result<Value, String> {
+/// The default is not startup-only: the plugin keeps it in memory and uses it
+/// for every session without an override, so the next tool call already sees
+/// the new value.
+async fn set(app: &AppHandle, payload: &Value) -> Result<Value, String> {
     let raw = payload
         .get("mode")
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    let mode = match raw {
-        "auto" => PermissionMode::Auto,
-        "notify" => PermissionMode::Notify,
-        "full" => PermissionMode::Full,
-        other => return Err(tr_args("dsh.policy.unknown", &[&other])),
-    };
+    let mode = PermissionMode::parse(raw)
+        .ok_or_else(|| tr_args("dsh.policy.unknown", &[&raw]))?;
     let mut config = agent_settings::config_for(app);
     config.permission_mode = mode;
     let saved = agent_settings::save_for(app, &config)?;
+    push_default(app, saved.permission_mode);
     Ok(mode_json(saved.permission_mode))
+}
+
+/// Best effort: a runtime that is not up already has the new default in its
+/// next environment; a live one applies it on the next tool call.
+fn push_default(app: &AppHandle, mode: PermissionMode) {
+    let Some(bridge) = app.try_state::<Arc<BridgeState>>() else {
+        return;
+    };
+    if let Err(error) = bridge.inner().set_default_mode(mode) {
+        tracing::debug!(%error, "default permission mode was not queued");
+    }
 }
 
 /// One `notice` frame from the policy plugin: notify mode is telling us what it

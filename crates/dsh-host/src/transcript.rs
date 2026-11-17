@@ -183,6 +183,10 @@ pub struct DshSession {
     /// request records one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<ModelSelection>,
+    /// The engine's plan mode for this session (`plan/mode` events). Plan mode
+    /// is prompt-enforced upstream; the session row is where the UI reads it.
+    #[serde(default)]
+    pub plan_active: bool,
 }
 
 impl DshSession {
@@ -195,6 +199,7 @@ impl DshSession {
             message_count: 0,
             usage: SessionUsage::default(),
             selection: None,
+            plan_active: false,
         }
     }
 }
@@ -262,6 +267,10 @@ pub enum DshEntry {
         /// `TurnEndReason.kind` (`completed`, `error`, `aborted`, …).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// The provider/runtime message behind a failed turn. The reason alone
+        /// says *that* it failed; this says why.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -402,6 +411,7 @@ impl Transcript {
                 | "step/start"
                 | "request/context"
                 | "model/selection"
+                | "plan/mode"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -423,18 +433,24 @@ impl Transcript {
             "turn/start" => {
                 record.meta.status = SessionStatus::Running;
                 record.meta.usage.turns += 1;
-                Some(record.push_turn(seq, at, TurnState::Start, None))
+                Some(record.push_turn(seq, at, TurnState::Start, None, None))
             }
             "turn/end" => {
                 let reason = event
                     .pointer("/data/reason/kind")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                let error = event
+                    .pointer("/data/reason/error/message")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                    .map(str::to_string);
                 record.meta.status = match reason.as_deref() {
                     Some("error") | Some("blocked") => SessionStatus::Failed,
                     _ => SessionStatus::Idle,
                 };
-                Some(record.push_turn(seq, at, TurnState::End, reason))
+                Some(record.push_turn(seq, at, TurnState::End, reason, error))
             }
             "step/start" => {
                 record.meta.usage.steps += 1;
@@ -447,6 +463,13 @@ impl Transcript {
             }
             "model/selection" => {
                 record.record_selection(event);
+                None
+            }
+            "plan/mode" => {
+                record.meta.plan_active = event
+                    .pointer("/data/active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 None
             }
             _ => None,
@@ -497,6 +520,21 @@ impl Transcript {
         changed
     }
 
+    /// A session hydrated from its log cannot be running: the runtime is what
+    /// runs turns, and it did not know this session yet. An unclosed
+    /// `turn/start` in the file is a crash artifact, not live work — leaving it
+    /// `running` would show a timer that never stops.
+    pub fn settle_hydrated(&mut self, session_id: &str) -> bool {
+        let Some(record) = self.sessions.get_mut(session_id) else {
+            return false;
+        };
+        if record.meta.status != SessionStatus::Running {
+            return false;
+        }
+        record.meta.status = SessionStatus::Idle;
+        true
+    }
+
     /// Sessions sorted newest first.
     pub fn sessions(&self) -> Vec<DshSession> {
         let mut sessions: Vec<DshSession> =
@@ -513,6 +551,12 @@ impl Transcript {
         self.sessions
             .get(session_id)
             .map(|record| record.meta.clone())
+    }
+
+    /// Drops one session's normalized state (a deleted chat). Returns whether
+    /// the registry held it.
+    pub fn remove_session(&mut self, session_id: &str) -> bool {
+        self.sessions.remove(session_id).is_some()
     }
 
     /// The route dsh last recorded for this session, if any.
@@ -750,12 +794,20 @@ impl SessionRecord {
         Some(entry)
     }
 
-    fn push_turn(&mut self, seq: u64, at: &str, state: TurnState, reason: Option<String>) -> DshEntry {
+    fn push_turn(
+        &mut self,
+        seq: u64,
+        at: &str,
+        state: TurnState,
+        reason: Option<String>,
+        error: Option<String>,
+    ) -> DshEntry {
         let entry = DshEntry::Turn {
             seq,
             at: at.to_string(),
             state,
             reason,
+            error,
         };
         self.entries.push(entry.clone());
         entry
@@ -988,13 +1040,29 @@ mod tests {
             "error": { "message": "boom", "code": "HTTP_500" } } });
         let ingested = transcript.ingest("s1", &end, "2026-11-16T00:00:09.000Z");
         match ingested.entry.unwrap() {
-            DshEntry::Turn { state, reason, .. } => {
+            DshEntry::Turn {
+                state, reason, error, ..
+            } => {
                 assert_eq!(state, TurnState::End);
                 assert_eq!(reason.as_deref(), Some("error"));
+                assert_eq!(error.as_deref(), Some("boom"));
             }
             other => panic!("unexpected entry: {other:?}"),
         }
         assert_eq!(transcript.session("s1").unwrap().status, SessionStatus::Failed);
+    }
+
+    #[test]
+    fn a_hydrated_unclosed_turn_is_not_live() {
+        let mut transcript = Transcript::default();
+        transcript.ingest("s1", &event("turn/start", 0), "2026-11-16T00:00:00.000Z");
+        assert!(transcript.settle_hydrated("s1"));
+        assert_eq!(
+            transcript.session("s1").unwrap().status,
+            SessionStatus::Idle,
+            "a crash artifact must not keep a turn running forever"
+        );
+        assert!(!transcript.settle_hydrated("missing"));
     }
 
     #[test]
@@ -1149,6 +1217,27 @@ mod tests {
         let selection = transcript.selection("s1").unwrap();
         assert_eq!(selection.model, "fast");
         assert!(selection.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn plan_mode_is_part_of_the_session_row() {
+        let mut transcript = Transcript::default();
+        let entered = transcript.ingest(
+            "s1",
+            &json!({ "type": "plan/mode", "seq": 0, "data": { "active": true } }),
+            "2026-11-16T00:00:00.000Z",
+        );
+        // Plan state is a session flag, not a transcript row.
+        assert!(entered.entry.is_none());
+        assert!(entered.session_changed);
+        assert!(transcript.session("s1").unwrap().plan_active);
+
+        transcript.ingest(
+            "s1",
+            &json!({ "type": "plan/mode", "seq": 1, "data": { "active": false } }),
+            "2026-11-16T00:00:01.000Z",
+        );
+        assert!(!transcript.session("s1").unwrap().plan_active);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::bridge::BridgeState;
 use super::runtime::{DshStatus, Phase, RuntimeState};
+use crate::agent_settings::PermissionMode;
 use tapd_i18n::{tr, tr_args};
 
 fn runtime(app: &AppHandle) -> Result<Arc<RuntimeState>, String> {
@@ -36,11 +37,40 @@ fn bridge(app: &AppHandle) -> Result<Arc<BridgeState>, String> {
 // ---------------------------------------------------------------------------
 
 pub fn status(app: &AppHandle) -> Result<DshStatus, String> {
-    Ok(runtime(app)?.status())
+    Ok(runtime(app)?.status_for(app))
 }
 
 pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
     runtime(app)?.ensure_ready(app).await
+}
+
+/// Stops and starts in one step so startup-only settings (permission mode,
+/// model catalog, coworkers) take effect. Unlike `start`, it is not a no-op
+/// while the process is alive.
+pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
+    runtime(app)?.restart(app).await
+}
+
+/// Stops the current turn of one session without ending the task. `turn/end`
+/// follows from the runtime, so the workflow still settles normally. Requests
+/// the turn was blocked on are answered `cancelled` and removed here: leaving
+/// them pending would keep a card that can never do anything.
+pub async fn cancel_turn(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    if let Ok(runtime) = runtime(app) {
+        for request in runtime.pending_for_session(session_id) {
+            let result = match request.kind {
+                super::runtime::PendingKind::Approval => json!({ "outcome": "cancelled" }),
+                super::runtime::PendingKind::Question => json!({ "cancelled": true }),
+            };
+            let _ = runtime.respond(request.rpc_id, result).await;
+            let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
+        }
+    }
+    // A restored task has no live turn; the cancel is still a success.
+    if let Err(error) = bridge(app)?.cancel_session(session_id).await {
+        tracing::debug!(%error, session = session_id, "no live turn to cancel");
+    }
+    Ok(json!({ "ok": true }))
 }
 
 pub async fn stop(app: &AppHandle) -> Result<DshStatus, String> {
@@ -63,7 +93,7 @@ pub fn pending(app: &AppHandle) -> Result<Value, String> {
     Ok(json!({ "requests": requests }))
 }
 
-pub fn session_entries(
+pub async fn session_entries(
     app: &AppHandle,
     session_id: &str,
     since_seq: Option<u64>,
@@ -73,26 +103,43 @@ pub fn session_entries(
     // A persisted selection from before a restart names a session this process
     // has not seen yet. That is a "gone" state, not a failure: `known: false`
     // lets the UI fall back instead of rendering an error panel.
-    let known = bridge.entries_since(session_id, since).or_else(|| {
-        // The runtime resumes sessions lazily and may not even be running, so
-        // fall back to dsh's own log: history must not depend on either.
-        let sessions_dir = dsh_sessions_dir(app)?;
-        if !bridge.hydrate_from_log(&sessions_dir, session_id) {
-            return None;
+    let known = match bridge.entries_since(session_id, since) {
+        Some(entries) => Some(entries),
+        None => {
+            // The runtime resumes sessions lazily and may not even be running,
+            // so fall back to dsh's own log: history must not depend on either.
+            // Decompression is file IO, so it runs off the async runtime; the
+            // transcript lock is only taken for the pure ingest pass.
+            let Some(sessions_dir) = dsh_sessions_dir(app) else {
+                return Ok(unknown_session(session_id));
+            };
+            let handle = app.clone();
+            let id = session_id.to_string();
+            let restored = tauri::async_runtime::spawn_blocking(move || {
+                let Some(bridge) = handle.try_state::<Arc<BridgeState>>() else {
+                    return false;
+                };
+                let bridge = bridge.inner().clone();
+                if !bridge.hydrate_from_log(&sessions_dir, &id) {
+                    return false;
+                }
+                // The log carries token totals; the meter table carries the split.
+                bridge.restore_meter(&handle, &id);
+                // Publish so the session row (and its figures) survives a restart.
+                bridge.publish_sessions(&handle);
+                true
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            if restored {
+                bridge.entries_since(session_id, since)
+            } else {
+                None
+            }
         }
-        // The log carries token totals; the meter table carries the split.
-        bridge.restore_meter(app, session_id);
-        // Publish so the session row (and its figures) survives a restart.
-        bridge.publish_sessions(app);
-        bridge.entries_since(session_id, since)
-    });
+    };
     let Some((entries, last_seq)) = known else {
-        return Ok(json!({
-            "sessionId": session_id,
-            "known": false,
-            "entries": [],
-            "lastSeq": 0,
-        }));
+        return Ok(unknown_session(session_id));
     };
     Ok(json!({
         "sessionId": session_id,
@@ -100,6 +147,16 @@ pub fn session_entries(
         "entries": entries,
         "lastSeq": last_seq,
     }))
+}
+
+/// The documented fallback shape for a session this process cannot see.
+fn unknown_session(session_id: &str) -> Value {
+    json!({
+        "sessionId": session_id,
+        "known": false,
+        "entries": [],
+        "lastSeq": 0,
+    })
 }
 
 /// Where dsh keeps its own session logs (`$DSH_HOME/sessions`).
@@ -124,6 +181,12 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     bridge(app)?.create_session(app, session_id);
     let state = runtime(app)?;
     state.ensure_ready(app).await?;
+    // Free chats get their own scratch directory: a session with no project
+    // must never read or write a repository the user did not choose. Tasks
+    // assign their worktree right after this, so they are unaffected.
+    if super::tasks::kind_of(app, session_id).await == Some(super::tasks::TaskKind::Chat) {
+        assign_chat_workspace(app, session_id).await;
+    }
     // A session restored from a previous run is not open in the runtime: the
     // SDK would answer with a fresh empty session under the same id. History
     // loads from the log, so the attach has to happen before the first send.
@@ -138,6 +201,35 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     state.prepare_session(app, session_id, !restored).await;
     let receipt = state.query(app, session_id, text).await?;
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
+}
+
+/// Creates and queues the per-chat working directory. Best effort: the
+/// runtime-wide default is already a neutral scratch area, so a failed
+/// assignment cannot land the chat in a repository.
+async fn assign_chat_workspace(app: &AppHandle, session_id: &str) {
+    let Some(state) = app.try_state::<Arc<crate::state::AppState>>() else {
+        return;
+    };
+    let target = state
+        .paths
+        .data_dir
+        .join("dsh")
+        .join("chats")
+        .join(session_id);
+    let dir = target.clone();
+    let created = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map(|_| dir.to_string_lossy().to_string())
+    })
+    .await;
+    let Ok(Ok(cwd)) = created else {
+        tracing::warn!(session = session_id, "chat workspace could not be created");
+        return;
+    };
+    if let Ok(bridge) = bridge(app) {
+        if let Err(error) = bridge.assign_session(session_id, &cwd).await {
+            tracing::warn!(%error, session = session_id, "chat workspace was not assigned");
+        }
+    }
 }
 
 /// Switches one session's model route. The choice is durable in that session's
@@ -165,6 +257,70 @@ pub fn select_model(
         bridge.remember_selection(session_id, selection);
     }
     Ok(json!({ "ok": true }))
+}
+
+/// One session's permission mode; `mode: null` means "inherit the default".
+pub async fn session_mode(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let state = app
+        .try_state::<Arc<crate::state::AppState>>()
+        .ok_or_else(|| tr("dsh.state.unavailable").to_string())?;
+    let cache = state.inner().cache.clone();
+    let id = session_id.to_string();
+    let mode = tauri::async_runtime::spawn_blocking(move || super::mode_store::load(&cache, &id))
+        .await
+        .map_err(|error| error.to_string())??;
+    Ok(json!({ "sessionId": session_id, "mode": mode }))
+}
+
+/// Sets one session's permission mode and/or plan flag. Both take effect on the
+/// next tool call: the policy gate reads them per call, and the engine applies a
+/// queued plan selection at the next accepted step. A stopped runtime keeps the
+/// choice and replays it on the next prompt.
+pub async fn set_session_mode(
+    app: &AppHandle,
+    session_id: &str,
+    mode: Option<&str>,
+    plan: Option<bool>,
+) -> Result<Value, String> {
+    let parsed = match mode {
+        Some(raw) => Some(
+            PermissionMode::parse(raw)
+                .ok_or_else(|| tr_args("dsh.policy.unknown", &[&raw]))?,
+        ),
+        None => None,
+    };
+    if let Some(mode) = parsed {
+        let state = app
+            .try_state::<Arc<crate::state::AppState>>()
+            .ok_or_else(|| tr("dsh.state.unavailable").to_string())?;
+        let cache = state.inner().cache.clone();
+        let id = session_id.to_string();
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        tauri::async_runtime::spawn_blocking(move || {
+            super::mode_store::save(&cache, &id, mode, &at)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+    }
+
+    let bridge = bridge(app)?;
+    if let Some(mode) = parsed {
+        // Remembered inside the bridge call; a missing plugin only means the
+        // frame waits for the next prompt.
+        if let Err(error) = bridge.set_session_mode(session_id, mode) {
+            tracing::debug!(%error, session = session_id, "session mode was not queued");
+        }
+    }
+    if let Some(active) = plan {
+        if let Err(error) = bridge.set_plan(session_id, active) {
+            tracing::debug!(%error, session = session_id, "plan mode was not queued");
+        }
+    }
+    Ok(json!({
+        "sessionId": session_id,
+        "mode": parsed,
+        "plan": plan,
+    }))
 }
 
 /// Only `allowed-once` grants the operation.
@@ -218,6 +374,25 @@ struct SessionEntriesPayload {
     since_seq: Option<u64>,
 }
 
+/// A command that is about one existing session id.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionRequest {
+    session_id: String,
+}
+
+/// One session-mode write. Both fields are optional so a plan toggle does not
+/// rewrite the permission mode; at least one must be present.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionModePayload {
+    session_id: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    plan: Option<bool>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PromptPayload {
@@ -262,6 +437,27 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_status" => serde_json::to_value(status(app)?).map_err(|error| error.to_string()),
         "dsh_start" => serde_json::to_value(start(app).await?).map_err(|error| error.to_string()),
         "dsh_stop" => serde_json::to_value(stop(app).await?).map_err(|error| error.to_string()),
+        "dsh_restart" => {
+            serde_json::to_value(restart(app).await?).map_err(|error| error.to_string())
+        }
+        "dsh_session_cancel" => {
+            let request: SessionRequest = parse(payload, "dsh_session_cancel")?;
+            cancel_turn(app, &request.session_id).await
+        }
+        "dsh_session_mode_get" => {
+            let request: SessionRequest = parse(payload, "dsh_session_mode_get")?;
+            session_mode(app, &request.session_id).await
+        }
+        "dsh_session_mode_set" => {
+            let request: SessionModePayload = parse(payload, "dsh_session_mode_set")?;
+            set_session_mode(
+                app,
+                &request.session_id,
+                request.mode.as_deref(),
+                request.plan,
+            )
+            .await
+        }
         "dsh_sessions" => sessions(app),
         name if name.starts_with("dsh_team_") => super::team::command(app, name, payload).await,
         name if name.starts_with("dsh_task") => super::tasks::command(app, name, payload).await,
@@ -269,7 +465,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_pending" => pending(app),
         "dsh_session_entries" => {
             let request: SessionEntriesPayload = parse(payload, "dsh_session_entries")?;
-            session_entries(app, &request.session_id, request.since_seq)
+            session_entries(app, &request.session_id, request.since_seq).await
         }
         "dsh_prompt" => {
             let request: PromptPayload = parse(payload, "dsh_prompt")?;

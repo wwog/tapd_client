@@ -27,7 +27,7 @@ use tapd_i18n::{tr, tr_args};
 
 use super::{
     model::{AiAction, AiBlock, AiField, AiPayload, AiTone},
-    service,
+    service, MAX_AI_ACTION_DESC_CHARS,
 };
 use crate::dsh::{EVENT_APPROVAL, EVENT_QUESTION};
 
@@ -115,13 +115,16 @@ fn approval(app: &AppHandle, payload: &Value) {
                 id: "allow".to_string(),
                 label: tr("dsh.policy.approval.allow").to_string(),
                 style: "primary".to_string(),
+                description: None,
             },
             AiAction {
                 id: "reject".to_string(),
                 label: tr("dsh.policy.approval.reject").to_string(),
                 style: "danger".to_string(),
+                description: None,
             },
         ],
+        stack_actions: false,
         tag: None,
         resolution: None,
     };
@@ -266,16 +269,25 @@ fn option_card(question: &Question) -> AiPayload {
         client: tr("dsh.policy.client").to_string(),
         blocks,
         // Option labels are the buttons; the index is the stable action id.
+        // Several options are listed one per row (label over description),
+        // because the card is too narrow for side-by-side buttons.
         actions: question
             .options
             .iter()
             .enumerate()
             .map(|(index, option)| AiAction {
                 id: format!("option-{index}"),
-                label: option.label.clone(),
+                label: option.label.trim().to_string(),
                 style: "secondary".to_string(),
+                description: option
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| truncate(text, MAX_AI_ACTION_DESC_CHARS)),
             })
             .collect(),
+        stack_actions: true,
         tag: None,
         resolution: None,
     }
@@ -292,7 +304,9 @@ fn summary_card(count: usize) -> AiPayload {
             id: "open".to_string(),
             label: tr("dsh.policy.question.open").to_string(),
             style: "primary".to_string(),
+            description: None,
         }],
+        stack_actions: false,
         tag: None,
         resolution: None,
     }
@@ -324,6 +338,7 @@ pub fn notice(tool: &str, target: &str, risk: &str) {
             }]
         },
         actions: Vec::new(),
+        stack_actions: false,
         tag: Some(NOTICE_TAG.to_string()),
         resolution: None,
     };

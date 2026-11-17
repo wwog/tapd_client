@@ -8,14 +8,15 @@
 //! dropped instead of migrated. v9 adds `dsh_tasks`, the task workflow rows
 //! (metadata only; the transcript still lives in the dsh store). v10 adds
 //! `dsh_session_meters`, the last context meter per session — dsh keeps it in
-//! memory only, so without it a restart loses the prompt composition.
+//! memory only, so without it a restart loses the prompt composition. v11 adds
+//! `dsh_session_modes`, a per-session permission mode (missing = global default).
 
 use rusqlite::Connection;
 
 /// Schema version. Bumped only when the stored shape changes; fresh and
 /// pre-release databases are rebuilt from scratch, while shipped shapes are
 /// upgraded in place.
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -54,6 +55,7 @@ pub(super) fn run(conn: &Connection) -> Result<(), String> {
                 DROP TABLE IF EXISTS chat_sessions;
                 DROP TABLE IF EXISTS dsh_tasks;
                 DROP TABLE IF EXISTS dsh_session_meters;
+                DROP TABLE IF EXISTS dsh_session_modes;
                 "#,
             )
             .map_err(|error| error.to_string())?;
@@ -177,6 +179,14 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             session_id TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
+        );
+
+        -- Per-session permission mode. A missing row means "inherit the global
+        -- default"; the value is pushed to the running policy plugin.
+        CREATE TABLE IF NOT EXISTS dsh_session_modes (
+            session_id TEXT PRIMARY KEY,
+            mode TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         "#,
     )

@@ -24,9 +24,8 @@
 //! in-memory registry: the DB row is the one source, which makes a restart
 //! behave exactly like the live path.
 //!
-//! The bridge owns the turn signal; [`set_turn_observer`] is the startup hook
-//! and [`on_turn_end`] / [`observe`] are the call from its publish path (see
-//! the module report for the exact one-liner).
+//! The bridge owns the turn signal: [`observe`] is called from its publish path
+//! for every committed entry.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -299,6 +298,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_task_cancel" => cancel(app, parse(payload, name)?).await,
         "dsh_task_diff" => diff(app, parse(payload, name)?).await,
         "dsh_task_resume" => resume(app, parse(payload, name)?).await,
+        "dsh_task_delete" => delete_chat(app, parse(payload, name)?).await,
         other => Err(format!("unknown dsh task command: {other}")),
     }
 }
@@ -377,28 +377,8 @@ async fn tasks_payload(app: &AppHandle) -> Result<Value, String> {
 // Turn-end observation
 // ---------------------------------------------------------------------------
 
-/// Startup hook: loads the persisted list once so the first turn end does not
-/// pay for opening the table, and logs whether the store is usable at all.
-///
-/// Wiring (owned by the bridge): call `tasks::set_turn_observer(&handle)` once
-/// in `setup`, and `tasks::observe(app, session_id, &entry)` from
-/// `BridgeState::publish_entry` for every emitted entry.
-#[allow(dead_code)] // wired by bridge.rs (see the module report)
-pub fn set_turn_observer(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        match tasks_payload(&app).await {
-            Ok(payload) => {
-                let count = payload["tasks"].as_array().map(Vec::len).unwrap_or(0);
-                tracing::info!(tasks = count, "dsh task store loaded");
-            }
-            Err(error) => tracing::warn!(%error, "dsh task store is unavailable"),
-        }
-    });
-}
-
-/// One committed entry from the bridge. Only `turn/end` matters here.
-#[allow(dead_code)] // wired by bridge.rs (see the module report)
+/// One committed entry from the bridge: turn ends settle the workflow, and the
+/// first user line names a chat.
 pub fn observe(app: &AppHandle, session_id: &str, entry: &DshEntry) {
     let at = entry.at();
     match entry {
@@ -498,9 +478,77 @@ pub async fn create_chat(app: &AppHandle, session_id: &str) -> Result<Value, Str
     Ok(json!({ "sessionId": session_id }))
 }
 
+/// The persisted kind of a session, when it has a task row at all. Draft ids
+/// the UI knows but the store does not return `None`.
+pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
+    let state = shared(app).ok()?;
+    let cache = state.cache.clone();
+    let id = session_id.to_string();
+    let loaded = blocking(move || task_store::load(&cache, &id)).await.ok()??;
+    Some(loaded.task.kind)
+}
+
+/// Deletes a free conversation: its list row, its normalized state and the
+/// files only it owns. Work handed over from a bug or a local item keeps its
+/// worktree and its history, so only chats qualify.
+async fn delete_chat(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.kind != TaskKind::Chat {
+        return Err(tr("dsh.chat.delete.task").to_string());
+    }
+    let running = live_sessions(app)
+        .get(&request.session_id)
+        .is_some_and(|session| session.status == SessionStatus::Running);
+    if running {
+        return Err(tr("dsh.chat.delete.running").to_string());
+    }
+
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    blocking(move || task_store::delete(&cache, &id)).await?;
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    let _ = blocking(move || super::mode_store::delete(&cache, &id)).await;
+    if let Ok(bridge) = bridge(app) {
+        bridge.forget_session(app, &request.session_id);
+    }
+
+    // The conversation file and the chat's scratch workspace exist for this
+    // session only; leaving either behind lets a later hydrate resurrect it.
+    if let Some(sessions_dir) = super::session_log::dir(app) {
+        if let Some(dir) = super::session_log::path(&sessions_dir, &request.session_id)
+            .and_then(|log| log.parent().map(|parent| parent.to_path_buf()))
+        {
+            let _ = blocking(move || {
+                std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())
+            })
+            .await;
+        }
+    }
+    let workspace = state
+        .paths
+        .data_dir
+        .join("dsh")
+        .join("chats")
+        .join(&request.session_id);
+    let _ = blocking(move || {
+        std::fs::remove_dir_all(&workspace).map_err(|error| error.to_string())
+    })
+    .await;
+
+    emit(app);
+    Ok(json!({ "sessionId": request.session_id }))
+}
+
 /// Schedules the review of a finished turn. Idempotent: a task that already
 /// left `running` is ignored, so a replayed snapshot cannot restart the work.
-#[allow(dead_code)] // wired by bridge.rs (see the module report)
 pub fn on_turn_end(app: &AppHandle, session_id: &str, at: &str) {
     let app = app.clone();
     let session_id = session_id.to_string();
@@ -523,8 +571,22 @@ async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), 
         return Ok(());
     }
     // A chat has no repository, so there is nothing to review; its workflow
-    // stays `running` and the UI renders chat rows without a chip.
+    // stays `running`. The row still records activity: the list sorts and
+    // displays chats by it long after the live session is gone.
     if record.task.kind == TaskKind::Chat {
+        let mut record = record;
+        record.task.message_count = live_sessions(app)
+            .get(session_id)
+            .map(|session| session.message_count as u32)
+            .unwrap_or(record.task.message_count);
+        record.touch_at(at);
+        let expected = record.task.workflow;
+        let state = shared(app)?;
+        let cache = state.cache.clone();
+        let stored = record.clone();
+        if blocking(move || task_store::update_if(&cache, &stored, expected)).await? {
+            emit(app);
+        }
         return Ok(());
     }
 

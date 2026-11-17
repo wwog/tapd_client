@@ -22,9 +22,11 @@ import {
   type DshEntryEvent,
   type DshErrorEvent,
   type DshFocusSessionEvent,
+  type DshPermissionMode,
   type DshQuestionEvent,
   type DshSessionEvent,
   type DshSessionRow,
+  type DshSessionStatus,
   type DshSessionsEvent,
   type DshSettledEvent,
   type DshStatus,
@@ -97,6 +99,10 @@ export type AgentState = {
   configError: string | null;
   entries: Record<string, SessionHistory>;
   live: Record<string, LiveRun | undefined>;
+  /** The attempt whose committed message already landed. Deltas from it that
+   *  arrive after the commit (stream and stdio are different channels) must be
+   *  dropped instead of starting a second live run. */
+  committedAttempts: Record<string, string | undefined>;
   /** Prompts accepted by the runtime but not yet echoed as a user entry. */
   pendingPrompts: Record<string, string[] | undefined>;
   /** Model picked before a session exists; applied to the next allocation. */
@@ -105,6 +111,12 @@ export type AgentState = {
   questions: PendingQuestion[];
   /** Session rows (usage, counters) keyed by id; the status line reads them. */
   sessions: Record<string, DshSessionRow>;
+  /** Per-session permission mode; `null` inherits the configured default and
+   *  `undefined` means "not read yet". */
+  sessionModes: Record<string, DshPermissionMode | null | undefined>;
+  /** Plan choices that have not been confirmed by the engine's `plan/mode`
+   *  event. The session row is the authority once it matches. */
+  planOverrides: Record<string, boolean | undefined>;
   /** Team board per session; absent until read or pushed. */
   team: Record<string, DshTeam>;
   /** Sessions whose board was read once; `dsh://team` updates it afterwards. */
@@ -143,11 +155,14 @@ const initialState: AgentState = {
   configError: null,
   entries: {},
   live: {},
+  committedAttempts: {},
   pendingPrompts: {},
   draftSelection: null,
   approvals: [],
   questions: [],
   sessions: {},
+  sessionModes: {},
+  planOverrides: {},
   team: {},
   teamLoaded: {},
   teamBusy: {},
@@ -209,11 +224,81 @@ function upsertEntry(items: DshEntry[], entry: DshEntry): DshEntry[] {
   return next;
 }
 
+/**
+ * Same row from history and from the live feed. The fetched copy is
+ * authoritative unless it is a tool call that history saw mid-flight while the
+ * local copy already has its result — the old `running` row must not win.
+ */
+function preferEntry(current: DshEntry, incoming: DshEntry): DshEntry {
+  if (current.kind !== "tool" || incoming.kind !== "tool") return current;
+  const settled = (entry: Extract<DshEntry, { kind: "tool" }>) =>
+    entry.status !== "running" || entry.result !== undefined;
+  return settled(current) || !settled(incoming) ? current : incoming;
+}
+
 function mergeEntries(fetched: DshEntry[], live: DshEntry[]): DshEntry[] {
   const merged = new Map<string, DshEntry>();
   for (const entry of fetched) merged.set(entryKey(entry), entry);
-  for (const entry of live) merged.set(entryKey(entry), entry);
+  for (const entry of live) {
+    const key = entryKey(entry);
+    const current = merged.get(key);
+    merged.set(key, current ? preferEntry(current, entry) : entry);
+  }
   return [...merged.values()].sort((a, b) => a.seq - b.seq);
+}
+
+/** Whether a session is working right now. The runtime's own status is the
+ *  authority; live content covers the moment before the first status event. */
+export function isSessionRunning(state: AgentState, sessionId: string | null): boolean {
+  if (!sessionId) return false;
+  if (state.sessions[sessionId]?.status === "running") return true;
+  const live = state.live[sessionId];
+  return Boolean(live && (live.text || live.reasoning || live.tools.length > 0));
+}
+
+/** Live status for a task row: the session registry wins over the persisted
+ *  copy, which is only refreshed when the backend emits a task list. */
+export function taskLiveStatus(state: AgentState, task: DshTask): DshSessionStatus {
+  return state.sessions[task.id]?.status ?? task.status;
+}
+
+/** Last activity for sorting and display, for the same reason. */
+export function taskActivityAt(state: AgentState, task: DshTask): string {
+  return state.sessions[task.id]?.updatedAt ?? task.updatedAt;
+}
+
+/** Effective plan mode: a pending choice first, then the engine's session row. */
+export function sessionPlan(state: AgentState, sessionId: string | null): boolean {
+  if (!sessionId) return false;
+  return state.planOverrides[sessionId] ?? state.sessions[sessionId]?.planActive ?? false;
+}
+
+/** `null` inherits the configured default; `undefined` means not read yet. */
+export function sessionPermissionMode(
+  state: AgentState,
+  sessionId: string | null,
+): DshPermissionMode | null | undefined {
+  if (!sessionId) return undefined;
+  return state.sessionModes[sessionId];
+}
+
+/** One read per selection; a failure leaves the picker on the default. */
+async function readSessionMode(sessionId: string): Promise<void> {
+  try {
+    const { mode } = await dshApi.sessionMode(sessionId);
+    update((state) =>
+      // A choice made while the read was in flight wins over the stored value.
+      state.sessionModes[sessionId] !== undefined
+        ? state
+        : {
+            ...state,
+            sessionModes: { ...state.sessionModes, [sessionId]: mode ?? null },
+          },
+    );
+  } catch {
+    // A runtime that is not up still has the persisted value; the next
+    // selection retries.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,10 +335,25 @@ function replaceTask(task: DshTask): void {
 /** Installs a fresh list, keeping or repairing the selection. */
 /** Session rows are replaced wholesale; the map is small and id-keyed. */
 function applySessions(sessions: DshSessionRow[]): void {
-  update((state) => ({
-    ...state,
-    sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
-  }));
+  update((state) => {
+    // A plan choice is optimistic only until the engine records the same
+    // state. Sessions stream unrelated updates during a turn, so keeping the
+    // override forever would pin a queued choice that the engine has not
+    // applied yet.
+    let planOverrides = state.planOverrides;
+    for (const row of sessions) {
+      if (row.planActive === undefined) continue;
+      if (planOverrides[row.id] === row.planActive) {
+        if (planOverrides === state.planOverrides) planOverrides = { ...planOverrides };
+        delete planOverrides[row.id];
+      }
+    }
+    return {
+      ...state,
+      sessions: Object.fromEntries(sessions.map((session) => [session.id, session])),
+      planOverrides,
+    };
+  });
 }
 
 /** Optimistic selection echo; the `model/selection` event confirms it. */
@@ -278,8 +378,6 @@ function adoptTasks(tasks: DshTask[]): void {
     tasks,
     tasksError: null,
     selectedId,
-    // A stream from an earlier visit must not be painted over the new task.
-    live: moved && selectedId ? { ...state.live, [selectedId]: undefined } : state.live,
   }));
   persistPrefs();
 
@@ -294,11 +392,20 @@ function clearSelection(sessionId: string): void {
   update((state) => {
     const entries = { ...state.entries };
     delete entries[sessionId];
+    const live = { ...state.live };
+    delete live[sessionId];
+    const committedAttempts = { ...state.committedAttempts };
+    delete committedAttempts[sessionId];
+    const pendingPrompts = { ...state.pendingPrompts };
+    delete pendingPrompts[sessionId];
     const fallback = (state.tasks ?? []).find((task) => task.id !== sessionId)?.id ?? null;
     return {
       ...state,
       selectedId: state.selectedId === sessionId ? fallback : state.selectedId,
       entries,
+      live,
+      committedAttempts,
+      pendingPrompts,
     };
   });
   persistPrefs();
@@ -367,41 +474,61 @@ function ensureTeam(sessionId: string | null): void {
 
 function applyEntry(payload: DshEntryEvent): void {
   update((state) => {
-    if (payload.sessionId !== state.selectedId) return state;
-    const bucket = state.entries[payload.sessionId];
-    if (!bucket) return state;
-
     const { entry } = payload;
+    const sessionId = payload.sessionId;
+    const liveRun = state.live[sessionId];
     let live = state.live;
+    let committedAttempts = state.committedAttempts;
     let pendingPrompts = state.pendingPrompts;
 
+    // Live bookkeeping runs for every session: a commit that lands while the
+    // user is looking at another task still settles that session's overlay.
     if (entry.kind === "assistant") {
       // The committed message supersedes whatever the stream had accumulated.
-      live = { ...live, [payload.sessionId]: undefined };
+      if (liveRun) {
+        live = { ...live, [sessionId]: undefined };
+        committedAttempts = { ...committedAttempts, [sessionId]: liveRun.attemptId };
+      }
     } else if (entry.kind === "turn" && entry.state === "end") {
-      live = { ...live, [payload.sessionId]: undefined };
-      pendingPrompts = { ...pendingPrompts, [payload.sessionId]: [] };
+      if (liveRun) {
+        committedAttempts = { ...committedAttempts, [sessionId]: liveRun.attemptId };
+      }
+      live = { ...live, [sessionId]: undefined };
+      pendingPrompts = { ...pendingPrompts, [sessionId]: [] };
+    } else if (entry.kind === "tool" && liveRun && entry.callId) {
+      // The tool row owns the call from now on; leaving a copy in the overlay
+      // painted the same call twice and kept it as the "current" action.
+      const tools = liveRun.tools.filter((tool) => tool.callId !== entry.callId);
+      if (tools.length !== liveRun.tools.length) {
+        live = { ...live, [sessionId]: { ...liveRun, tools } };
+      }
     } else if (entry.kind === "user") {
-      const queue = pendingPrompts[payload.sessionId];
+      const queue = pendingPrompts[sessionId];
       const index = queue ? queue.indexOf(entry.text) : -1;
       if (queue && index >= 0) {
         const next = queue.slice();
         next.splice(index, 1);
-        pendingPrompts = { ...pendingPrompts, [payload.sessionId]: next };
+        pendingPrompts = { ...pendingPrompts, [sessionId]: next };
       }
     }
 
+    const bucket = state.entries[sessionId];
+    const selected = sessionId === state.selectedId;
+    if (!selected || !bucket) {
+      return { ...state, live, committedAttempts, pendingPrompts };
+    }
     return {
       ...state,
       entries: {
         ...state.entries,
-        [payload.sessionId]: {
+        [sessionId]: {
           items: upsertEntry(bucket.items, entry),
           loaded: true,
           error: null,
         },
       },
       live,
+      committedAttempts,
       pendingPrompts,
     };
   });
@@ -432,9 +559,13 @@ function appendToolDelta(tools: LiveToolCall[], stream: DshStream): LiveToolCall
 
 function applyStream(payload: DshSessionEvent): void {
   update((state) => {
-    if (payload.sessionId !== state.selectedId) return state;
+    const sessionId = payload.sessionId;
     const { attemptId, revision, delta } = payload.stream;
-    const previous = state.live[payload.sessionId];
+    // Stream deltas and committed entries travel on different channels; a
+    // delta from an attempt that already committed must not resurrect its
+    // overlay and paint the final answer a second time.
+    if (state.committedAttempts[sessionId] === attemptId) return state;
+    const previous = state.live[sessionId];
     // `revision` counts emitted frames upstream, so it grows with every chunk
     // and must not be read as "this frame replaced the attempt": doing that
     // reset the overlay on every delta, leaving only the last one on screen.
@@ -454,9 +585,12 @@ function applyStream(payload: DshSessionEvent): void {
       next = { ...base, revision, tools: appendToolDelta(base.tools, payload.stream) };
     }
 
+    // Streams are kept for every session, not only the selected one: switching
+    // back mid-turn must show the text that already streamed, and a commit for
+    // a background task arrives on its own channel anyway.
     return {
       ...state,
-      live: { ...state.live, [payload.sessionId]: next },
+      live: { ...state.live, [sessionId]: next },
     };
   });
 }
@@ -610,10 +744,6 @@ async function selectSession(sessionId: string): Promise<void> {
   update((current) => ({
     ...current,
     selectedId: sessionId,
-    // A buffer from an earlier visit may have missed its commit; history is
-    // authoritative and is fetched now.
-    live: { ...current.live, [sessionId]: undefined },
-    pendingPrompts: { ...current.pendingPrompts, [sessionId]: [] },
     entries: {
       ...current.entries,
       [sessionId]: {
@@ -760,10 +890,6 @@ export const agentActions = {
       // A repaired selection was loaded by `adoptTasks`; only an unchanged one
       // still needs its history refreshed.
       if (selected && selected === before) {
-        update((state) => ({
-          ...state,
-          live: { ...state.live, [selected]: undefined },
-        }));
         await loadEntries(selected);
       }
     } catch (error) {
@@ -783,6 +909,7 @@ export const agentActions = {
         [task.id]: state.entries[task.id] ?? { items: [], loaded: false, error: null },
       },
       live: { ...state.live, [task.id]: undefined },
+      committedAttempts: { ...state.committedAttempts, [task.id]: undefined },
       pendingPrompts: { ...state.pendingPrompts, [task.id]: [] },
       lastError: null,
     }));
@@ -811,11 +938,65 @@ export const agentActions = {
     return task;
   },
 
+  /** Deletes a free conversation (row, log and scratch workspace). Errors are
+   *  surfaced through the page's error line; the list self-heals from the
+   *  backend's `dsh://tasks` event either way. */
+  deleteChat: async (sessionId: string): Promise<void> => {
+    try {
+      await dshTaskApi.delete(sessionId);
+    } catch (error) {
+      setError(error);
+      return;
+    }
+    drafts.delete(sessionId);
+    update((state) => {
+      const tasks = (state.tasks ?? []).filter((task) => task.id !== sessionId);
+      const selectedId =
+        state.selectedId === sessionId ? (tasks[0]?.id ?? null) : state.selectedId;
+      const entries = { ...state.entries };
+      delete entries[sessionId];
+      const live = { ...state.live };
+      delete live[sessionId];
+      const committedAttempts = { ...state.committedAttempts };
+      delete committedAttempts[sessionId];
+      const pendingPrompts = { ...state.pendingPrompts };
+      delete pendingPrompts[sessionId];
+      return {
+        ...state,
+        tasks,
+        selectedId,
+        entries,
+        live,
+        committedAttempts,
+        pendingPrompts,
+      };
+    });
+    persistPrefs();
+    const selected = agentStore.get().selectedId;
+    if (selected) void loadEntries(selected);
+  },
+
+  /** Stops the selected session's current turn. This is not a task cancel:
+   *  the workflow still settles from the runtime's own `turn/end`. */
+  cancelTurn: async (sessionId: string): Promise<void> => {
+    try {
+      await dshApi.cancelTurn(sessionId);
+      update((state) => ({
+        ...state,
+        pendingPrompts: { ...state.pendingPrompts, [sessionId]: [] },
+      }));
+    } catch (error) {
+      setError(error);
+    }
+  },
+
   setPermissionMode: async (mode: DshAgentConfig["permissionMode"]): Promise<void> => {
     const { mode: saved } = await dshPolicyApi.set(mode);
     update((state) =>
       state.config ? { ...state, config: { ...state.config, permissionMode: saved } } : state,
     );
+    // The runtime keeps the gate it booted with; surface the drift right away.
+    void agentActions.refreshStatus();
   },
 
   setTeamView: (sessionId: string, view: AgentTeamView): void => {
@@ -896,6 +1077,33 @@ export const agentActions = {
     }
   },
 
+  /** Stop + start in one backend step, so settings that are only read at boot
+   *  take effect without quitting the app. */
+  restartRuntime: async (): Promise<void> => {
+    if (agentStore.get().starting) return;
+    update((state) => ({ ...state, starting: true, lastError: null }));
+    try {
+      const status = await dshApi.restart();
+      update((state) => ({
+        ...state,
+        status,
+        statusError: null,
+        starting: false,
+        live: {},
+        committedAttempts: {},
+      }));
+      await Promise.all([
+        agentActions.refreshSessions(),
+        agentActions.refreshTasks(),
+        agentActions.loadPending(),
+      ]);
+    } catch (error) {
+      update((state) => ({ ...state, starting: false }));
+      setError(error);
+      void agentActions.refreshStatus();
+    }
+  },
+
   /** First-run extraction takes seconds and has no progress events: the view
    *  shows elapsed time, then the runtime is started. */
   prepareRuntime: async (): Promise<void> => {
@@ -927,6 +1135,8 @@ export const agentActions = {
     const latest = await dshSettingsApi.get();
     const saved = await dshSettingsApi.save({ ...latest, ...draft });
     update((state) => ({ ...state, config: saved, configError: null }));
+    // Model edits are startup-only; the runtime reports the drift from here.
+    void agentActions.refreshStatus();
     return saved;
   },
 
@@ -945,6 +1155,10 @@ export const agentActions = {
       const targetId = sessionId;
       update((state) => ({
         ...state,
+        // A new prompt starts a new attempt; anything the previous one left in
+        // the overlay is stale before the first delta arrives.
+        live: { ...state.live, [targetId]: undefined },
+        committedAttempts: { ...state.committedAttempts, [targetId]: undefined },
         pendingPrompts: {
           ...state.pendingPrompts,
           [targetId]: [...(state.pendingPrompts[targetId] ?? []), trimmed],
@@ -1028,14 +1242,23 @@ export const agentActions = {
 /** Handlers registered once per app session by `useAgentRuntime`. */
 export const agentEvents = {
   status: (status: DshStatus): void => {
-    update((state) => ({
-      ...state,
-      status,
-      statusError: null,
-      starting: false,
-      preparingSince: status.phase === "ready" ? null : state.preparingSince,
-      lastError: status.phase === "ready" ? null : state.lastError,
-    }));
+    update((state) => {
+      const ready = status.phase === "ready";
+      return {
+        ...state,
+        status,
+        statusError: null,
+        // The process's own phase is the truth here: it also covers the boot
+        // that happens without a UI action (auto-start, restart from config).
+        starting: status.phase === "starting",
+        preparingSince: ready ? null : state.preparingSince,
+        lastError: ready ? null : state.lastError,
+        // A stopped, restarting or failed process has no live attempts; keeping
+        // them alive painted the previous answer over the next turn.
+        live: ready ? state.live : {},
+        committedAttempts: ready ? state.committedAttempts : {},
+      };
+    });
   },
   entry: (payload: DshEntryEvent): void => applyEntry(payload),
   stream: (payload: DshSessionEvent): void => applyStream(payload),

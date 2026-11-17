@@ -18,7 +18,8 @@ use super::{
         NotificationKind, NotificationSource, NotificationState,
     },
     rules::format_tapd_time,
-    service, NotificationService, DEFAULT_NOTIFY_WAIT_SECS, MAX_AI_ACTIONS, MAX_AI_BLOCKS,
+    service, NotificationService, DEFAULT_NOTIFY_WAIT_SECS, MAX_AI_ACTION_DESC_CHARS,
+    MAX_AI_ACTIONS, MAX_AI_BLOCKS,
     MAX_AI_CODE_CHARS, MAX_AI_ITEMS, MAX_AI_TAG_CHARS, MAX_AI_TEXT_CHARS, MAX_AI_TITLE_CHARS,
     MAX_NOTIFY_WAIT_SECS, NOT_FOUND,
 };
@@ -161,7 +162,17 @@ fn parse_ai_actions(value: Option<&Value>) -> Result<Vec<AiAction>, String> {
                 ));
             }
         };
-        actions.push(AiAction { id, label, style });
+        actions.push(AiAction {
+            id,
+            label,
+            style,
+            description: item
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| truncate_chars(text, MAX_AI_ACTION_DESC_CHARS)),
+        });
     }
     Ok(actions)
 }
@@ -246,6 +257,9 @@ pub fn ai_payload_from_arguments(
             tone,
             client,
             blocks,
+            // A hint only reads under its own label: an action row would cut it
+            // off, so actions carrying a description get a row each.
+            stack_actions: actions.iter().any(|action| action.description.is_some()),
             actions,
             tag,
             resolution: None,
@@ -604,6 +618,33 @@ mod ai_notification_tests {
             "client",
         );
         assert!(bad_style.is_err());
+    }
+
+    #[test]
+    fn parses_action_descriptions_and_counts_option_rows() {
+        let (_, payload) = ai_payload_from_arguments(
+            &json!({
+                "title": "x",
+                "actions": [
+                    {"id": "a", "label": "A", "description": "  第一条  "},
+                    {"id": "b", "label": "B", "description": "   "}
+                ]
+            }),
+            "client",
+        )
+        .expect("payload");
+        assert_eq!(payload.actions[0].description.as_deref(), Some("第一条"));
+        // Blank hints are dropped instead of rendering an empty line.
+        assert_eq!(payload.actions[1].description, None);
+        // Two actions are listed one per row, so the card needs the extra height.
+        assert_eq!(payload.option_rows(), 2);
+
+        let (_, single) = ai_payload_from_arguments(
+            &json!({"title": "x", "actions": [{"id": "a", "label": "A"}]}),
+            "client",
+        )
+        .expect("payload");
+        assert_eq!(single.option_rows(), 0);
     }
 
     #[test]

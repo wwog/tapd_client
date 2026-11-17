@@ -18,6 +18,29 @@ function lineCount(text: unknown): number {
   return text.split("\n").length;
 }
 
+/**
+ * Real added/removed lines between the old and new blocks, as a multiset
+ * difference. A literal replacement string says nothing about how much of the
+ * file actually changed; this at least never counts moved lines twice.
+ */
+function lineDelta(before: unknown, after: unknown): { added: number; removed: number } {
+  const split = (value: unknown): string[] =>
+    typeof value === "string" && value.length > 0 ? value.split("\n") : [];
+  const remaining = new Map<string, number>();
+  for (const line of split(before)) {
+    remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  }
+  let added = 0;
+  for (const line of split(after)) {
+    const count = remaining.get(line) ?? 0;
+    if (count > 0) remaining.set(line, count - 1);
+    else added += 1;
+  }
+  let removed = 0;
+  for (const count of remaining.values()) removed += count;
+  return { added, removed };
+}
+
 /** Last path segment, so rows stay one line on deep repository paths. */
 function baseName(path: unknown): string {
   if (typeof path !== "string" || !path) return "";
@@ -70,14 +93,16 @@ export function describeTool(name: string, argsJson: string): ToolAction {
         target: file || name,
         added: lineCount(args.content),
       };
-    case "edit":
+    case "edit": {
+      const delta = lineDelta(args.old_string, args.new_string);
       return {
         kind: "edit",
         verb: t("agent.action.edited"),
         target: file || name,
-        added: lineCount(args.new_string),
-        removed: lineCount(args.old_string),
+        added: delta.added,
+        removed: delta.removed,
       };
+    }
     case "glob":
     case "grep":
       return {
@@ -85,12 +110,14 @@ export function describeTool(name: string, argsJson: string): ToolAction {
         verb: t("agent.action.searched"),
         target: firstLine(args.pattern) || name,
       };
-    case "web_search":
+    case "web_search": {
+      const queries = Array.isArray(args.queries) ? args.queries : [];
       return {
         kind: "web",
         verb: t("agent.action.searchedWeb"),
-        target: firstLine(args.query) || name,
+        target: firstLine(queries[0]) || name,
       };
+    }
     case "web_fetch":
       return {
         kind: "web",
@@ -99,6 +126,32 @@ export function describeTool(name: string, argsJson: string): ToolAction {
       };
     default:
       return { kind: "other", verb: t("agent.action.called"), target: name };
+  }
+}
+
+/**
+ * The verb for a call that is still in flight. The past-tense verbs above are
+ * for committed rows; using them for the live line made a running command read
+ * as if it had already finished.
+ */
+export function runningVerb(kind: ToolAction["kind"]): string {
+  switch (kind) {
+    case "bash":
+      return t("agent.action.runningBash");
+    case "read":
+      return t("agent.action.runningRead");
+    case "image":
+      return t("agent.action.runningViewed");
+    case "write":
+      return t("agent.action.runningWrote");
+    case "edit":
+      return t("agent.action.runningEdited");
+    case "search":
+      return t("agent.action.runningSearched");
+    case "web":
+      return t("agent.action.runningFetched");
+    case "other":
+      return t("agent.action.runningCalled");
   }
 }
 

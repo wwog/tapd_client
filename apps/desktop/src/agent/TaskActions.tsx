@@ -98,19 +98,6 @@ export function TaskActions({ task }: { task: DshTask }) {
               </Button>
             ) : null}
 
-            {task.workflow === "running" ? (
-              <Button
-                size="sm"
-                variant="danger"
-                icon={<X size={13} />}
-                loading={busy === "cancel"}
-                disabled={disabled}
-                onClick={() => void run("cancel", () => agentActions.cancelTask(task.id))}
-              >
-                {t("agent.task.stop")}
-              </Button>
-            ) : null}
-
             {task.workflow === "awaiting_review" ? (
               <>
                 <Button

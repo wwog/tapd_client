@@ -60,6 +60,7 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm chec
 | `/test files` | 新建 → 读取 → 编辑 → 再读 |
 | `/test tools` | 安全的内置工具各调一次（含 todo、目录、glob、grep） |
 | `/test ask` | 只发一次提问（可选项见卡片） |
+| `/test agents` | 派三个子 agent：一个 glob/read 找文件、一个 `curl` 请求本机 `/healthz`、一个 grep 检索，最后 `wait_agent` 收回 |
 | `/test error` | 一条按预期失败的 `exit 3` |
 | `/test long` | 长文本，看滚动与渲染 |
 | `/test ping` | `tapd_ping`（走桥接工具） |
@@ -70,6 +71,8 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm chec
 - 只有显式的 `/test <名字>` 会切换脚本：运行时自己注入的上下文也以 user 消息下发（里面有
   “Ask the user to clarify…”），按关键词匹配会误命中。
 - 请求里已经有工具结果（第二轮）时只回一段收尾文字，不重复调用工具。
+- 子 agent 的任务由父级在 `subagent` 的 prompt 里带标记（`[test-child:files|curl|grep]`），子 agent 按标记选自己的脚本；
+  子脚本只做一件事、**不会再派子 agent**，所以任务树不会无限递归。curl 打的是本机 `/healthz`，不依赖外网。
 - 该供应商在每次加载配置时按当前端口重新注入（端口每次启动都变），不会写进 `agent.json`；
   切换到它只需在模型列表里点圆圈设为默认，再重启运行时。
 

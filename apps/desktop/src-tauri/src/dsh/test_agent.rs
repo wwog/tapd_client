@@ -254,6 +254,12 @@ enum Scenario {
     Error,
     Long,
     Ping,
+    /// Spawns three subagents, each with a different job.
+    Agents,
+    // Child scripts. A child never spawns further agents, so the tree stops.
+    ChildFiles,
+    ChildCurl,
+    ChildGrep,
 }
 
 /// Only an explicit `/test <name>` picks a script.
@@ -264,6 +270,10 @@ enum Scenario {
 /// newest command in the conversation wins.
 fn scenario_for(request: &Value) -> Scenario {
     for text in user_texts(request, 4) {
+        // A delegated prompt carries its own job tag; it never has `/test`.
+        if let Some(child) = child_marker(&text) {
+            return child;
+        }
         let tokens: Vec<&str> = text.split_whitespace().collect();
         if let Some(position) = tokens.iter().position(|token| *token == "/test") {
             if let Some(scenario) = tokens.get(position + 1).and_then(|token| parse(token)) {
@@ -272,6 +282,21 @@ fn scenario_for(request: &Value) -> Scenario {
         }
     }
     Scenario::All
+}
+
+/// The job tag a delegated prompt carries, e.g. `[test-child:curl]`.
+fn child_marker(text: &str) -> Option<Scenario> {
+    let lower = text.to_lowercase();
+    if lower.contains("[test-child:files]") {
+        return Some(Scenario::ChildFiles);
+    }
+    if lower.contains("[test-child:curl]") {
+        return Some(Scenario::ChildCurl);
+    }
+    if lower.contains("[test-child:grep]") {
+        return Some(Scenario::ChildGrep);
+    }
+    None
 }
 
 fn parse(token: &str) -> Option<Scenario> {
@@ -285,6 +310,7 @@ fn parse(token: &str) -> Option<Scenario> {
         "error" => Scenario::Error,
         "long" => Scenario::Long,
         "ping" => Scenario::Ping,
+        "agents" | "agent" | "subagent" => Scenario::Agents,
         _ => return None,
     })
 }
@@ -313,8 +339,8 @@ fn user_texts(request: &Value, limit: usize) -> Vec<String> {
 }
 
 const INTRO: &str = "你好，我是 TestAgent——客户端内置的测试模型，回复是脚本化的。\n\n\
-可用指令：`/test all | text | reasoning | files | tools | ask | error | long | ping`，\
-直接说「文件」「提问」「工具」也能选中对应脚本。\n\
+可用指令：`/test all | text | reasoning | files | tools | ask | agents | error | long | ping`。\n\
+`agents` 会派三个子 agent，分别做文件查找、curl 请求与内容检索。\n\
 文件脚本只动工作目录下的 `tmp/test-agent/`。\n";
 
 fn script(scenario: Scenario, request: &Value) -> Vec<Event> {
@@ -393,6 +419,81 @@ fn script(scenario: Scenario, request: &Value) -> Vec<Event> {
                 json!({}),
             );
         }
+        Scenario::Agents => {
+            events.push(Event::Reasoning(
+                "用户要测子 agent。先落一个文件给它们用，然后派三个各做一件事：文件查找、curl 请求、内容检索；最后等它们回来。"
+                    .to_string(),
+            ));
+            events.push(Event::Text(
+                "派三个子 agent：一个找文件、一个发 curl 请求、一个做内容检索。它们的回复在任务轨迹里能看到。\n"
+                    .to_string(),
+            ));
+            push_tool(
+                &mut events,
+                &available,
+                "write",
+                json!({ "file_path": format!("{TEST_DIR}/hello.txt"), "content": "hello from TestAgent\nsecond line\n" }),
+            );
+            for (description, prompt) in child_jobs() {
+                push_tool(
+                    &mut events,
+                    &available,
+                    "subagent",
+                    json!({ "description": description, "prompt": prompt }),
+                );
+            }
+            push_tool(
+                &mut events,
+                &available,
+                "wait_agent",
+                json!({ "timeout_ms": 90_000 }),
+            );
+        }
+        // Children do one focused job and report; they never delegate again.
+        Scenario::ChildFiles => {
+            events.push(Event::Text(
+                "子 agent A：在测试目录里找文件，读第一个并汇报。".to_string(),
+            ));
+            push_tool(
+                &mut events,
+                &available,
+                "glob",
+                json!({ "pattern": format!("{TEST_DIR}/*") }),
+            );
+            push_tool(
+                &mut events,
+                &available,
+                "read",
+                json!({ "file_path": format!("{TEST_DIR}/hello.txt") }),
+            );
+        }
+        Scenario::ChildCurl => {
+            events.push(Event::Text(
+                "子 agent B：用 curl 请求本机接口，把响应前 200 字节汇报。".to_string(),
+            ));
+            // The mock's own port: a deterministic target that needs no network.
+            let port = port().unwrap_or(0);
+            push_tool(
+                &mut events,
+                &available,
+                "bash",
+                json!({
+                    "description": "curl 本机接口",
+                    "command": format!("curl -s -m 5 http://127.0.0.1:{port}/healthz | head -c 200"),
+                }),
+            );
+        }
+        Scenario::ChildGrep => {
+            events.push(Event::Text(
+                "子 agent C：在测试目录里检索 TestAgent 并汇报匹配行。".to_string(),
+            ));
+            push_tool(
+                &mut events,
+                &available,
+                "grep",
+                json!({ "pattern": "TestAgent", "path": TEST_DIR }),
+            );
+        }
         Scenario::All => {
             events.push(Event::Reasoning(
                 "用户没有指定脚本，走完整路径：先推理，再说明，然后文件四连、一条命令，最后问一个问题。"
@@ -410,6 +511,32 @@ fn script(scenario: Scenario, request: &Value) -> Vec<Event> {
         }
     }
     events
+}
+
+/// The three delegated jobs, each with a distinct skill. The tag is what makes
+/// the child pick its own script.
+fn child_jobs() -> Vec<(&'static str, String)> {
+    let dir = TEST_DIR;
+    vec![
+        (
+            "查找测试文件",
+            format!(
+                "[test-child:files] 用 glob 在 {dir} 下找出所有文件，读第一个，用两行汇报文件名与第一行内容。"
+            ),
+        ),
+        (
+            "curl 本机接口",
+            format!(
+                "[test-child:curl] 用 bash 执行 curl 请求本机健康检查接口，把响应前 200 字节原样汇报。目录 {dir} 与本任务无关。"
+            ),
+        ),
+        (
+            "检索关键词",
+            format!(
+                "[test-child:grep] 用 grep 在 {dir} 里搜索 TestAgent，把匹配到的行汇报；没有匹配也要说明。"
+            ),
+        ),
+    ]
 }
 
 /// `write → read → edit → read`, all inside [`TEST_DIR`].
@@ -512,6 +639,10 @@ mod tests {
                 { "type": "function", "function": { "name": "read" } },
                 { "type": "function", "function": { "name": "edit" } },
                 { "type": "function", "function": { "name": "bash" } },
+                { "type": "function", "function": { "name": "glob" } },
+                { "type": "function", "function": { "name": "grep" } },
+                { "type": "function", "function": { "name": "subagent" } },
+                { "type": "function", "function": { "name": "wait_agent" } },
                 { "type": "function", "function": { "name": "ask_user_question" } },
             ],
         })
@@ -598,6 +729,56 @@ mod tests {
         let body = sse_chunks(&script(Scenario::Text, &request("hi"))).join("");
         assert!(body.contains("\"finish_reason\":\"stop\""));
         assert!(!body.contains("tool_calls"));
+    }
+
+    fn tools_of(events: &[Event]) -> Vec<(String, Value)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Tool { name, args } => Some((name.clone(), args.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_agents_script_delegates_three_distinct_jobs() {
+        let events = script(Scenario::Agents, &request("/test agents"));
+        let calls = tools_of(&events);
+        let prompts: Vec<&str> = calls
+            .iter()
+            .filter(|(name, _)| name == "subagent")
+            .map(|(_, args)| args["prompt"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(prompts.len(), 3);
+        assert!(prompts[0].contains("[test-child:files]"));
+        assert!(prompts[1].contains("[test-child:curl]"));
+        assert!(prompts[2].contains("[test-child:grep]"));
+        // The parent waits for them instead of ending the turn blind.
+        assert!(calls.iter().any(|(name, _)| name == "wait_agent"));
+    }
+
+    #[test]
+    fn a_delegated_prompt_picks_its_own_job_and_never_delegates_again() {
+        assert!(scenario_for(&request("[test-child:files] 找文件")) == Scenario::ChildFiles);
+        assert!(scenario_for(&request("[test-child:curl] 请求")) == Scenario::ChildCurl);
+        assert!(scenario_for(&request("[test-child:grep] 检索")) == Scenario::ChildGrep);
+        for scenario in [Scenario::ChildFiles, Scenario::ChildCurl, Scenario::ChildGrep] {
+            let calls = tools_of(&script(scenario, &request("child")));
+            assert!(
+                calls.iter().all(|(name, _)| name != "subagent"),
+                "a child must not spawn agents"
+            );
+            assert!(!calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_curl_child_targets_the_local_endpoint() {
+        set_port(1234);
+        let calls = tools_of(&script(Scenario::ChildCurl, &request("curl")));
+        let command = calls[0].1["command"].as_str().unwrap_or_default();
+        assert!(command.contains("127.0.0.1:1234/healthz"), "{command}");
     }
 
     #[test]

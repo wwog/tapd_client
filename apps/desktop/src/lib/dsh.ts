@@ -33,6 +33,8 @@ export type DshStatus = {
   /** Stable machine code (`node_missing`, `model_missing`, …). */
   errorCode?: string;
   error?: string;
+  /** Startup-only settings changed since this process booted. */
+  restartRequired?: boolean;
 };
 
 export type PayloadReport = {
@@ -96,6 +98,8 @@ export type DshSessionRow = {
   usage: DshSessionUsage;
   /** The route the session will use next; absent until one is recorded. */
   selection?: ModelSelection;
+  /** The engine's plan mode for this session (`plan/mode` events). */
+  planActive?: boolean;
 };
 
 export type DshEntry =
@@ -122,7 +126,7 @@ export type DshEntry =
        *  JSON value it received, so the view normalizes either shape. */
       result?: unknown;
     }
-  | { kind: "turn"; seq: number; at: string; state: "start" | "end"; reason?: string };
+  | { kind: "turn"; seq: number; at: string; state: "start" | "end"; reason?: string; error?: string };
 
 export type DshStreamDelta =
   | { type: "text"; text: string }
@@ -288,6 +292,11 @@ export const dshApi = {
   prepare: () => invoke<PayloadReport>("dsh_prepare"),
   start: () => invoke<DshStatus>("dsh_start"),
   stop: () => invoke<DshStatus>("dsh_stop"),
+  /** Stop + start: applies startup-only settings without quitting the app. */
+  restart: () => feature<DshStatus>("dsh_restart"),
+  /** Stops one session's current turn; the task workflow is untouched. */
+  cancelTurn: (sessionId: string) =>
+    feature<{ ok: true }>("dsh_session_cancel", { sessionId }),
   newSession: () => invoke<{ sessionId: string }>("dsh_new_session"),
   sessions: () => invoke<{ sessions: DshSessionRow[] }>("dsh_sessions"),
   pending: () => invoke<{ requests: DshPendingRequest[] }>("dsh_pending"),
@@ -305,6 +314,17 @@ export const dshApi = {
       model: selection.model,
       reasoningEffort: selection.reasoningEffort ?? null,
     }),
+  /** `mode: null` means the session inherits the configured default. */
+  sessionMode: (sessionId: string) =>
+    feature<{ sessionId: string; mode: DshPermissionMode | null }>("dsh_session_mode_get", {
+      sessionId,
+    }),
+  /** A plan toggle leaves the permission mode untouched. */
+  setSessionMode: (sessionId: string, patch: { mode?: DshPermissionMode; plan?: boolean }) =>
+    feature<{ sessionId: string; mode: DshPermissionMode | null; plan: boolean | null }>(
+      "dsh_session_mode_set",
+      { sessionId, ...patch },
+    ),
   approvalAnswer: (rpcId: number, outcome: DshApprovalOutcome) =>
     invoke<void>("dsh_approval_answer", { rpcId, outcome }),
   questionAnswer: (rpcId: number, answers: DshAnswer[] | null) =>
@@ -334,6 +354,10 @@ export type DshFocusSessionEvent = { sessionId: string };
  * here instead.
  */
 type DshFeatureCommand =
+  | "dsh_restart"
+  | "dsh_session_cancel"
+  | "dsh_session_mode_get"
+  | "dsh_session_mode_set"
   | "dsh_tasks"
   | "dsh_task_enqueue_bug"
   | "dsh_task_enqueue_local"
@@ -342,6 +366,7 @@ type DshFeatureCommand =
   | "dsh_task_cancel"
   | "dsh_task_diff"
   | "dsh_task_resume"
+  | "dsh_task_delete"
   | "dsh_policy_set"
   | "dsh_team_get"
   | "dsh_team_set";
@@ -386,6 +411,9 @@ export const dshTaskApi = {
     feature<{ diff: string; truncated: boolean }>("dsh_task_diff", { sessionId }),
   resume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
+  /** Chats only: removes the row, the log and the scratch workspace. */
+  delete: (sessionId: string) =>
+    feature<{ sessionId: string }>("dsh_task_delete", { sessionId }),
 };
 
 export const dshPolicyApi = {

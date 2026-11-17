@@ -28,6 +28,8 @@ export type AiAction = {
   id: string;
   label: string;
   style?: AiActionStyle;
+  /** Hint shown under the label; the label itself never wraps. */
+  description?: string;
 };
 
 export type AiResolution = {
@@ -43,6 +45,8 @@ export type AiPayload = {
   client: string;
   blocks: AiBlock[];
   actions: AiAction[];
+  /** List the actions one per row (question options) instead of one row. */
+  stackActions?: boolean;
   tag?: string | null;
   resolution?: AiResolution | null;
 };

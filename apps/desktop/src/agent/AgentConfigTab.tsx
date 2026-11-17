@@ -4,6 +4,7 @@ import { Check } from "lucide-react";
 
 import { ScrollingName } from "../components/ScrollingName";
 import { useCoworkers } from "../components/CoworkerPicker";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui";
 import { t } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
@@ -31,7 +32,8 @@ export function AgentConfigTab({ toast }: Props) {
   const [draft, setDraft] = useState<DshAgentConfig | null>(null);
   /** The permission mode saves on click, not with the form. */
   const [policySaving, setPolicySaving] = useState(false);
-  const [policySaved, setPolicySaved] = useState(false);
+  /** Restarting kills running turns; ask first when that would hurt. */
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const selection = useCoworkers(toast);
 
   // The draft is the local source of truth while editing; the stored config
@@ -69,6 +71,12 @@ export function AgentConfigTab({ toast }: Props) {
   const flushRef = useRef(flush);
   flushRef.current = flush;
   useEffect(() => () => flushRef.current(), []);
+
+  // The coworker roster is a startup-only setting too: refresh the drift flag
+  // after a committed change, not while the write is still in flight.
+  useEffect(() => {
+    if (!selection.busy) void agentActions.refreshStatus();
+  }, [selection.busy]);
 
   const patchDraft = (patch: Partial<DshAgentConfig>) => {
     const current = draftRef.current;
@@ -136,7 +144,6 @@ export function AgentConfigTab({ toast }: Props) {
     setPolicySaving(true);
     try {
       await agentActions.setPermissionMode(mode);
-      setPolicySaved(true);
     } catch (error) {
       toast("error", String(error));
     } finally {
@@ -151,6 +158,14 @@ export function AgentConfigTab({ toast }: Props) {
     if (selection.busy || selection.coworkers === null) return;
     if (coworkersOn) selection.clear();
     else selection.selectAll();
+  };
+
+  const restartRunning = Object.values(state.sessions).some(
+    (session) => session.status === "running",
+  );
+  const restart = () => {
+    if (restartRunning) setConfirmRestart(true);
+    else void agentActions.restartRuntime();
   };
 
   return (
@@ -235,11 +250,6 @@ export function AgentConfigTab({ toast }: Props) {
               );
             })}
           </div>
-          {policySaved ? (
-            <div className="mt-2 text-ui-xs text-amber-700">
-              {t("agent.config.permissionRestart")}
-            </div>
-          ) : null}
         </section>
 
         <section className={cardClass}>
@@ -327,9 +337,35 @@ export function AgentConfigTab({ toast }: Props) {
                 {t("common.retry")}
               </Button>
             </div>
+          ) : state.status?.phase === "ready" ? (
+            <div className="mt-3 flex items-center justify-end gap-3">
+              {state.status.restartRequired ? (
+                <span className="min-w-0 flex-1 text-ui-xs text-amber-700">
+                  {t("agent.config.restartRequired")}
+                </span>
+              ) : null}
+              <Button
+                size="sm"
+                loading={state.starting}
+                onClick={restart}
+              >
+                {t("agent.config.restartRuntime")}
+              </Button>
+            </div>
           ) : null}
         </section>
       </div>
+      {confirmRestart ? (
+        <ConfirmDialog
+          title={t("agent.config.restartRuntime")}
+          message={t("agent.config.restartBusy")}
+          onCancel={() => setConfirmRestart(false)}
+          onConfirm={() => {
+            setConfirmRestart(false);
+            void agentActions.restartRuntime();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

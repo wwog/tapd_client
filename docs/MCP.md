@@ -116,7 +116,7 @@ opencode mcp list
 - `fields`：键值对列表（最多 8 项），渲染为两列。
 - `progress`：`{ "percent": 0-100, "label": "…" }`，渲染进度条。
 - `blocks`：需要更精细排版时使用，支持 `text` / `code` / `fields` / `progress` / `divider`；传了非空 `blocks` 就不再使用上面的简写。
-- `actions`：最多 4 个按钮，`{ "id", "label", "style" }`；用户点击后返回 `actionId` 与 `actionLabel`。不传时只显示「知道了」。
+- `actions`：最多 4 个按钮，`{ "id", "label", "style", "description"? }`；用户点击后返回 `actionId` 与 `actionLabel`。`description` 是按钮下方的补充说明，带上它的按钮会改成每个占一行（第二行小字），不带时仍并排一行。不传时只显示「知道了」。
 - `tag`：相同 tag 的待处理通知会被替换，适合反复更新的进度卡片。
 - `waitSeconds`：0 表示立即返回；之后可用 `tapd_wait_notification` 继续等待。
 

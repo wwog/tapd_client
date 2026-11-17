@@ -39,6 +39,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use super::team::{normalize_team, DshTeam};
 use super::{EVENT_ENTRY, EVENT_SESSIONS, EVENT_STREAM};
+use crate::agent_settings::PermissionMode;
 use tapd_i18n::tr;
 
 /// What the child needs to reach this listener.
@@ -72,6 +73,14 @@ pub struct BridgeState {
     /// runtime restart (unlike the live agents) and cover sessions that do not
     /// exist yet, so the next prompt can force the route the user picked.
     selections: std::sync::Mutex<HashMap<String, ModelSelection>>,
+    /// Permission mode per session for this app run. The durable copy is the
+    /// mode table; this map keeps prompts from reading SQLite each time. Like
+    /// `selections`, it survives a runtime restart.
+    modes: std::sync::Mutex<HashMap<String, PermissionMode>>,
+    /// Plan-mode choices that have not reached the engine yet. The engine's
+    /// `plan/mode` event clears the entry, so the session log stays the
+    /// authority once the agent has acted on it.
+    plans: std::sync::Mutex<HashMap<String, bool>>,
     /// Per-connection identity, see [`Control`].
     connections: AtomicU64,
 }
@@ -184,6 +193,82 @@ impl BridgeState {
             .cloned()
     }
 
+    /// Pushes the runtime-wide default permission mode. Every session without
+    /// an override picks it up on its next tool call.
+    pub fn set_default_mode(&self, mode: PermissionMode) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "default-mode",
+            "mode": mode.as_env(),
+        }))
+    }
+
+    /// Pushes one session's permission mode and remembers it for the next
+    /// prompt. The plugin applies it on the next tool call.
+    pub fn set_session_mode(&self, session_id: &str, mode: PermissionMode) -> Result<(), String> {
+        self.remember_mode(session_id, mode);
+        self.send_control(json!({
+            "type": "mode",
+            "sessionId": session_id,
+            "mode": mode.as_env(),
+        }))
+    }
+
+    pub fn remember_mode(&self, session_id: &str, mode: PermissionMode) {
+        self.modes
+            .lock()
+            .expect("dsh mode lock")
+            .insert(session_id.to_string(), mode);
+    }
+
+    /// The mode this app run last pushed for the session, if any.
+    pub fn pending_mode(&self, session_id: &str) -> Option<PermissionMode> {
+        self.modes
+            .lock()
+            .expect("dsh mode lock")
+            .get(session_id)
+            .copied()
+    }
+
+    /// Requests plan mode for one session. The plugin queues the frame until
+    /// the Agent exists; the engine writes `plan/mode` once it is applied.
+    pub fn set_plan(&self, session_id: &str, active: bool) -> Result<(), String> {
+        self.plans
+            .lock()
+            .expect("dsh plan lock")
+            .insert(session_id.to_string(), active);
+        self.send_control(json!({
+            "type": "plan",
+            "sessionId": session_id,
+            "active": active,
+        }))
+    }
+
+    /// A plan choice that has not been confirmed by the engine yet.
+    pub fn pending_plan(&self, session_id: &str) -> Option<bool> {
+        self.plans
+            .lock()
+            .expect("dsh plan lock")
+            .get(session_id)
+            .copied()
+    }
+
+    /// Drops a plan request once the engine's own event confirms that state.
+    /// A divergent event (a snapshot from before the request) is ignored so a
+    /// reconnect cannot cancel the user's pending choice.
+    fn settle_plan_event(&self, session_id: &str, event: &Value) {
+        if event.get("type").and_then(Value::as_str) != Some("plan/mode") {
+            return;
+        }
+        let active = event
+            .pointer("/data/active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut plans = self.plans.lock().expect("dsh plan lock");
+        if plans.get(session_id).copied() == Some(active) {
+            plans.remove(session_id);
+        }
+    }
+
     /// The route dsh itself recorded for this session (`model/selection`).
     pub fn recorded_selection(&self, session_id: &str) -> Option<ModelSelection> {
         self.transcript
@@ -263,6 +348,7 @@ impl BridgeState {
 
     /// The one ingest entry point for committed events from either feed.
     pub fn ingest(&self, app: &AppHandle, session_id: &str, event: &Value) {
+        self.settle_plan_event(session_id, event);
         let at = event_at(event);
         let ingested = {
             let mut transcript = self.transcript.lock().expect("dsh transcript lock");
@@ -313,6 +399,19 @@ impl BridgeState {
             .sessions()
     }
 
+    /// Forgets a deleted session so the list and any later read cannot
+    /// resurrect it. The caller removes the log and the task row.
+    pub fn forget_session(&self, app: &AppHandle, session_id: &str) {
+        let removed = self
+            .transcript
+            .lock()
+            .expect("dsh transcript lock")
+            .remove_session(session_id);
+        if removed {
+            self.emit_sessions(app);
+        }
+    }
+
     /// Entries past `since_seq` plus the session's current last seq.
     pub fn entries_since(&self, session_id: &str, since_seq: u64) -> Option<(Vec<DshEntry>, u64)> {
         self.transcript
@@ -336,6 +435,9 @@ impl BridgeState {
             for event in &events {
                 transcript.ingest(session_id, event, &event_at(event));
             }
+            // The runtime did not know this session, so it cannot be running a
+            // turn: an unclosed `turn/start` in the file is a crash artifact.
+            transcript.settle_hydrated(session_id);
         }
         true
     }
@@ -384,6 +486,9 @@ impl BridgeState {
         };
         // One lock per snapshot: the normalization pass is pure and short, and
         // each row is published afterwards.
+        for event in events {
+            self.settle_plan_event(session_id, event);
+        }
         let outcomes = {
             let mut transcript = self.transcript.lock().expect("dsh transcript lock");
             events
@@ -795,11 +900,13 @@ mod tests {
             at: "2026-11-16T00:00:00.000Z".into(),
             state: TurnState::Start,
             reason: None,
+            error: None,
         };
         let value = serde_json::to_value(entry).unwrap();
         assert_eq!(value["kind"], "turn");
         assert_eq!(value["state"], "start");
         assert!(value.get("reason").is_none());
+        assert!(value.get("error").is_none());
     }
 
     #[tokio::test]
