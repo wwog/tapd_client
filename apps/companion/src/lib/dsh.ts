@@ -18,6 +18,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
 import { asApiError, feature } from "./api";
+import type { DshModelsCatalog } from "./agentModels";
 import { isPageHidden, onPageVisibilityChange } from "./visibility";
 
 export type DshPhase = "stopped" | "starting" | "ready" | "failed";
@@ -35,12 +36,57 @@ export type DshStatus = {
 
 export type DshSessionStatus = "idle" | "running" | "failed";
 
+/** `auto` / `notify` / `full`; plan is a separate engine flag, not a mode. */
+export type DshPermissionMode = "auto" | "notify" | "full";
+
+/** One session's model route; `reasoningEffort` absent means the adapter default. */
+export type ModelSelection = {
+  provider: string;
+  model: string;
+  reasoningEffort?: string;
+};
+
+/** Running totals the composer's status line reads (desktop parity). */
+export type DshSessionUsage = {
+  turns: number;
+  steps: number;
+  totalTokens: number;
+  contextWindow: number;
+  contextUsedTokens: number;
+  tokensPerSecond: number;
+  ttftMs: number;
+  modelMs: number;
+  provider: string;
+  model: string;
+};
+
 export type DshSession = {
   id: string;
   title: string;
   updatedAt: string;
   status: DshSessionStatus;
   messageCount: number;
+  usage?: DshSessionUsage;
+  /** The route the session will use next; absent until one is recorded. */
+  selection?: ModelSelection;
+  /** The engine's plan mode for this session (`plan/mode` events). */
+  planActive?: boolean;
+  /** Current session todo list (`todo/write`); empty until the agent plans. */
+  todos?: DshTodo[];
+  /** Present on a child agent session: the parent session it was started
+   *  from. Root sessions never set it. */
+  parentSession?: string;
+  /** The agent preset a child was started with; absent on root sessions. */
+  agentPreset?: string;
+};
+
+/**
+ * One entry of the session todo list (`todo/write`, whole-list replacement).
+ * No id: every write replaces the list, so entries have no stable identity.
+ */
+export type DshTodo = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
 };
 
 /* -------------------------------------------------------------------------
@@ -122,15 +168,21 @@ export type DshTeam = {
   failure?: string;
 };
 
-/** One rendered transcript row; `seq` is unique and monotonic per session. */
+/** dsh's 1-based turn/step counters; a step is one model request. */
+type DshEntryPosition = { turn: number; step: number };
+
+/**
+ * One rendered transcript row; `seq` is unique and monotonic per session.
+ * Field names mirror `apps/desktop/src/lib/dsh.ts` (the serde contract lives
+ * in `crates/dsh-host/src/transcript.rs`), so the shared agent view consumes
+ * both apps' rows unchanged.
+ */
 export type DshEntry =
-  | { kind: "user"; seq: number; at: string; turn: number; step: number; text: string }
-  | {
+  | ({ kind: "user"; seq: number; at: string; text: string } & DshEntryPosition)
+  | ({
       kind: "assistant";
       seq: number;
       at: string;
-      turn: number;
-      step: number;
       text: string;
       reasoning?: string;
       usage?: {
@@ -142,24 +194,29 @@ export type DshEntry =
       };
       provider?: string;
       model?: string;
+      /** `step/start` of the request this reply answered (epoch ms). */
       startedAtMs?: number;
+      /** First streamed chunk (epoch ms). */
       firstTokenAtMs?: number;
+      /** The `assistant/message` settle time (epoch ms). */
       completedAtMs?: number;
-    }
-  | {
+    } & DshEntryPosition)
+  | ({
       kind: "tool";
       seq: number;
       at: string;
-      turn: number;
-      step: number;
       callId: string;
       name: string;
       args: string;
       status: DshToolStatus;
-      result?: string;
+      /** Model-facing result text (docs/DSH.md §8.3). The host sends a string;
+       *  the view still normalizes objects so an older producer cannot crash it. */
+      result?: unknown;
+      /** `tool/call` time (epoch ms). */
       startedAtMs?: number;
+      /** `tool/result` time (epoch ms); absent while running. */
       endedAtMs?: number;
-    }
+    } & DshEntryPosition)
   | {
       kind: "turn";
       seq: number;
@@ -168,7 +225,22 @@ export type DshEntry =
       state: "start" | "end";
       reason?: string;
       error?: string;
-    };
+    }
+  | ({
+      /** The runtime's account of a child agent settling (`subagent-settled`
+       *  user/message). Rendered as part of the sub-agent group, never as a
+       *  human bubble. */
+      kind: "notice";
+      seq: number;
+      at: string;
+      text: string;
+      /** The `source.summary` line: how the child ended. */
+      summary: string;
+      /** `completed` / `aborted` / `max-tokens` / `refusal` / `error` … */
+      stopReason?: string;
+      /** The child session id, linking this row to the child's transcript. */
+      senderSessionId: string;
+    } & DshEntryPosition);
 
 /* -------------------------------------------------------------------------
    Blocking requests: approvals and user questions (docs/DSH.md §4.4, §8.7)
@@ -227,6 +299,29 @@ export const dshApi = {
   newSession: () => feature<{ sessionId: string }>("dsh_new_session"),
   prompt: (sessionId: string, text: string) =>
     feature<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
+  /** Stops the running turn; pending approval/question requests settle as cancelled. */
+  cancelTurn: (sessionId: string) =>
+    feature<{ ok: true }>("dsh_session_cancel", { sessionId }),
+  /** Session-local model route; recorded durably in the session's log. */
+  selectModel: (sessionId: string, selection: ModelSelection) =>
+    feature<{ ok: true }>("dsh_select_model", { sessionId, ...selection }),
+  /** The sanitized model catalog (no API keys) for the composer picker. */
+  agentModels: () => feature<{ models: DshModelsCatalog }>("settings_agent_models"),
+
+  /** One session's permission mode; `mode: null` means "inherit the default". */
+  sessionMode: (sessionId: string) =>
+    feature<{ sessionId: string; mode: DshPermissionMode | null }>(
+      "dsh_session_mode_get",
+      { sessionId },
+    ),
+  /** Sets the mode and/or the plan flag; both apply at the next tool call. */
+  setSessionMode: (sessionId: string, patch: { mode?: DshPermissionMode; plan?: boolean }) =>
+    feature<{ sessionId: string; mode: DshPermissionMode | null; plan: boolean | null }>(
+      "dsh_session_mode_set",
+      { sessionId, ...patch },
+    ),
+  /** The runtime-wide default mode a session without its own choice inherits. */
+  policyGet: () => feature<{ mode: DshPermissionMode }>("dsh_policy_get"),
 
   tasks: () => feature<{ tasks: DshTask[] }>("dsh_tasks"),
   taskApprove: (sessionId: string) =>

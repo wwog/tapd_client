@@ -32,7 +32,20 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 /** Strips scripts/styles/events; media and links keep the treatment above. */
 export function sanitizeRichHtml(html: string): string {
   return DOMPurify.sanitize(html, {
-    FORBID_TAGS: ["video", "audio", "source", "iframe", "object", "embed", "form"],
+    // `style` is a live gap otherwise: DOMPurify's default allow-list admits
+    // the element, and agent output could then inject global CSS (page
+    // rewriting + out-of-band `url()` requests).
+    FORBID_TAGS: [
+      "video",
+      "audio",
+      "source",
+      "iframe",
+      "object",
+      "embed",
+      "form",
+      "style",
+      "template",
+    ],
     FORBID_ATTR: ["style"],
   });
 }

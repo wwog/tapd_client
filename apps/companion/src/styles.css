@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Shared agent view components live outside this app root; scan them too. */
+@source "../../shared";
+
 @theme {
   --color-ink-900: #0b1524;
   --color-ink-800: #0f1e31;
@@ -517,6 +520,128 @@ select:focus,
 [data-theme="dark"] .hljs-class .hljs-title,
 [data-theme="dark"] .hljs-params {
   color: #7dd3fc;
+}
+
+/* -------------------------------------------------------------------------
+   Agent answer Markdown (shared chat view host capability, marked + hljs).
+   Mirrors the desktop `markdown.css` alignment: transparent surface, real
+   borders, 400 weight, theme-aware slate/sky tokens, no shadows.
+   ------------------------------------------------------------------------- */
+.answer-markdown {
+  font-size: var(--text-ui-caption);
+  line-height: 1.65;
+}
+
+.answer-markdown > :first-child {
+  margin-top: 0;
+}
+
+.answer-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.answer-markdown h1,
+.answer-markdown h2,
+.answer-markdown h3,
+.answer-markdown h4,
+.answer-markdown h5,
+.answer-markdown h6 {
+  font-weight: 400;
+  line-height: 1.4;
+  margin: 1em 0 0.35em;
+}
+
+.answer-markdown h1 {
+  font-size: var(--text-ui-lg);
+}
+
+.answer-markdown h2 {
+  font-size: var(--text-ui-base);
+}
+
+.answer-markdown h3,
+.answer-markdown h4,
+.answer-markdown h5,
+.answer-markdown h6 {
+  font-size: var(--text-ui-caption);
+}
+
+.answer-markdown p,
+.answer-markdown ul,
+.answer-markdown ol,
+.answer-markdown blockquote,
+.answer-markdown pre,
+.answer-markdown table {
+  margin: 0.4em 0;
+}
+
+.answer-markdown ul,
+.answer-markdown ol {
+  padding-left: 1.4em;
+}
+
+.answer-markdown li {
+  margin: 0.15em 0;
+}
+
+.answer-markdown a {
+  color: var(--color-sky-600);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.answer-markdown code {
+  font-family: var(--font-mono);
+  font-size: var(--text-ui-xs);
+  background: var(--color-slate-50);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.answer-markdown pre {
+  background: var(--color-slate-50);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  font-size: var(--text-ui-xs);
+  line-height: 1.55;
+}
+
+.answer-markdown pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+.answer-markdown blockquote {
+  border-left: 2px solid var(--color-border);
+  padding-left: 10px;
+  color: var(--color-slate-500);
+}
+
+.answer-markdown table {
+  border-collapse: collapse;
+}
+
+.answer-markdown th,
+.answer-markdown td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.answer-markdown img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.answer-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
 }
 
 /* iOS Safari zooms the page when a focused control's font-size is below 16px.

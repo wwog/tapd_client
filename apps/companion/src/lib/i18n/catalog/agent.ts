@@ -93,22 +93,63 @@ export const agent = {
   "mobile.agent.teamLoadFailed": ["读取任务板失败", "Couldn't load the board"],
 
   /* -- Session view ------------------------------------------------------- */
-  "mobile.agent.syncing": ["同步中", "Syncing"],
+  "mobile.agent.resuming": ["正在恢复会话…", "Resuming…"],
   "mobile.agent.entriesLoadFailed": ["读取消息失败", "Couldn't load messages"],
   "mobile.agent.emptyTranscript": ["还没有消息", "No messages yet"],
   "mobile.agent.emptyTranscriptHint": [
     "在下方输入第一条消息。",
     "Type the first message below.",
   ],
+
+  /* -- Composer ---------------------------------------------------------- */
   "mobile.agent.composerPlaceholder": ["给 Agent 发消息", "Message the Agent"],
   "mobile.agent.composerHint": [
     "Enter 发送，Shift+Enter 换行。",
     "Enter to send, Shift+Enter for a new line.",
   ],
   "mobile.agent.promptFailed": ["发送失败", "Couldn't send the message"],
-  "mobile.agent.reasoning": ["思考过程", "Reasoning"],
-  "mobile.agent.toolRunning": ["运行中", "Running"],
-  "mobile.agent.toolArgs": ["参数", "Arguments"],
-  "mobile.agent.toolResult": ["结果", "Result"],
-  "mobile.agent.turnEnded": ["本轮结束", "Turn ended"],
+  "mobile.agent.stopFailed": ["停止失败", "Couldn't stop the turn"],
+
+  /* -- Session mode picker (composer) ------------------------------------- */
+  "mobile.agent.modeTitle": ["会话模式", "Session mode"],
+  "mobile.agent.modePlan": ["计划模式", "Plan mode"],
+  "mobile.agent.modePlanHint": [
+    "先出计划，批准后再动手",
+    "Plan first; act after approval",
+  ],
+  "mobile.agent.modeNotify": ["变更前通知", "Notify before changes"],
+  "mobile.agent.modeNotifyHint": [
+    "全部放行，执行前推一条通知",
+    "Everything is allowed; a notice is sent before it runs",
+  ],
+  "mobile.agent.modeAuto": ["自主", "Autonomous"],
+  "mobile.agent.modeAutoHint": [
+    "只有风险操作才询问",
+    "Only risky operations ask for approval",
+  ],
+  "mobile.agent.modeFull": ["完全访问", "Full access"],
+  "mobile.agent.modeFullHint": [
+    "除硬黑名单外全部放行",
+    "Everything except the hard blocklist is allowed",
+  ],
+  "mobile.agent.modeSetFailed": ["切换模式失败", "Couldn't switch mode"],
+
+  /* -- Session model picker (composer) ------------------------------------ */
+  "mobile.agent.modelPickTitle": ["模型", "Model"],
+  "mobile.agent.modelNoAvailable": ["还没有可用模型", "No model available yet"],
+  "mobile.agent.modelProviderModels": ["{count} 个模型", "{count} models"],
+  "mobile.agent.modelImage": ["图像输入", "Image input"],
+  "mobile.agent.modelReasoningTag": ["可推理", "Reasoning"],
+  "mobile.agent.modelReasoningEffort": ["思考强度", "Reasoning effort"],
+  "mobile.agent.modelReasoningOff": ["关闭", "Off"],
+  "mobile.agent.modelSetFailed": ["切换模型失败", "Couldn't switch model"],
+
+  /* -- Composer status line ----------------------------------------------- */
+  "mobile.agent.usageTurns": ["{turns} 轮 · {steps} 步", "{turns} turns · {steps} steps"],
+  "mobile.agent.usageTokens": ["{tokens} tokens", "{tokens} tokens"],
+  "mobile.agent.usageContext": ["上下文 {percent}%", "Context {percent}%"],
+
+  /* -- Conversation / trajectory panes ------------------------------------ */
+  "mobile.agent.paneChat": ["对话", "Chat"],
+  "mobile.agent.paneTrajectory": ["轨迹", "Trajectory"],
 } as const satisfies Catalog;
