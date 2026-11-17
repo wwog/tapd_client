@@ -10,12 +10,11 @@
 //! the board on connect. A session the runtime has never seen simply answers
 //! with an empty board instead of an error.
 //!
-//! Enabling appends one guidance message naming the enabled coworkers, so the
-//! lead splits work into board tasks and hands parts to matching coworkers
-//! ([`crate::coworker`]). It is sent once per session per app run.
+//! Enabling changes the tool surface, nothing else: the lead creates board
+//! tasks and spawns the subagents it needs. The coworker roster is never
+//! queued into the session — dsh assigns work to agents that actually exist,
+//! so a declared roster would only be prompt noise.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -24,8 +23,6 @@ use tauri::{AppHandle, Manager};
 
 use super::bridge::BridgeState;
 use super::runtime::RuntimeState;
-use crate::agent_settings;
-use crate::coworker;
 use tapd_i18n::{tr, tr_args};
 
 /// Emitted on every inbound team frame. Payload: `{ sessionId, team }`.
@@ -215,15 +212,13 @@ async fn set(app: &AppHandle, request: TeamSetRequest) -> Result<Value, String> 
     let mut team = wait_for_mode(&bridge, &request.session_id, request.enabled)
         .await
         .unwrap_or_else(|| DshTeam::empty(&request.session_id));
-    if request.enabled {
-        // A session the runtime has not created yet only gets its live agent
-        // when the roster prompt arrives; the toggle then applies on
-        // `agent/created`, so wait once more for that frame.
-        if announce_coworkers(app, &runtime, &request.session_id).await && !team.enabled {
-            team = wait_for_mode(&bridge, &request.session_id, true)
-                .await
-                .unwrap_or(team);
-        }
+    // The plugin queues a toggle for a session whose Agent does not exist yet
+    // (a fresh chat before its first message). The board echo only arrives once
+    // the Agent is created, so reporting the old mode here would flip the
+    // switch back and hide a choice that is in fact queued. The pushed frame
+    // corrects this if the queue is ever dropped.
+    if team.enabled != request.enabled {
+        team.enabled = request.enabled;
     }
     Ok(json!({ "team": team }))
 }
@@ -244,49 +239,6 @@ async fn wait_for_mode(bridge: &BridgeState, session_id: &str, enabled: bool) ->
         }
         tokio::time::sleep(MODE_POLL).await;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Coworker roster
-// ---------------------------------------------------------------------------
-
-/// Sessions whose roster message was already queued in this app run. The
-/// message is guidance for the lead, so the guard only avoids spending a turn
-/// twice; it is not persisted.
-fn roster_sent() -> &'static Mutex<HashSet<String>> {
-    static SENT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    SENT.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-/// Queues the roster after Team mode was applied. Best effort: the toggle
-/// already succeeded and must not be reported as failed because a prompt
-/// could not be queued, so the error is logged. Returns whether the message
-/// was queued now (i.e. not already sent in this run).
-async fn announce_coworkers(app: &AppHandle, runtime: &RuntimeState, session_id: &str) -> bool {
-    {
-        let mut sent = roster_sent().lock().expect("dsh team roster lock");
-        if !sent.insert(session_id.to_string()) {
-            return false;
-        }
-    };
-
-    let config = agent_settings::config_for(app);
-    let section = coworker::prompt_section(app, &config.coworker_ids);
-    let text = if section.trim().is_empty() {
-        tr("dsh.team.roster.empty").to_string()
-    } else {
-        tr_args("dsh.team.roster", &[&section])
-    };
-    if let Err(error) = runtime.query(app, session_id, &text).await {
-        // Let the next enable retry the guidance.
-        roster_sent()
-            .lock()
-            .expect("dsh team roster lock")
-            .remove(session_id);
-        tracing::warn!(%error, session = session_id, "failed to queue the coworker roster");
-        return false;
-    }
-    true
 }
 
 // ---------------------------------------------------------------------------

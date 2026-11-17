@@ -12,8 +12,8 @@ type Props = {
 };
 
 /**
- * 同事页：勾选一起干活的同事。启用的同事把角色、简述和技能包路径带进
- * 每一次 Agent 任务的提示词；可叠加，也可随时清空回到单干。
+ * 同事页：勾选一起干活的同事。团队协作关闭时，启用的同事把角色、简述和技能包
+ * 路径带进每一次 Agent 任务的提示词；开启后提示词不再写名单，工作由任务板分配。
  */
 export function CoworkerPage({ toast }: Props) {
   const selection = useCoworkers(toast);

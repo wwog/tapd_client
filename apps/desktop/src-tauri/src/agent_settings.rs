@@ -45,9 +45,14 @@ pub struct AgentConfig {
     /// TAPD workspace id -> repository path + project rules.
     pub projects: BTreeMap<String, ProjectAgentConfig>,
     pub prompt_template: String,
-    /// Enabled coworkers from the bundled registry, in selection order. Their
-    /// roles and skill packages are appended to every task prompt.
+    /// Enabled coworkers from the bundled registry, in selection order. This is
+    /// now the collaboration roster: it is not written into any prompt.
     pub coworker_ids: Vec<String>,
+    /// 团队协作：开启后新会话默认进入 Agent Team（任务板），工作由 lead 分配。
+    /// `None` marks a config written before this switch existed; the roster
+    /// then decides, exactly as the old 同事 switch did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_enabled: Option<bool>,
     /// 每个任务在独立的 git worktree 中运行。关闭时并发固定为 1。
     #[serde(default)]
     pub worktree_enabled: bool,
@@ -571,6 +576,7 @@ impl Default for AgentConfig {
             projects: BTreeMap::new(),
             prompt_template: tr(DEFAULT_PROMPT_KEY).to_string(),
             coworker_ids: Vec::new(),
+            team_enabled: None,
             worktree_enabled: false,
             execution_units: default_execution_units(),
             dsh_models: DshModelsConfig::default(),
@@ -581,6 +587,13 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
+    /// Team collaboration for new sessions. A config written before the switch
+    /// existed asked for the team by enabling coworkers, so the roster is the
+    /// fallback instead of a silent "off".
+    pub fn team_enabled(&self) -> bool {
+        self.team_enabled.unwrap_or(!self.coworker_ids.is_empty())
+    }
+
     fn sanitized(mut self) -> Self {
         if self.prompt_template.trim().is_empty()
             || template_uses_removed_contract(&self.prompt_template)
@@ -589,6 +602,8 @@ impl AgentConfig {
         }
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
+        // Resolve the legacy fallback once, so every reader sees a real bool.
+        self.team_enabled = Some(self.team_enabled());
         self.execution_units = self.execution_units.clamp(1, 8);
 
         // One-time migration of the single-provider form; the field stops being
@@ -821,7 +836,8 @@ pub struct PromptVars {
     pub user_prompt: String,
     /// Absolute resource paths; inserted into the prompt as a path list.
     pub attachments: Vec<String>,
-    /// Enabled coworkers and their skill package paths; empty when none is on.
+    /// Coworker roster for the solo path. Empty while team collaboration is on:
+    /// work is then assigned on the board instead of announced in the prompt.
     pub coworker: String,
 }
 
@@ -829,7 +845,7 @@ pub struct PromptVars {
 ///
 /// Coworker skills (`{{coworker}}`) use a slot-or-append policy: an explicit
 /// placeholder keeps placement under the template's control, otherwise the whole
-/// section is appended.
+/// section is appended. The value is empty in team mode, so both cases collapse.
 pub fn render_prompt(template: &str, vars: &PromptVars) -> String {
     let attachments = render_attachments(&vars.attachments);
     let pairs = [
@@ -963,6 +979,29 @@ mod tests {
         };
         let out = render_prompt("{{task_id}} {{bug_id}} {{unknown}}", &vars);
         assert_eq!(out, "task-1 1001 {{unknown}}");
+    }
+
+    #[test]
+    fn team_default_is_migrated_from_the_roster_once() {
+        // Configs written before the switch existed asked for the team by
+        // enabling coworkers; sanitize resolves that to a real bool.
+        let migrated = AgentConfig {
+            coworker_ids: vec!["author".into()],
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(migrated.team_enabled, Some(true));
+        assert!(migrated.team_enabled());
+        // A roster without the fallback (explicitly off) stays off.
+        let off = AgentConfig {
+            coworker_ids: vec!["author".into()],
+            team_enabled: Some(false),
+            ..Default::default()
+        }
+        .sanitized();
+        assert!(!off.team_enabled());
+        // No roster, no switch: a single agent.
+        assert!(!AgentConfig::default().sanitized().team_enabled());
     }
 
     #[test]

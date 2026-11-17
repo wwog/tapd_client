@@ -8,6 +8,7 @@
  *
  *   initialize      → { serverInfo }
  *   session/query   → { kind: "prompt", messageId }
+ *   preset probe    → PRESET_PROBE on stderr (roster mount + agent_preset enum)
  *   shutdown        → process exits
  *
  * Run after every payload build and after every dsh version bump:
@@ -59,7 +60,59 @@ function pluginNames(modulesDir) {
     .map((name) => ({ name: `@tapd/${name}`, entry: join(scope, name, "index.js") }));
 }
 
-function writeProfile(homeDir, modulesDir, plugins) {
+/** One coworker preset plus a probe that reports it after boot. The rows
+ *  mirror what the app renders (crates/dsh-host/src/profile.rs): same row ids,
+ *  provider name and optional description, so an engine that starts validating
+ *  any of them fails here instead of only in the app. Keep the two in sync. */
+function presetRows(modulesDir, skillsDir, probePath) {
+  const entry = (pkg) => join(modulesDir, "@deepseek-ai", pkg, "lib/index.js");
+  return [
+    "    - id: 'agent-preset-registry'",
+    `      name: '${entry("dsh-agent-preset-registry")}'`,
+    "      config:",
+    "        default: 'author'",
+    "    - id: 'preset-author'",
+    `      name: '${entry("dsh-agent-preset")}'`,
+    "      config:",
+    "        id: 'author'",
+    "        name: 'Author'",
+    "        description: '一起写代码'",
+    "        order: 1",
+    "        plugins:",
+    "          - id: persona",
+    `            name: '${entry("dsh-persona")}'`,
+    "            config:",
+    "              prefix: 'smoke preset'",
+    "          - id: coworker-skills",
+    `            name: '${entry("dsh-skill-filesystem")}'`,
+    "            config:",
+    "              providerName: 'coworker-author'",
+    "              customSkillDirs:",
+    `                - '${skillsDir}'`,
+    "    - id: 'tapd-preset-probe'",
+    `      name: '${probePath}'`,
+  ].join("\n");
+}
+
+/** Reports the roster the registry mounted and the allowlist the spawn tool
+ *  exposes; stderr keeps it out of the JSON-RPC channel. */
+const PRESET_PROBE = `
+export const name = 'tapd-preset-probe'
+export const inject = ['agentPresets', 'tools']
+export function apply(ctx) {
+  setTimeout(() => {
+    const rows = []
+    for (const [id, record] of ctx.get('agentPresets')?.definitions ?? []) {
+      rows.push({ id, mounted: Boolean(record.generation), broken: record.broken ?? null })
+    }
+    const subagent = ctx.get('tools')?.schemas().find((tool) => tool.name === 'subagent')
+    const enumValues = subagent?.parameters?.properties?.agent_preset?.enum ?? null
+    process.stderr.write('PRESET_PROBE ' + JSON.stringify({ rows, enumValues }) + '\\n')
+  }, 2000)
+}
+`;
+
+function writeProfile(homeDir, modulesDir, plugins, preset) {
   const profileDir = join(homeDir, "profiles/tapd");
   mkdirSync(profileDir, { recursive: true });
   writeFileSync(
@@ -78,12 +131,28 @@ function writeProfile(homeDir, modulesDir, plugins) {
   const rows = plugins
     .map((plugin) => `    - id: ${plugin.name.replace("@tapd/", "")}\n      name: ${plugin.entry}`)
     .join("\n");
+  const presetBlock = preset
+    ? presetRows(modulesDir, preset.skillsDir, preset.probePath)
+    : "";
+  const allowlist = preset
+    ? [
+        "- id: tool-subagent",
+        "  config:",
+        "    provider: spawn",
+        "    toolName: subagent",
+        "    allowedAgentPresets:",
+        "      - 'author'",
+        "",
+      ]
+    : [];
   writeFileSync(
     join(profileDir, "cordis.patch.yml"),
     [
       "- insert:",
       rows,
+      presetBlock,
       "",
+      ...allowlist,
       "- id: llm-pi-ai",
       "  config:",
       "    providers:",
@@ -181,6 +250,23 @@ function drive(entry, homeDir, timeoutMs) {
         if (receipt?.kind !== "prompt" || !receipt.messageId) {
           throw new Error(`unexpected session/query receipt: ${JSON.stringify(receipt)}`);
         }
+        // Preset composition: the probe reports from inside the runtime, so a
+        // broken mount or a missing `agent_preset` enum fails the smoke test.
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 2500));
+        const probeLine = stderr
+          .split("\n")
+          .find((line) => line.startsWith("PRESET_PROBE "));
+        if (!probeLine) throw new Error("preset probe did not report");
+        const preset = JSON.parse(probeLine.slice("PRESET_PROBE ".length));
+        const mounted = (preset.rows ?? []).some(
+          (row) => row.id === "author" && row.mounted && !row.broken,
+        );
+        if (!mounted) {
+          throw new Error(`coworker preset did not mount: ${JSON.stringify(preset)}`);
+        }
+        if (!Array.isArray(preset.enumValues) || !preset.enumValues.includes("author")) {
+          throw new Error(`subagent preset enum is missing: ${JSON.stringify(preset)}`);
+        }
         // The launcher logs a failed plugin import and keeps booting, so a
         // green handshake alone does not prove the composition is healthy.
         const broken = stderr
@@ -224,7 +310,17 @@ export async function verifyPayload({ archivePath, version }) {
     const entry = join(modulesDir, "@deepseek-ai/dsh/lib/bin.js");
     if (!existsSync(entry)) throw new Error(`payload has no launcher at ${entry}`);
     const plugins = pluginNames(modulesDir);
-    writeProfile(homeDir, modulesDir, plugins);
+    // A minimal coworker package: one skill root, so the preset's provider row
+    // has something real to scan.
+    const skillsDir = join(workDir, "preset-skills");
+    mkdirSync(join(skillsDir, "demo"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: smoke preset\n---\n",
+    );
+    const probePath = join(workDir, "preset-probe.mjs");
+    writeFileSync(probePath, PRESET_PROBE);
+    writeProfile(homeDir, modulesDir, plugins, { skillsDir, probePath });
     log(`booting payload ${version ?? ""} with ${plugins.length} plugin(s)`);
     const started = Date.now();
     const { init } = await drive(entry, homeDir, 120_000);

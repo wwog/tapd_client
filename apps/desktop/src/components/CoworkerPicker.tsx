@@ -93,8 +93,6 @@ export function useCoworkers(toast: Toast) {
     busy,
     reload,
     toggle,
-    /** Turns the whole roster on in one step; the config tab's switch uses it. */
-    selectAll: () => void commit((coworkers ?? []).map((coworker) => coworker.id)),
     clear: () => void commit([]),
   };
 }

@@ -184,7 +184,7 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
   `failed` / `canceled`）+ 实时运行点；bug、本地事项与自由会话都在同一列表。契约见 [DSH.md](DSH.md) §9。
 - 审核 / 合并 / 取消 / 查看 diff 在任务条上直接操作；提交、合并与 TAPD 回写由宿主确定性地做，模型只改代码、跑测试。
 - 审批与提问可在桌面与手机回答，阻塞请求可随时用 `dsh_pending` 查快照；手机没有 token 级实时流，靠轮询收齐。
-- 配置页：权限模式三选一（auto / notify / full）、模型供应商与模型目录（多供应商、每模型上下文窗口 / 最大输出 / 输入模态 / 推理等级映射）、同事开关（打开即启用智能体团队，同事一起加入）、Worktree 隔离与执行单元；
+- 配置页：权限模式三选一（auto / notify / full）、模型供应商与模型目录（多供应商、每模型上下文窗口 / 最大输出 / 输入模态 / 推理等级映射）、团队协作开关（新任务会话默认进入任务板，同事渲染成 agent preset 供 lead 指派；提示词不再写同事名单）、集成（运行时注册的工具）、Worktree 隔离与执行单元；
   改动即时保存，提示词模板只在桌面编辑。
 - 旧的运行时选择、模型与权限 CLI 参数、TUI 终端接管、历史续接与「处理中」范围都已移除。
 
@@ -219,7 +219,7 @@ apps/desktop/
     notification.rs          轮询、分类、通知窗口调度、接受动作
     island_window.rs         胶囊窗口创建、定位、拖动持久化与尺寸动画
     notification_db.rs       通知状态 SQLite 持久化（设置 / 条目 / 去重 / 游标）
-    coworker.rs              同事包注册表、技能 frontmatter、提示词注入与 skill map
+    coworker.rs              同事包注册表、技能 frontmatter、提示词注入（单人路径）与 skill map
     mcp.rs                   MCP 工具调度、策略强制与审计记录
     mcp_audit.rs             有界 MCP 调用审计（SQLite `mcp_audit` 表，脱敏摘要）
     mcp_import.rs            各 AI 客户端配置一键注入

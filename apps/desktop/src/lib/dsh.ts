@@ -386,6 +386,7 @@ type DshFeatureCommand =
   | "dsh_worktrees"
   | "dsh_worktree_remove"
   | "dsh_plugins"
+  | "dsh_tools"
   | "dsh_session_mode_get"
   | "dsh_session_mode_set"
   | "dsh_models_discover"
@@ -497,6 +498,24 @@ export const dshPluginApi = {
   list: () => feature<{ entries: DshPluginEntry[] }>("dsh_plugins"),
 };
 
+/** One tool the runtime registers for a session created now. */
+export type DshToolEntry = {
+  name: string;
+  description: string;
+  /** Model-facing JSON schema (property names, required list, …). */
+  parameters: {
+    type?: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  /** Registered behind a mode (Agent Team's board tools) rather than composed. */
+  conditional: boolean;
+};
+
+export const dshToolApi = {
+  list: () => feature<{ tools: DshToolEntry[] }>("dsh_tools"),
+};
+
 export const dshPolicyApi = {
   /** The mode is part of `agent_settings_get`; only writes go through policy. */
   set: (mode: DshPermissionMode) =>
@@ -528,7 +547,7 @@ export const dshModelApi = {
 export const dshTeamApi = {
   /** Reads the persisted board; a session with no board returns it disabled. */
   get: (sessionId: string) => feature<{ team: DshTeam }>("dsh_team_get", { sessionId }),
-  /** Enabling also queues the coworker roster into the session. */
+  /** Enabling only switches the engine's Team tools on; nothing is queued. */
   set: (sessionId: string, enabled: boolean) =>
     feature<{ team: DshTeam }>("dsh_team_set", { sessionId, enabled }),
 };

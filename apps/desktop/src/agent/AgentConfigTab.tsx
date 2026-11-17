@@ -3,6 +3,8 @@ import clsx from "clsx";
 import {
   Boxes,
   Check,
+  HelpCircle,
+  Plug,
   Puzzle,
   ScrollText,
   Settings2,
@@ -12,13 +14,14 @@ import {
 
 import { Dialog } from "../components/Dialog";
 import { ScrollingName } from "../components/ScrollingName";
-import { useCoworkers } from "../components/CoworkerPicker";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui";
 import { t, type MessageKey } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
 import { ModelSettings } from "./ModelSettings";
 import { PluginInventory } from "./PluginInventory";
+import { ToolInventory } from "./ToolInventory";
+import { UsagePopover } from "./usage/Popover";
 import {
   agentActions,
   agentStore,
@@ -43,16 +46,17 @@ const NAV: Array<{ id: Section; label: MessageKey; icon: LucideIcon }> = [
   { id: "general", label: "agent.config.nav.general", icon: SlidersHorizontal },
   { id: "models", label: "agent.config.nav.models", icon: Boxes },
   { id: "rules", label: "agent.config.nav.rules", icon: ScrollText },
+  { id: "integrations", label: "agent.config.nav.integrations", icon: Plug },
   { id: "plugins", label: "agent.config.nav.plugins", icon: Puzzle },
 ];
 
 /**
  * All agent settings, in a dialog opened from the task column's footer. The
  * left column groups them: 模型 (providers and catalog), 规则 (prompt and
- * permission policy) and 常规 (execution, coworkers, runtime). Every control
- * applies on its own: edits are written back after a short pause instead of
- * behind a save button. Projects are edited on the projects page and merged by
- * the same command.
+ * permission policy), 集成 (the tools a session inherits), 内置插件 and 常规
+ * (execution, team collaboration, runtime). Every control applies on its own:
+ * edits are written back after a short pause instead of behind a save button.
+ * Projects are edited on the projects page and merged by the same command.
  */
 export function AgentConfigTab({ toast, onClose }: Props) {
   const state = agentStore.use();
@@ -64,7 +68,6 @@ export function AgentConfigTab({ toast, onClose }: Props) {
   const [policySaving, setPolicySaving] = useState(false);
   /** Restarting kills running turns; ask first when that would hurt. */
   const [confirmRestart, setConfirmRestart] = useState(false);
-  const selection = useCoworkers(toast);
 
   // The draft is the local source of truth while editing; the stored config
   // only seeds it, so a save echo never fights the caret.
@@ -90,6 +93,7 @@ export function AgentConfigTab({ toast, onClose }: Props) {
     void agentActions
       .saveConfig({
         promptTemplate: next.promptTemplate,
+        teamEnabled: next.teamEnabled,
         worktreeEnabled: next.worktreeEnabled,
         executionUnits: clamp(next.executionUnits, 1, 8),
         dshModels: next.dshModels,
@@ -101,12 +105,6 @@ export function AgentConfigTab({ toast, onClose }: Props) {
   const flushRef = useRef(flush);
   flushRef.current = flush;
   useEffect(() => () => flushRef.current(), []);
-
-  // Coworker changes and catalog edits both apply to the running runtime; this
-  // re-reads the drift flag after a committed change, not mid-write.
-  useEffect(() => {
-    if (!selection.busy) void agentActions.refreshStatus();
-  }, [selection.busy]);
 
   const patchDraft = (patch: Partial<DshAgentConfig>) => {
     const current = draftRef.current;
@@ -181,15 +179,6 @@ export function AgentConfigTab({ toast, onClose }: Props) {
     }
   };
 
-  // 同事 is one switch: on enables the agent team and its roster, off runs a
-  // single agent. The roster itself is picked on the 同事 page.
-  const coworkersOn = selection.selectedIds.length > 0;
-  const toggleCoworkers = () => {
-    if (selection.busy || selection.coworkers === null) return;
-    if (coworkersOn) selection.clear();
-    else selection.selectAll();
-  };
-
   const restartRunning = Object.values(state.sessions).some(
     (session) => session.status === "running",
   );
@@ -246,6 +235,10 @@ export function AgentConfigTab({ toast, onClose }: Props) {
               value={draft.dshModels}
               onChange={(dshModels) => patchDraft({ dshModels })}
             />
+          ) : section === "integrations" ? (
+            <div className="mx-auto max-w-3xl pb-2">
+              <ToolInventory />
+            </div>
           ) : section === "plugins" ? (
             <div className="mx-auto max-w-3xl pb-2">
               <PluginInventory />
@@ -355,32 +348,28 @@ export function AgentConfigTab({ toast, onClose }: Props) {
 
                 <section className={cardClass}>
                   <div className="flex items-center gap-3">
-                    <h2
-                      className="text-ui-base text-slate-900"
-                      title={t("agent.config.coworkersHint")}
-                    >
-                      {t("agent.config.coworkers")}
-                    </h2>
-                    {selection.loadError ? null : (
-                      <Switch
-                        className="ml-auto"
-                        checked={coworkersOn}
-                        disabled={selection.busy || selection.coworkers === null}
-                        onChange={toggleCoworkers}
-                        label={t("agent.config.coworkers")}
-                      />
-                    )}
-                  </div>
-                  {selection.loadError ? (
-                    <div className="mt-3 flex items-center gap-3 text-ui-caption text-rose-600">
-                      <span className="min-w-0 flex-1 truncate" title={selection.loadError}>
-                        {selection.loadError}
-                      </span>
-                      <Button size="sm" onClick={() => void selection.reload()}>
-                        {t("common.retry")}
-                      </Button>
+                    <div className="flex min-w-0 items-center gap-1">
+                      <h2 className="text-ui-base text-slate-900">
+                        {t("agent.config.team")}
+                      </h2>
+                      <UsagePopover
+                        trigger={<HelpCircle size={12} />}
+                        title={t("agent.config.team")}
+                        minWidth={280}
+                        fullHeight={160}
+                      >
+                        <p className="mt-2 text-ui-xs leading-5 text-slate-500">
+                          {t("agent.config.teamHint")}
+                        </p>
+                      </UsagePopover>
                     </div>
-                  ) : null}
+                    <Switch
+                      className="ml-auto"
+                      checked={draft.teamEnabled}
+                      onChange={(teamEnabled) => patchDraft({ teamEnabled })}
+                      label={t("agent.config.team")}
+                    />
+                  </div>
                 </section>
 
                 <section className={cardClass}>

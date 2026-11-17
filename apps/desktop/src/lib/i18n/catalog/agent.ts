@@ -53,10 +53,10 @@ export const agent = {
   "agent.task.openExport": ["打开导出目录", "Open export folder"],
 
   // Team board (P5).
-  "agent.team.toggle": ["团队协作", "Team mode"],
+  "agent.team.toggle": ["团队协作", "Team collaboration"],
   "agent.team.toggleHint": [
-    "开启后主 Agent 会把可拆分的工作派给同事，并在任务板登记。",
-    "The lead agent hands splittable work to coworkers and registers it on the board.",
+    "开启后主 Agent 把可拆分的工作登记在任务板上，并派给同事子 agent。",
+    "With team collaboration on, the lead registers splittable work on the board and hands it to coworker subagents.",
   ],
   "agent.team.viewChat": ["会话", "Chat"],
   "agent.team.viewBoard": ["任务板", "Board"],
@@ -74,6 +74,13 @@ export const agent = {
     "With team mode on, the lead agent registers splittable work here.",
   ],
   "agent.team.loadFailed": ["任务板读取失败", "Could not load the board"],
+
+  // Free-chat header: the session-local collaboration switch.
+  "agent.chat.team": ["同事协作", "Coworkers"],
+  "agent.chat.teamHint": [
+    "本会话让同事一起干活，主 Agent 可把工作派给同事子 agent。默认关闭，任务会话继承配置。",
+    "Let coworkers join this chat, with the lead handing parts to coworker subagents. Off by default; task sessions inherit the config.",
+  ],
 
   // Enqueue sheet (bug footer, bug row, local item row).
   "agent.enqueue.bugHint": ["导出缺陷并交给 Agent 修复", "Export the bug and let the agent fix it"],
@@ -156,6 +163,17 @@ export const agent = {
   "agent.plugins.stateActive": ["运行中", "Running"],
   "agent.plugins.stateFailed": ["启动失败", "Failed"],
   "agent.plugins.stateUnloading": ["卸载中", "Unloading"],
+
+  // 集成: the tool registry a new session inherits.
+  "agent.tools.loading": ["正在读取工具", "Reading tools"],
+  "agent.tools.search": ["搜索工具", "Search tools"],
+  "agent.tools.readyTitle": ["已注入", "Injected"],
+  "agent.tools.readyHint": ["新会话启动即可调用", "Callable as soon as a session starts"],
+  "agent.tools.conditionalTitle": ["按需开启", "On demand"],
+  "agent.tools.conditionalHint": ["对应模式打开后可用", "Callable while their mode is on"],
+  "agent.tools.params": ["{n} 个参数", ({ n }) => `${n} params`],
+  "agent.tools.empty": ["运行时没有注册工具", "The runtime has no tools registered"],
+  "agent.tools.emptySearch": ["没有匹配的工具", "No matching tools"],
 
   // Token usage.
   "agent.usage.chip": ["用量 {tokens} tok", "Usage {tokens} tok"],
@@ -371,6 +389,7 @@ export const agent = {
   "agent.config.nav.models": ["模型", "Models"],
   "agent.config.nav.rules": ["规则", "Rules"],
   "agent.config.nav.general": ["常规", "General"],
+  "agent.config.nav.integrations": ["集成", "Integrations"],
   "agent.config.nav.plugins": ["内置插件", "Built-in plugins"],
   "agent.config.execution": ["执行", "Execution"],
   "agent.config.prompt": ["提示词模板", "Prompt template"],
@@ -417,10 +436,10 @@ export const agent = {
     "重启会中断正在运行的会话，之后需要重新发送。确定继续？",
     "Restarting interrupts running conversations; you will need to resend. Continue?",
   ],
-  "agent.config.coworkers": ["同事", "Coworkers"],
-  "agent.config.coworkersHint": [
-    "打开后启用智能体团队,同事一起加入;重启运行时后生效。",
-    "Turning this on enables the agent team and its coworkers; applied after a runtime restart.",
+  "agent.config.team": ["团队协作", "Team collaboration"],
+  "agent.config.teamHint": [
+    "新任务会话默认进入任务板，主 Agent 可把工作派给同事子 agent；提示词不再写同事名单。自由会话默认关闭，可在输入框上方单独开启。",
+    "New task sessions start on the team board, where the lead can hand work to coworker subagents; the coworker roster stays out of the prompt. Free chats start off and can opt in above the composer.",
   ],
   "agent.config.runtime": ["运行时", "Runtime"],
   "agent.config.runtimeHint": ["只读的运行时信息。", "Read-only runtime facts."],

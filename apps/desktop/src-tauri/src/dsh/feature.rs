@@ -530,6 +530,13 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             let entries = bridge(app)?.plugin_inventory().await?;
             Ok(json!({ "entries": entries }))
         }
+        "dsh_tools" => {
+            // Same source rule as plugins: the registry exists only while the
+            // runtime is up, so the panel starts it instead of inventing rows.
+            runtime(app)?.ensure_ready(app).await?;
+            let tools = bridge(app)?.tool_inventory().await?;
+            Ok(json!({ "tools": tools }))
+        }
         "dsh_sessions" => sessions(app),
         name if name.starts_with("dsh_team_") => super::team::command(app, name, payload).await,
         name if name.starts_with("dsh_task") => super::tasks::command(app, name, payload).await,

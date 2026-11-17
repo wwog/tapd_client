@@ -86,11 +86,16 @@ export type PendingQuestion = {
  *  the permission mode are written through their own entry points. */
 export type AgentConfigDraft = Pick<
   DshAgentConfig,
-  "promptTemplate" | "worktreeEnabled" | "executionUnits" | "dshModels"
+  "promptTemplate" | "teamEnabled" | "worktreeEnabled" | "executionUnits" | "dshModels"
 >;
 
 /** The settings dialog's groups, in nav order. */
-export type AgentConfigSection = "general" | "models" | "rules" | "plugins";
+export type AgentConfigSection =
+  | "general"
+  | "models"
+  | "rules"
+  | "integrations"
+  | "plugins";
 
 export type AgentState = {
   /** The settings dialog; the page itself only shows the conversation. */
@@ -114,6 +119,9 @@ export type AgentState = {
   pendingPrompts: Record<string, string[] | undefined>;
   /** Model picked before a session exists; applied to the next allocation. */
   draftSelection: ModelSelection | null;
+  /** Team collaboration for the next free chat. Chats default off even when
+   *  the config default is on; a task session inherits the config instead. */
+  chatTeamDraft: boolean;
   /** Picks the transcript row does not know yet (a session without a committed
    *  message). Retired once the backend reports the route. */
   selectionOverrides: Record<string, ModelSelection | undefined>;
@@ -177,6 +185,7 @@ const initialState: AgentState = {
   committedAttempts: {},
   pendingPrompts: {},
   draftSelection: null,
+  chatTeamDraft: false,
   selectionOverrides: {},
   approvals: [],
   questions: [],
@@ -421,10 +430,12 @@ function adoptTasks(tasks: DshTask[]): void {
   }));
   persistPrefs();
 
+  // A chat session's row can appear after it was selected, so the board read
+  // must not wait for a selection change.
+  if (selectedId) ensureTeam(selectedId);
   if (moved && selectedId) {
     void loadEntries(selectedId);
     void readSessionMode(selectedId);
-    ensureTeam(selectedId);
   }
 }
 
@@ -468,14 +479,21 @@ function clearSelection(sessionId: string): void {
 const teamReads = new Set<string>();
 
 /** Team mode is offered on tasks with workflow metadata, not free chats. */
-function hasTeamUi(state: AgentState, sessionId: string): boolean {
+export function agentHasTeamUi(state: AgentState, sessionId: string | null): boolean {
+  if (!sessionId) return false;
   return (state.tasks ?? []).some((task) => task.id === sessionId && task.kind !== "chat");
 }
 
-/** The pane to show: the reader's explicit choice, else the team mode default. */
+/** The pane to show: the reader's explicit choice, else the team mode default.
+ *  Task sessions open on the board; a free chat keeps its transcript unless the
+ *  reader asks for the board, because chatting is the point of a chat. */
 export function agentTeamView(state: AgentState, sessionId: string | null): AgentTeamView {
   if (!sessionId) return "chat";
-  return state.teamViews[sessionId] ?? (state.team[sessionId]?.enabled ? "board" : "chat");
+  const explicit = state.teamViews[sessionId];
+  if (explicit) return explicit;
+  const task = (state.tasks ?? []).find((item) => item.id === sessionId);
+  const chat = !task || task.kind === "chat";
+  return !chat && state.team[sessionId]?.enabled ? "board" : "chat";
 }
 
 /** The session's pane choice; the transcript unless the user opened the ledger. */
@@ -516,7 +534,6 @@ async function readTeam(sessionId: string): Promise<void> {
 function ensureTeam(sessionId: string | null): void {
   if (!sessionId) return;
   const state = agentStore.get();
-  if (!hasTeamUi(state, sessionId)) return;
   if (state.teamLoaded[sessionId] || teamReads.has(sessionId)) return;
   void readTeam(sessionId);
 }
@@ -827,7 +844,26 @@ async function allocateSession(): Promise<string> {
   }));
   persistPrefs();
   void readSessionMode(sessionId);
+  applyChatTeam(sessionId);
   return sessionId;
+}
+
+/**
+ * Applies the chat default once a free session exists. Free chats are
+ * independent: off unless the composer bar was flipped before the first
+ * message, even when the config default is on. Task sessions inherit the
+ * config instead and never come through here.
+ */
+function applyChatTeam(sessionId: string): void {
+  const state = agentStore.get();
+  const desired = state.chatTeamDraft;
+  // A config read that has not landed (or failed) must not be read as "off":
+  // the engine default is whatever the profile rendered, so the choice is
+  // written explicitly instead of guessed.
+  const inherited = state.config ? state.config.teamEnabled : null;
+  update((current) => ({ ...current, chatTeamDraft: false }));
+  if (inherited !== null && desired === inherited) return;
+  void agentActions.setTeamEnabled(sessionId, desired);
 }
 
 /**
@@ -1221,6 +1257,11 @@ export const agentActions = {
   /** Retries a failed board read; the toggle itself never bypasses this. */
   refreshTeam: (sessionId: string): void => {
     void readTeam(sessionId);
+  },
+
+  /** Free chats have no session until the first message; the pick waits here. */
+  setChatTeamDraft: (enabled: boolean): void => {
+    update((state) => ({ ...state, chatTeamDraft: enabled }));
   },
 
   /**

@@ -987,7 +987,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
         priority,
         user_prompt: request.extra_prompt.unwrap_or_default(),
         attachments: request.attachments,
-        coworker: coworker::prompt_section(app, &config.coworker_ids),
+        coworker: coworker_section(app, &config),
     };
     let prompt = build_prompt(&config, vars, &project.rule, false);
     launch(app, record, prompt, None).await
@@ -1088,7 +1088,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
         priority: String::new(),
         user_prompt: request.extra_prompt.unwrap_or_default(),
         attachments: request.attachments,
-        coworker: coworker::prompt_section(app, &config.coworker_ids),
+        coworker: coworker_section(app, &config),
     };
     let prompt = build_prompt(&config, vars, &project.rule, true);
     let link = LocalLink {
@@ -1267,6 +1267,16 @@ async fn assign_session_with_retry(
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err(last_error.unwrap_or_else(|| tr("dsh.bridge.unavailable").to_string()))
+}
+
+/// The roster belongs to the solo path. With team collaboration on, work is
+/// assigned on the board and the prompt carries no coworker names at all.
+fn coworker_section(app: &AppHandle, config: &AgentConfig) -> String {
+    if config.team_enabled() {
+        String::new()
+    } else {
+        coworker::prompt_section(app, &config.coworker_ids)
+    }
 }
 
 fn build_prompt(config: &AgentConfig, vars: PromptVars, rule: &str, local: bool) -> String {

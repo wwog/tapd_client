@@ -10,8 +10,9 @@
 //!
 //! The folder name is the only id source. A broken package or skill is skipped
 //! and reported as a warning so one contribution cannot hide the others.
-//! Selected coworkers are stored in `agent.json` and rendered into the prompt by
-//! [`prompt_section`] / [`crate::agent_settings::render_prompt`].
+//! Selected coworkers are stored in `agent.json`. [`prompt_section`] renders
+//! them into the solo task prompt; with team collaboration on the roster is
+//! left out, because dsh assigns work on the board to real subagents.
 
 use std::{
     collections::BTreeMap,
@@ -629,16 +630,8 @@ pub async fn command(
             let mut config = agent_settings::config_for(app);
             config.coworker_ids = selected;
             let config = agent_settings::save_for(app, &config)?;
-            // The roster is read per prompt, but "has coworkers" also sets the
-            // Team default of new sessions. That is a profile row, so a running
-            // runtime adopts it live instead of asking for a restart.
-            if let Some(state) =
-                app.try_state::<std::sync::Arc<crate::dsh::runtime::RuntimeState>>()
-            {
-                if let Err(error) = state.sync_catalog(app, &config).await {
-                    tracing::warn!(%error, "team default was not applied to the running runtime");
-                }
-            }
+            // The roster is read per task; it no longer decides the Team default,
+            // so a running runtime needs no sync here.
             let prompt_section = registry.prompt_section(&config.coworker_ids);
             Ok(json!({
                 "selectedIds": config.coworker_ids,

@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dsh_host::profile::{PluginRow, ProfileSpec, ProviderConfig, ProviderModel, PROFILE_NAME};
+use dsh_host::profile::{
+    CoworkerPreset, PluginRow, PresetModules, ProfileSpec, ProviderConfig, ProviderModel,
+    PROFILE_NAME,
+};
 use dsh_host::protocol::{
     ApprovalRequestParams, Capabilities, InitializeParams, InitializeResult, SessionQueryParams,
     UserQuestionRequest,
@@ -281,14 +284,23 @@ impl RuntimeState {
         status
     }
 
-    /// Startup-only settings differ from what this process booted with.
+    /// Startup-only settings differ from what this process booted with. The
+    /// team default rides `sync_catalog` too, and a failed push leaves the
+    /// remembered value stale, so it counts as drift as well: the restart
+    /// button must not hide a default the running runtime never adopted.
     fn config_drifted(&self, app: &AppHandle) -> bool {
+        let config = agent_settings::config_for(app);
         let booted = self
             .boot_config
             .lock()
             .expect("dsh boot config lock")
             .clone();
-        booted.is_some_and(|booted| booted != boot_fingerprint(&agent_settings::config_for(app)))
+        let booted_team = *self
+            .boot_team_default
+            .lock()
+            .expect("dsh boot team lock");
+        booted.is_some_and(|booted| booted != boot_fingerprint(&config))
+            || booted_team.is_some_and(|booted| booted != config.team_enabled())
     }
 
     fn remember_boot_config(&self, config: &AgentConfig) {
@@ -297,7 +309,7 @@ impl RuntimeState {
         *self
             .boot_team_default
             .lock()
-            .expect("dsh boot team lock") = Some(!config.coworker_ids.is_empty());
+            .expect("dsh boot team lock") = Some(config.team_enabled());
     }
 
     fn clear_boot_config(&self) {
@@ -331,7 +343,7 @@ impl RuntimeState {
             .boot_team_default
             .lock()
             .expect("dsh boot team lock");
-        let team_default = !config.coworker_ids.is_empty();
+        let team_default = config.team_enabled();
         let models_changed = started
             .as_ref()
             .map(|started| catalog_json(started) != catalog_json(&config.dsh_models))
@@ -1026,6 +1038,12 @@ fn prepare_profile(
             entry: stats_entry.to_string_lossy().into_owned(),
         });
     }
+    let preset_modules = preset_modules(&runtime_dir);
+    let presets = if preset_modules.is_some() {
+        coworker_presets(app)
+    } else {
+        Vec::new()
+    };
     let spec = ProfileSpec {
         plugins,
         providers: models
@@ -1034,9 +1052,11 @@ fn prepare_profile(
             .filter(|provider| routable(provider))
             .map(provider_config)
             .collect(),
-        // The 同事 switch is the agent team: coworkers join the board, and no
-        // coworkers means a single agent.
-        team_default_enabled: Some(!config.coworker_ids.is_empty()),
+        // Team collaboration is its own switch now: a new session starts on the
+        // task board, and the coworker roster never enters the prompt.
+        team_default_enabled: Some(config.team_enabled()),
+        presets,
+        preset_modules,
     };
     spec.write(&profile_dir)
         .map_err(|error| format!("failed to write profile: {error}"))?;
@@ -1145,6 +1165,59 @@ fn plugin_rows(runtime_dir: &Path) -> Vec<PluginRow> {
     rows
 }
 
+/// ESM entries the preset rows need. `None` when the payload was stripped of
+/// any of them: the profile then stays without presets instead of half-written.
+fn preset_modules(runtime_dir: &Path) -> Option<PresetModules> {
+    let entry = |package: &str| {
+        let path = runtime_dir
+            .join("node_modules/@deepseek-ai")
+            .join(package)
+            .join("lib/index.js");
+        path.is_file()
+            .then(|| path.to_string_lossy().into_owned())
+    };
+    Some(PresetModules {
+        registry: entry("dsh-agent-preset-registry")?,
+        declaration: entry("dsh-agent-preset")?,
+        persona: entry("dsh-persona")?,
+        skills: entry("dsh-skill-filesystem")?,
+    })
+}
+
+/// Every bundled coworker becomes an agent preset, so the lead can address a
+/// real agent by name when it hands out board tasks. The enabled roster only
+/// decides the solo prompt; membership here is everything that is installed.
+fn coworker_presets(app: &AppHandle) -> Vec<CoworkerPreset> {
+    crate::coworker::load(app)
+        .coworkers
+        .iter()
+        .map(|coworker| {
+            let skills_dir = coworker
+                .avatar
+                .parent()
+                .map(|dir| dir.join("skills"))
+                .filter(|dir| dir.is_dir())
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            CoworkerPreset {
+                id: coworker.id.clone(),
+                // Manifest fields are length-checked but may still carry line
+                // breaks, and the profile renders them as single-line quoted
+                // YAML scalars: flatten here or one contribution breaks boot.
+                name: flatten(&coworker.name),
+                role: flatten(&coworker.role),
+                description: flatten(&coworker.description),
+                skills_dir,
+            }
+        })
+        .collect()
+}
+
+/// Collapses every whitespace run (including line breaks) to one space.
+fn flatten(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Sessions inherit this directory unless the task later moves them. It is a
 /// neutral scratch area, not a user repository: a free chat that never chose a
 /// project must not read or write one.
@@ -1161,9 +1234,9 @@ fn default_cwd(app: &AppHandle) -> PathBuf {
 }
 
 /// Fingerprint of everything a running process freezes at start: the model
-/// catalog and the coworker roster (which decides team mode). Permission mode
-/// is pushed per session and can change live, so it is not part of the
-/// baseline; prompts and per-task settings are read live too.
+/// catalog. Permission mode and the team default are pushed live, so they are
+/// not part of the baseline; prompts, per-task settings and the coworker
+/// roster are read live too.
 fn boot_fingerprint(config: &AgentConfig) -> String {
     // Only the rendered catalog is start-only now: the Team default travels
     // with a catalog sync, and a permission mode is already a live frame. The
@@ -1594,6 +1667,12 @@ mod tests {
     use super::*;
     use crate::agent_settings::{DshModelEntry, ReasoningEffort};
 
+    #[test]
+    fn manifest_whitespace_is_flattened_for_the_profile() {
+        assert_eq!(flatten("a\nb \r\n c"), "a b c");
+        assert_eq!(flatten("  单行  "), "单行");
+    }
+
     fn entry(id: &str) -> DshModelEntry {
         DshModelEntry {
             id: id.into(),
@@ -1709,6 +1788,8 @@ mod tests {
                 .map(provider_config)
                 .collect(),
             team_default_enabled: Some(false),
+            presets: Vec::new(),
+            preset_modules: None,
         }
         .patch_yaml();
 

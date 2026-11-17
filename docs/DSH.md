@@ -191,11 +191,43 @@ type AssistantStreamFrame =
 - root session 的投影 `agentTeam`：`{ enabled, tasks: TeamTaskView[], failure? }`。
 - `TeamTaskView`：`id(task-<n>) / revision / subject / description / status(pending|in_progress|completed|deleted)
   / blockedBy[] / writeScopes[] / ownerId? / ownerName? / ready / writeScopeWarnings[]`。
-- 开关：profile 里 `- id: agent-team config: { defaultEnabled: <有同事?> }` —— 由配置页的「同事」
-  开关决定（`coworker_ids` 非空即开），打开时同事随团队一起加入；会话内仍可写 `team/mode`，
+- 开关：profile 里 `- id: agent-team config: { defaultEnabled: <团队协作?> }` —— 由配置页的
+  「团队协作」决定（`team_enabled`，旧配置按 `coworker_ids` 非空回退）；会话内仍可写 `team/mode`，
   Web 侧方法名为 `remote.agentTeams.setEnabled`。
+- 成员：Team 没有名单，任务只能指派给**真实存在**的子 agent（lead 用 `subagent` 按需创建，
+  用 `list_agents` 发现，用 `team_task_*` 指派）；没有调度器会自动开始一个 owner。
 - 子 agent 提供者：`subagent-spawn-in-process` / `-fork-in-process` / `-acp` / `-codex` /
-  `-claude-code` / `-dsh-sdk`。同事先用 in-process + 技能根；ACP 留给后续。
+  `-claude-code` / `-dsh-sdk`。当前只用 in-process。
+
+### 4.5.1 同事 = agent preset
+
+Team 没有名册，但 `subagent` 工具可以选择子 agent 的组合，所以每个内置同事渲染成一个 preset：
+
+```yaml
+- id: agent-preset-registry          # 自己插的一行，默认取第一个 preset id
+  config: { default: author }
+- id: preset-author                  # 每个同事一行 @deepseek-ai/dsh-agent-preset
+  config:
+    id: author
+    plugins:
+      - id: persona                  # 子 agent 的身份
+        name: '<abs>/dsh-persona/lib/index.js'
+      - id: coworker-skills           # 该同事的技能根（providerName 独立，避免遮蔽全局根）
+        name: '<abs>/dsh-skill-filesystem/lib/index.js'
+        config: { providerName: coworker-author, customSkillDirs: [...] }
+- id: tool-subagent
+  config: { provider: spawn, toolName: subagent, allowedAgentPresets: [author] }
+```
+
+- preset 是**叠加层**：子 agent 仍然继承宿主全局注册的工具（bash/fs/搜索/todo…），
+  preset 只加 persona 和技能根；不需要重复挂工具。
+- `allowedAgentPresets` 会变成 `subagent` 工具里的可选 `agent_preset` 枚举（只有 id，
+  没有描述）；不传时按父 preset 走，lead 想派给某位同事就必须显式传 id。
+- `agent_preset` 只对 spawn 生效，`subagent_fork` 不支持。
+- 只有**已安装**的同事进 preset 名单；「同事」页的勾选只决定单人路径的提示词名单。
+  名单随 payload 变化，改名单需要重启运行时（profile 在启动时重写）。
+- registry 的 `default` 是 schema 必填项，但 SDK 创建 root session 时不走 preset 组合，
+  root 仍是全局组合。
 
 ### 4.6 自定义模型 Provider
 
@@ -352,10 +384,16 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 { "type": "discover-models", "token": "<token>", "requestId": 2,
   "provider": "opencode-go", "baseURL": "https://…/v1", "api": "openai-completions",
   "apiKey": "…" }
+// 面板读取：Loader 实际组成的插件 / 新会话继承的工具注册表
+{ "type": "plugins", "token": "<token>", "requestId": 3 }
+{ "type": "tools", "token": "<token>", "requestId": 4 }
 ```
 
-`models` / `discover-models` 是请求帧，回复走同一通道：
-`{type:"models-applied"|"models-discovered", token, requestId, error?, models?}`。
+`models` / `discover-models` / `plugins` / `tools` 是请求帧，回复走同一通道：
+`{type:"models-applied"|"models-discovered", token, requestId, error?, models?}`、
+`{type:"plugins-listed", token, requestId, entries}`、`{type:"tools-listed", token, requestId, tools}`。
+`tools` 读 `ctx.tools.schemas()`（全局视图，即新会话继承的集合），并把带 `when` 条件的行
+（例如团队任务板工具）标成 `conditional`——它们是否可调用取决于模式，与插件是否组成无关。
 插件用引擎自己的 `configEditor` 改 `llm-pi-ai` / `agent-team` 两行并等 Loader 落定，
 所以新供应商、模型与团队默认都在**运行中生效**，不需要重启；`providers` 省略表示只刷新
 托管凭据（启动初始化后做一次，覆盖早先运行留在 `.credentials.yaml` 里的旧 key）。
@@ -668,7 +706,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   `write` / `edit` / `apply_patch` / `str_replace_editor`，bash 不拦（引擎本身是提示级约束）。
   `plan/mode` 事件进 `DshSession.planActive`，选择器据此回显。
 - 默认模式改动通过 `default-mode` 帧立即作用于没有会话覆盖的会话；模型目录与
-  「有没有同事」也通过上表的 `models` 帧热更新（`configEditor` 改写 profile 行），
+  「团队协作」默认值也通过上表的 `models` 帧热更新（`configEditor` 改写 profile 行），
   改动后不需要重启运行时；`restartRequired` 只在运行时没接住热更新时作为兜底提示。
 - 不做模型审查：规则是确定性的，零 token，可单测。若以后要模型审查，
   再挂上游 `dsh-experimental-auto-review` 作为 `auto` 的一层。
@@ -712,8 +750,12 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 
 - 事件 `dsh://team { sessionId, team }`：连接、Team 开关、任务/归属变化时推送。
 - 运行行已在 `dsh-sdk-app` 的 profile 里（`agent-team` + `tool-agent-team`），
-  `defaultEnabled: false`；P5 不新增依赖。
-- 开启团队时，宿主向会话追加一条**同事名单**消息：已启用同事的角色、
-  技能包 `SKILL.md` 绝对路径，并要求把可拆分工作指派给匹配的同事/子 agent
-  并在任务板登记；没有匹配同事时按性质派给普通子 agent。
+  `defaultEnabled` 由「团队协作」开关写入；P5 不新增依赖。
+- 开启团队不再向会话追加任何名单消息：dsh 的 Team 没有成员名册，任务按 `ownerName`
+  指向现存的子 agent；把同事写进提示词只会得到无法解析的 owner。同事通过
+  §4.5.1 的 agent preset 变成可指派的子 agent，lead 在 `subagent` 里显式传 `agent_preset`。
+  同事名单只在「团队协作关闭」的单人路径里进入提示词（技能包 `SKILL.md` 路径由 agent 自己读）。
+- 会话优先：任务会话默认继承配置；自由会话（chat）默认关闭，输入框上方的「同事协作」
+  开关按会话写入 `team/mode`，之后重启沿用；开启后同一条栏里出现「会话 / 任务板」切换，
+  chat 默认停在会话（任务会话默认停在任务板）。第一次发消息前只是草稿状态，选择随新会话落盘。
 - 任务板不创建独立工作目录；成员共用当前 checkout（worktree 语义不变）。

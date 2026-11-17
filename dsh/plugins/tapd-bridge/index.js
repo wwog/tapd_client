@@ -24,6 +24,7 @@
  *   models → adopt a model catalog, Team default and credentials live
  *   discover-models → ask the engine which models a draft endpoint advertises
  *   plugins → read the Loader's composed plugin inventory (settings panel)
+ *   tools → read the tool registry a new session inherits (settings panel)
  *
  * `models` and `discover-models` are requests: the same socket carries the
  * reply (`models-applied` / `models-discovered`) tagged with the caller's
@@ -373,11 +374,15 @@ export function apply(ctx) {
   /**
    * Applies one Team toggle. The service needs the live Agent that owns the
    * session; a toggle for a session created later waits for `session/created`.
+   * A failed toggle republishes the real board: the Rust caller answers its
+   * UI optimistically when the echo is slow, so a dropped or rejected toggle
+   * must push a correction instead of leaving the switch lying.
    */
   const applyTeamMode = (sessionId, enabled) => {
     const teams = ctx.get('agentTeams')
     if (!teams) {
       warn(`team ${sessionId}`, 'the agentTeams service is not composed')
+      send({ type: 'team', token, sessionId, enabled: false, tasks: [] })
       return
     }
     const agent = ctx.agents.get(sessionId)
@@ -388,7 +393,14 @@ export function apply(ctx) {
     teamModes.delete(sessionId)
     Promise.resolve(teams.setEnabled(agent, enabled)).then(
       () => ctx.logger.info(`${name}: session ${sessionId} team mode → ${enabled}`),
-      (error) => warn(`team ${sessionId} → ${enabled}`, error),
+      (error) => {
+        warn(`team ${sessionId} → ${enabled}`, error)
+        try {
+          sendTeam(agent.session)
+        } catch (pushError) {
+          warn(`team ${sessionId} correction`, pushError)
+        }
+      },
     )
   }
 
@@ -569,6 +581,31 @@ export function apply(ctx) {
   }
 
   /**
+   * Answers "which tools does this runtime register?".
+   *
+   * `ctx.tools` is the engine's own registry, and the unscoped view is what a
+   * session created right now inherits. Conditional registrations (Agent Team's
+   * board tools, for example) are kept and marked: their availability depends on
+   * a mode, not on whether the owning plugin is composed.
+   */
+  const toolInventory = () => {
+    const tools = ctx.get('tools')
+    if (typeof tools?.schemas !== 'function') return { tools: [] }
+    const view = typeof tools.view === 'function' ? tools.view() : null
+    return {
+      tools: tools.schemas().map((schema) => {
+        const name = String(schema.name ?? '')
+        return {
+          name,
+          description: typeof schema.description === 'string' ? schema.description : '',
+          parameters: schema.parameters ?? {},
+          conditional: Boolean(view?.registrations?.get(name)?.when),
+        }
+      }),
+    }
+  }
+
+  /**
    * Adopts a new model catalog through the engine's own config editor. The
    * editor validates the rows, rewrites the profile patch and reconciles the
    * Loader, so routes register live; the reply is sent only after that settled.
@@ -671,6 +708,15 @@ export function apply(ctx) {
       } catch (error) {
         warn('plugins', error)
         reply('plugins-listed', frame.requestId, { entries: [], error: messageOf(error) })
+      }
+      return
+    }
+    if (frame.type === 'tools' && typeof frame.requestId === 'number') {
+      try {
+        reply('tools-listed', frame.requestId, toolInventory())
+      } catch (error) {
+        warn('tools', error)
+        reply('tools-listed', frame.requestId, { tools: [], error: messageOf(error) })
       }
       return
     }

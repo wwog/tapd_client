@@ -48,6 +48,16 @@ use tapd_i18n::tr;
 /// a slow answer is normal; an unanswered one must still free the caller.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Inbound frame types that answer a pending request. A reply type missing
+/// here is dropped and its caller times out, so every new request frame adds
+/// its reply here as well.
+const REPLY_TYPES: [&str; 4] = [
+    "models-applied",
+    "models-discovered",
+    "plugins-listed",
+    "tools-listed",
+];
+
 /// What the child needs to reach this listener.
 #[derive(Clone, Debug)]
 pub struct BridgeEndpoint {
@@ -208,8 +218,8 @@ impl BridgeState {
     }
 
     /// Toggles Team mode for one session. The plugin applies it through the
-    /// `agentTeams` service and re-publishes the board; the session must exist
-    /// in the runtime (a queued frame for an unknown id is ignored).
+    /// `agentTeams` service and re-publishes the board; a session whose Agent
+    /// does not exist yet has the toggle queued until `agent/created`.
     pub async fn set_team_mode(&self, session_id: &str, enabled: bool) -> Result<(), String> {
         self.send_control(json!({
             "type": "team",
@@ -257,6 +267,19 @@ impl BridgeState {
             .await?;
         Ok(reply
             .get("entries")
+            .cloned()
+            .unwrap_or_else(|| json!([])))
+    }
+
+    /// Reads the tool registry a session created now inherits (the settings
+    /// panel's "集成"). The plugin answers from the engine's own `tools`
+    /// service, so conditional rows are reported rather than guessed.
+    pub async fn tool_inventory(&self) -> Result<Value, String> {
+        let reply = self
+            .request(json!({ "type": "tools" }), REPLY_TIMEOUT)
+            .await?;
+        Ok(reply
+            .get("tools")
             .cloned()
             .unwrap_or_else(|| json!([])))
     }
@@ -642,9 +665,7 @@ impl BridgeState {
             Some("stats") => self.ingest_stats(app, message),
             Some("team") => self.ingest_team(app, message),
             Some("notice") => super::policy::notice(message),
-            Some("models-applied") | Some("models-discovered") | Some("plugins-listed") => {
-                self.resolve_reply(message)
-            }
+            Some(kind) if REPLY_TYPES.contains(&kind) => self.resolve_reply(message),
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
             None => tracing::warn!("agent bridge: frame without a type"),
         }

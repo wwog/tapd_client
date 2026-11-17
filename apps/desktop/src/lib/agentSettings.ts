@@ -87,6 +87,8 @@ export type AgentConfig = {
   projects: Record<string, ProjectAgentConfig>;
   promptTemplate: string;
   coworkerIds: string[];
+  /** 团队协作：开启后新会话默认进入 Agent Team（任务板），提示词不再写同事名单。 */
+  teamEnabled: boolean;
   worktreeEnabled: boolean;
   executionUnits: number;
   /** 自定义供应商与模型目录;启动运行时渲染进 profile。 */

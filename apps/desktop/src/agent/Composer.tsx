@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Loader2, Send, Square } from "lucide-react";
 
 import { t } from "../lib/i18n";
+import { ChatTeamBar } from "./ChatTeamBar";
 import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModePicker } from "./SessionModePicker";
 import { SessionModelPicker } from "./SessionModelPicker";
@@ -31,6 +32,9 @@ export function Composer() {
     setDrafts((current) => ({ ...current, [sessionId]: value }));
   const block = runtimeBlock(state);
   const running = isSessionRunning(state, state.selectedId);
+  // Free chats get the collaboration bar; task sessions carry their own header.
+  const task = state.tasks?.find((item) => item.id === state.selectedId);
+  const chat = !task || task.kind === "chat";
 
   const send = async () => {
     if (block !== null || sending || !text.trim()) return;
@@ -62,6 +66,7 @@ export function Composer() {
   return (
     <div className="px-4 pb-3 pt-2">
       <div className="mx-auto max-w-3xl">
+        {chat ? <ChatTeamBar /> : null}
         <div className="rounded-xl border border-border bg-surface transition focus-within:border-slate-300">
           <textarea
             value={text}

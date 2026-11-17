@@ -124,15 +124,4 @@ pub static MESSAGES: &[Message] = &[
         "只能清理应用自己创建的 worktree",
         "Only worktrees created by this app can be cleaned up here",
     ),
-    // Team mode: guidance queued to the lead session when coworkers are enabled.
-    (
-        "dsh.team.roster",
-        "团队协作已开启。可用的同事：\n{0}\n1. 把工作拆成任务板上的任务（team_task_create）；\n2. 每部分指派给匹配的同事，并要求该子 agent 先读取对应技能包的 SKILL.md；\n3. 没有匹配的同事时，按性质派给普通子 agent。",
-        "Team collaboration is on. Available coworkers:\n{0}\n1. Split the work into tasks on the shared board (team_task_create);\n2. Assign each part to a matching coworker and tell that subagent to read the matching SKILL.md first;\n3. Use a plain subagent when nobody matches.",
-    ),
-    (
-        "dsh.team.roster.empty",
-        "团队协作已开启。本轮没有启用协作同事，请把工作拆成任务板上的任务（team_task_create），再按依赖顺序推进。",
-        "Team collaboration is on. No coworkers are enabled: split the work into tasks on the shared board (team_task_create), then work through them in dependency order.",
-    ),
 ];

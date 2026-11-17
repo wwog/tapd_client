@@ -118,8 +118,8 @@ export const workbench = {
   // -------------------------------------------------------- CoworkerPage.tsx
   "coworker.pageTitle": ["找同事搭伙", "Find coworkers"],
   "coworker.pageIntro": [
-    "找同事一起干活吧，工作不是一个人的工作。",
-    "Grab a coworker and get to work - work is not a solo job.",
+    "选几位同事。团队协作关闭时名单写进提示词；开启后改由任务板分配工作。",
+    "Pick teammates. With team collaboration off they are written into the prompt; with it on, work is assigned on the board.",
   ],
   "coworker.nameSeparator": ["、", ", "],
   "coworker.currentNames": ["当前搭子：{names}", "Coworkers: {names}"],
@@ -128,7 +128,10 @@ export const workbench = {
     "{n} 条同事包告警",
     ({ n }) => `${n} coworker package warning${Number(n) === 1 ? "" : "s"}`,
   ],
-  "coworker.promptSection": ["将写入 Agent 提示词的内容", "What will be added to the agent prompt"],
+  "coworker.promptSection": [
+    "关闭团队协作时写入提示词的内容",
+    "Added to the prompt while team collaboration is off",
+  ],
   "coworker.contribute": ["技能征集", "Contribute a skill"],
   "coworker.contributeIntro": [
     "你的独门手艺，也值得成为下一位同事。带上角色、头像和技能包来投。",

@@ -6,8 +6,17 @@ import { MessageStream } from "./MessageStream";
 import { RuntimeNotice } from "./RuntimeNotice";
 import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
+import { TeamBar } from "./TeamBar";
+import { TeamBoard } from "./TeamBoard";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
-import { agentActions, agentStore, agentTaskView, isSessionRunning } from "./store";
+import {
+  agentActions,
+  agentHasTeamUi,
+  agentStore,
+  agentTaskView,
+  agentTeamView,
+  isSessionRunning,
+} from "./store";
 
 type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
@@ -28,6 +37,11 @@ export function AgentWorkspace({ toast }: Props) {
   const state = agentStore.use();
   const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
   const view = agentTaskView(state, state.selectedId);
+  // Team mode is per session, and only workflow tasks get the header switch.
+  // The board replaces the transcript for any session that chose it; a chat
+  // keeps its transcript unless the reader explicitly opens the board.
+  const teamUi = agentHasTeamUi(state, state.selectedId);
+  const board = view === "chat" && agentTeamView(state, state.selectedId) === "board";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -50,16 +64,18 @@ export function AgentWorkspace({ toast }: Props) {
               </div>
             </div>
           ) : null}
+          {selected && teamUi ? <TeamBar key={`team:${selected.id}`} task={selected} /> : null}
           {selected && selected.kind !== "chat" ? (
             <TaskActions key={selected.id} task={selected} />
           ) : null}
           <MessageStream
             key={`chat:${state.selectedId ?? "draft"}`}
-            visible={view === "chat"}
+            visible={view === "chat" && !board}
           />
           {state.selectedId && view === "trajectory" ? (
             <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
           ) : null}
+          {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
           <div className="shrink-0 border-t border-border">
             <RuntimeNotice />
             <Composer />

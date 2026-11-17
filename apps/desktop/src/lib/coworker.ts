@@ -4,7 +4,7 @@ import { featureCommand } from "./feature";
 export type CoworkerSkill = {
   name: string;
   description: string;
-  /** Absolute path to SKILL.md, injected into the prompt. */
+  /** Absolute path to SKILL.md. */
   path: string;
 };
 
@@ -27,7 +27,10 @@ export type CoworkerList = {
   coworkers: Coworker[];
   /** Enabled ids in selection order. */
   selectedIds: string[];
-  /** Exact block appended to the task prompt; empty when nobody is enabled. */
+  /**
+   * Exact block appended to a solo task prompt. Empty while team collaboration
+   * is on, where the roster stays out of the prompt.
+   */
   promptSection: string;
   /** Packages/skills that failed validation; surfaced on the page. */
   warnings: string[];
