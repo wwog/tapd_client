@@ -53,9 +53,12 @@ export function AgentWorkspace({ toast }: Props) {
           {selected && selected.kind !== "chat" ? (
             <TaskActions key={selected.id} task={selected} />
           ) : null}
-          <MessageStream key={state.selectedId ?? "draft"} visible={view === "chat"} />
+          <MessageStream
+            key={`chat:${state.selectedId ?? "draft"}`}
+            visible={view === "chat"}
+          />
           {state.selectedId && view === "trajectory" ? (
-            <TrajectoryPane key={state.selectedId} sessionId={state.selectedId} />
+            <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
           ) : null}
           <div className="shrink-0 border-t border-border">
             <RuntimeNotice />

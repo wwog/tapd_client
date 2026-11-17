@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Brain, ChevronRight, Loader2, PencilLine } from "lucide-react";
+import {
+  AlertTriangle,
+  Brain,
+  ChevronRight,
+  FileText,
+  Loader2,
+  MessageSquare,
+  PencilLine,
+  Terminal,
+} from "lucide-react";
 
 import type { DshEntry } from "../lib/dsh";
 import { t } from "../lib/i18n";
@@ -54,36 +63,115 @@ function useElapsed(block: TurnBlockModel, running: boolean): number | null {
   return stop - start;
 }
 
-/**
- * The trace's headline: what the turn did, by count. It reads like a work log
- * ("read 4, ran 5 commands, changed 6 files"), so a long turn is legible
- * without scrolling the whole timeline.
- */
-function traceSummary(entries: DshEntry[], liveTools: LiveToolCall[]): string | null {
-  let reads = 0;
-  let commands = 0;
-  let searches = 0;
-  const files = new Set<string>();
+/** One folded group inside a turn's trace. */
+type TraceGroup = {
+  key: "reasoning" | "notes" | "reads" | "commands" | "files";
+  /** Header text with its own count (`查阅 9 项`). */
+  label: string;
+  entries: DshEntry[];
+  live?: LiveToolCall[];
+  /** Committed reasoning that is not attached to a row (`answer.reasoning`). */
+  texts?: string[];
+  /** The reasoning group is the one that can still be streaming. */
+  liveReasoning?: boolean;
+};
 
-  const visit = (name: string, args: string) => {
-    const action = describeTool(name, args);
-    if (action.kind === "read" || action.kind === "image") reads += 1;
-    else if (action.kind === "bash") commands += 1;
-    else if (action.kind === "search" || action.kind === "web") searches += 1;
-    else if (action.kind === "write" || action.kind === "edit") files.add(action.target);
+/**
+ * The trace folded into what the turn *did*, not the order it did it in: one
+ * group each for reasoning, intermediate notes, reads, commands and edits.
+ * Opening the turn shows these folded rows; opening one shows its log rows.
+ */
+function traceGroups(
+  entries: DshEntry[],
+  liveTools: LiveToolCall[],
+  liveReasoning: string,
+  answerReasoning: string,
+): TraceGroup[] {
+  const buckets = new Map<TraceGroup["key"], TraceGroup>();
+
+  const bucket = (key: TraceGroup["key"], label: string): TraceGroup => {
+    let group = buckets.get(key);
+    if (!group) {
+      group = { key, label, entries: [] };
+      buckets.set(key, group);
+    }
+    return group;
   };
 
   for (const entry of entries) {
-    if (entry.kind === "tool") visit(entry.name, entry.args);
+    if (entry.kind === "tool") {
+      const kind = describeTool(entry.name, entry.args).kind;
+      if (kind === "read" || kind === "image") bucket("reads", "").entries.push(entry);
+      else if (kind === "write" || kind === "edit") bucket("files", "").entries.push(entry);
+      else if (kind === "search" || kind === "web") bucket("reads", "").entries.push(entry);
+      else bucket("commands", "").entries.push(entry);
+    } else if (entry.kind === "assistant") {
+      if (entry.reasoning) bucket("reasoning", "").entries.push(entry);
+      if (entry.text) bucket("notes", "").entries.push(entry);
+    }
   }
-  for (const tool of liveTools) visit(tool.name, tool.args);
 
-  const parts: string[] = [];
-  if (reads > 0) parts.push(t("agent.turn.reads", { count: reads }));
-  if (commands > 0) parts.push(t("agent.turn.commands", { count: commands }));
-  if (searches > 0) parts.push(t("agent.turn.searches", { count: searches }));
-  if (files.size > 0) parts.push(t("agent.turn.files", { count: files.size }));
-  return parts.length > 0 ? parts.join(t("agent.turn.summarySeparator")) : null;
+  for (const tool of liveTools) {
+    const kind = describeTool(tool.name, tool.args).kind;
+    if (kind === "read" || kind === "image" || kind === "search" || kind === "web") {
+      const group = bucket("reads", "");
+      group.live = [...(group.live ?? []), tool];
+    } else if (kind === "write" || kind === "edit") {
+      const group = bucket("files", "");
+      group.live = [...(group.live ?? []), tool];
+    } else {
+      const group = bucket("commands", "");
+      group.live = [...(group.live ?? []), tool];
+    }
+  }
+
+  if (liveReasoning) {
+    const group = bucket("reasoning", "");
+    group.liveReasoning = true;
+  }
+  if (answerReasoning) {
+    const group = bucket("reasoning", "");
+    group.texts = [...(group.texts ?? []), answerReasoning];
+  }
+
+  const order: TraceGroup["key"][] = ["reasoning", "notes", "reads", "commands", "files"];
+  const files = new Set<string>();
+  for (const entry of buckets.get("files")?.entries ?? []) {
+    if (entry.kind === "tool") files.add(describeTool(entry.name, entry.args).target);
+  }
+  for (const tool of buckets.get("files")?.live ?? []) files.add(describeTool(tool.name, tool.args).target);
+
+  return order
+    .map((key) => buckets.get(key))
+    .filter((group): group is TraceGroup => group !== undefined)
+    .map((group) => {
+      const count =
+        group.key === "files"
+          ? files.size
+          : group.entries.length +
+            (group.live?.length ?? 0) +
+            (group.texts?.length ?? 0) +
+            (group.liveReasoning ? 1 : 0);
+      let label: string;
+      switch (group.key) {
+        case "reasoning":
+          label = t("agent.turn.reasoning", { count });
+          break;
+        case "notes":
+          label = t("agent.turn.notes", { count });
+          break;
+        case "reads":
+          label = t("agent.turn.reads", { count });
+          break;
+        case "commands":
+          label = t("agent.turn.commands", { count });
+          break;
+        case "files":
+          label = t("agent.turn.files", { count });
+          break;
+      }
+      return { ...group, label };
+    });
 }
 
 /**
@@ -104,14 +192,11 @@ export function TurnBlock({
   /** The session this turn belongs to; retry is addressed to it. */
   sessionId?: string;
 }) {
-  const [open, setOpen] = useState(running);
+  // Folded by default in both states: while running the block is one line of
+  // "what is happening now" plus the clock; once settled it is the elapsed line.
+  // Opening it is what reveals the grouped flow.
+  const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  // A running turn shows its own activity; the moment it settles the whole flow
-  // folds into its summary line. The user can still open it again, and the next
-  // transition re-applies the default.
-  useEffect(() => {
-    setOpen(running);
-  }, [running]);
   const users = block.entries.filter((entry) => entry.kind === "user");
   const content = block.entries.filter((entry) => entry.kind !== "user");
   const end = block.end;
@@ -145,13 +230,13 @@ export function TurnBlock({
 
   const elapsed = useElapsed(block, running);
   const label = elapsed !== null ? duration(elapsed) : null;
-  const status = running
-    ? label
-      ? t("agent.turn.working", { duration: label })
-      : t("agent.turn.workingPlain")
-    : label
-      ? t("agent.turn.worked", { duration: label })
-      : t("agent.turn.trace");
+  // The timer is always its own line, never mixed into the counts: while the
+  // turn runs it sits at the bottom of the block, and once it settles it
+  // becomes the block's parent line.
+  const timing = label
+    ? t(running ? "agent.turn.working" : "agent.turn.worked", { duration: label })
+    : t(running ? "agent.turn.workingPlain" : "agent.turn.trace");
+  const groups = traceGroups(trace, liveTools, liveReasoning, answer?.reasoning ?? "");
   // A loose block from an old log has no markers and nothing to settle, so it
   // gets no status line at all rather than a permanent "trace" label.
   const showStatus = running || hasTrace || elapsed !== null;
@@ -177,9 +262,6 @@ export function TurnBlock({
     running && !liveText && !action && liveReasoning
       ? reasoningPreview(liveReasoning)
       : "";
-  // The flow's own statistics. A running flow has none — it is still deciding
-  // what it did; the settled flow folds into this line.
-  const summary = traceSummary(trace, liveTools);
 
   return (
     <div className="flex flex-col gap-2">
@@ -191,9 +273,33 @@ export function TurnBlock({
       ))}
 
       <div className="flex flex-col gap-1">
-        {/* The folded one-liner: only while the trace is closed, so an open
-            trace never repeats what its own rows already say. */}
-        {!open && thinking ? (
+        {/* Settled: the elapsed time is the block's parent line and the flow
+            folds underneath it. Running: the timer lives at the bottom (below),
+            because what matters is what is happening right now. */}
+        {!running && showStatus ? (
+          hasTrace ? (
+            <button
+              type="button"
+              aria-expanded={open}
+              title={open ? t("agent.turn.collapse") : t("agent.turn.expand")}
+              onClick={() => setOpen((value) => !value)}
+              className="-ml-1 flex min-w-0 items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-400 transition hover:bg-overlay hover:text-slate-600"
+            >
+              <span className="shrink-0 tabular-nums">{timing}</span>
+              <ChevronRight
+                size={12}
+                className={clsx("shrink-0 transition-transform", open && "rotate-90")}
+              />
+            </button>
+          ) : (
+            <span className="inline-flex min-w-0 items-center gap-1.5 px-1 text-ui-xs text-slate-400">
+              <span className="shrink-0 tabular-nums">{timing}</span>
+            </span>
+          )
+        ) : null}
+
+        {/* Running and folded: only the newest item, one line. */}
+        {running && !open && thinking ? (
           <div className="flex min-w-0 items-center gap-2 text-ui-xs text-slate-400">
             <Brain size={12} className="shrink-0" />
             <span className="shrink-0">{t("agent.action.thinking")}</span>
@@ -201,7 +307,7 @@ export function TurnBlock({
           </div>
         ) : null}
 
-        {!open && action ? (
+        {running && !open && action ? (
           <div className="flex min-w-0 items-center gap-2 text-ui-xs">
             <ActionIcon action={action} />
             <span className="shrink-0 text-slate-500">{runningVerb(action.kind)}</span>
@@ -221,67 +327,46 @@ export function TurnBlock({
             ) : null}
           </div>
         ) : null}
-
-        {showStatus ? (
-          <div className="flex items-center gap-1.5 text-ui-xs text-slate-400">
-            {running ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
-            {hasTrace ? (
-              <button
-                type="button"
-                aria-expanded={open}
-                title={open ? t("agent.turn.collapse") : t("agent.turn.expand")}
-                onClick={() => setOpen((value) => !value)}
-                className="-ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition hover:bg-overlay hover:text-slate-600"
-              >
-                {/* Settled flows fold into their statistics; a running one has
-                    none yet, so it shows its clock instead. */}
-                {!running && summary ? (
-                  <>
-                    <PencilLine size={12} className="shrink-0 text-slate-400" />
-                    <ScrollingName text={summary} className="min-w-0 flex-1 text-slate-500" />
-                    <span className="shrink-0 tabular-nums text-slate-300">{status}</span>
-                  </>
-                ) : (
-                  <span className="shrink-0 tabular-nums">{status}</span>
-                )}
-                <ChevronRight
-                  size={12}
-                  className={clsx("shrink-0 transition-transform", open && "rotate-90")}
-                />
-              </button>
-            ) : (
-              <span className="inline-flex min-w-0 items-center gap-1.5 px-1">
-                <span className="shrink-0 tabular-nums">{status}</span>
-              </span>
-            )}
-          </div>
-        ) : null}
       </div>
 
       {open && hasTrace ? (
-        <div className="flex flex-col gap-2 border-l border-border pl-3">
-          {trace.map((entry) => (
-            <TraceEntry
-              key={entryKey(entry)}
-              entry={entry}
+        <div className="flex flex-col gap-1 border-l border-border pl-3">
+          {groups.map((group) => (
+            <TraceGroupRow
+              key={group.key}
+              group={group}
+              liveReasoning={group.liveReasoning ? liveReasoning : ""}
               onOpenTrace={
                 sessionId
-                  ? () =>
-                      agentActions.focusTrajectory(sessionId, recordIdOf(entry))
+                  ? (entry) => agentActions.focusTrajectory(sessionId, recordIdOf(entry))
                   : undefined
               }
             />
           ))}
-          {answer?.reasoning ? <ReasoningRow text={answer.reasoning} /> : null}
-          {liveReasoning ? <ReasoningRow text={liveReasoning} live /> : null}
-          {liveTools.map((tool, index) => (
-            <ActionRow
-              key={`live-${tool.callId || index}`}
-              name={tool.name}
-              args={tool.args}
-              status="running"
-            />
-          ))}
+        </div>
+      ) : null}
+
+      {/* Running: the clock is its own line at the bottom of the block. */}
+      {running && showStatus ? (
+        <div className="flex items-center gap-1.5 text-ui-xs text-slate-400">
+          <Loader2 size={11} className="shrink-0 animate-spin" />
+          {hasTrace ? (
+            <button
+              type="button"
+              aria-expanded={open}
+              title={open ? t("agent.turn.collapse") : t("agent.turn.expand")}
+              onClick={() => setOpen((value) => !value)}
+              className="-ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition hover:bg-overlay hover:text-slate-600"
+            >
+              <span className="shrink-0 tabular-nums">{timing}</span>
+              <ChevronRight
+                size={12}
+                className={clsx("shrink-0 transition-transform", open && "rotate-90")}
+              />
+            </button>
+          ) : (
+            <span className="shrink-0 tabular-nums">{timing}</span>
+          )}
         </div>
       ) : null}
 
@@ -321,32 +406,85 @@ export function TurnBlock({
   );
 }
 
-/** One committed row of the trace: an intermediate note or a tool call. */
-function TraceEntry({
-  entry,
+/** Glyph per group, so a folded flow still reads as what it did. */
+function GroupIcon({ kind }: { kind: TraceGroup["key"] }) {
+  const Icon = {
+    reasoning: Brain,
+    notes: MessageSquare,
+    reads: FileText,
+    commands: Terminal,
+    files: PencilLine,
+  }[kind];
+  return <Icon size={12} className="shrink-0 text-slate-400" />;
+}
+
+/**
+ * One folded group of the flow (`查阅 9 项`). Opening it is the second level:
+ * the group's own rows, each a tool call or a reasoning block.
+ */
+function TraceGroupRow({
+  group,
+  liveReasoning,
   onOpenTrace,
 }: {
-  entry: DshEntry;
-  onOpenTrace?: () => void;
+  group: TraceGroup;
+  liveReasoning: string;
+  onOpenTrace?: (entry: DshEntry) => void;
 }) {
-  if (entry.kind === "tool") {
-    return (
-      <ActionRow
-        name={entry.name}
-        args={entry.args}
-        status={entry.status}
-        result={entry.result}
-        onOpenTrace={onOpenTrace}
-      />
-    );
-  }
-  if (entry.kind === "assistant") {
-    return (
-      <>
-        {entry.reasoning ? <ReasoningRow text={entry.reasoning} /> : null}
-        {entry.text ? <AnswerBlock text={entry.text} /> : null}
-      </>
-    );
-  }
-  return null;
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex min-w-0 flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="-ml-1 flex min-w-0 items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-500 transition hover:bg-overlay hover:text-slate-700"
+      >
+        <GroupIcon kind={group.key} />
+        <span className="shrink-0">{group.label}</span>
+        <ChevronRight
+          size={12}
+          className={clsx("shrink-0 text-slate-300 transition-transform", open && "rotate-90")}
+        />
+      </button>
+      {open ? (
+        <div className="mt-1 flex flex-col gap-2 border-l border-border pl-3">
+          {group.entries.map((entry) =>
+            group.key === "reasoning" ? (
+              <ReasoningRow
+                key={entryKey(entry)}
+                text={entry.kind === "assistant" ? (entry.reasoning ?? "") : ""}
+              />
+            ) : group.key === "notes" ? (
+              <AnswerBlock
+                key={entryKey(entry)}
+                text={entry.kind === "assistant" ? entry.text : ""}
+              />
+            ) : (
+              <ActionRow
+                key={entryKey(entry)}
+                name={entry.kind === "tool" ? entry.name : ""}
+                args={entry.kind === "tool" ? entry.args : "{}"}
+                status={entry.kind === "tool" ? entry.status : "ok"}
+                result={entry.kind === "tool" ? entry.result : undefined}
+                onOpenTrace={onOpenTrace ? () => onOpenTrace(entry) : undefined}
+              />
+            ),
+          )}
+          {(group.texts ?? []).map((text, index) => (
+            <ReasoningRow key={`text-${index}`} text={text} />
+          ))}
+          {liveReasoning ? <ReasoningRow text={liveReasoning} live /> : null}
+          {(group.live ?? []).map((tool, index) => (
+            <ActionRow
+              key={`live-${tool.callId || index}`}
+              name={tool.name}
+              args={tool.args}
+              status="running"
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
