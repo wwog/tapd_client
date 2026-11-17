@@ -418,19 +418,24 @@ function applyStream(payload: DshSessionEvent): void {
   update((state) => {
     if (payload.sessionId !== state.selectedId) return state;
     const { attemptId, revision, delta } = payload.stream;
-    const current = state.live[payload.sessionId];
-    const fresh = !current || current.attemptId !== attemptId || current.revision !== revision;
-    const base: LiveRun = fresh
+    const previous = state.live[payload.sessionId];
+    // `revision` counts emitted frames upstream, so it grows with every chunk
+    // and must not be read as "this frame replaced the attempt": doing that
+    // reset the overlay on every delta, leaving only the last one on screen.
+    // A different attempt, or a revision that went backwards, is the restart.
+    const restart =
+      !previous || previous.attemptId !== attemptId || revision < previous.revision;
+    const base: LiveRun = restart
       ? { attemptId, revision, text: "", reasoning: "", tools: [] }
-      : current;
+      : previous;
 
     let next: LiveRun;
     if (delta.type === "text") {
-      next = { ...base, text: base.text + delta.text };
+      next = { ...base, revision, text: base.text + delta.text };
     } else if (delta.type === "reasoning") {
-      next = { ...base, reasoning: base.reasoning + delta.text };
+      next = { ...base, revision, reasoning: base.reasoning + delta.text };
     } else {
-      next = { ...base, tools: appendToolDelta(base.tools, payload.stream) };
+      next = { ...base, revision, tools: appendToolDelta(base.tools, payload.stream) };
     }
 
     return {

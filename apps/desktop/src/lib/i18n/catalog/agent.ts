@@ -96,6 +96,30 @@ export const agent = {
   "agent.tool.running": ["运行中", "Running"],
   "agent.tool.failed": ["工具执行失败", "Tool failed"],
 
+  // Token usage.
+  "agent.usage.chip": ["用量 {tokens} tok", "Usage {tokens} tok"],
+  "agent.usage.hint": [
+    "这一条回复的用量；dsh 按消息上报，回复结束才更新。",
+    "What this reply cost; dsh reports it per message, so it settles when the reply ends.",
+  ],
+  "agent.usage.title": ["本轮用量", "This reply"],
+  "agent.usage.route": ["提供方 / 模型", "Provider / model"],
+  "agent.usage.cacheHit": ["缓存命中", "Cache hit"],
+  "agent.usage.input": ["未缓存输入", "Uncached input"],
+  "agent.usage.cacheRead": ["缓存读取", "Cache read"],
+  "agent.usage.output": ["输出", "Output"],
+  "agent.usage.total": ["合计", "Total"],
+  "agent.usage.tokens": ["{tokens} tok", "{tokens} tok"],
+  "agent.stats.turns": ["{turns} 轮 {steps} 步", "{turns} turns, {steps} steps"],
+  "agent.stats.speed": ["{speed} tok/s", "{speed} tok/s"],
+  "agent.stats.tokens": ["{tokens} tok", "{tokens} tok"],
+  "agent.stats.cache": ["缓存命中 {percent}%", "cache {percent}%"],
+  "agent.stats.percent": ["{percent}%", "{percent}%"],
+  "agent.stats.hint": [
+    "本会话累计：轮 / 步、上一段生成速度、总 token、输入缓存命中率、上下文占用。",
+    "Session totals: turns/steps, last generation speed, total tokens, input cache hit rate, context used.",
+  ],
+
   // Composer.
   "agent.composer.placeholder": ["描述要做什么…", "Describe the task…"],
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],

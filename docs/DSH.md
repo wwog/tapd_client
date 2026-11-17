@@ -151,8 +151,10 @@ type AssistantStreamFrame =
 `StreamChunk`（`packages/llm/llm/src/types.ts:496`）：
 `block-start | text-delta | reasoning-delta | tool-call-delta | block-end | usage | finish`，全部是纯 JSON。
 
-订阅方式：`agent/assistant-stream`，payload 为 `{ agent, frame }`；`revision` 在同一 Agent 生命周期内单调，
-递增表示替换（重试 / 改写），接收端必须按 `revision` 重置而不是追加。
+订阅方式：`agent/assistant-stream`，payload 为 `{ agent, frame }`。`revision` 是**每帧递增**的
+帧序号（`AssistantStreamAttempt.push()` 每来一个 chunk 就 `nextRevision()`），不是"整次尝试的代次"：
+同一 `attemptId` 下的帧必须**追加**，只有 `attemptId` 变化（新的请求 / 重试）才重置；`revision`
+回退也说明被改写，可以据此兜底重置。
 
 ### 4.3 会话与历史
 
@@ -323,7 +325,11 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 ```jsonc
 { "kind": "user", "seq": 3, "at": "2026-11-16T12:00:00.000Z", "text": "hello" }
 
-{ "kind": "assistant", "seq": 5, "at": "…", "text": "…", "reasoning": "…" } // reasoning 可省略
+{ "kind": "assistant", "seq": 5, "at": "…", "text": "…", "reasoning": "…",
+  // 可省略。dsh 按消息上报用量，所以任何计数只会在一条回复落定时跳一次：
+  "usage": { "inputTokens": 181, "outputTokens": 189, "totalTokens": 8306,
+             "cacheReadTokens": 7936, "cacheWriteTokens": 0 },
+  "provider": "opencode-go", "model": "deepseek-v4.1-flash" }
 
 { "kind": "tool", "seq": 6, "at": "…", "callId": "call_1", "name": "bash",
   "args": "{\"cmd\":\"ls\"}",          // 模型产出的原始 JSON 字符串，由前端解析
@@ -343,6 +349,11 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   `user` 行；`agent-instructions`、时间采样等注入上下文虽然也是 `user/message`，但**不进入对话**
   （否则会把 AGENTS.md 渲染成用户气泡），它们仍留在 dsh 自己的会话日志里。
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
+- 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
+  累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
+  以及上一段生成速度 `tokensPerSecond`（`outputTokens ÷ (数据块首帧时间 → 消息落定)`）。
+  状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用 = `totalTokens ÷ contextWindow`。
+  快照重放靠 `seq` 去重，所以这些累计值不会重复计算。
 - 未知事件类型（`step/start`、`request/header` 等）忽略，每种类型只记一条 debug 日志。
 - 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
 
@@ -365,17 +376,18 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 ### 8.5 实时增量 `DshStream`
 
 ```jsonc
-{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 7,
+{ "sessionId": "probe-1", "attemptId": "probe-1:1", "revision": 12, "index": 7,
   "delta": { "type": "text", "text": "你" } }
-{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 8,
+{ "sessionId": "probe-1", "attemptId": "probe-1:1", "revision": 13, "index": 8,
   "delta": { "type": "reasoning", "text": "…" } }
-{ "sessionId": "probe-1", "attemptId": "attempt-1", "revision": 1, "index": 9,
+{ "sessionId": "probe-1", "attemptId": "probe-1:1", "revision": 14, "index": 9,
   "delta": { "type": "tool-call", "callId": "call_1", "name": "bash",
              "arguments": "{\"cmd\":" } }
 ```
 
-- **不持久**：只用于流式渲染。live 文本按 `(sessionId, attemptId, revision)` 分组；
-  `revision` 变大表示该 attempt 被替换（重试/改写），先清空再追加，不要拼接。
+- **不持久**：只用于流式渲染。live 文本按 `(sessionId, attemptId)` 分组并**追加**；
+  `revision` 是每帧递增的序号，同一次尝试内持续变大，不能作为"替换"的信号。
+  真正的新尝试是 `attemptId` 变化（`<sessionId>:<attempt>`），此时先清空再追加。
 - 已提交的 `assistant` 行到达后丢弃对应的 live 文本；`turn/end` 到达后清空该会话所有 live。
 - 插件不合并 delta（每帧一行）；Rust 也不合并，`index` 保留上游含义。
 

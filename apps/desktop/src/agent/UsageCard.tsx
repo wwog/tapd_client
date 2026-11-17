@@ -90,7 +90,7 @@ export function UsageChip({
                     </span>
                   </Row>
                   <Row label={t("agent.usage.cacheHit")}>
-                    {t("agent.usage.percent", { percent: cache })}
+                    {t("agent.stats.percent", { percent: cache })}
                   </Row>
                   <Row label={t("agent.usage.input")}>
                     {t("agent.usage.tokens", { tokens: exactCount(usage.inputTokens) })}

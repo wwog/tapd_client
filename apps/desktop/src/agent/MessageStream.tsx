@@ -100,19 +100,7 @@ function Reasoning({ text }: { text: string }) {
   );
 }
 
-function AssistantBlock({
-  text,
-  reasoning,
-  usage,
-  provider,
-  model,
-}: {
-  text: string;
-  reasoning?: string;
-  usage?: DshEntryUsage;
-  provider?: string;
-  model?: string;
-}) {
+function AssistantBlock({ text, reasoning }: { text: string; reasoning?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       {reasoning ? <Reasoning text={reasoning} /> : null}
@@ -121,7 +109,6 @@ function AssistantBlock({
           {text}
         </div>
       ) : null}
-      {usage ? <UsageChip usage={usage} provider={provider} model={model} /> : null}
     </div>
   );
 }
@@ -134,15 +121,21 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-/** Time and copy under a message. Copy confirms in place, never with a toast. */
+/** Usage, time and copy under a message. Copy confirms in place, no toast. */
 function MessageMeta({
   at,
   text,
   align,
+  usage,
+  provider,
+  model,
 }: {
   at: string;
   text: string;
   align: "left" | "right";
+  usage?: DshEntryUsage;
+  provider?: string;
+  model?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -153,10 +146,11 @@ function MessageMeta({
   return (
     <div
       className={clsx(
-        "mt-1 flex items-center gap-1 text-ui-xs text-slate-400",
+        "mt-1 flex items-center gap-2 text-ui-xs text-slate-400",
         align === "right" ? "justify-end" : "justify-start",
       )}
     >
+      {usage ? <UsageChip usage={usage} provider={provider} model={model} /> : null}
       <span className="tabular-nums">{clock(at)}</span>
       <button
         type="button"
@@ -302,14 +296,15 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
             case "assistant":
               return (
                 <div key={entryKey(entry)} className="flex flex-col">
-                  <AssistantBlock
+                  <AssistantBlock text={entry.text} reasoning={entry.reasoning} />
+                  <MessageMeta
+                    at={entry.at}
                     text={entry.text}
-                    reasoning={entry.reasoning}
+                    align="left"
                     usage={entry.usage}
                     provider={entry.provider}
                     model={entry.model}
                   />
-                  <MessageMeta at={entry.at} text={entry.text} align="left" />
                 </div>
               );
             case "tool":
