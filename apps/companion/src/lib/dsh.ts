@@ -184,10 +184,10 @@ export const dshApi = {
   stop: () => feature<DshStatus>("dsh_stop"),
 
   sessions: () => feature<{ sessions: DshSession[] }>("dsh_sessions"),
-  entries: (sessionId: string) =>
-    feature<{ sessionId: string; known: boolean; entries: DshEntry[] }>(
+  entries: (sessionId: string, sinceSeq?: number) =>
+    feature<{ sessionId: string; known: boolean; entries: DshEntry[]; lastSeq: number }>(
       "dsh_session_entries",
-      { sessionId },
+      sinceSeq === undefined ? { sessionId } : { sessionId, sinceSeq },
     ),
   pending: () => feature<{ requests: DshPendingRequest[] }>("dsh_pending"),
 

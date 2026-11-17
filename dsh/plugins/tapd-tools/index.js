@@ -10,17 +10,53 @@
  * resolve against the same tree the launcher uses.
  */
 
+import { connect } from 'node:net'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export const name = 'tapd-tools'
 export const inject = ['tools']
+
+/**
+ * A TCP connect to the bridge listener is the honest reachability answer: the
+ * bridge itself authenticates individual frames, so a bare connection is all a
+ * probe needs (and all it should do).
+ */
+function bridgeReachable(url, timeoutMs = 500) {
+  return new Promise((resolve) => {
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch {
+      resolve(false)
+      return
+    }
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+      resolve(false)
+      return
+    }
+    const socket = connect({
+      host: parsed.hostname,
+      port: Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)),
+    })
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.setTimeout(timeoutMs, () => finish(false))
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+  })
+}
 
 export function apply(ctx) {
   ctx.tools.register(
     defineTool({
       name: 'tapd_ping',
       description:
-        'Check that the TAPD desktop client is reachable from this agent session. Returns the bridge identity and working directory.',
+        'Check that the TAPD desktop client bridge is reachable from this agent session. Connects to the local bridge and returns the working directory.',
       parameters: {},
       output: {
         schema: {
@@ -36,7 +72,10 @@ export function apply(ctx) {
         ],
       },
       async execute(_args, exec) {
-        return { ok: true, cwd: exec.agent?.session?.header?.cwd ?? '' }
+        const cwd = exec.agent?.session?.header?.cwd ?? ''
+        const url = process.env.TAPD_DSH_BRIDGE_URL ?? ''
+        const ok = url ? await bridgeReachable(url) : false
+        return { ok, cwd }
       },
     }),
   )

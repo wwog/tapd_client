@@ -8,6 +8,7 @@ import type {
   DshFocusSessionEvent,
   DshQuestionEvent,
   DshSessionEvent,
+  DshSettledEvent,
   DshStatus,
   DshTasksEvent,
   DshTeamEvent,
@@ -37,6 +38,7 @@ function subscribeAgentEvents(): void {
   subscribe<DshSessionEvent>("dsh://stream", agentEvents.stream);
   subscribe<DshApprovalEvent>("dsh://approval", agentEvents.approval);
   subscribe<DshQuestionEvent>("dsh://question", agentEvents.question);
+  subscribe<DshSettledEvent>("dsh://request-settled", agentEvents.settled);
   subscribe<DshTasksEvent>("dsh://tasks", agentEvents.tasks);
   subscribe<DshTeamEvent>("dsh://team", agentEvents.team);
   subscribe<DshFocusSessionEvent>("dsh://focus-session", agentEvents.focusSession);

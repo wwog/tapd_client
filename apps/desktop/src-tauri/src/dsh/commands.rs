@@ -89,8 +89,12 @@ pub async fn dsh_sessions(app: AppHandle) -> Result<Value, String> {
 
 /// Normalized committed entries for one session.
 #[tauri::command]
-pub async fn dsh_session_entries(app: AppHandle, session_id: String) -> Result<Value, String> {
-    feature::session_entries(&app, &session_id)
+pub async fn dsh_session_entries(
+    app: AppHandle,
+    session_id: String,
+    since_seq: Option<u64>,
+) -> Result<Value, String> {
+    feature::session_entries(&app, &session_id, since_seq)
 }
 
 /// Approvals and questions the runtime is blocked on.

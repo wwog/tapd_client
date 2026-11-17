@@ -26,7 +26,8 @@
   校验主次版本，失败给明确错误页（安装命令 + 重新检测），**不静默降级、不打包 node**。
 - 打包的是压缩 payload：`resources/dsh/{manifest.json,payload-<version>-<platform>-<arch>.tar.zst}`
   （约 19 MB，解压后约 233 MB / 2.5 万文件），首启按版本解到 `<data>/dsh/<version>/`；
-  payload 里是 JS 依赖树与自有插件，**不含 Node 二进制**。
+  payload 里是 JS 依赖树与自有插件，**不含 Node 二进制**。清理只删版本形态的旧目录：
+  同一父目录下的 `home/`（`DSH_HOME`）与解压 staging 必须保留。
 
 ### 2.1 已实测（2026-11-16，`/tmp/dsh-probe`）
 
@@ -376,6 +377,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh://sessions` | `{ sessions: DshSession[] }`（新增会话、标题/状态/计数变化时） |
 | `dsh://session-event` | SDK 原始 `{sessionId, event}`（保留给调试/原始消费者） |
 | `dsh://approval` / `dsh://question` | 见 4.4，回执按 `rpcId` |
+| `dsh://request-settled` | `{ rpcId }`：该请求已在别的面（胶囊 / 手机 / 主窗口）作答，或运行时退出清空了 pending；各面据此撤卡 |
 | `dsh://status` / `dsh://ready` / `dsh://error` | 运行时状态机 |
 
 命令（桌面 `invoke` 与手机 `feature_router` 的 `dsh_*` 是同一实现）：
@@ -385,7 +387,7 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 | `dsh_status` | — | `DshStatus` |
 | `dsh_start` / `dsh_stop` | — | `DshStatus` |
 | `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
-| `dsh_session_entries` | `{ sessionId }` | `{ sessionId, known, entries: DshEntry[] }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错） |
+| `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时只返回 `seq > sinceSeq` 的行，手机轮询用它避免全量重下；`lastSeq` 小于本地值时说明运行时重启过，回退全量读） |
 | `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
@@ -463,8 +465,17 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
   Worktree 开启时建 worktree 并把会话 cwd 指过去，然后发送渲染好的提示词。
 - `running → awaiting_review`：回合结束（`turn/end`）且有改动；无改动 → `done`。
 - `awaiting_review → awaiting_merge`：`dsh_task_approve` 提交改动后（Worktree 关闭时直接 `done` 并回写）。
+- **approve 拒绝有活跃回合的会话**（`dsh.task.approve.busy`）：提交是对当前树的快照，
+  回合继续写会让快照之后的内容在合并时被 `worktree remove` 丢掉。持久化行不带 live
+  状态，判定读 bridge 注册表。
 - `awaiting_merge → done`：`dsh_task_merge` 合并成功且分支已是 HEAD 祖先，随后回写 TAPD。
-- 任意非终态 → `canceled`：`dsh_task_cancel`（可选 `stash: true`）。
+  **合并前要求分支 tip ≠ baseline**：`merge --no-ff` 对未前进的分支返回 exit 0
+  （"Already up to date"），ancestor 校验会恒真，任务会被假判成功并回写 resolved。
+- 合并成功但 worktree 有未提交改动（审核后用户又编辑过）时**保留 worktree 目录**，
+  不执行 `remove --force`；目录已不存在则 prune。
+- `dsh_task_cancel` 与 `dsh_task_merge` 共用一把进程内互斥锁：合并期间取消返回
+  「正在合并」，取消先赢时合并直接返回；取消本地事项任务会把事项退回 attach 前的状态
+  并清掉 `agentTaskId`。
 - 失败只在准备阶段（导出 / worktree / 启动）置 `failed`；运行中的模型失败仍由 `turn` 行为准。
 
 ### 9.2 命令面（桌面 invoke 与手机 feature 同一实现）

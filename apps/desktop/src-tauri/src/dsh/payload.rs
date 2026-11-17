@@ -137,7 +137,15 @@ fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
 ///
 /// Returns the runtime directory. Superseded versions are removed so upgrades
 /// never leave several hundred megabytes behind.
+///
+/// Serialized: `dsh_prepare` and `ensure_ready` can run concurrently (settings
+/// button while a prompt starts), and two extractions would delete each
+/// other's staging directory.
 pub fn ensure_payload(app: &AppHandle) -> Result<PayloadStatus, String> {
+    static EXTRACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = EXTRACT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (manifest, root, source) = read_manifest(app)?;
     let data_dir = data_root(app)?;
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
@@ -222,19 +230,32 @@ pub fn ensure_payload(app: &AppHandle) -> Result<PayloadStatus, String> {
 }
 
 /// Deletes extracted runtimes of superseded versions.
+///
+/// Only version-shaped directories qualify: the same parent holds `home/`
+/// (`DSH_HOME`: profiles and dsh's own persisted state) and staging remains,
+/// and this runs on every start through the `is_fresh` fast path.
 fn remove_other_versions(data_dir: &Path, keep: &str) {
     let Ok(entries) = fs::read_dir(data_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == keep || !entry.path().is_dir() {
+        if name == keep || !is_version_dir(&name) || !entry.path().is_dir() {
             continue;
         }
         if let Err(error) = fs::remove_dir_all(entry.path()) {
             tracing::warn!(%error, dir = %name, "failed to remove an old agent payload");
         }
     }
+}
+
+/// `runtime_dir` names are `<major>.<minor>…`; everything else under the
+/// payload parent (`home`, extraction staging) must survive.
+fn is_version_dir(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_digit())
+        && name.contains('.')
 }
 
 /// Node's `process.platform` name for this host (`darwin`, not `macos`).

@@ -190,6 +190,9 @@ pub(super) struct TaskMeta {
     pub worktree: bool,
     pub local_project_id: Option<String>,
     pub local_item_id: Option<String>,
+    /// Status the item had before `attach_task` moved it to in_progress; a
+    /// canceled or failed launch puts it back here.
+    pub local_previous_status: Option<String>,
     /// Package directory holding `bug.json` / `quest.json`.
     pub export_dir: Option<String>,
 }
@@ -748,6 +751,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
             worktree: config.worktree_enabled,
             local_project_id: Some(project.id.clone()),
             local_item_id: Some(item.id.clone()),
+            local_previous_status: Some(item.status.as_str().to_string()),
             export_dir: Some(
                 std::path::Path::new(&json_path)
                     .parent()
@@ -975,6 +979,17 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
     let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
         return Err(not_found(&request.session_id));
     };
+    // Approving commits the tree, so it is only safe once the turn stopped:
+    // a live turn would keep writing after the snapshot, and the merge path
+    // would then discard those writes with the worktree. The persisted row
+    // does not carry the live status (`overlay` computes it for output), so
+    // the bridge registry is the authoritative source.
+    let live_running = live_sessions(app)
+        .get(&request.session_id)
+        .is_some_and(|session| session.status == SessionStatus::Running);
+    if live_running {
+        return Err(tr("dsh.task.approve.busy").to_string());
+    }
     if !matches!(
         record.task.workflow,
         Workflow::Running | Workflow::AwaitingReview
@@ -1039,13 +1054,19 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
 
     let expected = match writeback_error {
         Some(error) => {
-            // Keep `awaiting_review` (with the error) so approving again can
-            // retry only the failed write-back.
+            // The task is already `awaiting_review` here; keeping the workflow
+            // and surfacing the error is the retry contract. A transition to
+            // the same state is not a legal move, and asking for one would
+            // replace the real write-back error with "invalid state".
             record.task.merge = Some(TaskMerge {
                 error,
                 instructions: String::new(),
             });
-            transition(&mut record, Workflow::AwaitingReview)?
+            if record.task.workflow == Workflow::Running {
+                transition(&mut record, Workflow::AwaitingReview)?
+            } else {
+                record.task.workflow
+            }
         }
         None => {
             record.task.merge = None;
@@ -1082,6 +1103,12 @@ enum MergeAttempt {
     Failed(String),
 }
 
+/// A worktree that still holds uncommitted work (or cannot be inspected) is
+/// kept: `remove --force` would silently discard edits made after approval.
+fn keep_worktree(path: &str) -> bool {
+    std::path::Path::new(path).is_dir() && worktree::is_dirty(path).unwrap_or(true)
+}
+
 async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -1095,6 +1122,17 @@ async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String
     let Ok(_guard) = merge_lock().try_lock() else {
         return Err(tr("dsh.task.busy").to_string());
     };
+    // `cancel` takes the same lock, but a transition can still win between the
+    // first read and the lock; re-read so a canceled task is never merged.
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.workflow != Workflow::AwaitingMerge {
+        return Ok(task_value(app, record.task));
+    }
     let Some(branch) = record
         .task
         .branch
@@ -1107,11 +1145,22 @@ async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String
     let repo = record.task.repo_path.clone();
     let merge_message = format!("Merge branch '{branch}'");
     let branch_for_merge = branch.clone();
+    let baseline = record.meta.baseline.clone();
     let workspace = workspace_for(&record);
     let worktree_path = record.task.worktree_path.clone();
     let attempt = blocking(move || {
         if worktree::is_dirty(&repo)? {
             return Err(tr("dsh.task.merge.dirty").to_string());
+        }
+        // `merge --no-ff` exits 0 ("Already up to date") when the branch never
+        // advanced, and the ancestor proof would then pass vacuously. A task
+        // whose changes were reverted must not be declared merged.
+        if let Some(baseline) = baseline.as_deref() {
+            if worktree::branch_tip(&repo, &branch_for_merge)? == baseline {
+                return Ok(MergeAttempt::Failed(
+                    tr("dsh.task.merge.empty").to_string(),
+                ));
+            }
         }
         match worktree::merge_no_ff(&repo, &branch_for_merge, &merge_message) {
             Ok(()) => {}
@@ -1123,13 +1172,23 @@ async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String
             ));
         }
         let worktree_removed = match worktree_path {
-            Some(path) => match worktree::remove(&repo, &path) {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(%error, "merged but failed to remove the worktree");
+            Some(path) => {
+                if keep_worktree(&path) {
+                    tracing::warn!(
+                        worktree = %path,
+                        "merged with uncommitted worktree changes; keeping the directory"
+                    );
                     false
+                } else {
+                    match worktree::remove(&repo, &path) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(%error, "merged but failed to remove the worktree");
+                            false
+                        }
+                    }
                 }
-            },
+            }
             None => false,
         };
         // The branch survives the worktree, so the summary still describes the
@@ -1162,8 +1221,10 @@ async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String
         return Err(not_found(&request.session_id));
     };
     if record.task.workflow != Workflow::AwaitingMerge {
-        // A cancel won the race; the branch is merged physically, but the
-        // task must not be written back to TAPD behind the user's back.
+        // Defensive: `cancel` is serialized on the merge lock, so a canceled
+        // task should not reach the physical merge; if something else moved
+        // the row, leave it untouched and let the UI see the fresh value.
+        emit(app);
         return Ok(task_value(app, record.task));
     }
     let expected = record.task.workflow;
@@ -1262,6 +1323,13 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
         return Ok(task_value(app, record.task));
     }
 
+    // Merging and canceling must not interleave: the branch merge and its
+    // write-back are one physical step, and a cancel landing mid-merge would
+    // leave a canceled task already in main.
+    let Ok(_guard) = merge_lock().try_lock() else {
+        return Err(tr("dsh.task.cancel.busy").to_string());
+    };
+
     if let Ok(bridge) = bridge(app) {
         if let Err(error) = bridge.cancel_session(&record.task.id).await {
             // A task restored from a previous app run has no live turn; the
@@ -1301,6 +1369,31 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
     let changed = blocking(move || task_store::update_if(&cache, &stored, expected)).await?;
     if !changed {
         return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    // Canceling a local-item task used to leave the item stuck in in_progress
+    // with a dangling agentTaskId: `attach_task` is the only thing that moves
+    // it, and `complete_local` only runs for Done. Undo the link here.
+    if record.task.kind == TaskKind::LocalItem {
+        if let Some(item_id) = record.meta.local_item_id.clone() {
+            let store = shared(app)?.local.clone();
+            let task_id = record.task.id.clone();
+            let previous = record
+                .meta
+                .local_previous_status
+                .clone()
+                .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string());
+            let at = now();
+            if let Err(error) = blocking(move || {
+                store.forget_task(&task_id, &at)?;
+                store
+                    .update_item(&item_id, None, None, Some(previous.as_str()))
+                    .map(|_| ())
+            })
+            .await
+            {
+                tracing::warn!(%error, "failed to revert the canceled item link");
+            }
+        }
     }
     emit(app);
     Ok(task_value(app, record.task))

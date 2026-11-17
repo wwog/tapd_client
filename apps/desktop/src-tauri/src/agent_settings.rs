@@ -307,8 +307,10 @@ pub async fn agent_settings_set(
 
 /// `settings_agent_get` / `settings_agent_set` over `feature_command`.
 ///
-/// The phone may edit worktree isolation and execution units; the desktop's
-/// prompt template and project rules stay desktop-only.
+/// The phone may edit worktree isolation and execution units; the model API
+/// key, prompt template and project rules stay desktop-only. The response is a
+/// projection for exactly that reason: returning the whole config would put
+/// `dshModel.apiKey` on the paired wire.
 pub async fn command(
     app: &tauri::AppHandle,
     name: &str,
@@ -317,7 +319,7 @@ pub async fn command(
     use serde_json::json;
 
     match name {
-        "settings_agent_get" => Ok(json!({ "config": config_for(app) })),
+        "settings_agent_get" => Ok(json!({ "config": companion_view(&config_for(app)) })),
         "settings_agent_set" => {
             let patch: Patch = serde_json::from_value(payload)
                 .map_err(|error| error.to_string())?;
@@ -331,10 +333,18 @@ pub async fn command(
             if let Some(units) = patch.execution_units {
                 config.execution_units = units;
             }
-            Ok(json!({ "config": save_for(app, &config)? }))
+            Ok(json!({ "config": companion_view(&save_for(app, &config)?) }))
         }
         other => Err(format!("unknown settings command: {other}")),
     }
+}
+
+/// The only settings the paired phone renders and edits.
+fn companion_view(config: &AgentConfig) -> serde_json::Value {
+    serde_json::json!({
+        "worktreeEnabled": config.worktree_enabled,
+        "executionUnits": config.execution_units,
+    })
 }
 
 #[derive(Deserialize)]

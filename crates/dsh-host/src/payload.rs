@@ -2,7 +2,9 @@
 //!
 //! `scripts/dsh/prepare.mjs` writes `resources/dsh/manifest.json` next to the
 //! compressed tarball. The app extracts the tarball into its data directory and
-//! keeps this manifest beside it, so a version change forces a fresh extraction.
+//! keeps this manifest beside it. Freshness is decided by the app (version and
+//! archive digest): a rebuilt payload under an unchanged version must still
+//! replace the old tree, so there is no manifest-level freshness helper here.
 
 use std::path::{Path, PathBuf};
 
@@ -38,11 +40,6 @@ impl PayloadManifest {
     /// Whether this build can run on the given host.
     pub fn matches_host(&self, platform: &str, arch: &str) -> bool {
         self.platform == platform && self.arch == arch
-    }
-
-    /// A payload is fresh when the extracted runtime still has the same version.
-    pub fn is_fresh(&self, extracted_version: Option<&str>) -> bool {
-        extracted_version == Some(self.version.as_str())
     }
 }
 
@@ -87,9 +84,6 @@ mod tests {
         assert!(manifest.matches_host("darwin", "arm64"));
         assert!(!manifest.matches_host("darwin", "x64"));
         assert!(!manifest.matches_host("linux", "arm64"));
-        assert!(manifest.is_fresh(Some("0.2.2-rc.3")));
-        assert!(!manifest.is_fresh(Some("0.2.2-rc.2")));
-        assert!(!manifest.is_fresh(None));
     }
 
     #[test]

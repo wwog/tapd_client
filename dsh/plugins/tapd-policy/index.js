@@ -25,7 +25,8 @@
  */
 
 import { homedir } from 'node:os'
-import { isAbsolute, relative } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 
 export const name = 'tapd-policy'
 export const inject = ['tools']
@@ -37,7 +38,7 @@ const MAX_TARGET = 160
 const SHELL_TOOLS = new Set(['bash', 'pwsh', 'bash_persistent', 'pwsh_persistent'])
 
 /** Tools that write exactly the paths in their arguments. */
-const FILE_TOOLS = new Set(['write', 'edit', 'apply_patch'])
+const FILE_TOOLS = new Set(['write', 'edit', 'apply_patch', 'str_replace_editor'])
 
 /** One-line descriptions for the SDK-side approval prompt (other clients). */
 const DESCRIPTIONS = {
@@ -123,17 +124,31 @@ function classifyShell(command, { cwd, home }) {
   if (!text) return { risk: null }
   const target = truncate(text)
 
+  // Rules run on a normalized line: bash treats newlines as separators, and
+  // quotes must not hide `sudo` or `of=/dev/...`. Paths are parsed from the
+  // original text below, where quoted *write targets* are kept.
+  const scan = text
+    .replace(/["']/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n/g, ' ; ')
+    // `git -C repo push` is the same command as `git push`.
+    .replace(
+      /\bgit\s+(?:-C\s+\S+\s+|--git-dir=\S+\s+|--work-tree=\S+\s+|-c\s+\S+\s+)+/g,
+      'git ',
+    )
+
   for (const [rule, matches] of HARD_SHELL) {
-    if (matches(text, home)) return { risk: 'hard', rule, target }
+    if (matches(scan, home)) return { risk: 'hard', rule, target }
   }
-  if (WRITE_VERB.test(text) && shellPaths(text, cwd, home).some((path) => isProtected(path, home))) {
+  const paths = shellPaths(text, cwd, home)
+  if (WRITE_VERB.test(scan) && paths.some((path) => isProtected(path, home))) {
     return { risk: 'hard', rule: 'protected_path', target }
   }
   for (const [rule, matches] of SOFT_SHELL) {
-    if (matches(text)) return { risk: 'soft', rule, target }
+    if (matches(scan)) return { risk: 'soft', rule, target }
   }
-  if (WRITE_VERB.test(text)) {
-    const outside = shellPaths(text, cwd, home).find((path) => outsideOf(path, cwd))
+  if (WRITE_VERB.test(scan)) {
+    const outside = paths.find((path) => outsideOf(path, cwd))
     if (outside) return { risk: 'soft', rule: 'outside_cwd', target: truncate(outside) }
   }
   return { risk: null }
@@ -142,7 +157,7 @@ function classifyShell(command, { cwd, home }) {
 function classifyPaths(paths, { cwd, home }) {
   // File tools name their targets relative to the session directory, so the
   // session cwd (never the process cwd) resolves them.
-  const absolute = paths.map((path) => resolvePath(path, home, cwd))
+  const absolute = paths.map((path) => canonical(resolvePath(path, home, cwd)))
   const protectedHit = absolute.find((path) => isProtected(path, home))
   if (protectedHit) {
     return { risk: 'hard', rule: 'protected_path', target: truncate(protectedHit) }
@@ -153,13 +168,17 @@ function classifyPaths(paths, { cwd, home }) {
 }
 
 const HARD_SHELL = [
-  ['sudo', (text) => /(^|[;&|]\s*)sudo\b/.test(text)],
-  ['mkfs', (text) => /(^|[;&|]\s*)mkfs(\.\w+)?\b/.test(text)],
+  // `(^|[\s;&|(])` also catches a quote-wrapped `bash -c "sudo …"` once the
+  // scan line drops quotes.
+  ['sudo', (text) => /(^|[\s;&|(])sudo\b/.test(text)],
+  ['mkfs', (text) => /(^|[\s;&|(])mkfs(\.\w+)?\b/.test(text)],
   ['dd_disk', (text) => /\bdd\b[^;&|]*\bof=\/dev\//.test(text)],
   ['rm_rf_root', (text) => deletesRoot(text)],
   ['chmod_root', (text) => /chmod\s+(-[A-Za-z]+\s+)*(777|a\+rwx|\+rwx)\s+(-[A-Za-z]+\s+)*(\/(\*)?|~(\/)?)(\s|$|[;&|])/.test(text)],
-  ['git_force_push', (text) => /git\s+push\b[^;&|]*\s(--force(-with-lease)?|-[a-z]*f[a-z]*)(\s|$)/.test(text)],
-  ['drop_table', (text) => /drop\s+table\b/i.test(text)],
+  // The git prefix is normalized to `git ` before this runs, so `-C`/`-c`
+  // forms match; `+refspec` is the other force form.
+  ['git_force_push', (text) => /git\s+push\b[^;&|]*\s(--force(-with-lease)?|-[a-z]*f[a-z]*|\+\S+)(\s|$)/.test(text)],
+  ['drop_table', (text) => /drop\s+(table|database|schema)\b/i.test(text)],
   ['pipe_to_shell', (text) => /(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|da)?sh\b/.test(text)],
 ]
 
@@ -168,7 +187,7 @@ const SOFT_SHELL = [
   ['package_install', (text) => /\b(brew|pip|pip3|uv)\s+(install|add)\b/.test(text)],
   ['git_push', (text) => /\bgit\s+push\b/.test(text)],
   ['upload', (text) => /\bcurl\b[^;&|]*\s(-T|--upload-file)\b/.test(text)],
-  ['upload', (text) => /(^|[;&|]\s*)scp\b/.test(text)],
+  ['upload', (text) => /(^|[\s;&|(])scp\b/.test(text)],
 ]
 
 /** Commands that create, replace, move or delete something on disk. */
@@ -187,7 +206,19 @@ function deletesRoot(text) {
   return false
 }
 
-const ROOT_PATHS = new Set(['/', '/*', '~', '~/', '~/*', '$HOME', '$HOME/', '$HOME/*'])
+const ROOT_PATHS = new Set([
+  '/',
+  '/*',
+  '~',
+  '~/',
+  '~/*',
+  '$HOME',
+  '$HOME/',
+  '$HOME/*',
+  '${HOME}',
+  '${HOME}/',
+  '${HOME}/*',
+])
 
 function isRootPath(path) {
   return ROOT_PATHS.has(stripQuotes(path))
@@ -209,8 +240,10 @@ function writeTargets(tool, args) {
 }
 
 /**
- * Absolute-looking path tokens in a shell line. Quoted strings are ignored on
- * purpose: `echo "rm -rf /"` is text, not a command.
+ * Absolute-looking path tokens in a shell line. Quoted strings are ignored as
+ * tokens on purpose: `echo "rm -rf /"` is text, not a command. Quoted *write
+ * targets* are still collected below — a quoted redirection target is a real
+ * write (`echo k > "$HOME/.ssh/authorized_keys"`).
  */
 function shellPaths(text, cwd, home) {
   const tokens = text
@@ -219,24 +252,70 @@ function shellPaths(text, cwd, home) {
     .map(stripQuotes)
     .filter(Boolean)
     .filter((token) => !token.startsWith('-'))
-    .filter(
-      (token) =>
-        token.startsWith('/') ||
-        token.startsWith('~') ||
-        token.startsWith('./') ||
-        token.startsWith('../') ||
-        token.startsWith('$HOME'),
-    )
-  return tokens.map((token) => resolvePath(token, home, cwd))
+    .filter(looksAbsolute)
+  const quoted = quotedWriteTargets(text).filter(looksAbsolute)
+  return [...tokens, ...quoted].map((token) => canonical(resolvePath(token, home, cwd)))
+}
+
+/** Quoted path arguments of write commands and redirect targets. */
+function quotedWriteTargets(text) {
+  const found = []
+  const redirect = /(?:>>?)\s*["']([^"']+)["']/g
+  let match
+  while ((match = redirect.exec(text)) !== null) found.push(match[1])
+  const verbs = /\b(cp|mv|ln|install|tee|touch|mkdir|rm|rmdir|chmod|chown|shred|truncate|unlink)\b([^;&|]*)/g
+  while ((match = verbs.exec(text)) !== null) {
+    const quoted = /["']([^"']+)["']/g
+    let inner
+    while ((inner = quoted.exec(match[2])) !== null) found.push(inner[1])
+  }
+  return found
+}
+
+function looksAbsolute(token) {
+  return (
+    token.startsWith('/') ||
+    token.startsWith('~') ||
+    token.startsWith('./') ||
+    token.startsWith('../') ||
+    token.startsWith('$HOME') ||
+    token.startsWith('${HOME}')
+  )
 }
 
 function resolvePath(path, home, cwd = '') {
   const cleaned = stripQuotes(path.trim())
+  if (cleaned.startsWith('${HOME}')) return home + cleaned.slice(7)
   if (cleaned.startsWith('$HOME')) return home + cleaned.slice(5)
   if (cleaned === '~') return home
   if (cleaned.startsWith('~/')) return `${home}${cleaned.slice(1)}`
+  if (cleaned.startsWith('~')) {
+    // `~user` needs an OS lookup; on macOS a user home is /Users/<user>
+    // (/var/root for root), which is enough to catch credential targets.
+    const slash = cleaned.indexOf('/')
+    const user = slash === -1 ? cleaned.slice(1) : cleaned.slice(1, slash)
+    const rest = slash === -1 ? '' : cleaned.slice(slash)
+    if (user) return `${user === 'root' ? '/var/root' : `/Users/${user}`}${rest}`
+  }
   if (!isAbsolute(cleaned) && cwd) return `${cwd.replace(/\/$/, '')}/${cleaned}`
   return cleaned
+}
+
+/**
+ * Follows symlinks so a link inside the workspace cannot launder a write into
+ * `~/.ssh`; for a not-yet-created file the existing parent is enough.
+ */
+function canonical(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    // Target does not exist (yet): resolve the parent instead.
+  }
+  try {
+    return join(realpathSync(dirname(path)), basename(path))
+  } catch {
+    return path
+  }
 }
 
 /**

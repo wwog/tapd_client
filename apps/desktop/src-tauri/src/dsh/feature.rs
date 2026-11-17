@@ -12,7 +12,7 @@ use std::sync::Arc;
 use dsh_host::protocol::{AnswerItem, ApprovalOutcome, ApprovalRequestResult, UserQuestionResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::bridge::BridgeState;
 use super::runtime::{DshStatus, RuntimeState};
@@ -62,15 +62,29 @@ pub fn pending(app: &AppHandle) -> Result<Value, String> {
     Ok(json!({ "requests": requests }))
 }
 
-pub fn session_entries(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+pub fn session_entries(
+    app: &AppHandle,
+    session_id: &str,
+    since_seq: Option<u64>,
+) -> Result<Value, String> {
     let bridge = bridge(app)?;
     // A persisted selection from before a restart names a session this process
     // has not seen yet. That is a "gone" state, not a failure: `known: false`
     // lets the UI fall back instead of rendering an error panel.
-    let Some(entries) = bridge.entries(session_id) else {
-        return Ok(json!({ "sessionId": session_id, "known": false, "entries": [] }));
+    let Some((entries, last_seq)) = bridge.entries_since(session_id, since_seq.unwrap_or(0)) else {
+        return Ok(json!({
+            "sessionId": session_id,
+            "known": false,
+            "entries": [],
+            "lastSeq": 0,
+        }));
     };
-    Ok(json!({ "sessionId": session_id, "known": true, "entries": entries }))
+    Ok(json!({
+        "sessionId": session_id,
+        "known": true,
+        "entries": entries,
+        "lastSeq": last_seq,
+    }))
 }
 
 /// Allocates an id and its (empty) registry row. The runtime creates the real
@@ -103,7 +117,9 @@ pub async fn approval_answer(app: &AppHandle, rpc_id: u64, outcome: &str) -> Res
     };
     let result = serde_json::to_value(ApprovalRequestResult { outcome })
         .map_err(|error| error.to_string())?;
-    runtime(app)?.respond(rpc_id, result).await
+    runtime(app)?.respond(rpc_id, result).await?;
+    emit_settled(app, rpc_id);
+    Ok(())
 }
 
 /// `answers: None` dismisses the whole request; dismissal is never approval.
@@ -117,17 +133,30 @@ pub async fn question_answer(
         None => serde_json::to_value(UserQuestionResult::Cancelled { cancelled: true }),
     }
     .map_err(|error| error.to_string())?;
-    runtime(app)?.respond(rpc_id, result).await
+    runtime(app)?.respond(rpc_id, result).await?;
+    emit_settled(app, rpc_id);
+    Ok(())
+}
+
+/// Tells every other surface that one request was answered. The answering
+/// surface removes its card itself; the capsule polls `pending`, but the
+/// webview (and the phone) only learn about the answer through this event.
+fn emit_settled(app: &AppHandle, rpc_id: u64) {
+    let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": rpc_id }));
 }
 
 // ---------------------------------------------------------------------------
 // JSON dispatch (feature_router)
 // ---------------------------------------------------------------------------
 
+/// `sinceSeq` is optional so the desktop's full read stays byte-identical; the
+/// phone passes the previous `lastSeq` and receives only the new rows.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionIdPayload {
+struct SessionEntriesPayload {
     session_id: String,
+    #[serde(default)]
+    since_seq: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -170,8 +199,8 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         name if name.starts_with("dsh_policy_") => super::policy::command(app, name, payload).await,
         "dsh_pending" => pending(app),
         "dsh_session_entries" => {
-            let request: SessionIdPayload = parse(payload, "dsh_session_entries")?;
-            session_entries(app, &request.session_id)
+            let request: SessionEntriesPayload = parse(payload, "dsh_session_entries")?;
+            session_entries(app, &request.session_id, request.since_seq)
         }
         "dsh_prompt" => {
             let request: PromptPayload = parse(payload, "dsh_prompt")?;

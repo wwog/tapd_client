@@ -175,8 +175,8 @@ export const agent = {
   "agent.config.protocolGemini": ["Gemini", "Gemini"],
   "agent.config.apiKey": ["API 密钥", "API key"],
   "agent.config.apiKeyHint": [
-    "只通过环境变量传给运行时，不写进配置文件。",
-    "Passed to the runtime through an environment variable, never written to a config file.",
+    "保存在本机 agent.json（明文），只经环境变量传给运行时，不写进日志。",
+    "Stored locally in agent.json (plain text); passed to the runtime only through an environment variable and never logged.",
   ],
   "agent.config.modelId": ["模型 ID", "Model ID"],
   "agent.config.contextWindow": ["上下文长度", "Context window"],

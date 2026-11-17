@@ -162,20 +162,49 @@ function dropPackages() {
 }
 
 /**
- * Removes sources/typings/maps. `src` and `docs` are only stripped at a package
- * root: `build/src/index.js` is real runtime code in several packages.
+ * True when this package's entry points live under `src/`
+ * (`ecdsa-sig-formatter` has `"main": "src/…"` and is required lazily by the
+ * Google provider chain). Pruning those breaks the import at call time, and the
+ * probe provider never exercises that path.
  */
-function strip(dir, counters, isPackageRoot = false) {
+function srcIsEntry(packageJsonPath) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  } catch {
+    return false;
+  }
+  const targets = [];
+  const collect = (value) => {
+    if (typeof value === "string") targets.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  collect([manifest.main, manifest.module, manifest.browser, manifest.exports]);
+  return targets.some((target) => target.startsWith("./src/") || target.startsWith("src/"));
+}
+
+/**
+ * Removes sources/typings/maps. `src` and `docs` are only stripped at a package
+ * root, and `src` survives when the package entry points into it:
+ * `build/src/index.js` is real runtime code in several packages.
+ */
+function strip(dir, counters) {
   const packageRoot = existsSync(join(dir, "package.json"));
+  const keepSrc = packageRoot && srcIsEntry(join(dir, "package.json"));
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (packageRoot && STRIP_DIRS.has(entry.name)) {
+      const strippable =
+        packageRoot &&
+        STRIP_DIRS.has(entry.name) &&
+        !(entry.name === "src" && keepSrc);
+      if (strippable) {
         rmSync(full, { recursive: true, force: true });
         counters.dirs += 1;
         continue;
       }
-      strip(full, counters, isPackageRoot);
+      strip(full, counters);
       continue;
     }
     if (STRIP_FILE_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) {

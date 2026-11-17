@@ -240,11 +240,12 @@ impl BridgeState {
             .sessions()
     }
 
-    pub fn entries(&self, session_id: &str) -> Option<Vec<DshEntry>> {
+    /// Entries past `since_seq` plus the session's current last seq.
+    pub fn entries_since(&self, session_id: &str, since_seq: u64) -> Option<(Vec<DshEntry>, u64)> {
         self.transcript
             .lock()
             .expect("dsh transcript lock")
-            .entries(session_id)
+            .entries_since(session_id, since_seq)
     }
 
     /// Applies one NDJSON message from the plugin.

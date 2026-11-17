@@ -4,9 +4,19 @@ use crate::Message;
 
 pub static MESSAGES: &[Message] = &[
     (
+        "dsh.task.approve.busy",
+        "模型还在运行，等这一轮结束后再审核",
+        "The model is still running; approve after this turn ends",
+    ),
+    (
         "dsh.task.busy",
         "任务正在运行，请稍后再试",
         "The task is still running; try again shortly",
+    ),
+    (
+        "dsh.task.cancel.busy",
+        "正在合并，等合并结束后再取消",
+        "A merge is in progress; cancel after it finishes",
     ),
     (
         "dsh.task.cancel.stash",
@@ -42,6 +52,11 @@ pub static MESSAGES: &[Message] = &[
         "dsh.task.merge.dirty",
         "主仓库有未提交改动，请先提交或储藏",
         "The main repository has uncommitted changes; commit or stash them first",
+    ),
+    (
+        "dsh.task.merge.empty",
+        "分支没有新提交，未执行合并（改动可能已被还原）",
+        "The branch has no new commits; nothing was merged (the changes may have been reverted)",
     ),
     (
         "dsh.task.merge.failed",

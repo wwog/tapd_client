@@ -232,9 +232,11 @@ impl RuntimeState {
             if running.child.try_wait().ok().flatten().is_none() {
                 return Ok(self.status());
             }
-            // Reap and fall through to a fresh start.
-            *self.running.lock().await = None;
         }
+        // Reaped (or never started): drop the stale handle. The lock is taken a
+        // second time only after the `if let` guard is gone — tokio's Mutex is
+        // not reentrant, so re-locking inside the block would deadlock.
+        *self.running.lock().await = None;
 
         let payload = match payload::ensure_payload(app) {
             Ok(payload) => payload,
@@ -457,6 +459,12 @@ impl RuntimeState {
     }
 
     pub async fn stop(&self, app: &AppHandle) -> Result<(), String> {
+        // Cards must disappear with their requests: the webview and the phone
+        // render from the approval/question events and have no other way to
+        // learn that a stop cleared the queue.
+        for request in self.pending() {
+            let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
+        }
         self.clear_pending();
         let mut guard = self.running.lock().await;
         let Some(mut running) = guard.take() else {
@@ -697,6 +705,10 @@ fn spawn_reader(
         // No live turn can outlive its process.
         bridge::shutdown(&app).await;
         if let Some(state) = app.try_state::<Arc<RuntimeState>>() {
+            // Stale cards must not outlive the runtime that asked the question.
+            for request in state.pending() {
+                let _ = app.emit(super::EVENT_SETTLED, json!({ "rpcId": request.rpc_id }));
+            }
             state.clear_pending();
             let status = state.status();
             if status.phase != Phase::Stopped {
@@ -878,9 +890,9 @@ fn resolve_node() -> Result<(PathBuf, String), String> {
         match node_version(&candidate) {
             Ok(version) => match dsh_host::node::evaluate(Some(&version)) {
                 Ok(_) => return Ok((candidate, version)),
-                Err(error) => {
-                    return Err(tr_args("dsh.node.tooOld", &[&error]))
-                }
+                // An old node earlier on PATH must not hide a newer one that
+                // comes later (the Homebrew fallbacks are appended below it).
+                Err(error) => last_error = error.to_string(),
             },
             Err(error) => last_error = error,
         }

@@ -1177,15 +1177,33 @@ export function AgentSessionPage(props: { id: string }) {
       if (entriesInFlight.current) return;
       entriesInFlight.current = true;
       if (poll) setSyncing(true);
+      // Incremental: the runtime already ships only rows past `sinceSeq`.
+      // A poll without a cursor is the first read, which is a full snapshot.
+      const from = poll && lastSeq.current > 0 ? lastSeq.current : undefined;
       try {
-        const result = await dshApi.entries(id);
-        if (alive.current) {
+        const result = await dshApi.entries(id, from);
+        if (!alive.current) return;
+        // A restarted desktop answers with a smaller `lastSeq`; that
+        // invalidates the suffix, so fall back to a full read.
+        if (from !== undefined && result.known && result.lastSeq < lastSeq.current) {
+          lastSeq.current = 0;
+          entriesInFlight.current = false;
+          void loadEntries(false);
+          return;
+        }
+        if (from !== undefined && result.known) {
+          const fresh = result.entries.filter((entry) => entry.seq > lastSeq.current);
+          if (fresh.length > 0) {
+            setEntries((current) => [...(current ?? []), ...fresh]);
+          }
+        } else {
           // `known: false` means the desktop restarted before the bridge saw
           // this session; the transcript is simply empty, not a failure.
           setEntries(result.entries);
-          setEntriesKnown(result.known);
-          setEntriesError(null);
         }
+        lastSeq.current = result.lastSeq;
+        setEntriesKnown(result.known);
+        setEntriesError(null);
       } catch (err) {
         if (alive.current) setEntriesError(asApiError(err).message);
       } finally {
@@ -1212,6 +1230,13 @@ export function AgentSessionPage(props: { id: string }) {
       off();
     };
   }, [loadEntries]);
+
+  // Tool rows are merged in place (a result keeps the call's seq), so statuses
+  // like `completed` only reach the phone with a full read. Do one at turn end.
+  const sessionStatus = task?.status;
+  useEffect(() => {
+    if (sessionStatus && sessionStatus !== "running") void loadEntries(false);
+  }, [sessionStatus, loadEntries]);
 
   // The app's only poller also refreshes this session's board while the page
   // is open, so the board never needs an interval of its own. Free chats have

@@ -33,6 +33,9 @@ pub const EVENT_STATUS: &str = "dsh://status";
 pub const EVENT_SESSION_EVENT: &str = "dsh://session-event";
 pub const EVENT_APPROVAL: &str = "dsh://approval";
 pub const EVENT_QUESTION: &str = "dsh://question";
+/// A request was answered (or its runtime went away), whichever surface did it.
+/// The payload is `{ rpcId }`; every other surface drops that card.
+pub const EVENT_SETTLED: &str = "dsh://request-settled";
 pub const EVENT_ERROR: &str = "dsh://error";
 
 /// Normalized views (the ones UIs should render). `dsh://entry` carries a

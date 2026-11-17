@@ -111,6 +111,18 @@ pub enum DshEntry {
     },
 }
 
+impl DshEntry {
+    /// Commit position shared by every row kind; incremental readers page on it.
+    pub fn seq(&self) -> u64 {
+        match self {
+            Self::User { seq, .. }
+            | Self::Assistant { seq, .. }
+            | Self::Tool { seq, .. }
+            | Self::Turn { seq, .. } => *seq,
+        }
+    }
+}
+
 /// One live token-level delta. Not durable: the committed `assistant/message`
 /// entry replaces it. The consumer keys live text by `(attemptId, revision)`;
 /// a higher `revision` means the previous attempt was replaced, not appended.
@@ -305,6 +317,21 @@ impl Transcript {
         self.sessions
             .get(session_id)
             .map(|record| record.entries.clone())
+    }
+
+    /// Entries past `since_seq` plus the session's current last seq. The phone
+    /// polls with the previous `last_seq`, so a long transcript is not shipped
+    /// whole every few seconds.
+    pub fn entries_since(&self, session_id: &str, since_seq: u64) -> Option<(Vec<DshEntry>, u64)> {
+        let record = self.sessions.get(session_id)?;
+        let last_seq = record.entries.last().map(|entry| entry.seq()).unwrap_or(0);
+        let entries = record
+            .entries
+            .iter()
+            .filter(|entry| entry.seq() > since_seq)
+            .cloned()
+            .collect();
+        Some((entries, last_seq))
     }
 }
 

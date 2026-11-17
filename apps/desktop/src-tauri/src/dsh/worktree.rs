@@ -35,6 +35,22 @@ pub fn head(dir: &str) -> Result<Option<String>, String> {
     Ok((!head.is_empty()).then_some(head))
 }
 
+/// Tip commit of `branch`. The merge path compares it with the task baseline:
+/// a branch that never advanced would make `merge --no-ff` a no-op that still
+/// exits 0.
+pub fn branch_tip(repo_path: &str, branch: &str) -> Result<String, String> {
+    let output = git(
+        repo_path,
+        &["rev-parse", "--verify", "--quiet", branch],
+        &[1],
+    )?;
+    let tip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tip.is_empty() {
+        return Err(format!("branch {branch} does not exist"));
+    }
+    Ok(tip)
+}
+
 /// Adds a worktree at `target` on a new `branch` starting at HEAD.
 pub fn create(repo_path: &str, target: &Path, branch: &str) -> Result<CreatedWorktree, String> {
     let Some(parent) = target.parent() else {

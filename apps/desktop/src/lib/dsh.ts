@@ -238,6 +238,8 @@ export type DshApprovalEvent = { rpcId: number; request: DshApprovalRequest };
 export type DshQuestionEvent = { rpcId: number; request: DshQuestionRequest };
 export type DshErrorEvent = { code: string; message: string };
 export type DshTasksEvent = { tasks: DshTask[] };
+/** A request was answered on another surface (or its runtime went away). */
+export type DshSettledEvent = { rpcId: number };
 /** Pushed on connect, on every switch and on any task or owner change. */
 export type DshTeamEvent = { sessionId: string; team: DshTeam };
 /** The capsule asks the main window to reveal a session (docs/DSH.md §9.4). */

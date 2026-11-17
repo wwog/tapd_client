@@ -24,6 +24,7 @@ import {
   type DshFocusSessionEvent,
   type DshQuestionEvent,
   type DshSessionEvent,
+  type DshSettledEvent,
   type DshStatus,
   type DshStream,
   type DshTask,
@@ -459,6 +460,25 @@ function applyQuestion(payload: DshQuestionEvent): void {
           busy: false,
         },
       ],
+    };
+  });
+}
+
+/**
+ * A request answered on another surface (the island capsule or the paired
+ * phone) leaves `RuntimeState.pending` there; without this event the main
+ * window would keep showing a card for a decision that already happened.
+ */
+function applySettled(payload: DshSettledEvent): void {
+  update((state) => {
+    const holds =
+      state.approvals.some((item) => item.rpcId === payload.rpcId) ||
+      state.questions.some((item) => item.rpcId === payload.rpcId);
+    if (!holds) return state;
+    return {
+      ...state,
+      approvals: state.approvals.filter((item) => item.rpcId !== payload.rpcId),
+      questions: state.questions.filter((item) => item.rpcId !== payload.rpcId),
     };
   });
 }
@@ -935,6 +955,7 @@ export const agentEvents = {
   stream: (payload: DshSessionEvent): void => applyStream(payload),
   approval: (payload: DshApprovalEvent): void => applyApproval(payload),
   question: (payload: DshQuestionEvent): void => applyQuestion(payload),
+  settled: (payload: DshSettledEvent): void => applySettled(payload),
   /** The list is authoritative; replace it and repair the selection. */
   tasks: (payload: DshTasksEvent): void => adoptTasks(payload.tasks),
   /** The board is authoritative for its session, including after a toggle. */
