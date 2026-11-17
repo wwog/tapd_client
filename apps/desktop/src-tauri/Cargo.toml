@@ -24,6 +24,8 @@ tapd-i18n.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 axum = { version = "0.8", features = ["ws"] }
+# Streaming body for the debug-only fake model provider (`dsh/test_agent.rs`).
+futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
 portable-pty = "0.9"

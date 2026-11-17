@@ -225,7 +225,7 @@ export function SelectPicker(props: Props) {
                         placeholder={
                           allowCustom ? t("common.picker.searchOrTypeModel") : t("common.search")
                         }
-                        className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+                        className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:bg-surface"
                       />
                     </div>
                   </div>

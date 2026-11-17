@@ -102,6 +102,18 @@ select,
   user-select: text;
 }
 
+/* Text fields never take a coloured focus edge: the resting hairline border is
+   the only edge, so clicking in does not repaint the control. Keyboard focus
+   stays visible on buttons, switches and other non-text controls. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+textarea:focus,
+select:focus,
+[contenteditable="true"]:focus,
+[contenteditable="plaintext-only"]:focus {
+  outline: none;
+  border-color: var(--color-border);
+}
+
 /* Style contract: borders carry structure, never shadows. This also keeps
    third-party widgets (Markdown editor, native-looking controls) flat. */
 *,
@@ -651,12 +663,6 @@ select,
   font-size: 12px;
 }
 
-.agent-compose-editor .w-md-editor:focus-within {
-  border-color: #38bdf8;
-  outline: 2px solid rgb(224 242 254);
-  outline-offset: -1px;
-}
-
 .agent-compose-editor .w-md-editor-toolbar {
   border-bottom: 1px solid #f1f5f9;
   border-radius: 12px 12px 0 0;
@@ -964,10 +970,6 @@ select,
 [data-theme="dark"] .agent-compose-editor .w-md-editor-text-pre > code,
 [data-theme="dark"] .agent-compose-editor .w-md-editor-text {
   color: var(--color-slate-700) !important;
-}
-
-[data-theme="dark"] .agent-compose-editor .w-md-editor:focus-within {
-  outline-color: rgb(56 189 248 / 0.35);
 }
 
 [data-theme="dark"] .agent-compose-editor .w-md-editor-preview {

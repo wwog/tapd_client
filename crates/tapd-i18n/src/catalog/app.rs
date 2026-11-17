@@ -88,6 +88,7 @@ pub static MESSAGES: &[Message] = &[
     ("app.open.exit", "打开失败（open 退出码 {}）", "Open failed (open exited with {})"),
     ("app.open.launch", "启动打开命令失败：{}", "Could not launch the open command: {}"),
     ("app.open.mode", "不支持的打开方式：{}", "Unsupported open mode: {}"),
+    ("app.open.url", "只支持 http / https 链接", "Only http and https links are supported"),
     ("app.openwith.default", "默认浏览器", "Default browser"),
     ("app.openwith.finder", "访达", "Finder"),
     ("app.openwith.photos", "照片", "Photos"),

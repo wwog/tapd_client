@@ -210,6 +210,15 @@ impl TaskRecord {
         self.task.updated_at = now();
     }
 
+    /// Records an event that already happened: replaying a log must restore the
+    /// activity time it had, not claim the session is active right now — the
+    /// list is ordered by this field.
+    fn touch_at(&mut self, at: &str) {
+        if !at.is_empty() {
+            self.task.updated_at = at.to_string();
+        }
+    }
+
     /// The directory the session and the review operate on.
     fn work_dir(&self) -> String {
         if self.meta.worktree {
@@ -352,13 +361,16 @@ async fn tasks_payload(app: &AppHandle) -> Result<Value, String> {
     let cache = state.cache.clone();
     let records = blocking(move || task_store::load_all(&cache)).await?;
     let live = live_sessions(app);
-    let tasks: Vec<DshTask> = records
+    let mut tasks: Vec<DshTask> = records
         .into_iter()
         .map(|mut record| {
             overlay(&mut record.task, &live);
             record.task
         })
         .collect();
+    // Overlaid times can differ from the stored column, so order here too:
+    // newest activity first, which is also the order the UI paints.
+    tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(json!({ "tasks": tasks }))
 }
 
@@ -389,25 +401,27 @@ pub fn set_turn_observer(app: &AppHandle) {
 /// One committed entry from the bridge. Only `turn/end` matters here.
 #[allow(dead_code)] // wired by bridge.rs (see the module report)
 pub fn observe(app: &AppHandle, session_id: &str, entry: &DshEntry) {
+    let at = entry.at();
     match entry {
         DshEntry::Turn {
             state: TurnState::End,
             ..
-        } => on_turn_end(app, session_id),
+        } => on_turn_end(app, session_id, at),
         // A chat starts untitled; the first human line names it in the list.
-        DshEntry::User { text, .. } => retitle_chat(app, session_id, text),
+        DshEntry::User { text, .. } => retitle_chat(app, session_id, text, at),
         _ => {}
     }
 }
 
 /// Names a chat task from its first user message. Tasks with a real title
 /// (bug / local item) are never touched.
-fn retitle_chat(app: &AppHandle, session_id: &str, text: &str) {
+fn retitle_chat(app: &AppHandle, session_id: &str, text: &str, at: &str) {
     let Some(title) = first_line(text) else {
         return;
     };
     let app = app.clone();
     let session_id = session_id.to_string();
+    let at = at.to_string();
     tauri::async_runtime::spawn(async move {
         let Ok(state) = shared(&app) else {
             return;
@@ -422,7 +436,7 @@ fn retitle_chat(app: &AppHandle, session_id: &str, text: &str) {
                 return Ok(None);
             }
             record.task.title = title;
-            record.touch();
+            record.touch_at(&at);
             task_store::update_if(&cache, &record, Workflow::Running)?;
             Ok(Some(record.task))
         })
@@ -488,17 +502,18 @@ pub async fn create_chat(app: &AppHandle, session_id: &str) -> Result<Value, Str
 /// Schedules the review of a finished turn. Idempotent: a task that already
 /// left `running` is ignored, so a replayed snapshot cannot restart the work.
 #[allow(dead_code)] // wired by bridge.rs (see the module report)
-pub fn on_turn_end(app: &AppHandle, session_id: &str) {
+pub fn on_turn_end(app: &AppHandle, session_id: &str, at: &str) {
     let app = app.clone();
     let session_id = session_id.to_string();
+    let at = at.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = finish_turn(&app, &session_id).await {
+        if let Err(error) = finish_turn(&app, &session_id, &at).await {
             tracing::warn!(%error, session = session_id, "failed to review a finished dsh turn");
         }
     });
 }
 
-async fn finish_turn(app: &AppHandle, session_id: &str) -> Result<(), String> {
+async fn finish_turn(app: &AppHandle, session_id: &str, at: &str) -> Result<(), String> {
     let state = shared(app)?;
     let cache = state.cache.clone();
     let id = session_id.to_string();
@@ -550,7 +565,7 @@ async fn finish_turn(app: &AppHandle, session_id: &str) -> Result<(), String> {
         .get(session_id)
         .map(|session| session.message_count as u32)
         .unwrap_or(record.task.message_count);
-    record.touch();
+    record.touch_at(at);
 
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -1423,9 +1438,10 @@ async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, Strin
         Err(error) => return Err(tr_args("dsh.task.resume.failed", &[&error])),
     }
 
+    // Re-attaching a persisted session is not activity: bumping `updated_at`
+    // here reordered the list every time a row was opened.
     let mut record = record;
     record.task.status = SessionStatus::Idle;
-    record.touch();
     let expected = record.task.workflow;
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -1512,6 +1528,10 @@ fn overlay(task: &mut DshTask, live: &HashMap<String, DshSession>) {
         Some(session) => {
             task.status = session.status;
             task.message_count = session.message_count.min(u32::MAX as u64) as u32;
+            // The transcript knows when the session last actually moved. Rows
+            // written by older builds carry a bumped time, so the list would
+            // otherwise stay out of order until the task ran again.
+            task.updated_at = session.updated_at.clone();
         }
         None => task.status = SessionStatus::Idle,
     }

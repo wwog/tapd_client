@@ -405,7 +405,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
               value={selectedId ?? ""}
               disabled={!sourcesSettled}
               onChange={(event) => selectWorkspace(event.target.value)}
-              className="min-h-11 min-w-0 max-w-[60%] truncate rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
+              className="min-h-11 min-w-0 max-w-[60%] truncate rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 disabled:opacity-40"
             >
               {sourceGroups.tapd.length > 0 ? (
                 <optgroup label={t("mobile.files.groupTapd")}>

@@ -218,7 +218,7 @@ export function TableFilter(props: Props) {
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       placeholder={t("bugs.matchLabel", { label })}
-                      className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+                      className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:bg-surface"
                     />
                   </div>
                 </div>

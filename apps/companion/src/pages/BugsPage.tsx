@@ -439,7 +439,7 @@ export function BugsPage() {
               aria-label={t("common.projects")}
               value={workspaceId ?? ""}
               onChange={(event) => setWorkspaceId(event.target.value)}
-              className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700"
             >
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>
@@ -457,7 +457,7 @@ export function BugsPage() {
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
               placeholder={t("mobile.bugs.search")}
-              className="w-full rounded-lg border border-border bg-surface py-1.5 pr-2.5 pl-7 text-ui-caption text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+              className="w-full rounded-lg border border-border bg-surface py-1.5 pr-2.5 pl-7 text-ui-caption text-slate-700 transition placeholder:text-slate-400"
             />
           </div>
         </div>
@@ -505,7 +505,7 @@ export function BugsPage() {
                 });
               }
             }}
-            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700"
           >
             {SORT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>

@@ -130,7 +130,7 @@ export function FolderPicker(props: {
               if (event.key === "Enter") void load(pathInput);
             }}
             spellCheck={false}
-            className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:bg-surface"
           />
           <Button size="sm" variant="secondary" onClick={() => void load(pathInput)}>
             {t("folder.go")}

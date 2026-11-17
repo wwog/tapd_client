@@ -21,12 +21,13 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use chrono::{SecondsFormat, Utc};
 use dsh_host::transcript::{
-    DshDelta, DshEntry, DshSession, DshStream, Ingested, SessionStatus, Transcript,
+    DshDelta, DshEntry, DshSession, DshStream, Ingested, SessionMeter, SessionStatus, Transcript,
 };
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -248,6 +249,23 @@ impl BridgeState {
             .entries_since(session_id, since_seq)
     }
 
+    /// Rebuilds one session from dsh's own log, for a session this process has
+    /// not seen (the runtime resumes sessions lazily and may be stopped).
+    ///
+    /// Ingested quietly: the caller returns these rows directly, so publishing
+    /// them would only duplicate a burst the UI is about to read anyway.
+    /// Returns whether a log existed.
+    pub fn hydrate_from_log(&self, sessions_dir: &Path, session_id: &str) -> bool {
+        let Some(events) = super::session_log::events(sessions_dir, session_id) else {
+            return false;
+        };
+        let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+        for event in &events {
+            transcript.ingest(session_id, event, &event_at(event));
+        }
+        true
+    }
+
     /// Applies one NDJSON message from the plugin.
     fn dispatch(&self, app: &AppHandle, message: &Value) {
         match message.get("type").and_then(Value::as_str) {
@@ -262,6 +280,7 @@ impl BridgeState {
                 }
             }
             Some("stream") => self.ingest_stream(app, message),
+            Some("stats") => self.ingest_stats(app, message),
             Some("team") => self.ingest_team(app, message),
             Some("notice") => super::policy::notice(message),
             Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
@@ -316,6 +335,24 @@ impl BridgeState {
         );
     }
 
+    /// The runtime's own meter snapshot: prompt-side context occupancy and the
+    /// composition of the request surface. Token totals stay transcript-owned;
+    /// this only fills the figures dsh alone can price.
+    fn ingest_stats(&self, app: &AppHandle, message: &Value) {
+        let Some(session_id) = message.get("sessionId").and_then(Value::as_str) else {
+            tracing::warn!("agent bridge: stats frame without a session");
+            return;
+        };
+        let meter = normalize_meter(message);
+        let changed = {
+            let mut transcript = self.transcript.lock().expect("dsh transcript lock");
+            transcript.set_meter(session_id, &meter, &now())
+        };
+        if changed {
+            self.emit_sessions(app);
+        }
+    }
+
     /// Team board for one root session. Every frame replaces the stored board
     /// and reaches the UI; the plugin only sends it when the projection exists
     /// and after a settled burst of board events.
@@ -356,6 +393,12 @@ impl BridgeState {
             );
         }
         ingested.created || ingested.session_changed
+    }
+
+    /// Publishes the current session list. Used after hydrating a session from
+    /// disk so the UI gets its usage counters without waiting for the runtime.
+    pub fn publish_sessions(&self, app: &AppHandle) {
+        self.emit_sessions(app);
     }
 
     fn emit_sessions(&self, app: &AppHandle) {
@@ -489,6 +532,21 @@ fn text_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// Reads one `stats` frame. `projectedTokens` is the runtime's forward-looking
+/// occupancy (the last sample plus surface movement); `pressureTokens` is the
+/// last request's own prompt size, used when the projection is unavailable.
+fn normalize_meter(message: &Value) -> SessionMeter {
+    let number = |pointer: &str| message.pointer(pointer).and_then(Value::as_u64);
+    SessionMeter {
+        context_used_tokens: number("/pressure/projectedTokens")
+            .or_else(|| number("/pressure/pressureTokens")),
+        context_window: number("/pressure/contextWindow"),
+        system_tokens: number("/breakdown/systemTokens"),
+        tools_tokens: number("/breakdown/toolsTokens"),
+        message_tokens: number("/breakdown/messageTokens"),
+    }
+}
+
 /// The event's own timestamp (`time`, epoch ms), so a replayed snapshot keeps
 /// its original ordering. Falls back to now for a malformed event.
 fn event_at(event: &Value) -> String {
@@ -586,6 +644,29 @@ mod tests {
         // Sorted lexicographically, i.e. chronologically.
         let later = json!({ "time": 1_700_000_001_000u64 });
         assert!(event_at(&later) > event_at(&event));
+    }
+
+    #[test]
+    fn a_stats_frame_fills_context_and_composition() {
+        let frame = json!({
+            "type": "stats",
+            "sessionId": "s1",
+            "pressure": { "contextWindow": 1_000_000, "pressureTokens": 12_000,
+                          "projectedTokens": 12_060 },
+            "breakdown": { "systemTokens": 1_800, "toolsTokens": 8_800,
+                           "messageTokens": 1_460 },
+        });
+        let meter = normalize_meter(&frame);
+        assert_eq!(meter.context_used_tokens, Some(12_060));
+        assert_eq!(meter.context_window, Some(1_000_000));
+        assert_eq!(meter.system_tokens, Some(1_800));
+        assert_eq!(meter.tools_tokens, Some(8_800));
+        assert_eq!(meter.message_tokens, Some(1_460));
+
+        // A projection that has not caught up yet still reports its sample.
+        let fallback = json!({ "pressure": { "pressureTokens": 9_000 } });
+        assert_eq!(normalize_meter(&fallback).context_used_tokens, Some(9_000));
+        assert_eq!(normalize_meter(&json!({})), SessionMeter::default());
     }
 
     #[test]

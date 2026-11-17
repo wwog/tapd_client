@@ -449,6 +449,22 @@ impl RuntimeState {
             .map_err(|_| tr("dsh.runtime.exited").to_string())
     }
 
+    /// Re-attaches a session dsh persisted in an earlier run. Idempotent: an
+    /// already-open session reports an error we treat as success.
+    pub async fn resume_session(&self, session_id: &str) -> Result<(), String> {
+        match self
+            .call(
+                rpc::METHOD_SESSION_RESUME,
+                json!({ "sessionId": session_id }),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) if error.contains("already open") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Queues one prompt on a session, creating it on first use.
     pub async fn query(&self, session_id: &str, text: &str) -> Result<Value, String> {
         let params = SessionQueryParams {

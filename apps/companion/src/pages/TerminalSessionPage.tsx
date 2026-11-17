@@ -694,7 +694,7 @@ export function TerminalSessionPage(props: { id: string }) {
             autoCorrect="off"
             autoComplete="off"
             spellCheck={false}
-            className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-ui-base text-slate-900 placeholder:text-slate-400 focus:outline-2 focus:outline-sky-200"
+            className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-ui-base text-slate-900 placeholder:text-slate-400"
           />
           <button
             type="button"

@@ -125,7 +125,7 @@ export function EnqueueSheet({ target, onClose }: Props) {
               event.preventDefault();
               void submit();
             }}
-            className="w-full resize-none rounded-xl border border-border bg-surface px-3 py-2 text-ui-caption leading-6 text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+            className="w-full resize-none rounded-xl border border-border bg-surface px-3 py-2 text-ui-caption leading-6 text-slate-700 transition placeholder:text-slate-300"
           />
         </div>
 

@@ -280,14 +280,14 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               value={debugTitle}
               onChange={(event) => setDebugTitle(event.target.value)}
               placeholder="标题"
-              className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700"
             />
             <textarea
               value={debugBody}
               onChange={(event) => setDebugBody(event.target.value)}
               rows={2}
               placeholder="正文（可换行）"
-              className="mt-1.5 w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="mt-1.5 w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700"
             />
 
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
@@ -353,7 +353,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.currentTarget.blur();
               }}
-              className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700"
             />
           </label>
 
@@ -367,7 +367,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               onChange={(event) =>
                 patch({ maxVisible: Number(event.target.value) })
               }
-              className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700"
             >
               {[1, 2, 3, 4, 5].map((value) => (
                 <option key={value} value={value}>
@@ -402,7 +402,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               onChange={(event) =>
                 patchQuietHours({ start: event.target.value })
               }
-              className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 focus:outline-2 focus:outline-sky-200"
+              className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
             />
             <span className="text-ui-sm text-slate-400">{t("settings.notify.quietTo")}</span>
             <input
@@ -410,7 +410,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
               value={settings.quietHours.end}
               disabled={!settings.quietHours.enabled}
               onChange={(event) => patchQuietHours({ end: event.target.value })}
-              className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 focus:outline-2 focus:outline-sky-200"
+              className="rounded-lg border border-border px-2 py-1.5 text-ui-caption text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
             />
           </div>
         </div>

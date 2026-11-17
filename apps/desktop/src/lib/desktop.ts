@@ -1,3 +1,18 @@
+import { invoke } from "@tauri-apps/api/core";
+
+/**
+ * Opens http(s) links in the default browser. Rendered Markdown uses this so a
+ * click cannot navigate the app's own WebView (which carries Tauri IPC) away
+ * from the UI. Best effort: a rejected open is reported nowhere.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    await invoke("open_url", { url });
+  } catch {
+    // A link the host refuses (non-http scheme) needs no UI of its own.
+  }
+}
+
 /**
  * Copies text with the async clipboard API and falls back to a hidden
  * textarea + `execCommand("copy")` when the webview denies/does not expose it.

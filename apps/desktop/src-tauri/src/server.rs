@@ -58,6 +58,9 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
     *state.runtime.lock().expect("runtime lock") = Some(runtime);
 
     tracing::info!(port = address.port(), "local API listening");
+    // Debug builds expose the fake model provider on this port.
+    #[cfg(debug_assertions)]
+    crate::dsh::test_agent::set_port(address.port());
 
     let api_state = ApiState {
         app,
@@ -81,7 +84,12 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/feature", post(dev::dev_feature))
         .route("/dev/dsh", post(dev::dev_dsh))
         .route("/dev/companion", get(dev::dev_companion))
-        .route("/dev/companion/pairing", post(dev::dev_companion_pairing));
+        .route("/dev/companion/pairing", post(dev::dev_companion_pairing))
+        // Fake model provider for the built-in agent; debug builds only.
+        .route(
+            "/test-agent/v1/chat/completions",
+            post(crate::dsh::test_agent::completions),
+        );
 
     let router = router.with_state(api_state);
 

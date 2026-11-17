@@ -1043,6 +1043,20 @@ pub async fn open_directory(
     open_local(&dir, &selected)
 }
 
+/// Opens an http(s) URL in the default browser.
+///
+/// Markdown links (agent replies, file previews) go through this instead of
+/// letting the WebView navigate away from the app; the scheme check keeps
+/// `file:` / custom handlers out of `open`.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| tr("app.open.url").to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(tr("app.open.url").to_string());
+    }
+    run_open(&[url.as_str()])
+}
+
 /// Opens a TAPD resource locally.
 ///
 /// `mode`:

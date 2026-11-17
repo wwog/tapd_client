@@ -4,7 +4,7 @@ import { Send } from "lucide-react";
 import { Button } from "../components/ui";
 import { t } from "../lib/i18n";
 import { runtimeBlock, runtimeLabel } from "./runtime";
-import { SessionStats } from "./SessionStats";
+import { SessionUsageBar } from "./usage/SessionUsageBar";
 import { agentActions, agentStore } from "./store";
 /**
  * Enter sends, Shift+Enter adds a line. The send button is disabled while the
@@ -40,10 +40,10 @@ export function Composer() {
             event.preventDefault();
             void send();
           }}
-          className="w-full resize-none rounded-xl border border-border bg-surface px-3 py-2 text-ui-caption leading-6 text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+          className="w-full resize-none rounded-xl border border-border bg-surface px-3 py-2 text-ui-caption leading-6 text-slate-700 transition placeholder:text-slate-300"
         />
         <div className="mt-2 flex items-center gap-3">
-          <SessionStats
+          <SessionUsageBar
             usage={
               state.selectedId ? state.sessions[state.selectedId]?.usage : undefined
             }

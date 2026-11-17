@@ -921,7 +921,7 @@ function QuestionSheet(props: { pending: QuestionPending; onClose: () => void })
                   setCustom((prev) => ({ ...prev, [current.id]: event.target.value }))
                 }
                 placeholder={t("mobile.agent.questionCustomPlaceholder")}
-                className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-base text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+                className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-base text-slate-700 transition placeholder:text-slate-400"
               />
             </label>
           )}
@@ -1645,7 +1645,7 @@ export function AgentSessionPage(props: { id: string }) {
             onKeyDown={onComposerKeyDown}
             placeholder={t("mobile.agent.composerPlaceholder")}
             title={t("mobile.agent.composerHint")}
-            className="max-h-30 min-h-11 min-w-0 flex-1 resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+            className="max-h-30 min-h-11 min-w-0 flex-1 resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400"
           />
           <button
             type="button"

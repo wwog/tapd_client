@@ -5,7 +5,6 @@ import { Check } from "lucide-react";
 import { ScrollingName } from "../components/ScrollingName";
 import { useCoworkers } from "../components/CoworkerPicker";
 import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui";
-import { modelsReady } from "../lib/agentSettings";
 import { t } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
 import { ModelSettings } from "./ModelSettings";
@@ -110,7 +109,6 @@ export function AgentConfigTab({ toast }: Props) {
     );
   }
 
-  const modelReady = modelsReady(config.dshModels);
   const permissionModes: Array<{
     value: DshPermissionMode;
     label: string;
@@ -201,7 +199,7 @@ export function AgentConfigTab({ toast }: Props) {
                     executionUnits: clamp(Number.parseInt(event.target.value, 10) || 1, 1, 8),
                   })
                 }
-                className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200 disabled:text-slate-400"
+                className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition disabled:text-slate-400"
               />
             </div>
           </div>
@@ -323,27 +321,13 @@ export function AgentConfigTab({ toast }: Props) {
               </div>
             )}
           </div>
-          <div className="mt-3 flex justify-end">
-            {state.status?.phase === "ready" ? (
-              <Button
-                size="sm"
-                loading={state.stopping}
-                onClick={() => void agentActions.stopRuntime()}
-              >
-                {t("agent.runtime.stop")}
+          {state.status?.phase === "failed" ? (
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" onClick={() => void agentActions.startRuntime()}>
+                {t("common.retry")}
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                loading={state.starting}
-                disabled={!modelReady || state.preparingSince !== null}
-                title={modelReady ? undefined : t("agent.runtime.modelMissingHint")}
-                onClick={() => void agentActions.startRuntime()}
-              >
-                {t("agent.runtime.start")}
-              </Button>
-            )}
-          </div>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

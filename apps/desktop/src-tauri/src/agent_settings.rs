@@ -544,9 +544,15 @@ fn config_file(data_dir: &Path) -> PathBuf {
 /// Reads the settings file. Missing or malformed files yield defaults; the
 /// caller never has to distinguish "fresh install" from "user cleared it".
 pub fn load(data_dir: &Path) -> AgentConfig {
-    read_json::<AgentConfig>(&config_file(data_dir))
-        .unwrap_or_default()
-        .sanitized()
+    let mut config = read_json::<AgentConfig>(&config_file(data_dir)).unwrap_or_default();
+    // Before sanitizing: the scripted provider has to exist for a saved choice
+    // of it to survive the "does the active provider resolve" repair. The port
+    // moves between launches, so it is refreshed here rather than stored.
+    #[cfg(debug_assertions)]
+    if let Some(port) = crate::dsh::test_agent::port() {
+        crate::dsh::test_agent::inject(&mut config, port);
+    }
+    config.sanitized()
 }
 
 pub fn save(data_dir: &Path, config: &AgentConfig) -> std::io::Result<()> {
@@ -556,9 +562,13 @@ pub fn save(data_dir: &Path, config: &AgentConfig) -> std::io::Result<()> {
 /// Snapshot for callers that only hold an `AppHandle` (MCP bridge, fs, export).
 pub fn config_for(app: &tauri::AppHandle) -> AgentConfig {
     use tauri::Manager;
-    app.try_state::<std::sync::Arc<crate::state::AppState>>()
-        .map(|state| load(&state.paths.data_dir))
-        .unwrap_or_default()
+    let Ok(state) = app
+        .try_state::<std::sync::Arc<crate::state::AppState>>()
+        .ok_or(())
+    else {
+        return AgentConfig::default();
+    };
+    load(&state.paths.data_dir)
 }
 
 /// Persists settings through the `AppHandle` path used by feature commands.

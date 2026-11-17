@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { Button } from "../components/ui";
-import { modelsReady } from "../lib/agentSettings";
 import { t } from "../lib/i18n";
 import { runtimeBlock, runtimeHint, runtimeLabel } from "./runtime";
-import { agentActions, agentStore, type AgentState } from "./store";
+import { agentActions, agentStore } from "./store";
 
 /**
  * The runtime's real state directly above the composer. It is never a dash:
@@ -31,7 +30,7 @@ export function RuntimeNotice() {
           <span className="min-w-0 flex-1 truncate text-slate-500" title={hint}>
             {runtimeLabel(block)}
           </span>
-          <RuntimeAction block={block} state={state} />
+          <RuntimeAction block={block} />
         </div>
       ) : null}
       {state.lastError ? <ErrorLine error={state.lastError} /> : null}
@@ -39,7 +38,7 @@ export function RuntimeNotice() {
   );
 }
 
-function RuntimeAction({ block, state }: { block: NonNullable<ReturnType<typeof runtimeBlock>>; state: AgentState }) {
+function RuntimeAction({ block }: { block: NonNullable<ReturnType<typeof runtimeBlock>> }) {
   switch (block) {
     case "model":
       return (
@@ -66,22 +65,10 @@ function RuntimeAction({ block, state }: { block: NonNullable<ReturnType<typeof 
           {t("common.retry")}
         </Button>
       );
+    // `stopped` is transient: the runtime starts with the app and comes back on
+    // its own, so there is nothing for the user to press.
     case "stopped":
-      return (
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={state.starting}
-          title={
-            state.config && !modelsReady(state.config.dshModels)
-              ? t("agent.runtime.modelMissingHint")
-              : undefined
-          }
-          onClick={() => void agentActions.startRuntime()}
-        >
-          {t("agent.runtime.start")}
-        </Button>
-      );
+      return null;
     case "starting":
     case "checking":
       return null;

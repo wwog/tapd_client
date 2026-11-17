@@ -91,6 +91,12 @@ export const agent = {
     "Describe the task below; Enter sends it.",
   ],
   "agent.stream.loadFailed": ["会话记录读取失败", "Could not load the conversation"],
+  "agent.turn.running": ["运行中 · {duration}", "Running · {duration}"],
+  "agent.turn.runningPlain": ["运行中", "Running"],
+  "agent.turn.worked": ["已工作 {duration}", "Worked for {duration}"],
+  "agent.turn.trace": ["轨迹", "Trace"],
+  "agent.turn.expand": ["展开这一轮的轨迹", "Show the trace of this turn"],
+  "agent.turn.collapse": ["收起这一轮的轨迹", "Hide the trace of this turn"],
   "agent.thinking": ["思考", "Reasoning"],
   "agent.tool.calling": ["工具调用", "Tool call"],
   "agent.tool.running": ["运行中", "Running"],
@@ -111,13 +117,42 @@ export const agent = {
   "agent.usage.total": ["合计", "Total"],
   "agent.usage.tokens": ["{tokens} tok", "{tokens} tok"],
   "agent.stats.turns": ["{turns} 轮 {steps} 步", "{turns} turns, {steps} steps"],
+  "agent.stats.turnsLabel": ["轮 / 步", "Turns / steps"],
   "agent.stats.speed": ["{speed} tok/s", "{speed} tok/s"],
   "agent.stats.tokens": ["{tokens} tok", "{tokens} tok"],
   "agent.stats.cache": ["缓存命中 {percent}%", "cache {percent}%"],
   "agent.stats.percent": ["{percent}%", "{percent}%"],
+  "agent.stats.title": ["会话统计", "Session stats"],
+  "agent.stats.modelTime": ["模型用时", "Model time"],
+  "agent.stats.ttft": ["首 token 平均", "Avg TTFT"],
+  "agent.stats.tps": ["输出速度", "Output speed"],
+  "agent.stats.seconds": ["{seconds} 秒", "{seconds}s"],
+  "agent.stats.minutes": [
+    "{minutes} 分 {seconds} 秒",
+    "{minutes}m {seconds}s",
+  ],
   "agent.stats.hint": [
-    "本会话累计：轮 / 步、上一段生成速度、总 token、输入缓存命中率、上下文占用。",
-    "Session totals: turns/steps, last generation speed, total tokens, input cache hit rate, context used.",
+    "本会话累计：轮 / 步、上一段生成速度、总 token、输入缓存命中率、上下文占用。点开看明细。",
+    "Session totals: turns/steps, last generation speed, total tokens, cache hit rate, context used. Click for details.",
+  ],
+
+  // Token usage of the whole session (the dock's second figure).
+  "agent.usage.sessionTitle": ["Token 用量", "Token usage"],
+
+  // Context composition (the dock's ring).
+  "agent.context.title": ["上下文", "Context"],
+  "agent.context.hint": [
+    "最近一次请求占用的上下文窗口，以及系统提示词、工具定义、对话消息各自的估算用量。",
+    "Context window used by the latest request, split into system prompt, tool definitions and messages.",
+  ],
+  "agent.context.used": ["上下文已用 {percent}%", "Context used {percent}%"],
+  "agent.context.window": ["{used} / {window}", "{used} / {window}"],
+  "agent.context.system": ["系统提示词", "System prompt"],
+  "agent.context.tools": ["工具定义", "Tool definitions"],
+  "agent.context.messages": ["对话消息", "Messages"],
+  "agent.context.pending": [
+    "等待运行时的用量统计…",
+    "Waiting for the runtime's meter…",
   ],
 
   // Composer.
@@ -125,11 +160,9 @@ export const agent = {
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
 
   // Runtime states (also used as the composer's disabled explanation).
-  "agent.runtime.stopped": ["运行时未启动", "Runtime is not running"],
+  "agent.runtime.stopped": ["正在准备运行时", "Preparing the runtime"],
   "agent.runtime.starting": ["运行时启动中", "Runtime starting"],
-  "agent.runtime.start": ["启动", "Start"],
-  "agent.runtime.stop": ["停止", "Stop"],
-  "agent.runtime.stateFailed": ["运行时状态读取失败", "Could not read the runtime status"],
+      "agent.runtime.stateFailed": ["运行时状态读取失败", "Could not read the runtime status"],
   "agent.runtime.nodeMissing": ["未找到 Node.js", "Node.js not found"],
   "agent.runtime.nodeMissingHint": [
     "内置 Agent 需要系统安装 Node.js 24.9 或更高版本，应用不打包 Node。",

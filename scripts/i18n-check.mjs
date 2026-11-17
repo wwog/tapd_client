@@ -276,6 +276,11 @@ function checkRust() {
 
   for (const file of files) {
     const text = readFileSync(file, "utf8");
+    // Fixtures opt out with `// i18n-exempt: <reason>` in the header: scripted
+    // test data is not interface copy and has nothing to translate.
+    if (/^\s*\/\/!?\s*i18n-exempt:/m.test(text.split("\n").slice(0, 8).join("\n"))) {
+      continue;
+    }
     const lines = text.split("\n");
     let testDepth = 0;
     let depth = 0;

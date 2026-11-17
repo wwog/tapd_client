@@ -22,8 +22,12 @@ pub mod feature;
 pub mod payload;
 pub mod policy;
 pub mod runtime;
+pub mod session_log;
 pub mod tasks;
 pub mod team;
+/// Debug-only fake model provider (`TestAgent`).
+#[cfg(debug_assertions)]
+pub mod test_agent;
 
 
 

@@ -175,7 +175,7 @@ function UserField(props: {
             if (members.length === 0 && !membersLoading) onRefreshMembers();
           }}
           title={t("bugs.chooseFromMembers")}
-          className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
+          className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition disabled:opacity-60"
         >
           {!current ? (
             <option value="">

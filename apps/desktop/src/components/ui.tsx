@@ -91,10 +91,10 @@ export function Spinner({ className }: { className?: string }) {
 
 /** Shared form field styles; callers add layout classes with `clsx`. */
 export const inputClass =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300";
 
 export const selectClass =
-  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition";
 
 export const cardClass = "rounded-2xl border border-border bg-surface p-4";
 

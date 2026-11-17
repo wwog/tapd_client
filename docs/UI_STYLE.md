@@ -63,7 +63,7 @@
 
 - 边框：`border border-border`；需要强调时 `border-2 border-sky-400`，**最大 2px**。
 - 圆角：卡片 `rounded-xl` / `rounded-2xl`；输入框、按钮 `rounded-lg`；小标签 `rounded-md`。
-- 阴影：0。焦点用 `outline-2 outline-sky-200`，不要用 `ring` / `shadow`。
+- 阴影：0。文本输入框（`input` / `textarea` / `select` / `contenteditable`）聚焦时保持原边框、不加 outline，由 `styles.css` 全局兜底；按钮、开关等非文本控件焦点用 `outline-2 outline-sky-200`，不要用 `ring` / `shadow`。
 - 卡片嵌套不要超过两层边框：外层容器负责边框，内层用背景色或间距分组。
 
 文本选择：
@@ -143,7 +143,7 @@
 
 ```tsx
 <input
-  className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+  className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition"
 />
 ```
 
@@ -179,6 +179,9 @@ grep -rn "font-medium\|font-semibold\|font-bold" apps/desktop/src
 
 # 不允许 ring 伪装边框 / 焦点
 grep -rn "ring-" apps/desktop/src --include='*.tsx'
+
+# 输入框不允许彩色焦点边框 / outline（按钮的 focus-visible 除外）
+grep -rn "focus:border-\|focus:outline-" apps/desktop/src --include='*.tsx'
 
 # 边框最大 2px
 grep -rn "border-[3-9]\|border-\[[3-9]px\]" apps/desktop/src --include='*.tsx'

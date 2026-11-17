@@ -309,7 +309,20 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 // 每个 agent/assistant-stream 帧一行，frame 原样透传（见 4.2 的 AssistantStreamFrame）
 { "type": "stream", "token": "<token>", "sessionId": "probe-1", "frame": { /* AssistantStreamFrame */ } }
+
+// 每个会话的 token-meter 投影，连接时与每批已提交事件后（300ms 合并）发送
+{ "type": "stats", "token": "<token>", "sessionId": "probe-1",
+  "usage": { "uncachedInputTokens": 11607, "outputTokens": 197,
+             "cacheReadTokens": 256, "cacheWriteTokens": 0 },
+  "pressure": { "contextWindow": 1000000, "pressureTokens": 11863,
+                "projectedTokens": 12060 },
+  "breakdown": { "systemTokens": 1800, "toolsTokens": 8800, "messageTokens": 1460 } }
 ```
+
+`usage` / `pressure` / `breakdown` 分别来自 dsh 的 `tokenUsage` / `contextPressure` /
+`contextBreakdown` 投影，任一投影缺失时该字段省略。Rust 只取 `pressure` 与
+`breakdown`（累计 token 由 transcript 自己算）；`projectedTokens` 是上下文占用的
+首选值，没有时退回 `pressureTokens`。
 
 `event`（单条事件）是保留类型：Rust 已能接收 `{type:"event",token,sessionId,event}`，
 当前插件不发（已提交事件走 SDK 的 `session.event`，两边共用同一个 ingest）。
@@ -351,9 +364,14 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
-  以及上一段生成速度 `tokensPerSecond`（`outputTokens ÷ (数据块首帧时间 → 消息落定)`）。
-  状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用 = `totalTokens ÷ contextWindow`。
+  上一段生成速度 `tokensPerSecond`（`outputTokens ÷ (数据块首帧时间 → 消息落定)`）、
+  首 token 平均等待 `ttftMs`（`step/start → 数据块首帧`，多次请求取平均）、
+  模型总用时 `modelMs`（`step/start → 消息落定` 累加）。
+  状态栏的缓存命中率 = `cacheRead ÷ (input + cacheRead)`，上下文占用优先用运行时的
+  `contextUsedTokens`（`contextPressure` 投影），未上报时退回 `totalTokens ÷ contextWindow`。
   快照重放靠 `seq` 去重，所以这些累计值不会重复计算。
+- `stats` 帧另外补上 `systemTokens` / `toolsTokens` / `messageTokens`（`contextBreakdown`
+  投影），三者相加就是最近一次请求的上下文构成；缺失时保持 0，由 UI 显示等待态。
 - 未知事件类型（`step/start`、`request/header` 等）忽略，每种类型只记一条 debug 日志。
 - 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
 

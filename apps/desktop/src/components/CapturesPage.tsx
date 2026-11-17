@@ -121,14 +121,14 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("capture.searchUrl")}
-            className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+            className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:bg-surface"
           />
         </div>
 
         <select
           value={method}
           onChange={(event) => setMethod(event.target.value)}
-          className="rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+          className="rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700"
         >
           <option value="ALL">{t("capture.allMethods")}</option>
           {methods.map((item) => (

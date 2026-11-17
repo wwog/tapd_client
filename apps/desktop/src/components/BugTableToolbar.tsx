@@ -257,7 +257,7 @@ export function BugTableToolbar(props: Props) {
               onChange={(event) => onKeywordChange(event.target.value)}
               placeholder={t("bugs.searchPlaceholder")}
               title={t("bugs.searchHint")}
-              className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+              className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:bg-surface"
             />
           </div>
         ) : null}

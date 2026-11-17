@@ -500,7 +500,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
-              className="min-h-[55vh] w-full resize-y rounded-xl border border-border bg-surface p-3 font-mono text-ui-xs leading-5 text-slate-700 outline-none focus:border-sky-300"
+              className="min-h-[55vh] w-full resize-y rounded-xl border border-border bg-surface p-3 font-mono text-ui-xs leading-5 text-slate-700 outline-none"
             />
             <div className="flex items-center justify-between gap-2 py-3 text-ui-xs text-slate-400">
               <span>

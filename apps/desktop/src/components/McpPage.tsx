@@ -368,7 +368,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               onChange={(event) =>
                 setAuditFilter(event.target.value as "all" | "denied" | "error")
               }
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-600 focus:border-sky-300"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-600"
             >
               <option value="all">{t("common.all")}</option>
               <option value="denied">{t("mcp.filterDenied")}</option>

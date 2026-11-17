@@ -131,6 +131,7 @@ pub fn run() {
             commands::open_file,
             commands::open_directory,
             commands::open_media,
+            commands::open_url,
             commands::media_endpoint,
             commands::list_dirs,
             fs::fs_list,
@@ -170,6 +171,20 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = server::run(server_handle, server_state).await {
                     tracing::error!(%error, "local API server stopped");
+                }
+            });
+
+            // The built-in agent is a service, not a session: one child process
+            // serves every conversation, starts with the app and dies with it.
+            // Nothing in the UI asks the user to start it; a missing model or
+            // payload is reported where it can be fixed.
+            let agent_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                match dsh::feature::start(&agent_handle).await {
+                    Ok(status) => {
+                        tracing::info!(phase = ?status.phase, "built-in agent runtime started")
+                    }
+                    Err(error) => tracing::warn!(%error, "built-in agent runtime did not start"),
                 }
             });
 

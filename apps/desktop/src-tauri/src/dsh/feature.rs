@@ -68,10 +68,23 @@ pub fn session_entries(
     since_seq: Option<u64>,
 ) -> Result<Value, String> {
     let bridge = bridge(app)?;
+    let since = since_seq.unwrap_or(0);
     // A persisted selection from before a restart names a session this process
     // has not seen yet. That is a "gone" state, not a failure: `known: false`
     // lets the UI fall back instead of rendering an error panel.
-    let Some((entries, last_seq)) = bridge.entries_since(session_id, since_seq.unwrap_or(0)) else {
+    let known = bridge.entries_since(session_id, since).or_else(|| {
+        // The runtime resumes sessions lazily and may not even be running, so
+        // fall back to dsh's own log: history must not depend on either.
+        let sessions_dir = dsh_sessions_dir(app)?;
+        if !bridge.hydrate_from_log(&sessions_dir, session_id) {
+            return None;
+        }
+        // The log carries the usage counters too; publish them so the session
+        // row (and its token figures) survives a restart.
+        bridge.publish_sessions(app);
+        bridge.entries_since(session_id, since)
+    });
+    let Some((entries, last_seq)) = known else {
         return Ok(json!({
             "sessionId": session_id,
             "known": false,
@@ -85,6 +98,12 @@ pub fn session_entries(
         "entries": entries,
         "lastSeq": last_seq,
     }))
+}
+
+/// Where dsh keeps its own session logs (`$DSH_HOME/sessions`).
+fn dsh_sessions_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.try_state::<std::sync::Arc<crate::state::AppState>>()
+        .map(|state| state.paths.data_dir.join("dsh").join("home").join("sessions"))
 }
 
 /// Allocates an id and its (empty) registry row. The runtime creates the real
@@ -104,6 +123,14 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     bridge(app)?.create_session(app, session_id);
     let state = runtime(app)?;
     state.ensure_ready(app).await?;
+    // A session restored from a previous run is not open in the runtime: the
+    // SDK would answer with a fresh empty session under the same id. History
+    // loads from the log, so the attach has to happen before the first send.
+    if let Some(dir) = dsh_sessions_dir(app) {
+        if super::session_log::path(&dir, session_id).is_some() {
+            state.resume_session(session_id).await?;
+        }
+    }
     let receipt = state.query(session_id, text).await?;
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
 }

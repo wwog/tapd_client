@@ -61,6 +61,30 @@ pub struct SessionUsage {
     pub context_window: u64,
     /// Output tokens per second over the last message's generation.
     pub tokens_per_second: u64,
+    /// Average wait for the first streamed token, over the requests that
+    /// reported one; 0 when no request was timed.
+    pub ttft_ms: u64,
+    /// Request start → message settle, summed over every timed request.
+    pub model_ms: u64,
+    /// Prompt-side tokens of the latest request (the context occupancy the
+    /// runtime's own meter reports); 0 until it does.
+    pub context_used_tokens: u64,
+    /// Context composition as dsh priced the latest request surface.
+    pub system_tokens: u64,
+    pub tools_tokens: u64,
+    pub message_tokens: u64,
+}
+
+/// One meter snapshot read from the runtime's projections. Every field is
+/// optional upstream, so an absent value keeps what the transcript already
+/// knows instead of zeroing it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionMeter {
+    pub context_used_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    pub system_tokens: Option<u64>,
+    pub tools_tokens: Option<u64>,
+    pub message_tokens: Option<u64>,
 }
 
 impl SessionUsage {
@@ -73,12 +97,55 @@ impl SessionUsage {
         (self.cache_read_tokens * 100 + input / 2) / input
     }
 
-    /// Context window used by the latest request, in percent.
+    /// Context window used by the latest request, in percent. The runtime's
+    /// own prompt-side meter wins; the cumulative total is only a fallback for
+    /// a session the bridge has not measured yet.
     pub fn context_percent(&self) -> u64 {
         if self.context_window == 0 {
             return 0;
         }
-        ((self.total_tokens * 100 + self.context_window / 2) / self.context_window).min(100)
+        let used = if self.context_used_tokens > 0 {
+            self.context_used_tokens
+        } else {
+            self.total_tokens
+        };
+        ((used * 100 + self.context_window / 2) / self.context_window).min(100)
+    }
+}
+
+impl SessionUsage {
+    /// Applies one meter snapshot; absent values keep the current figure.
+    fn apply_meter(&mut self, meter: &SessionMeter) -> bool {
+        let before = (
+            self.context_used_tokens,
+            self.context_window,
+            self.system_tokens,
+            self.tools_tokens,
+            self.message_tokens,
+        );
+        if let Some(value) = meter.context_used_tokens {
+            self.context_used_tokens = value;
+        }
+        if let Some(value) = meter.context_window {
+            self.context_window = value;
+        }
+        if let Some(value) = meter.system_tokens {
+            self.system_tokens = value;
+        }
+        if let Some(value) = meter.tools_tokens {
+            self.tools_tokens = value;
+        }
+        if let Some(value) = meter.message_tokens {
+            self.message_tokens = value;
+        }
+        before
+            != (
+                self.context_used_tokens,
+                self.context_window,
+                self.system_tokens,
+                self.tools_tokens,
+                self.message_tokens,
+            )
     }
 }
 
@@ -190,6 +257,17 @@ impl DshEntry {
             | Self::Turn { seq, .. } => *seq,
         }
     }
+
+    /// The event's own timestamp. Replaying a log must use this instead of the
+    /// wall clock, so history does not read as "just now".
+    pub fn at(&self) -> &str {
+        match self {
+            Self::User { at, .. }
+            | Self::Assistant { at, .. }
+            | Self::Tool { at, .. }
+            | Self::Turn { at, .. } => at,
+        }
+    }
 }
 
 /// One live token-level delta. Not durable: the committed `assistant/message`
@@ -248,6 +326,9 @@ struct SessionRecord {
     /// `step/start` time of the current step, used as the generation start
     /// when a message carries no stream timing.
     last_step_ms: Option<u64>,
+    /// Sum and count behind [`SessionUsage::ttft_ms`].
+    ttft_total_ms: u64,
+    ttft_samples: u64,
 }
 
 /// The one owner of normalized session state.
@@ -273,6 +354,8 @@ impl Transcript {
                 calls: HashMap::new(),
                 first_user_seen: false,
                 last_step_ms: None,
+                ttft_total_ms: 0,
+                ttft_samples: 0,
             },
         );
         true
@@ -365,6 +448,17 @@ impl Transcript {
         record.meta.status = status;
         record.touch(at);
         true
+    }
+
+    /// Applies the runtime's own meter snapshot (token usage, context
+    /// occupancy and composition). Returns whether the session row changed.
+    ///
+    /// A meter read is not activity: it must not move `updated_at`, or every
+    /// reconnect would reorder the session list.
+    pub fn set_meter(&mut self, session_id: &str, meter: &SessionMeter, at: &str) -> bool {
+        let created = self.ensure_session(session_id, at);
+        let record = self.sessions.get_mut(session_id).expect("session ensured above");
+        created || record.meta.usage.apply_meter(meter)
     }
 
     /// Marks every running session as failed after the runtime process exits —
@@ -482,16 +576,27 @@ impl SessionRecord {
             totals.output_tokens += usage.output_tokens;
             totals.cache_read_tokens += usage.cache_read_tokens;
             totals.total_tokens += usage.total_tokens;
+            // Generation-only speed: the stream's first chunk beats
+            // `step/start`, which also covers request setup and queueing.
+            let end = event.get("time").and_then(Value::as_u64);
+            let generation_start = event.pointer("/data/stream/0/time").and_then(Value::as_u64);
+            let request_start = self.last_step_ms;
+            if let (Some(start), Some(end)) = (request_start, end) {
+                if end > start {
+                    totals.model_ms += end - start;
+                    // Only a real stream timestamp can time the first token;
+                    // the step clock would report the whole request instead.
+                    if let Some(first) = generation_start {
+                        if first > start && first <= end {
+                            self.ttft_total_ms += first - start;
+                            self.ttft_samples += 1;
+                            totals.ttft_ms = self.ttft_total_ms / self.ttft_samples;
+                        }
+                    }
+                }
+            }
             if usage.output_tokens > 0 {
-                // Generation-only speed: the stream's first chunk beats
-                // `step/start`, which also covers request setup and queueing.
-                let start = event
-                    .pointer("/data/stream/0/time")
-                    .and_then(Value::as_u64)
-                    .or(self.last_step_ms);
-                if let (Some(start), Some(end)) =
-                    (start, event.get("time").and_then(Value::as_u64))
-                {
+                if let (Some(start), Some(end)) = (generation_start.or(request_start), end) {
                     if end > start {
                         let elapsed = (end - start) as f64 / 1000.0;
                         totals.tokens_per_second =
@@ -950,9 +1055,66 @@ mod tests {
         assert_eq!(session.usage.context_window, 1_000_000);
         assert_eq!(session.usage.context_percent(), 0);
 
-        transcript.ingest("s1", &assistant_with_usage(1, 2_000), "2026-11-16T00:00:02.000Z");
+        transcript.ingest("s1", &assistant_with_usage(1, 2_000_000), "2026-11-16T00:00:02.000Z");
         // 8306 / 1,000,000 rounds to nothing at integer percent.
         assert_eq!(transcript.session("s1").unwrap().usage.context_percent(), 1);
+    }
+
+    #[test]
+    fn timings_start_at_the_step_and_separate_first_token_wait() {
+        let mut transcript = Transcript::default();
+        let mut step = event("step/start", 1);
+        step["time"] = json!(1_700_000_000_000u64);
+        transcript.ingest("s1", &step, "2026-11-16T00:00:00.000Z");
+        let mut message = assistant_with_usage(2, 1_700_000_005_500);
+        message["data"]["stream"] = json!([{ "type": "chunk", "time": 1_700_000_002_500u64 }]);
+        transcript.ingest("s1", &message, "2026-11-16T00:00:05.500Z");
+
+        let usage = &transcript.session("s1").unwrap().usage;
+        assert_eq!(usage.ttft_ms, 2_500);
+        assert_eq!(usage.model_ms, 5_500);
+        // Speed still counts generation only (5.5s - 2.5s = 3s).
+        assert_eq!(usage.tokens_per_second, 63);
+    }
+
+    #[test]
+    fn the_meter_supplies_context_occupancy_and_composition() {
+        let mut transcript = Transcript::default();
+        transcript.ingest(
+            "s1",
+            &json!({
+                "type": "request/context",
+                "seq": 0,
+                "data": { "contextWindow": 1_000_000 },
+            }),
+            "2026-11-16T00:00:00.000Z",
+        );
+        let meter = SessionMeter {
+            context_used_tokens: Some(12_060),
+            context_window: Some(1_000_000),
+            system_tokens: Some(1_800),
+            tools_tokens: Some(8_800),
+            message_tokens: Some(1_460),
+        };
+        assert!(transcript.set_meter("s1", &meter, "2026-11-16T00:00:01.000Z"));
+        let usage = &transcript.session("s1").unwrap().usage;
+        assert_eq!(usage.context_used_tokens, 12_060);
+        assert_eq!(usage.system_tokens, 1_800);
+        assert_eq!(usage.tools_tokens, 8_800);
+        assert_eq!(usage.message_tokens, 1_460);
+        assert_eq!(usage.context_percent(), 1);
+
+        // An unchanged snapshot is not a change; omissions keep the old values.
+        assert!(!transcript.set_meter("s1", &meter, "2026-11-16T00:00:02.000Z"));
+        let sparse = SessionMeter {
+            context_used_tokens: Some(20_000),
+            ..SessionMeter::default()
+        };
+        assert!(transcript.set_meter("s1", &sparse, "2026-11-16T00:00:03.000Z"));
+        let usage = &transcript.session("s1").unwrap().usage;
+        assert_eq!(usage.context_used_tokens, 20_000);
+        assert_eq!(usage.tools_tokens, 8_800);
+        assert_eq!(usage.context_percent(), 2);
     }
 
     #[test]

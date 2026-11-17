@@ -124,6 +124,17 @@ select,
   user-select: text;
 }
 
+/* Text fields never take a coloured focus edge; the resting hairline border is
+   the only edge. Non-text controls keep their keyboard focus outline. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+textarea:focus,
+select:focus,
+[contenteditable="true"]:focus,
+[contenteditable="plaintext-only"]:focus {
+  outline: none;
+  border-color: var(--color-border);
+}
+
 /* -------------------------------------------------------------------------
    Appearance: light / dark tokens.
    Utilities such as `bg-surface` and `text-slate-500` resolve through these

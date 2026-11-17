@@ -73,6 +73,16 @@ export type DshSessionUsage = {
   contextWindow: number;
   /** Output tokens per second over the last message. */
   tokensPerSecond: number;
+  /** Average wait for the first streamed token; 0 when no request was timed. */
+  ttftMs: number;
+  /** Request start → message settle, summed over every timed request. */
+  modelMs: number;
+  /** Prompt-side tokens of the latest request (the runtime's own meter). */
+  contextUsedTokens: number;
+  /** Composition of the latest request surface, as dsh priced it. */
+  systemTokens: number;
+  toolsTokens: number;
+  messageTokens: number;
 };
 
 /** One session row as the runtime reports it. */

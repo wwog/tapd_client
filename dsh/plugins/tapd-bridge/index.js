@@ -8,6 +8,7 @@
  *   hello    → identity of the feed (always first)
  *   snapshot → one session's recorded events, sent on every connect
  *   stream   → every `agent/assistant-stream` frame, forwarded verbatim
+ *   stats    → one session's meter projections (context occupancy/composition)
  *   team     → one root session's whole `agentTeam` board (enabled + tasks)
  *   notice   → advisory notice from the policy plugin (notify mode)
  *
@@ -39,8 +40,8 @@ export const inject = ['sessions', 'agents', 'workingDirectory']
 
 const RECONNECT_MIN_MS = 250
 const RECONNECT_MAX_MS = 4000
-/** Board changes commit as session events; one settled frame per burst. */
-const TEAM_DEBOUNCE_MS = 300
+/** Board and meter changes commit as session events; one settled frame per burst. */
+const SETTLE_MS = 300
 
 export function apply(ctx) {
   const url = process.env.TAPD_DSH_BRIDGE_URL
@@ -61,8 +62,8 @@ export function apply(ctx) {
   const assignments = new Map()
   /** sessionId → enabled, for Team toggles that arrived before the Agent existed. */
   const teamModes = new Map()
-  /** sessionId → pending debounce timer for that session's board frame. */
-  const teamTimers = new Map()
+  /** sessionId → pending debounce timer for that session's board/stats frame. */
+  const settleTimers = new Map()
 
   const send = (message) => {
     if (!socket || socket.destroyed) return
@@ -149,25 +150,80 @@ export function apply(ctx) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Meter (token-meter projections → Rust)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The runtime's own token meter. Token totals also exist in the transcript,
+   * but context occupancy (`contextPressure`) and the request composition
+   * (`contextBreakdown`) are priced by dsh alone; both projections are always
+   * composed by the base bundle, yet `get` keeps this inert on a trimmed one.
+   */
+  const meterProjection = (session) => {
+    const projections = ctx.get('sessionProjections')
+    if (!projections) return null
+    try {
+      const { values } = projections.snapshot(session, [
+        'tokenUsage',
+        'contextPressure',
+        'contextBreakdown',
+      ])
+      return {
+        usage: values.tokenUsage,
+        pressure: values.contextPressure,
+        breakdown: values.contextBreakdown,
+      }
+    } catch (error) {
+      warn(`stats ${session.id}`, error)
+      return null
+    }
+  }
+
+  const sendStats = (session) => {
+    const stats = meterProjection(session)
+    if (!stats) return
+    send({
+      type: 'stats',
+      token,
+      sessionId: session.id,
+      ...(stats.usage ? { usage: stats.usage } : {}),
+      ...(stats.pressure ? { pressure: stats.pressure } : {}),
+      ...(stats.breakdown ? { breakdown: stats.breakdown } : {}),
+    })
+  }
+
+  const sendStatsFrames = () => {
+    for (const session of ctx.sessions.list()) {
+      try {
+        sendStats(session)
+      } catch (error) {
+        warn(`stats ${session?.id ?? '?'}`, error)
+      }
+    }
+  }
+
   // Any committed event may move a row (claim, complete, assign), change the
-  // mode, or invalidate the projection; the whole board is cheap to re-send, so
-  // one settled frame per session per burst keeps the ordering without games.
-  const scheduleTeam = (sessionId) => {
-    const pending = teamTimers.get(sessionId)
+  // mode, invalidate the projection, or shift the meter; both frames are cheap,
+  // so one settled send per session per burst keeps ordering without games.
+  const scheduleSession = (sessionId) => {
+    const pending = settleTimers.get(sessionId)
     if (pending) clearTimeout(pending)
-    teamTimers.set(
+    settleTimers.set(
       sessionId,
       setTimeout(() => {
-        teamTimers.delete(sessionId)
+        settleTimers.delete(sessionId)
         const session = ctx.sessions.get(sessionId)
-        if (session) sendTeam(session)
-      }, TEAM_DEBOUNCE_MS),
+        if (!session) return
+        if (isRoot(session)) sendTeam(session)
+        sendStats(session)
+      }, SETTLE_MS),
     )
   }
 
   ctx.on('session/event', (session) => {
     try {
-      if (isRoot(session)) scheduleTeam(session.id)
+      if (session?.id) scheduleSession(session.id)
     } catch (error) {
       warn(`session/event ${session?.id ?? '?'}`, error)
     }
@@ -303,6 +359,7 @@ export function apply(ctx) {
       send({ type: 'hello', token })
       sendSnapshots()
       sendTeamFrames()
+      sendStatsFrames()
     })
     next.on('data', (chunk) => {
       buffer += chunk
@@ -329,8 +386,8 @@ export function apply(ctx) {
       closed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
       reconnectTimer = null
-      for (const timer of teamTimers.values()) clearTimeout(timer)
-      teamTimers.clear()
+      for (const timer of settleTimers.values()) clearTimeout(timer)
+      settleTimers.clear()
       socket?.destroy()
       socket = null
     }

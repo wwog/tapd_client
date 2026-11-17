@@ -769,7 +769,7 @@ export function SettingsPage() {
               value={notif?.quietHours.start ?? "22:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ start: event.target.value })}
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 disabled:opacity-40"
             />
             <span className="text-ui-sm text-slate-400">{t("mobile.settings.to")}</span>
             <input
@@ -778,7 +778,7 @@ export function SettingsPage() {
               value={notif?.quietHours.end ?? "09:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ end: event.target.value })}
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 disabled:opacity-40"
             />
           </span>
         </SettingRow>

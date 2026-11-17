@@ -109,7 +109,7 @@ const primaryButton =
   "min-h-11 w-full rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50";
 
 const textField =
-  "mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 transition placeholder:text-slate-400";
 
 function ItemsSkeleton() {
   return (
@@ -438,7 +438,7 @@ export function LocalPage(props: { projectId: string | null }) {
                 title={project.repoPath}
                 value={project.id}
                 onChange={(event) => selectProject(event.target.value)}
-                className="min-h-11 min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+                className="min-h-11 min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 text-ui-sm text-slate-700"
               >
                 {projects?.map((row) => (
                   <option key={row.id} value={row.id}>
