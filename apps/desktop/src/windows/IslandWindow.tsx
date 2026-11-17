@@ -316,7 +316,7 @@ export function IslandWindow() {
                   : t("app.island.tipOpen")
             }
             className={clsx(
-              "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
+              "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line transition active:cursor-grabbing",
               // `hover:` only fires in a key window; the native hover state does
               // not, so it picks the same background itself.
               hovered ? "bg-island-hover" : "bg-island hover:bg-island-hover",
@@ -341,7 +341,7 @@ export function IslandWindow() {
   return (
     <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
       {items.length === 0 ? (
-        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line backdrop-blur-xl">
+        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line">
           {t("app.island.empty")}
         </div>
       ) : (
@@ -368,7 +368,7 @@ export function IslandWindow() {
           return (
             <article
               key={item.id}
-              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl"
+              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line"
             >
               <button
                 type="button"
@@ -540,7 +540,7 @@ function AiCard(props: {
       : Boolean(payload.allowCustom);
 
   return (
-    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
+    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line">
       <button
         type="button"
         aria-label={t("common.close")}
@@ -889,7 +889,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
   if (failed) {
     return (
-      <div className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line backdrop-blur-xl">
+      <div className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-rose-500/15 text-rose-700">
           <AlertTriangle size={16} />
         </span>
@@ -945,7 +945,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
         : t("app.update.verifying");
 
   return (
-    <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line backdrop-blur-xl">
+    <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line">
       <div className="flex items-center gap-2">
         {phase === "ready" ? (
           <CheckCircle2 size={15} className="text-emerald-700" />
