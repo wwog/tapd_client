@@ -179,6 +179,16 @@ export type DshEntry =
       /** The child session id, linking this row to the child's transcript. */
       senderSessionId: string;
     } & DshEntryPosition)
+  | ({
+      /** The rendered system prompt (`system/message`). The trajectory lists
+       *  it; the conversation view never renders it as a bubble. */
+      kind: "system";
+      seq: number;
+      at: string;
+      text: string;
+      /** The prompt replaced an earlier one (phase change / normalization). */
+      update?: boolean;
+    } & DshEntryPosition)
 
 export type DshStreamDelta =
   | { type: "text"; text: string }

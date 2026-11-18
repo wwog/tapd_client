@@ -14,6 +14,7 @@ import {
   Image as ImageIcon,
   Loader2,
   PenLine,
+  ScrollText,
   Search,
   Sparkles,
   Terminal,
@@ -58,6 +59,9 @@ function KindIcon({ record }: { record: TrajRecord }) {
   if (record.kind === "notice") {
     return <Bot size={12} className="shrink-0 text-slate-400" aria-hidden="true" />;
   }
+  if (record.kind === "system") {
+    return <ScrollText size={12} className="shrink-0 text-cyan-600" aria-hidden="true" />;
+  }
   const Icon =
     record.kind === "assistant"
       ? Sparkles
@@ -87,6 +91,7 @@ function kindTagClass(record: TrajRecord): string {
   if (record.kind === "user") return "text-sky-700 bg-sky-50";
   if (record.kind === "assistant") return "text-violet-700 bg-violet-50";
   if (record.kind === "notice") return "text-slate-600 bg-slate-100";
+  if (record.kind === "system") return "text-cyan-700 bg-cyan-50";
   return "text-amber-700 bg-amber-50";
 }
 
@@ -94,6 +99,7 @@ function kindLabel(record: TrajRecord, locale: AgentLocale): string {
   if (record.kind === "user") return agentLabel("traj.kindUser", locale);
   if (record.kind === "assistant") return agentLabel("traj.kindAssistant", locale);
   if (record.kind === "notice") return agentLabel("traj.kindNotice", locale);
+  if (record.kind === "system") return agentLabel("traj.kindSystem", locale);
   return agentLabel("traj.kindTool", locale);
 }
 
@@ -127,20 +133,27 @@ function buildRows(
     const first = inTurn[0];
     if (first === undefined) continue;
     if (turn.turn > 0 && collapsedTurns.has(turn.turn) && inTurn.length > 1) {
+      // The human prompt stays visible; a system prompt that opened the turn
+      // folds with the rest instead of taking the prompt's place.
+      const anchor = inTurn.find((draft) => draft.record.kind === "user") ?? first;
       afterTurns.push({
         key: `turn-open:${turn.turn}`,
-        record: first.record,
+        record: anchor.record,
+        // The turn's separator still belongs to the top of the turn, even when
+        // the prompt it keeps visible is not the first row.
         turnStart: first.turnStart,
-        groupStart: first.groupStart,
+        groupStart: anchor.groupStart,
       });
       afterTurns.push({
         key: `fold:turn:${turn.turn}`,
-        record: first.record,
+        record: anchor.record,
         turnStart: false,
         groupStart: false,
         summary: summarizeTurn(turn, locale),
         fold: "turn",
-        folded: inTurn.slice(1).map((draft) => draft.record),
+        folded: inTurn
+          .filter((draft) => draft !== anchor)
+          .map((draft) => draft.record),
       });
       continue;
     }
@@ -469,7 +482,12 @@ export function TrajectoryLedger({
                   ) : (
                     <span
                       className={clsx(
-                        "grid min-w-0 grid-cols-[minmax(140px,34%)_minmax(0,1fr)] items-center gap-2",
+                        "grid min-w-0 items-center gap-2",
+                        // A row without a result owns the whole width; a call
+                        // splits into its description and its result at 3:2.
+                        record.result === undefined
+                          ? "grid-cols-1"
+                          : "grid-cols-[minmax(0,3fr)_minmax(0,2fr)]",
                         record.kind === "tool" && "font-mono",
                       )}
                     >

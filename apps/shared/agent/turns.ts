@@ -19,6 +19,9 @@ export function groupTurns(items: AgentEntry[]): AgentTurnBlock[] {
   };
 
   for (const item of items) {
+    // A system prompt is request context, shown in the trajectory only; in
+    // the conversation it would be at best an empty block of its own.
+    if (item.kind === "system") continue;
     if (item.kind === "turn") {
       if (item.state === "start") {
         // A prompt that committed just before the marker belongs to this turn.

@@ -23,6 +23,7 @@ export type TrajTimelineModel = TrajTimeRange & {
   turnBoundaries: { turn: number; time: number }[];
 };
 
+/** Prompt-side rows (user, sub-agent notices, system prompts) share lane 0. */
 function laneOf(kind: TrajKind): number {
   if (kind === "tool") return 2;
   if (kind === "assistant") return 1;

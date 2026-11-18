@@ -74,6 +74,18 @@ export type AgentEntry =
       summary: string;
       stopReason?: string;
       senderSessionId: string;
+    }
+  | {
+      /** The rendered system prompt (`system/message`). Trajectory only: the
+       *  conversation view treats it as request context, not a bubble. */
+      kind: "system";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      text: string;
+      /** The prompt replaced an earlier one (phase change / normalization). */
+      update?: boolean;
     };
 
 /** Per-reply token accounting, as the assistant entry carries it. */

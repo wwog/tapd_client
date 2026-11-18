@@ -135,6 +135,7 @@ const LABELS = {
   "traj.kindAssistant": ["助手", "Assistant"],
   "traj.kindTool": ["工具", "Tool"],
   "traj.kindNotice": ["通知", "Notice"],
+  "traj.kindSystem": ["系统", "System"],
   "traj.groupMessage": ["消息", "Message"],
   "traj.groupStep": ["第 {step} 步", "Step {step}"],
   "traj.turnLabel": ["第 {turn} 轮", "Turn {turn}"],

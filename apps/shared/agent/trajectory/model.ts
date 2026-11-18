@@ -9,7 +9,7 @@
 import type { AgentEntry, AgentLocale } from "../types";
 import { agentLabel } from "../labels";
 
-export type TrajKind = "user" | "assistant" | "tool" | "notice";
+export type TrajKind = "user" | "assistant" | "tool" | "notice" | "system";
 
 /** One in-flight call of the live attempt; the host's stream shape fits as-is. */
 export type LiveToolCall = { callId?: string; name: string; args: string };
@@ -231,6 +231,24 @@ export function deriveTrajectory(entries: readonly AgentEntry[], locale: AgentLo
       lastAssistant = { index, turn: entry.turn, step: entry.step };
       continue;
     }
+    if (entry.kind === "system") {
+      // The exact instructions of the request this step made. The row sits at
+      // its own turn/step, so a phase change shows up where it happened.
+      records.push({
+        id: `system:${entry.seq}`,
+        index,
+        kind: "system",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: previewText(entry.text),
+        state: "complete",
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
     if (entry.kind === "notice") {
       // A child agent's settlement: the summary (how it ended, plus the exact
       // stop reason when recorded) is the row, the closing message its result.
@@ -445,6 +463,7 @@ export function matchesQuery(record: TrajRecord, query: string): boolean {
     entry?.kind === "notice" ? entry.summary : "",
     entry?.kind === "notice" ? entry.text : "",
     entry?.kind === "notice" ? entry.stopReason ?? "" : "",
+    entry?.kind === "system" ? entry.text : "",
   ]
     .join("\n")
     .toLowerCase();

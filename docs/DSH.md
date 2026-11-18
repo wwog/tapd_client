@@ -447,6 +447,11 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 { "kind": "turn", "seq": 0, "at": "…", "turn": 1, "state": "start" }   // state: start | end
 { "kind": "turn", "seq": 9, "at": "…", "turn": 1, "state": "end", "reason": "error",
   "error": "HTTP 500: upstream unavailable" } // reason = TurnEndReason.kind，error = reason.error.message
+
+// 系统提示词（system/message）。只进轨迹，不进对话。
+{ "kind": "system", "seq": 14, "at": "…", "turn": 1, "step": 1,
+  "text": "You are an AI agent powered by DeepSeek Harness. …",
+  "update": false }                    // 省略 = false；replace 型节点为 true
 ```
 
 规则（实现见 `crates/dsh-host/src/transcript.rs`）：
@@ -462,6 +467,11 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   `text` 是通知文本块，`summary` / `stopReason` / `senderSessionId` 来自 `source`（结束原因省略时
   键省略），它**不进** `messageCount`、不影响标题；`senderSessionId` 是子会话 id，前端据此把该行
   挂到子 agent 的轨迹组里。
+- `system/message` 是一次请求实际渲染出的系统提示词，产生一行
+  `{ kind: "system", seq, at, turn, step, text, update? }`：`turn` / `step` 取事件自带值，
+  `surfaceOp` 不是 `append`（阶段切换或归一化重写）时 `update: true`。它**只进轨迹面板**，
+  对话区按请求上下文处理（不渲染气泡、不计 `messageCount`、不影响标题）；归一化留下的
+  空节点（`text` 为空）不产生行。
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、

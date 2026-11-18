@@ -100,13 +100,15 @@ type SpanLabelKey =
   | "traj.kindUser"
   | "traj.kindAssistant"
   | "traj.kindTool"
-  | "traj.kindNotice";
+  | "traj.kindNotice"
+  | "traj.kindSystem";
 
 const KIND_LABEL: Record<TrajSpan["kind"], SpanLabelKey> = {
   user: "traj.kindUser",
   assistant: "traj.kindAssistant",
   tool: "traj.kindTool",
   notice: "traj.kindNotice",
+  system: "traj.kindSystem",
 };
 
 function spanLabel(span: TrajSpan, record: TrajRecord | undefined, locale: AgentLocale): string {
@@ -634,6 +636,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                       span.kind === "tool" && "bg-amber-500/85",
                       span.kind === "assistant" && "bg-violet-400",
                       span.kind === "notice" && "bg-slate-400/70",
+                      span.kind === "system" && "bg-cyan-500/85",
                       span.isError && "bg-rose-500",
                       dimmed && "opacity-15",
                       !dimmed && outside && "opacity-20",

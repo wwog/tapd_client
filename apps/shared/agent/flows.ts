@@ -136,7 +136,12 @@ function buildCommittedFlows(block: AgentTurnBlock): AgentFlow[] {
   };
 
   for (const entry of block.entries) {
-    if (entry.kind === "user" || entry.kind === "turn" || entry.kind === "notice") {
+    if (
+      entry.kind === "user" ||
+      entry.kind === "turn" ||
+      entry.kind === "notice" ||
+      entry.kind === "system"
+    ) {
       continue;
     }
     if (entry.kind === "tool" && entry.name === "subagent") continue;

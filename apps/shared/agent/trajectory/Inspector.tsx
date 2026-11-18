@@ -58,6 +58,11 @@ const TABS: Record<TrajRecord["kind"], readonly { id: Tab; label: TabLabelKey }[
     { id: "preview", label: "traj.tabPreview" },
     { id: "raw", label: "traj.tabRaw" },
   ],
+  system: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "preview", label: "traj.tabPreview" },
+    { id: "raw", label: "traj.tabRaw" },
+  ],
 };
 
 const DETAILS_MIN_WIDTH = 320;
@@ -73,6 +78,7 @@ function kindLabel(kind: TrajRecord["kind"], locale: AgentLocale): string {
   if (kind === "user") return agentLabel("traj.kindUser", locale);
   if (kind === "assistant") return agentLabel("traj.kindAssistant", locale);
   if (kind === "notice") return agentLabel("traj.kindNotice", locale);
+  if (kind === "system") return agentLabel("traj.kindSystem", locale);
   return agentLabel("traj.kindTool", locale);
 }
 
@@ -85,6 +91,7 @@ function KindTag({ kind, locale }: { kind: TrajRecord["kind"]; locale: AgentLoca
         kind === "user" && "bg-sky-50 text-sky-700",
         kind === "assistant" && "bg-violet-50 text-violet-700",
         kind === "notice" && "bg-slate-100 text-slate-600",
+        kind === "system" && "bg-cyan-50 text-cyan-700",
         kind === "tool" && "bg-amber-50 text-amber-700",
       )}
     >
@@ -319,7 +326,10 @@ export function TrajectoryInspector({
   const args = entry?.kind === "tool" ? entry.args : undefined;
   const result = entry?.kind === "tool" ? resultText(entry.result) : undefined;
   const messageText =
-    entry?.kind === "assistant" || entry?.kind === "user" || entry?.kind === "notice"
+    entry?.kind === "assistant" ||
+    entry?.kind === "user" ||
+    entry?.kind === "notice" ||
+    entry?.kind === "system"
       ? entry.text
       : undefined;
   const thinking = entry?.kind === "assistant" ? entry.reasoning : undefined;

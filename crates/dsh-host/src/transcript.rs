@@ -389,6 +389,27 @@ pub enum DshEntry {
         /// The child session id, linking this row to the child's transcript.
         sender_session_id: String,
     },
+    /// The rendered system prompt of one request (`system/message`). The
+    /// conversation view skips it — a prompt is request context, not a chat
+    /// bubble — but the trajectory lists it so the exact instructions of a
+    /// step are inspectable. A dormant (empty) node produces no row.
+    System {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        text: String,
+        /// The event replaced an earlier prompt (`surfaceOp` is not `append`):
+        /// an in-history series or a normalization rewrite, not the first one.
+        #[serde(default, skip_serializing_if = "is_false")]
+        update: bool,
+    },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl DshEntry {
@@ -399,7 +420,8 @@ impl DshEntry {
             | Self::Assistant { seq, .. }
             | Self::Tool { seq, .. }
             | Self::Turn { seq, .. }
-            | Self::Notice { seq, .. } => *seq,
+            | Self::Notice { seq, .. }
+            | Self::System { seq, .. } => *seq,
         }
     }
 
@@ -411,7 +433,8 @@ impl DshEntry {
             | Self::Assistant { at, .. }
             | Self::Tool { at, .. }
             | Self::Turn { at, .. }
-            | Self::Notice { at, .. } => at,
+            | Self::Notice { at, .. }
+            | Self::System { at, .. } => at,
         }
     }
 }
@@ -564,6 +587,7 @@ impl Transcript {
                 | "model/selection"
                 | "plan/mode"
                 | "todo/write"
+                | "system/message"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -579,6 +603,7 @@ impl Transcript {
 
         let entry = match kind {
             "user/message" => record.push_user(seq, at, event),
+            "system/message" => record.push_system(seq, at, event),
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
             "tool/result" => record.merge_tool_result(seq, event),
@@ -939,6 +964,44 @@ impl SessionRecord {
         self.entries.push(entry.clone());
         self.last_update.insert(seq, seq);
         entry
+    }
+
+    /// The rendered system prompt of one request (`system/message`).
+    ///
+    /// dsh writes the effective prompt as a surface node and later rewrites it
+    /// through a replacing `system/message` (a phase change, or normalization
+    /// that empties the old node). New text keeps the event's own turn/step so
+    /// the trajectory places it at its request; an empty node is dormant and
+    /// projects to no row. Not transcript content: `message_count` and the
+    /// title stay untouched.
+    fn push_system(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let text = join_text_blocks(event.pointer("/data/message/content"));
+        if text.trim().is_empty() {
+            return None;
+        }
+        let turn = event
+            .pointer("/data/turn")
+            .and_then(Value::as_u64)
+            .unwrap_or(self.turn);
+        let step = event
+            .pointer("/data/step")
+            .and_then(Value::as_u64)
+            .unwrap_or(self.step);
+        let update = event
+            .get("surfaceOp")
+            .map(|op| op.as_str() != Some("append"))
+            .unwrap_or(false);
+        let entry = DshEntry::System {
+            seq,
+            at: at.to_string(),
+            turn,
+            step,
+            text,
+            update,
+        };
+        self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
+        Some(entry)
     }
 
     fn push_assistant(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
@@ -1374,6 +1437,72 @@ mod tests {
         let session = transcript.session("s1").unwrap();
         assert_eq!(session.title, "real question");
         assert_eq!(session.message_count, 1);
+    }
+
+    /// A `system/message` as dsh writes it: the rendered prompt plus its
+    /// surface placement (`"append"` or a `replace` range).
+    fn system_prompt(seq: u64, text: &str, turn: u64, step: u64, surface_op: Value) -> Value {
+        let mut value = event("system/message", seq);
+        value["surfaceOp"] = surface_op;
+        value["data"] = json!({
+            "turn": turn,
+            "step": step,
+            "message": {
+                "role": "system",
+                "content": [{ "type": "text", "text": text }],
+                "source": { "kind": "system-prompt" }
+            }
+        });
+        value
+    }
+
+    #[test]
+    fn system_prompt_rows_are_trajectory_only() {
+        let mut transcript = Transcript::default();
+        let appended = transcript.ingest(
+            "s1",
+            &system_prompt(1, "you are an agent", 1, 1, json!("append")),
+            "2026-11-16T00:00:01.000Z",
+        );
+        let prompt = appended.entry.expect("the prompt is a row");
+        assert!(matches!(
+            &prompt,
+            DshEntry::System { seq: 1, turn: 1, step: 1, text, update: false, .. }
+                if text == "you are an agent"
+        ));
+        // Neither a bubble nor a title: the conversation view never sees it.
+        let session = transcript.session("s1").unwrap();
+        assert_eq!(session.message_count, 0);
+        assert!(session.title.is_empty());
+
+        // A dormant node (normalization emptied it) projects to no row.
+        let dormant = transcript.ingest(
+            "s1",
+            &system_prompt(2, "", 1, 1, json!({ "op": "replace", "startSeq": 1, "endSeq": 1 })),
+            "2026-11-16T00:00:02.000Z",
+        );
+        assert!(dormant.entry.is_none());
+
+        // A replacement keeps its own turn/step and is marked as an update.
+        let replaced = transcript.ingest(
+            "s1",
+            &system_prompt(
+                3,
+                "write-back instructions",
+                2,
+                1,
+                json!({ "op": "replace", "startSeq": 2, "endSeq": 2 }),
+            ),
+            "2026-11-16T00:00:03.000Z",
+        );
+        let row = replaced.entry.expect("the updated prompt is a row");
+        assert!(matches!(
+            &row,
+            DshEntry::System { seq: 3, turn: 2, step: 1, text, update: true, .. }
+                if text == "write-back instructions"
+        ));
+        assert_eq!(transcript.entries("s1").unwrap().len(), 2);
+        assert_eq!(transcript.session("s1").unwrap().message_count, 0);
     }
 
     /// A `subagent-settled` user/message, as dsh writes it into the parent log
@@ -1943,9 +2072,9 @@ mod tests {
     #[test]
     fn unknown_event_types_are_reported_once() {
         let mut transcript = Transcript::default();
-        let first = transcript.ingest("s1", &event("system/message", 0), "2026-11-16T00:00:00.000Z");
-        let second = transcript.ingest("s1", &event("system/message", 1), "2026-11-16T00:00:01.000Z");
-        assert_eq!(first.unknown.as_deref(), Some("system/message"));
+        let first = transcript.ingest("s1", &event("session/title", 0), "2026-11-16T00:00:00.000Z");
+        let second = transcript.ingest("s1", &event("session/title", 1), "2026-11-16T00:00:01.000Z");
+        assert_eq!(first.unknown.as_deref(), Some("session/title"));
         assert!(second.unknown.is_none());
         assert!(transcript.entries("s1").unwrap().is_empty());
     }
