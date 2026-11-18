@@ -114,6 +114,7 @@ export const agent = {
     "Describe the task below; Enter sends it.",
   ],
   "agent.stream.loadFailed": ["会话记录读取失败", "Could not load the conversation"],
+  "agent.stream.jumpToLatest": ["跳到最新", "Jump to latest"],
 
   // Built-in plugin inventory (agent config → plugins).
   "agent.plugins.loading": ["正在读取插件…", "Reading plugins…"],

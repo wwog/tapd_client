@@ -76,8 +76,11 @@ function FlowBlockImpl({ flow, running, live, locale, hideNote = false }: Props)
   const flatThinking = thinkingOnly && flow.steps.length === 1;
 
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      {step ? (
+    <div className="flex min-w-0 flex-col gap-2">
+      {/* Header and fold share one wrapper so the note below keeps the same
+          root gap before, during and after the close animation. */}
+      <div className="flex min-w-0 flex-col">
+        {step ? (
         <StepHeader
           step={step}
           open={expanded}
@@ -97,7 +100,7 @@ function FlowBlockImpl({ flow, running, live, locale, hideNote = false }: Props)
       ) : null}
 
       <Collapse open={expanded}>
-        <div className="flex flex-col gap-2 border-l border-border pt-1.5 pl-3">
+        <div className="flex flex-col gap-2 border-l border-border pt-2 pl-3">
           {flatThinking ? (
             flow.steps.map((item) =>
               item.kind === "thinking" ? (
@@ -143,7 +146,8 @@ function FlowBlockImpl({ flow, running, live, locale, hideNote = false }: Props)
             })
           )}
         </div>
-      </Collapse>
+        </Collapse>
+      </div>
 
       {hideNote ? null : flow.note ? (
         <AnswerBlock text={flow.note.text} locale={locale} />

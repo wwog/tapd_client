@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { Profiler, useMemo } from "react";
 
 import { Segmented } from "../components/Segmented";
 import { Markdown } from "../components/Markdown";
@@ -15,6 +15,7 @@ import { TaskList } from "./TaskList";
 import { TeamBar } from "./TeamBar";
 import { TeamBoard } from "./TeamBoard";
 import { openAgentPath, resolveAgentImage } from "./localOpen";
+import { installAgentPerf, recordAgentCommit } from "./perf";
 import { MessageUsageChip } from "./usage/MessageUsageChip";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
 import {
@@ -31,6 +32,26 @@ type Props = {
   /** Opens a local path from the transcript in a workbench file tab. */
   onOpenFile: (target: FileTabTarget) => void;
 };
+
+if (import.meta.env.DEV) installAgentPerf();
+
+/** Dev-only: commit timing for the transcript subtree (see `perf.ts`). */
+function onStreamRender(
+  id: string,
+  phase: "mount" | "update" | "nested-update",
+  actualDuration: number,
+  baseDuration: number,
+  _startTime: number,
+  commitTime: number,
+) {
+  recordAgentCommit({
+    id,
+    phase,
+    actualMs: actualDuration,
+    baseMs: baseDuration,
+    commitTime,
+  });
+}
 
 /** Usage chip under one answer; the shared view hides it without a host. */
 function renderUsage(
@@ -93,6 +114,12 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
   // keeps its transcript unless the reader explicitly opens the board.
   const teamUi = agentHasTeamUi(state, state.selectedId);
   const board = view === "chat" && agentTeamView(state, state.selectedId) === "board";
+  const stream = (
+    <MessageStream
+      key={`chat:${state.selectedId ?? "draft"}`}
+      visible={view === "chat" && !board}
+    />
+  );
 
   return (
     <AgentHostProvider value={host}>
@@ -120,10 +147,13 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
             {selected && selected.kind !== "chat" ? (
               <TaskActions key={selected.id} task={selected} />
             ) : null}
-            <MessageStream
-              key={`chat:${state.selectedId ?? "draft"}`}
-              visible={view === "chat" && !board}
-            />
+            {import.meta.env.DEV ? (
+              <Profiler id="agent-stream" onRender={onStreamRender}>
+                {stream}
+              </Profiler>
+            ) : (
+              stream
+            )}
             {state.selectedId && view === "trajectory" ? (
               <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
             ) : null}

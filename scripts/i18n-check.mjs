@@ -160,6 +160,8 @@ function checkFrontend(front) {
     (file) =>
       /\.(ts|tsx)$/.test(file) &&
       !file.includes("/lib/i18n/") &&
+      // Dev-only 60fps fixture: its Chinese sample content is test data, not UI.
+      !file.includes("/src/perf/") &&
       !file.endsWith(".d.ts"),
   );
   const untranslated = [];

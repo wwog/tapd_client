@@ -21,6 +21,7 @@
     "release": "bash scripts/release.sh",
     "changelog": "node scripts/changelog.mjs",
     "test:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo test --workspace",
-    "test:policy": "node --test scripts/dsh/policy.test.mjs"
+    "test:policy": "node --test scripts/dsh/policy.test.mjs",
+    "perf:agent": "node scripts/agent-perf-lab.mjs"
   }
 }

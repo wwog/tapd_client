@@ -255,55 +255,58 @@ function TurnBlockImpl({
 
       {/* Settled: 已工作 is the process fold. Collapsed it hides every flow,
           sub-agent row and intermediate 说明; the turn's last 说明 stays
-          outside, always readable. */}
+          outside, always readable.
+          The status and the fold share one wrapper: the Collapse is not a
+          direct sibling of the answer, so unmounting it after the close
+          animation cannot remove a flex gap and make the answer jump. */}
       {!running && showStatus ? (
-        hasInner ? (
-          <button
-            type="button"
-            aria-expanded={processOpen}
-            title={
-              processOpen
-                ? agentLabel("turn.collapse", locale)
-                : agentLabel("turn.expand", locale)
-            }
-            onClick={() => setProcessOpen((value) => !value)}
-            className="group/fold flex w-full min-w-0 items-center gap-1.5 self-start border-b border-border pb-1.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700"
-          >
-            <span className="min-w-0 truncate tabular-nums">
-              {label
-                ? agentLabel("turn.worked", locale, { duration: label })
-                : agentLabel("turn.workedPlain", locale)}
-            </span>
-            <ChevronRight
-              size={12}
-              className={clsx(
-                "shrink-0 text-slate-300 opacity-40 transition-[opacity,transform] group-hover/fold:opacity-100 group-focus-visible/fold:opacity-100",
-                processOpen && "rotate-90 opacity-100",
-              )}
-            />
-          </button>
-        ) : (
-          <span className="inline-flex min-w-0 items-center gap-1.5 self-start text-ui-caption text-slate-400">
-            <span className="truncate tabular-nums">
-              {label
-                ? agentLabel("turn.worked", locale, { duration: label })
-                : agentLabel("turn.workedPlain", locale)}
-            </span>
-          </span>
-        )
-      ) : null}
-
-      {running ? (
-        items.map((item) => renderItem(item, false))
-      ) : (
-        <Collapse open={processOpen}>
+        <div className="flex flex-col">
           {hasInner ? (
-            <div className="flex flex-col gap-3 pt-3">
-              {items.map((item) => renderItem(item, true))}
-            </div>
+            <button
+              type="button"
+              aria-expanded={processOpen}
+              title={
+                processOpen
+                  ? agentLabel("turn.collapse", locale)
+                  : agentLabel("turn.expand", locale)
+              }
+              onClick={() => setProcessOpen((value) => !value)}
+              className="group/fold flex w-full min-w-0 items-center gap-1.5 self-start border-b border-border pb-1.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700"
+            >
+              <span className="min-w-0 truncate tabular-nums">
+                {label
+                  ? agentLabel("turn.worked", locale, { duration: label })
+                  : agentLabel("turn.workedPlain", locale)}
+              </span>
+              <ChevronRight
+                size={12}
+                className={clsx(
+                  "shrink-0 text-slate-300 opacity-40 transition-[opacity,transform] group-hover/fold:opacity-100 group-focus-visible/fold:opacity-100",
+                  processOpen && "rotate-90 opacity-100",
+                )}
+              />
+            </button>
+          ) : (
+            <span className="inline-flex min-w-0 items-center gap-1.5 self-start text-ui-caption text-slate-400">
+              <span className="truncate tabular-nums">
+                {label
+                  ? agentLabel("turn.worked", locale, { duration: label })
+                  : agentLabel("turn.workedPlain", locale)}
+              </span>
+            </span>
+          )}
+
+          {hasInner ? (
+            <Collapse open={processOpen}>
+              <div className="flex flex-col gap-3 pt-3">
+                {items.map((item) => renderItem(item, true))}
+              </div>
+            </Collapse>
           ) : null}
-        </Collapse>
-      )}
+        </div>
+      ) : running ? (
+        items.map((item) => renderItem(item, false))
+      ) : null}
 
       {!running && answer ? (
         <div className="flex flex-col">

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import { ArrowDown } from "lucide-react";
 
 import { Button, Spinner } from "../components/ui";
 import { t, useLocale } from "../lib/i18n";
@@ -233,6 +234,9 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  // Floating "jump to latest" affordance: only while the reader is away from
+  // the bottom, so the tail can keep streaming without dragging them down.
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const todoKey = useMemo(
     () => `${todos.length}:${todos.map((todo) => todo.status).join("")}`,
@@ -291,13 +295,27 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     const element = scrollRef.current;
     if (!element || !stickRef.current) return;
     element.scrollTop = element.scrollHeight;
+    setAwayFromBottom(false);
   }, [lastUserSeq, pending.length, signature, visible]);
 
   const onScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    stickRef.current = distance < 48;
+    const stuck = distance < 48;
+    stickRef.current = stuck;
+    setAwayFromBottom(!stuck);
+  }, []);
+
+  // An instant jump, not a smooth one: the bottom-follow pins the tail on the
+  // next delta anyway, and a long animation would leave the arrow visible
+  // mid-flight.
+  const jumpToLatest = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    stickRef.current = true;
+    setAwayFromBottom(false);
+    element.scrollTop = element.scrollHeight;
   }, []);
 
   if (!sessionId) {
@@ -327,75 +345,94 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
   return (
     <div
-      ref={scrollRef}
-      onScroll={onScroll}
-      className={clsx(
-        "min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4",
-        !visible && "hidden",
-      )}
+      className={clsx("relative flex min-h-0 flex-1 flex-col", !visible && "hidden")}
     >
       <div
-        className={clsx(
-          "mx-auto flex w-full max-w-3xl flex-col gap-5",
-          (quiet || loading || failed) && "min-h-full justify-center",
-        )}
+        ref={scrollRef}
+        onScroll={onScroll}
+        // The transcript owns its own bottom-follow. Leaving the browser's
+        // scroll anchoring on made a fold's height animation drag the scroll
+        // position with it, which reads as a stutter/jump under the pointer.
+        style={{ overflowAnchor: "none" }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4"
       >
-        {todos.length > 0 ? <TodoCard todos={todos} locale={locale} /> : null}
+        <div
+          className={clsx(
+            "mx-auto flex w-full max-w-3xl flex-col gap-5",
+            (quiet || loading || failed) && "min-h-full justify-center",
+          )}
+        >
+          {todos.length > 0 ? <TodoCard todos={todos} locale={locale} /> : null}
 
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
-            <Spinner />
-            {t("common.loading")}
-          </div>
-        ) : failed ? (
-          <div className="flex items-center justify-center gap-3 py-8 text-ui-caption text-slate-400">
-            <span className="min-w-0 truncate" title={history?.error ?? undefined}>
-              {t("agent.stream.loadFailed")}
-            </span>
-            <Button size="sm" onClick={() => agentActions.refreshEntries(sessionId)}>
-              {t("common.retry")}
-            </Button>
-          </div>
-        ) : !hasContent ? (
-          <div
-            className="grid place-items-center py-8 text-ui-caption text-slate-400"
-            title={t("agent.stream.emptyHint")}
-          >
-            {t("agent.stream.empty")}
-          </div>
-        ) : null}
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
+              <Spinner />
+              {t("common.loading")}
+            </div>
+          ) : failed ? (
+            <div className="flex items-center justify-center gap-3 py-8 text-ui-caption text-slate-400">
+              <span className="min-w-0 truncate" title={history?.error ?? undefined}>
+                {t("agent.stream.loadFailed")}
+              </span>
+              <Button size="sm" onClick={() => agentActions.refreshEntries(sessionId)}>
+                {t("common.retry")}
+              </Button>
+            </div>
+          ) : !hasContent ? (
+            <div
+              className="grid place-items-center py-8 text-ui-caption text-slate-400"
+              title={t("agent.stream.emptyHint")}
+            >
+              {t("agent.stream.empty")}
+            </div>
+          ) : null}
 
-        {shown.map((block) => {
-          const active = block.key === activeKey;
-          const subagents = subagentGroups.get(block.key);
-          return (
-            <TurnBlock
-              key={block.key}
-              block={block}
-              running={active}
-              live={active ? liveTrace : undefined}
-              sessionId={sessionId ?? undefined}
-              subagents={subagents?.children}
-              orphanNotices={subagents?.orphans}
-              renderTurns={renderChildTurns}
-              openSubagentIds={openChildren}
-              onToggleSubagent={toggleChild}
-            />
-          );
-        })}
+          {shown.map((block) => {
+            const active = block.key === activeKey;
+            const subagents = subagentGroups.get(block.key);
+            return (
+              <TurnBlock
+                key={block.key}
+                block={block}
+                running={active}
+                live={active ? liveTrace : undefined}
+                sessionId={sessionId ?? undefined}
+                subagents={subagents?.children}
+                orphanNotices={subagents?.orphans}
+                renderTurns={renderChildTurns}
+                openSubagentIds={openChildren}
+                onToggleSubagent={toggleChild}
+              />
+            );
+          })}
 
-        {pending.map((text, index) => (
-          <UserBubble key={`pending-${index}-${text.length}`} text={text} locale={locale} />
-        ))}
+          {pending.map((text, index) => (
+            <UserBubble key={`pending-${index}-${text.length}`} text={text} locale={locale} />
+          ))}
 
-        {approvals.map((approval) => (
-          <ApprovalCard key={approval.rpcId} approval={approval} />
-        ))}
+          {approvals.map((approval) => (
+            <ApprovalCard key={approval.rpcId} approval={approval} />
+          ))}
 
-        {questions.map((question) => (
-          <QuestionCard key={question.rpcId} pending={question} />
-        ))}
+          {questions.map((question) => (
+            <QuestionCard key={question.rpcId} pending={question} />
+          ))}
+        </div>
       </div>
+
+      {awayFromBottom ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            title={t("agent.stream.jumpToLatest")}
+            aria-label={t("agent.stream.jumpToLatest")}
+            className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full border border-border bg-surface text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-sky-200"
+          >
+            <ArrowDown size={16} />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
