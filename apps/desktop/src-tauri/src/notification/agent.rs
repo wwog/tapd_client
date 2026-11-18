@@ -565,8 +565,9 @@ fn still_pending(app: &AppHandle, rpc_id: u64) -> bool {
 }
 
 /// Brings the main window forward and asks it to select the session. The Agent
-/// page owns the QuestionSheet; the event only moves the selection.
-fn focus_session(app: &AppHandle, session_id: &str) {
+/// page owns the QuestionSheet; the event only moves the selection. Shared with
+/// the review card and the "fix with agent" action (`notification/actions.rs`).
+pub(super) fn focus_session(app: &AppHandle, session_id: &str) {
     // While an update owns the screen the main window is deliberately
     // unreachable (same rule as the notification handlers).
     if crate::update::is_updating() {

@@ -8,9 +8,9 @@ import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { useLayerClose } from "../hooks/useLayerClose";
 import { usePanelServices } from "../workbench/panels/context";
-import { Button, ModalDragStrip } from "../components/ui";
+import { Button, ModalDragStrip, Switch } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
-import { agentActions } from "./store";
+import { agentActions, agentStore } from "./store";
 
 /** A bug or a local work item; the sheet has no other targets. */
 export type EnqueueTarget =
@@ -32,6 +32,12 @@ export function EnqueueSheet({ target, onClose }: Props) {
   const { closing, requestClose } = useLayerClose(onClose);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // The task inherits the configured default; the choice is fixed once the
+  // task is created, so it is offered here and nowhere else. Read once at
+  // mount: subscribing would re-render the sheet on every stream delta.
+  const [team, setTeam] = useState(
+    () => agentStore.get().config?.teamEnabled ?? false,
+  );
 
   const heading =
     target.kind === "bug" ? t("bugs.fixWithAgent") : t("local.items.toAgent");
@@ -54,8 +60,20 @@ export function EnqueueSheet({ target, onClose }: Props) {
     try {
       const { task } =
         target.kind === "bug"
-          ? await dshTaskApi.enqueueBug(target.workspaceId, target.bugId, extraPrompt)
-          : await dshTaskApi.enqueueLocal(target.projectId, target.itemId, extraPrompt);
+          ? await dshTaskApi.enqueueBug(
+              target.workspaceId,
+              target.bugId,
+              extraPrompt,
+              undefined,
+              team,
+            )
+          : await dshTaskApi.enqueueLocal(
+              target.projectId,
+              target.itemId,
+              extraPrompt,
+              undefined,
+              team,
+            );
       agentActions.adoptTask(task);
       // The backend emits the new list; one refetch keeps a dropped event from
       // leaving the sidebar stale.
@@ -113,6 +131,18 @@ export function EnqueueSheet({ target, onClose }: Props) {
         </header>
 
         <div className="min-h-0 flex-1 px-5 py-3">
+          <div
+            className="mb-2 flex w-fit items-center gap-2 text-ui-xs text-slate-500"
+            title={t("agent.enqueue.teamHint")}
+          >
+            <Switch
+              checked={team}
+              onChange={setTeam}
+              disabled={submitting}
+              label={t("agent.chat.team")}
+            />
+            {t("agent.chat.team")}
+          </div>
           <textarea
             autoFocus
             rows={3}

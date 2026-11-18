@@ -92,6 +92,9 @@ export function ProjectSettings(props: {
       return {
         ...current,
         [workspaceId]: {
+          // Keep fields this form does not edit (the TAPD project name the
+          // backend learns on the first enqueue).
+          ...previous,
           repoPath: patch.repoPath ?? previous.repoPath,
           rule: patch.rule ?? previous.rule,
         },

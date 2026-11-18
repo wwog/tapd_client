@@ -16,6 +16,7 @@
 //! - `model` — serde/wire types, settings defaults and clamping.
 //! - `rules` — pure classification, time, quiet-hours and pruning rules.
 //! - `ai` — AI/MCP payload parsing, transient AI cards, MCP entry points.
+//! - `review` — the built-in agent's "awaiting review" card (`raise` / `settle`).
 //! - `poll` — identity resolution, paged TAPD fetches and poll rounds.
 //! - `actions` — Tauri command dispatch, card actions and the accept flow.
 
@@ -24,6 +25,7 @@ pub(crate) mod agent;
 pub(crate) mod ai;
 pub(crate) mod model;
 mod poll;
+pub(crate) mod review;
 pub(crate) mod rules;
 
 use std::{

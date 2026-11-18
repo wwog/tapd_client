@@ -24,8 +24,11 @@ export function TaskActions({ task }: { task: DshTask }) {
   const exportDir = task.jsonPath ? dirName(task.jsonPath) : "";
   const showExport =
     Boolean(exportDir) && (task.workflow === "failed" || task.workflow === "canceled");
+  // A host fallback (the model did not finish the TAPD half) is recorded on the
+  // done row; without this line it would be invisible outside the log.
+  const notice = task.workflow === "done" ? task.finalize?.notice : undefined;
 
-  if (!showExport) return null;
+  if (!showExport && !notice) return null;
 
   const open = async () => {
     if (busy) return;
@@ -43,16 +46,23 @@ export function TaskActions({ task }: { task: DshTask }) {
   return (
     <div className="shrink-0 border-b border-border px-5 py-2">
       <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button
-            size="sm"
-            icon={<FolderOpen size={13} />}
-            loading={busy}
-            onClick={() => void open()}
-          >
-            {t("agent.task.openExport")}
-          </Button>
-        </div>
+        {notice ? (
+          <div className="select-text break-words text-ui-xs leading-5 text-amber-700">
+            {notice}
+          </div>
+        ) : null}
+        {showExport ? (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              icon={<FolderOpen size={13} />}
+              loading={busy}
+              onClick={() => void open()}
+            >
+              {t("agent.task.openExport")}
+            </Button>
+          </div>
+        ) : null}
         {error ? (
           <div className="select-text break-all text-ui-xs text-rose-600">{error}</div>
         ) : null}

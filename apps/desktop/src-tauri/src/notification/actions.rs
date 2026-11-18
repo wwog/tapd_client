@@ -7,6 +7,8 @@
 use chrono::Local;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use tapd_core::tapd::api::user_workspace_url;
 use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter, Manager};
@@ -14,12 +16,14 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{bug_write, commands::auth::session_request_json, notification_db, state::SharedState};
 
 use super::{
+    agent,
     ai::ai_payload_from_arguments,
     fetch_bug,
     model::{
         bug_key, NotificationItem, NotificationKind, NotificationScope, NotificationSettings,
         NotificationSource, NotificationState,
     },
+    review,
     rules::{current_user_nick, format_tapd_time, is_hhmm},
     service, suppress_transfer, NotificationService, MAX_AI_ANSWER_CHARS, MAX_HISTORY,
 };
@@ -172,6 +176,11 @@ pub async fn command(
             let service = service()?;
             simulate_notification(state, &service, &payload)
         }
+        "notification_fix_bug" => {
+            let service = service()?;
+            let id = payload_str(&payload, "notificationId")?;
+            fix_bug(app, state, &service, &id).await
+        }
         "notification_ai_action" => {
             let service = service()?;
             let id = payload_str(&payload, "notificationId")?;
@@ -190,6 +199,33 @@ pub async fn command(
                 .map(|text| text.chars().take(MAX_AI_ANSWER_CHARS).collect::<String>());
             if action_id.is_none() && value.is_none() {
                 return Err(tr_args("notify.param.missing", &[&"actionId"]));
+            }
+            // A review card's buttons command the workflow (approve / cancel),
+            // not just a waiting MCP caller: handle them before the generic
+            // "store the decision" path. Only a pending card may act; a settled
+            // one falls through and returns its stored resolution.
+            let review_session = service
+                .find_ai_item(&id)
+                .ok()
+                .filter(|item| item.state == NotificationState::Pending)
+                .and_then(|item| {
+                    item.ai
+                        .as_ref()
+                        .and_then(|ai| review::review_session(ai.tag.as_deref()))
+                });
+            if let Some(session) = review_session {
+                match action_id {
+                    Some("view") => {
+                        agent::focus_session(app, &session);
+                        let item = service.finish_ai(&id, "action", action_id, None)?;
+                        return Ok(json!({ "ok": true, "item": item }));
+                    }
+                    Some(action @ ("approve" | "discard")) => {
+                        return review_action(app, &service, &id, &session, action).await;
+                    }
+                    // Anything else keeps the generic behavior below.
+                    _ => {}
+                }
             }
             let item = service.finish_ai(&id, "action", action_id, value.as_deref())?;
             Ok(json!({ "ok": true, "item": item }))
@@ -453,6 +489,131 @@ async fn handle_notification(
         "assigned": plan.assigned,
         "transitioned": transitioned
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Card workflow actions (built-in agent)
+// ---------------------------------------------------------------------------
+
+/// Sessions whose review card has an approve/cancel in flight. The island
+/// disables the buttons while one runs, but a second window (or a stale click)
+/// must not start a competing command.
+static REVIEW_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn review_flight() -> &'static Mutex<HashSet<String>> {
+    REVIEW_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Releases the session's in-flight slot on drop, so a failed action can be
+/// retried immediately.
+struct ReviewFlight(String);
+
+impl ReviewFlight {
+    fn acquire(session: &str) -> Option<Self> {
+        let mut flights = review_flight().lock().expect("review flight lock");
+        if !flights.insert(session.to_string()) {
+            return None;
+        }
+        Some(Self(session.to_string()))
+    }
+}
+
+impl Drop for ReviewFlight {
+    fn drop(&mut self) {
+        review_flight()
+            .lock()
+            .expect("review flight lock")
+            .remove(&self.0);
+    }
+}
+
+/// Runs the review card's workflow command and only then drops the card.
+///
+/// A failure keeps the card pending and returns the error: the island shows it
+/// under the buttons, and the click can be retried (for example when a live
+/// turn made the task busy for a moment).
+async fn review_action(
+    app: &AppHandle,
+    service: &NotificationService,
+    id: &str,
+    session: &str,
+    action: &str,
+) -> Result<Value, String> {
+    let Some(_flight) = ReviewFlight::acquire(session) else {
+        return Err(tr("notify.review.busy").to_string());
+    };
+    let result = match action {
+        "approve" => {
+            crate::dsh::tasks::command(app, "dsh_task_approve", json!({ "sessionId": session }))
+                .await?
+        }
+        _ => {
+            crate::dsh::tasks::command(
+                app,
+                "dsh_task_cancel",
+                // The card's 丢弃 discards the work, so the worktree is
+                // stashed rather than left dirty.
+                json!({ "sessionId": session, "stash": true }),
+            )
+            .await?
+        }
+    };
+    let item = service.finish_ai(id, "action", Some(action), None)?;
+    Ok(json!({ "ok": true, "item": item, "task": review::task_field(&result) }))
+}
+
+/// 「用 Agent 修复」: creates a workflow task for the card's bug, then claims the
+/// notification.
+///
+/// The task comes first. A project without a repo mapping fails here before
+/// anything is written, and the card stays pending with that reason. The claim
+/// (the same accept flow as 处理) is a side effect: if TAPD rejects it, the task
+/// already exists and stays, so the command still succeeds and only logs.
+async fn fix_bug(
+    app: &AppHandle,
+    state: &SharedState,
+    service: &NotificationService,
+    id: &str,
+) -> Result<Value, String> {
+    let item = service.find_item(id)?;
+    if is_simulated(&item) {
+        return Err(tr("notify.simulated.handle").to_string());
+    }
+    // A second click while the first task was being created would enqueue a
+    // duplicate worktree for the same bug.
+    if item.state == NotificationState::Handled {
+        return Err(tr("notify.already.handled").to_string());
+    }
+
+    let result = crate::dsh::tasks::command(
+        app,
+        "dsh_task_enqueue_bug",
+        json!({ "workspaceId": item.workspace_id, "bugId": item.bug_id }),
+    )
+    .await?;
+
+    // Re-read: a concurrent 处理 may have claimed the card meanwhile.
+    let current = service.find_item(id).unwrap_or(item);
+    if current.state != NotificationState::Handled {
+        if let Err(error) = handle_notification(app, state, service, id).await {
+            tracing::warn!(
+                %error,
+                notification = id,
+                "bug task enqueued but the notification stayed unclaimed"
+            );
+        }
+    }
+
+    let session_id = result
+        .get("task")
+        .and_then(|task| task.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(session_id) = session_id.as_deref() {
+        agent::focus_session(app, session_id);
+    }
+
+    Ok(json!({ "ok": true, "task": review::task_field(&result) }))
 }
 
 // ---------------------------------------------------------------------------

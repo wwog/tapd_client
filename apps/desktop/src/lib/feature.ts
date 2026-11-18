@@ -60,6 +60,7 @@ export type FeatureCommandName =
   | "mcp_import_client"
   | "notification_ai_action"
   | "notification_ai_debug"
+  | "notification_fix_bug"
   | "notification_handle"
   | "notification_ignore"
   | "notification_island_answer_focus"

@@ -282,6 +282,7 @@ mod tests {
         ProjectAgentConfig {
             repo_path: repo_path.to_string_lossy().to_string(),
             rule: String::new(),
+            name: String::new(),
         }
     }
 

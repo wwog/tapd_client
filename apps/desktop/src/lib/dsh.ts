@@ -480,24 +480,28 @@ export const dshTaskApi = {
     bugId: string,
     extraPrompt?: string,
     attachments?: string[],
+    team?: boolean,
   ) =>
     feature<{ task: DshTask }>("dsh_task_enqueue_bug", {
       workspaceId,
       bugId,
       ...(extraPrompt ? { extraPrompt } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(typeof team === "boolean" ? { team } : {}),
     }),
   enqueueLocal: (
     projectId: string,
     itemId: string,
     extraPrompt?: string,
     attachments?: string[],
+    team?: boolean,
   ) =>
     feature<{ task: DshTask }>("dsh_task_enqueue_local", {
       projectId,
       itemId,
       ...(extraPrompt ? { extraPrompt } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(typeof team === "boolean" ? { team } : {}),
     }),
   approve: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),

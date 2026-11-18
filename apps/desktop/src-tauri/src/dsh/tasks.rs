@@ -247,6 +247,9 @@ pub(super) struct TaskMeta {
     /// Whether the session works in an isolated worktree (chats toggle this;
     /// workflow tasks always set it).
     pub worktree: bool,
+    /// Team collaboration chosen when the task was created. `None` keeps the
+    /// runtime default; a task's choice is fixed for its whole life.
+    pub team: Option<bool>,
     pub local_project_id: Option<String>,
     pub local_item_id: Option<String>,
     /// Status the item had before `attach_task` moved it to in_progress; a
@@ -264,6 +267,9 @@ pub(super) struct TaskMeta {
     pub comment_posted: bool,
     /// The status transition already ran.
     pub status_updated: bool,
+    /// Hidden write-back turns the host has sent for this task. After
+    /// [`HOST_WRITEBACK_ATTEMPTS`] the host finishes the missing writes itself.
+    pub writeback_attempts: u32,
     pub status_from: Option<String>,
     pub status_to: Option<String>,
 }
@@ -523,6 +529,9 @@ struct EnqueueBugRequest {
     extra_prompt: Option<String>,
     #[serde(default)]
     attachments: Vec<String>,
+    /// Team collaboration for this task; `None` keeps the runtime default.
+    #[serde(default)]
+    team: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -534,6 +543,9 @@ struct EnqueueLocalRequest {
     extra_prompt: Option<String>,
     #[serde(default)]
     attachments: Vec<String>,
+    /// Team collaboration for this task; `None` keeps the runtime default.
+    #[serde(default)]
+    team: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -698,17 +710,27 @@ async fn finish_turn(
     };
     match record.task.workflow {
         Workflow::Running => {}
-        // Already reviewed: a second turn end only refreshes the counts.
+        // Already reviewed: a second turn end only refreshes the counts. The
+        // turn that just ended is what frees the slot, so the queue is asked
+        // for a start here.
         Workflow::AwaitingReview => {
             refresh_review(app, record, session_id, at).await?;
+            reschedule(app);
             return Ok(());
         }
         // The write-back turn ended: finish only when both writes happened.
         Workflow::Finalizing => {
             settle_writeback(app, record, at).await?;
+            reschedule(app);
             return Ok(());
         }
-        _ => return Ok(()),
+        // A settled task receiving a late turn end holds no slot; the scheduler
+        // may still have been waiting on the session's live status.
+        Workflow::Done | Workflow::Failed | Workflow::Canceled => {
+            reschedule(app);
+            return Ok(());
+        }
+        Workflow::Queued => return Ok(()),
     }
 
     // A chat has no repository, so there is nothing to review; its workflow
@@ -783,6 +805,9 @@ async fn finish_turn(
     complete_local(app, &record).await;
     push_phase(app, &record);
     emit(app);
+    if next == Workflow::AwaitingReview {
+        crate::notification::review::raise(app, &record.task);
+    }
     // A turn leaving `running` frees its execution slot.
     reschedule(app);
     Ok(())
@@ -816,10 +841,49 @@ async fn refresh_review(
         .unwrap_or(record.task.message_count);
     record.touch_at(at);
     let expected = record.task.workflow;
-    if save_record(app, record, expected).await? {
+    if save_record(app, record.clone(), expected).await? {
         emit(app);
+        crate::notification::review::raise(app, &record.task);
     }
     Ok(())
+}
+
+/// Hidden write-back turns the host gives the model before it takes over.
+/// The first prompt is attempt 1; the retry after the first incomplete turn is
+/// attempt 2, and when *that* turn also ends incomplete the host writes TAPD
+/// itself so a finished task cannot sit in `finalizing` forever.
+const HOST_WRITEBACK_ATTEMPTS: u32 = 2;
+
+/// What the write-back still owes TAPD. Read from the persisted flags, so a
+/// retry only repeats the missing half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WritebackGaps {
+    comment: bool,
+    status: bool,
+}
+
+impl WritebackGaps {
+    fn is_empty(self) -> bool {
+        !self.comment && !self.status
+    }
+}
+
+fn writeback_gaps(meta: &TaskMeta) -> WritebackGaps {
+    WritebackGaps {
+        comment: !meta.comment_posted,
+        status: !meta.status_updated,
+    }
+}
+
+/// Counts one more hidden turn. Saturating: the number only grows and never
+/// needs to hold anything beyond "the model had its attempts".
+fn next_writeback_attempt(attempts: u32) -> u32 {
+    attempts.saturating_add(1)
+}
+
+/// Whether the model has used its write-back turns and the host must finish.
+fn host_writeback_due(attempts: u32) -> bool {
+    attempts >= HOST_WRITEBACK_ATTEMPTS
 }
 
 /// The write-back turn ended. `task_complete` occasionally loses the race with
@@ -833,24 +897,61 @@ async fn settle_writeback(app: &AppHandle, record: TaskRecord, at: &str) -> Resu
     if step != Some(FinalizeStep::Writeback) {
         return Ok(());
     }
-    let mut record = record;
-    if record.meta.comment_posted && record.meta.status_updated {
-        let expected = transition(&mut record, Workflow::Done)?;
-        record.task.finalize = None;
-        record.touch_at(at);
-        if save_record(app, record.clone(), expected).await? {
-            complete_local(app, &record).await;
-            emit(app);
-            if let Ok(bridge) = bridge(app) {
-                let _ = bridge.send_task_phase(&record.task.id, "none", record.task.kind.as_str());
-            }
-        }
-        return Ok(());
+    let gaps = writeback_gaps(&record.meta);
+    if gaps.is_empty() {
+        return finish_writeback(app, record, at, None).await;
     }
+    // The host only takes over when the model is out of turns. Until then the
+    // task stays retryable and the model gets its next hidden turn.
+    if host_writeback_due(record.meta.writeback_attempts) {
+        return host_writeback(app, record, at).await;
+    }
+    incomplete_writeback(
+        app,
+        record,
+        at,
+        tr("dsh.task.finalize.incomplete").to_string(),
+    )
+    .await
+}
+
+/// Both writes are in: the task is done. The notice (when the host wrote the
+/// missing half) survives on the row so the done screen can explain it.
+async fn finish_writeback(
+    app: &AppHandle,
+    mut record: TaskRecord,
+    at: &str,
+    notice: Option<String>,
+) -> Result<(), String> {
+    let expected = transition(&mut record, Workflow::Done)?;
+    record.task.finalize = notice.map(|notice| TaskFinalize {
+        step: Some(FinalizeStep::Writeback),
+        notice: Some(notice),
+        ..TaskFinalize::default()
+    });
+    record.touch_at(at);
+    if save_record(app, record.clone(), expected).await? {
+        complete_local(app, &record).await;
+        emit(app);
+        if let Ok(bridge) = bridge(app) {
+            let _ = bridge.send_task_phase(&record.task.id, "none", record.task.kind.as_str());
+        }
+    }
+    Ok(())
+}
+
+/// Keeps the task in `finalizing` with the reason the write-back is unfinished.
+/// Every flag written so far stays persisted, so a retry resumes mid-way.
+async fn incomplete_writeback(
+    app: &AppHandle,
+    mut record: TaskRecord,
+    at: &str,
+    error: String,
+) -> Result<(), String> {
     {
         let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
         finalize.step = Some(FinalizeStep::Writeback);
-        finalize.error = Some(tr("dsh.task.finalize.incomplete").to_string());
+        finalize.error = Some(error);
         finalize.instructions = Some(tr("dsh.task.finalize.instructions.writeback").to_string());
     }
     record.touch_at(at);
@@ -859,6 +960,136 @@ async fn settle_writeback(app: &AppHandle, record: TaskRecord, at: &str) -> Resu
         emit(app);
     }
     Ok(())
+}
+
+/// Deterministic host write-back. Runs only after the model's hidden turns ran
+/// out, and only for the parts still missing: `tapd_comment` / `tapd_status`
+/// set the same flags, so a half-finished write-back is never repeated.
+async fn host_writeback(app: &AppHandle, record: TaskRecord, at: &str) -> Result<(), String> {
+    // The same lock the tools take: a call still in flight must finish (and
+    // persist its flag) before the host decides what is missing.
+    let _guard = writeback_lock().lock().await;
+    let Some(mut record) = load_record(app, &record.task.id).await? else {
+        return Ok(());
+    };
+    // Re-read under the lock: a cancel, a retry or `task_complete` may have
+    // settled the row while the turn was ending.
+    if record.task.workflow != Workflow::Finalizing {
+        return Ok(());
+    }
+    let (workspace, bug) = match writeback_bug(&record) {
+        Ok(pair) => pair,
+        Err(error) => return incomplete_writeback(app, record, at, error).await,
+    };
+
+    let gaps = writeback_gaps(&record.meta);
+    if gaps.comment {
+        let comment = host_comment(&record);
+        if let Err(error) = crate::bug_write::add_comment(app, &workspace, &bug, &comment).await {
+            let failure = tr_args("dsh.task.writeback.failed", &[&error]);
+            return incomplete_writeback(app, record, at, failure).await;
+        }
+        record.meta.comment_posted = true;
+        record.touch_at(at);
+        // Persisted right away: a crash before the status step must not post
+        // the comment twice.
+        if !save_record(app, record.clone(), Workflow::Finalizing).await? {
+            return Err(tr("dsh.task.busy").to_string());
+        }
+    }
+
+    if gaps.status {
+        // Same helper as the tool and the bug panel: a `new` bug is accepted
+        // first, and an illegal target surfaces TAPD's own list as the error.
+        let outcome = match crate::bug_write::perform_transition(
+            app,
+            &workspace,
+            &bug,
+            "resolved",
+            &Value::Null,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let failure = tr_args("dsh.task.writeback.failed", &[&error]);
+                return incomplete_writeback(app, record, at, failure).await;
+            }
+        };
+        record.meta.status_updated = true;
+        record.meta.status_from = Some(outcome.original_status);
+        record.meta.status_to = Some(outcome.status);
+        record.touch_at(at);
+        if !save_record(app, record.clone(), Workflow::Finalizing).await? {
+            return Err(tr("dsh.task.busy").to_string());
+        }
+    }
+
+    finish_writeback(
+        app,
+        record,
+        at,
+        Some(tr("dsh.task.writeback.hostNotice").to_string()),
+    )
+    .await
+}
+
+/// The comment the host posts when the model never wrote one. The facts come
+/// from the task row (review summary, branch, commit, change counts), so the
+/// text matches what the model was told.
+fn host_comment(record: &TaskRecord) -> String {
+    let review = record.task.review.as_ref();
+    let summary = review
+        .map(|review| review.summary.trim())
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or_else(|| record.task.title.trim());
+    let verification = review
+        .and_then(|review| review.verification.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("-");
+    let risks = review
+        .and_then(|review| review.risks.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("-");
+    let branch = text_or(record.task.branch.as_deref().unwrap_or_default(), "-");
+    let commit = text_or(record.meta.commit.as_deref().unwrap_or_default(), "-");
+    let changes = record.task.changes.clone().unwrap_or_default();
+    tr_args(
+        "dsh.task.writeback.hostComment",
+        &[
+            &summary,
+            &verification,
+            &risks,
+            &branch,
+            &commit,
+            &changes.files.to_string(),
+            &changes.additions.to_string(),
+            &changes.deletions.to_string(),
+            &bug_page_link(&record.task),
+        ],
+    )
+}
+
+/// The bug page, matching the link the write-back prompt hands the model.
+fn bug_page_link(task: &DshTask) -> String {
+    let workspace = task
+        .project
+        .as_ref()
+        .map(|project| project.id.trim())
+        .filter(|id| !id.is_empty());
+    let bug = task
+        .bug_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match (workspace, bug) {
+        (Some(workspace), Some(bug)) => {
+            format!("https://www.tapd.cn/{workspace}/bugtrace/bugs/view?bug_id={bug}")
+        }
+        _ => "-".to_string(),
+    }
 }
 
 async fn fail_task(app: &AppHandle, session_id: &str, reason: &str) {
@@ -889,6 +1120,7 @@ pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), S
         return Ok(());
     };
     let expected = record.task.workflow;
+    let left_review = expected == Workflow::AwaitingReview;
     record.task.workflow = next;
     // A fresh turn reviews afresh: nothing pending from the previous round.
     record.task.review = None;
@@ -898,9 +1130,15 @@ pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), S
     record.meta.status_updated = false;
     record.meta.status_from = None;
     record.meta.status_to = None;
+    // A new round gives the model its hidden turns again; only a retry inside
+    // one round counts attempts.
+    record.meta.writeback_attempts = 0;
     let saved = save_record(app, record, expected).await?;
     if saved {
         emit(app);
+        if left_review {
+            crate::notification::review::settle(app, session_id);
+        }
     }
     Ok(())
 }
@@ -927,6 +1165,9 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
     let detail =
         crate::commands::bugs::fetch_bug_detail(app, &request.workspace_id, &request.bug_id)
             .await?;
+    // The first bug handed over from a workspace learns its display name; the
+    // session list keeps grouping by it instead of the repository folder name.
+    remember_project_name(app, request.workspace_id.trim(), &detail.workspace_name);
     let export =
         crate::export::export_detail(app, &state.paths, &request.workspace_id, None, &detail)
             .await
@@ -992,6 +1233,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
             workspace_id: Some(request.workspace_id),
             baseline: Some(work_dir.baseline),
             worktree: true,
+            team: request.team,
             export_dir: Some(export.dir),
             pending_prompt: Some(prompt),
             ..TaskMeta::default()
@@ -1084,6 +1326,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
         meta: TaskMeta {
             baseline: Some(work_dir.baseline),
             worktree: true,
+            team: request.team,
             local_project_id: Some(project.id.clone()),
             local_item_id: Some(item.id.clone()),
             local_previous_status: Some(item.status.as_str().to_string()),
@@ -1226,16 +1469,20 @@ fn schedule_lock() -> &'static tokio::sync::Mutex<()> {
     SCHEDULE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// Number of workflow tasks that hold a slot: `running` *and* live. Rows
+/// Number of workflow tasks that hold a slot: a task whose live session is
+/// still `running`. The workflow value is deliberately not consulted: a task
+/// that called `task_submit` moves to review while its turn (and the worktree it
+/// is writing) is still live, so that turn keeps its slot until it ends. Rows
 /// persisted as running without a live session (an app restart) do not count;
 /// they wait for the user to open them.
-fn active_slots(records: &[TaskRecord], live: &HashSet<String>) -> usize {
+fn active_slots(records: &[TaskRecord], live: &HashMap<String, DshSession>) -> usize {
     records
         .iter()
         .filter(|record| {
             record.task.kind.is_task()
-                && record.task.workflow == Workflow::Running
-                && live.contains(&record.task.id)
+                && live
+                    .get(&record.task.id)
+                    .is_some_and(|session| session.status == SessionStatus::Running)
         })
         .count()
 }
@@ -1259,20 +1506,31 @@ fn next_queued(records: &[TaskRecord]) -> Option<TaskRecord> {
 pub async fn schedule(app: &AppHandle) -> Result<(), String> {
     let _guard = schedule_lock().lock().await;
     let units = agent_settings::config_for(app).execution_units.clamp(1, 8) as usize;
-    let mut started_here = 0usize;
+    // Tasks this run already started. They hold a slot before the plugin has
+    // reported their first turn as running; once it does, `active_slots` counts
+    // them and this marker stops (so no task is counted twice).
+    let mut started: HashSet<String> = HashSet::new();
     for _ in 0..32 {
         let state = shared(app)?;
         let cache = state.cache.clone();
         let records = blocking(move || task_store::load_all(&cache)).await?;
-        let live: HashSet<String> = live_sessions(app).into_keys().collect();
-        if active_slots(&records, &live) + started_here >= units {
+        let live = live_sessions(app);
+        let starting = started
+            .iter()
+            .filter(|id| {
+                live.get(*id)
+                    .map_or(true, |session| session.status != SessionStatus::Running)
+            })
+            .count();
+        if active_slots(&records, &live) + starting >= units {
             return Ok(());
         }
         let Some(record) = next_queued(&records) else {
             return Ok(());
         };
+        let id = record.task.id.clone();
         if start_queued(app, record).await {
-            started_here += 1;
+            started.insert(id);
         }
     }
     Ok(())
@@ -1305,7 +1563,8 @@ async fn start_queued(app: &AppHandle, record: TaskRecord) -> bool {
         fail_task(app, &id, tr("dsh.task.state.invalid")).await;
         return false;
     }
-    if let Err(error) = start_session(app, &id, &record.work_dir(), &prompt).await {
+    if let Err(error) = start_session(app, &id, &record.work_dir(), &prompt, record.meta.team).await
+    {
         fail_task(app, &id, &error).await;
         return false;
     }
@@ -1330,6 +1589,7 @@ async fn start_session(
     session_id: &str,
     work_dir: &str,
     prompt: &str,
+    team: Option<bool>,
 ) -> Result<(), String> {
     if let Ok(bridge) = bridge(app) {
         // Register the row before the runtime reports events for it, so the
@@ -1342,6 +1602,23 @@ async fn start_session(
     // the worktree assignment below then moves its directory.
     runtime.prepare_session(app, session_id, true).await;
     assign_session_with_retry(app, session_id, work_dir).await?;
+    // The task was created with its own team choice; the plugin applies it to
+    // the Agent `prepare_session` just created. `None` keeps the runtime
+    // default, which the profile already carries.
+    if let Some(team) = team {
+        match bridge(app) {
+            Ok(bridge) => {
+                if let Err(error) = bridge.set_team_mode(session_id, team).await {
+                    // Best effort: the turn is more valuable than the flag, and
+                    // a cold socket is the only way here (assign just succeeded).
+                    tracing::warn!(%error, session = session_id, team, "team mode was not applied");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, session = session_id, "the bridge was unavailable for team mode");
+            }
+        }
+    }
     // The first step must already see the execute-phase tool and prompt.
     sync_phase(app, session_id).await?;
     runtime.query(app, session_id, prompt).await?;
@@ -1447,6 +1724,7 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
         return Err(tr("dsh.task.busy").to_string());
     }
     emit(app);
+    crate::notification::review::settle(app, &request.session_id);
     let task = run_finalize(app, &request.session_id).await?;
     Ok(task_value(app, task))
 }
@@ -1698,6 +1976,19 @@ async fn begin_writeback(app: &AppHandle, record: TaskRecord) -> Result<DshTask,
         record.task.changes.as_ref(),
         record.meta.commit.as_deref(),
     );
+    // Count the hidden turn before it is sent and persist it: a crash during
+    // the turn must still remember that the model had this attempt.
+    record.meta.writeback_attempts = next_writeback_attempt(record.meta.writeback_attempts);
+    {
+        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
+        finalize.step = Some(FinalizeStep::Writeback);
+        finalize.error = None;
+        finalize.instructions = None;
+    }
+    record.touch();
+    if !save_record(app, record.clone(), Workflow::Finalizing).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
     if let Err(error) = bridge(app).and_then(|bridge| bridge.send_host_prompt(&record.task.id, &text))
     {
         return fail_finalize(
@@ -1708,16 +1999,6 @@ async fn begin_writeback(app: &AppHandle, record: TaskRecord) -> Result<DshTask,
             tr("dsh.task.finalize.instructions.writeback").to_string(),
         )
         .await;
-    }
-    {
-        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
-        finalize.step = Some(FinalizeStep::Writeback);
-        finalize.error = None;
-        finalize.instructions = None;
-    }
-    record.touch();
-    if !save_record(app, record.clone(), Workflow::Finalizing).await? {
-        return Err(tr("dsh.task.busy").to_string());
     }
     emit(app);
     Ok(record.task)
@@ -1920,8 +2201,10 @@ async fn task_submit(app: &AppHandle, session_id: &str, params: &Value) -> Resul
     complete_local(app, &record).await;
     push_phase(app, &record);
     emit(app);
-    // The task left `running`, so its execution slot is free again.
-    reschedule(app);
+    // The review card waits for `finish_turn`: the turn is still running here,
+    // and an approve click would bounce off `dsh.task.approve.busy`.
+    // The slot is *not* released here: this turn is still running in the
+    // worktree, and `finish_turn` hands the slot back when it ends.
     let outcome = if next == Workflow::Done {
         "done"
     } else {
@@ -2243,6 +2526,7 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
     }
     push_phase(app, &record);
     emit(app);
+    crate::notification::review::settle(app, &record.task.id);
     // A canceled running task frees its slot.
     reschedule(app);
     Ok(task_value(app, record.task))
@@ -2308,6 +2592,40 @@ async fn diff(app: &AppHandle, request: DiffRequest) -> Result<Value, String> {
 // Projects / free conversations (docs/AGENT_TASK_FLOW.md §10, §11)
 // ---------------------------------------------------------------------------
 
+/// Fills a project's display name once, from the first bug handed over. Only
+/// that one field is written: repositories and rules are edited elsewhere and
+/// a background repair must not overwrite them.
+fn remember_project_name(app: &AppHandle, workspace_id: &str, name: &str) {
+    let name = name.trim();
+    if workspace_id.is_empty() || name.is_empty() {
+        return;
+    }
+    // Read right before writing: a settings edit may have landed while the bug
+    // detail was fetched.
+    let mut config = agent_settings::config_for(app);
+    let Some(project) = config.projects.get_mut(workspace_id) else {
+        return;
+    };
+    if !project.name.trim().is_empty() {
+        return;
+    }
+    project.name = name.to_string();
+    if let Err(error) = agent_settings::save_for(app, &config) {
+        tracing::warn!(%error, workspace = workspace_id, "failed to remember a project name");
+    }
+}
+
+/// The display name of a configured TAPD project: its saved TAPD name, or the
+/// repository folder name for rows written before names were stored.
+fn project_display_name(project: &agent_settings::ProjectAgentConfig) -> String {
+    let saved = project.name.trim();
+    if saved.is_empty() {
+        tapd_local::LocalProject::derive_project_name(&project.repo_path)
+    } else {
+        saved.to_string()
+    }
+}
+
 /// All project groups a free conversation can be created under: configured
 /// TAPD projects plus every local project.
 pub async fn projects(app: &AppHandle) -> Result<Value, String> {
@@ -2320,7 +2638,7 @@ pub async fn projects(app: &AppHandle) -> Result<Value, String> {
             json!({
                 "kind": "tapd",
                 "id": id,
-                "name": tapd_local::LocalProject::derive_project_name(&project.repo_path),
+                "name": project_display_name(project),
                 "repoPath": project.repo_path,
             })
         })
@@ -2379,7 +2697,7 @@ async fn resolve_project(
                 .cloned()
                 .filter(|project| !project.repo_path.trim().is_empty())
                 .ok_or_else(|| tr("dsh.task.repo.missing").to_string())?;
-            let name = tapd_local::LocalProject::derive_project_name(&project.repo_path);
+            let name = project_display_name(&project);
             Ok((
                 Some(TaskProject {
                     id: reference.id.clone(),
@@ -2914,6 +3232,7 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         }
     }
 
+    crate::notification::review::settle(app, &request.session_id);
     emit(app);
     reschedule(app);
     Ok(json!({ "sessionId": request.session_id }))
@@ -3125,6 +3444,22 @@ mod tests {
         }
     }
 
+    fn session(id: &str, status: SessionStatus) -> DshSession {
+        DshSession {
+            id: id.to_string(),
+            title: String::new(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+            status,
+            message_count: 0,
+            usage: Default::default(),
+            selection: None,
+            plan_active: false,
+            todos: Vec::new(),
+            parent_session: None,
+            agent_preset: None,
+        }
+    }
+
     #[test]
     fn workflow_moves_forward_and_terminal_states_never_regress() {
         for (from, to) in [
@@ -3229,21 +3564,106 @@ mod tests {
     }
 
     #[test]
-    fn slots_only_count_live_running_workflow_tasks() {
+    fn slots_count_live_running_turns_not_the_workflow_value() {
         let mut running = record(Workflow::Running);
         running.task.id = "live".into();
-        let mut idle_running = record(Workflow::Running);
-        idle_running.task.id = "persisted".into();
+        // `task_submit` moved the task to review while its turn keeps writing;
+        // that turn still holds the slot.
+        let mut in_review = record(Workflow::AwaitingReview);
+        in_review.task.id = "review".into();
+        let mut persisted = record(Workflow::Running);
+        persisted.task.id = "persisted".into();
         let mut chat = record(Workflow::Running);
         chat.task.kind = TaskKind::Chat;
         chat.task.id = "chat".into();
         let mut queued = record(Workflow::Queued);
         queued.task.id = "queued".into();
-        let records = vec![running, idle_running, chat, queued];
-        let live: HashSet<String> = ["live".to_string(), "chat".to_string()]
-            .into_iter()
-            .collect();
-        assert_eq!(active_slots(&records, &live), 1);
+        let records = vec![running, in_review, persisted, chat, queued];
+        let live: HashMap<String, DshSession> = [
+            ("live".to_string(), session("live", SessionStatus::Running)),
+            ("review".to_string(), session("review", SessionStatus::Running)),
+            // A session that exists but is not in a turn holds nothing.
+            ("persisted".to_string(), session("persisted", SessionStatus::Idle)),
+            ("chat".to_string(), session("chat", SessionStatus::Running)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(active_slots(&records, &live), 2);
+    }
+
+    #[test]
+    fn writeback_attempts_grow_and_the_host_takes_over_after_two_turns() {
+        assert_eq!(next_writeback_attempt(0), 1);
+        assert_eq!(next_writeback_attempt(1), 2);
+        assert_eq!(next_writeback_attempt(u32::MAX), u32::MAX);
+        assert!(!host_writeback_due(0));
+        assert!(!host_writeback_due(1));
+        assert!(host_writeback_due(HOST_WRITEBACK_ATTEMPTS));
+        assert!(host_writeback_due(HOST_WRITEBACK_ATTEMPTS + 1));
+    }
+
+    #[test]
+    fn a_retry_only_redoes_the_write_that_is_missing() {
+        let mut meta = TaskMeta::default();
+        assert_eq!(
+            writeback_gaps(&meta),
+            WritebackGaps {
+                comment: true,
+                status: true
+            }
+        );
+        // The model posted the comment but never moved the status.
+        meta.comment_posted = true;
+        assert_eq!(
+            writeback_gaps(&meta),
+            WritebackGaps {
+                comment: false,
+                status: true
+            }
+        );
+        // A status already applied by a tool leaves only the comment.
+        meta.comment_posted = false;
+        meta.status_updated = true;
+        assert_eq!(
+            writeback_gaps(&meta),
+            WritebackGaps {
+                comment: true,
+                status: false
+            }
+        );
+        meta.comment_posted = true;
+        assert!(writeback_gaps(&meta).is_empty());
+    }
+
+    #[test]
+    fn the_host_comment_carries_the_task_facts_instead_of_placeholders() {
+        let mut record = record(Workflow::Finalizing);
+        record.task.project = Some(TaskProject {
+            id: "ws".to_string(),
+            name: "UU".to_string(),
+            kind: ProjectKind::Tapd,
+        });
+        record.task.branch = Some("tapd/42-ab12cd".to_string());
+        record.task.changes = Some(TaskChanges {
+            files: 2,
+            additions: 30,
+            deletions: 4,
+        });
+        record.task.review = Some(TaskReview {
+            summary: "根因在登录态判断".to_string(),
+            verification: Some("跑了单测".to_string()),
+            risks: None,
+            files: Vec::new(),
+        });
+        record.meta.commit = Some("abc123".to_string());
+
+        let text = host_comment(&record);
+        assert!(text.contains("根因在登录态判断"));
+        assert!(text.contains("跑了单测"));
+        assert!(text.contains("tapd/42-ab12cd"));
+        assert!(text.contains("abc123"));
+        assert!(text.contains("https://www.tapd.cn/ws/bugtrace/bugs/view?bug_id=42"));
+        assert!(!text.contains('{'), "no placeholder may survive");
     }
 
     #[test]

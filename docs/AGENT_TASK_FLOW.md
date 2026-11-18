@@ -278,9 +278,10 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 
 - 配置只保留 `executionUnits`（1–8，默认 2）；删除 `worktreeEnabled`。
 - 入队时完成导出与 worktree 创建，任务进入 `Queued`，提示词存 `meta.pendingPrompt`。
-- 调度：`active = 有 live 会话且 workflow = Running 的任务数`；`active < units` 时按
-  `createdAt` 升序启动 `Queued`。
-- 释放槽位：任务离开 `Running`（→ awaiting_review / done / failed / canceled）时触发调度。
+- 调度：`active = 有 live 会话且会话 status = Running 的工作流任务数`（不看 `workflow`）。
+  `task_submit` 后回合仍在跑，仍占槽位；`active < units` 时按 `createdAt` 升序启动 `Queued`。
+- 释放槽位：真正的 `turn/end` 时触发调度（`finish_turn` 在 awaiting_review、finalizing、
+  done/failed/canceled 各分支都会 reschedule），不是 `task_submit` 一调用就释放。
 - 应用重启后，`Queued` 任务按当前 live 会话数重新调度；持久化 `Running` 但无 live 会话的任务
   不算槽位，等用户打开/恢复。
 - 自由会话（含 chat worktree）不占工作流队列。
@@ -292,7 +293,8 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 - 位置：输入框卡片内、文本区上方的一行。没有项目绑定（`project == null`）时整行不显示。
 - 左侧：项目名 + 当前分支，纯展示。**不提供项目切换，也不提供分支切换，没有「+」按钮。**
 - 右侧：
-  - 同事协作开关（chat：开始前可改；task：创建时已固定，只显示状态）。
+  - 同事协作开关（chat：开始前可改；task：在缺陷/事项的 EnqueueSheet 里创建时选择，
+    工作条只显示状态）。
   - Worktree 开关（chat：开始前可改；task：始终开启，只显示状态）。
   - 团队协作已开启时，多一个「会话 / 任务板」视图切换。
 - “开始”的判定：chat = 已发过第一条消息或回合正在运行；task = 任务创建即开始。

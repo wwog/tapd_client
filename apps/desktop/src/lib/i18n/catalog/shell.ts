@@ -82,6 +82,7 @@ export const shell = {
   "app.island.priority": ["{priority}优先级", "{priority} priority"],
   "app.island.creator": ["创建人 {creator}", "Creator {creator}"],
   "app.island.handle": ["处理", "Handle"],
+  "app.island.fix": ["修复", "Fix"],
   "app.island.viewBug": ["查看缺陷", "View bug"],
   "app.island.progress": ["进度", "Progress"],
   "app.aiTone.info": ["提示信息", "Info"],

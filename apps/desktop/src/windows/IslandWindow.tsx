@@ -16,6 +16,7 @@ import {
   Info,
   Loader2,
   Send,
+  Sparkles,
   X,
 } from "lucide-react";
 
@@ -148,7 +149,10 @@ export function IslandWindow() {
     };
   }, [refreshStatus]);
 
-  const run = async (item: NotificationItem, action: "handle" | "view" | "ignore") => {
+  const run = async (
+    item: NotificationItem,
+    action: "handle" | "view" | "ignore" | "fix",
+  ) => {
     if (busy) return;
     setBusy({ id: item.id, action });
     setErrors((previous) => {
@@ -160,6 +164,7 @@ export function IslandWindow() {
     try {
       if (action === "handle") await notificationApi.handle(item.id);
       else if (action === "view") await notificationApi.view(item.id);
+      else if (action === "fix") await notificationApi.fix(item.id);
       else await notificationApi.ignore(item.id);
       setItems((previous) => previous.filter((candidate) => candidate.id !== item.id));
       void refreshStatus();
@@ -399,31 +404,45 @@ export function IslandWindow() {
               </div>
 
               <div className="mt-auto flex items-center gap-1.5 pt-2">
+                {/* 384px card, three buttons: equal width keeps them on one row. */}
+                <button
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onClick={() => void run(item, "fix")}
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {itemBusy === "fix" ? (
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
+                  ) : (
+                    <Sparkles size={12} className="shrink-0" />
+                  )}
+                  <span className="truncate">{t("app.island.fix")}</span>
+                </button>
                 <button
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => void run(item, "handle")}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {itemBusy === "handle" ? (
-                    <Loader2 size={12} className="animate-spin" />
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
                   ) : (
-                    <Check size={12} />
+                    <Check size={12} className="shrink-0" />
                   )}
-                  {t("app.island.handle")}
+                  <span className="truncate">{t("app.island.handle")}</span>
                 </button>
                 <button
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => void run(item, "view")}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2.5 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {itemBusy === "view" ? (
-                    <Loader2 size={12} className="animate-spin" />
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
                   ) : (
-                    <Eye size={12} />
+                    <Eye size={12} className="shrink-0" />
                   )}
-                  {t("app.island.viewBug")}
+                  <span className="truncate">{t("app.island.viewBug")}</span>
                 </button>
               </div>
 

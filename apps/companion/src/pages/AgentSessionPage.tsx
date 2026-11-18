@@ -1716,6 +1716,11 @@ export function AgentSessionPage(props: { id: string }) {
             ) : null}
           </div>
         ) : null}
+        {task?.workflow === "done" && task.finalize?.notice ? (
+          <p className="mb-1 select-text break-words px-1 text-ui-2xs leading-5 text-amber-700">
+            {task.finalize.notice}
+          </p>
+        ) : null}
         {composerError ? (
           <p
             className="mb-1 text-ui-xs leading-5 text-rose-600"

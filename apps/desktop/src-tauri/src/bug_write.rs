@@ -113,7 +113,10 @@ pub(crate) async fn add_comment(
 
     let root = session_request_json(app, "POST", COMMENT_URL, Some(body), Duration::from_secs(45))
         .await?;
-    ensure_api_ok(&root, tr("bug.comment.add"))?;
+    if let Err(error) = ensure_api_ok(&root, tr("bug.comment.add")) {
+        tracing::warn!(%error, ?root, bug_id, workspace_id, "bug comment rejected");
+        return Err(error);
+    }
 
     tracing::info!(bug_id, workspace_id, "added bug comment");
     Ok(root.get("data").cloned().unwrap_or(Value::Null))
@@ -481,7 +484,17 @@ async fn load_transition_fields(
         encode_query(bug_id),
     );
     let root = session_request_json(app, "GET", &url, None, Duration::from_secs(45)).await?;
-    ensure_api_ok(&root, tr("bug.transition.fields"))?;
+    if let Err(error) = ensure_api_ok(&root, tr("bug.transition.fields")) {
+        tracing::warn!(
+            %error,
+            ?root,
+            bug_id,
+            current_status,
+            next_status,
+            "transition fields rejected"
+        );
+        return Err(error);
+    }
 
     Ok(parse_transition_fields_response(&root))
 }

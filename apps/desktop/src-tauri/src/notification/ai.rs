@@ -412,6 +412,44 @@ impl NotificationService {
         }
     }
 
+    /// Dismisses every pending card carrying `tag`, without a card id.
+    ///
+    /// Cards that name their request in the tag (a review waits per session)
+    /// are settled elsewhere — the Agent page's own button, a cancel, or a
+    /// new turn — and the capsule must not keep offering a stale decision.
+    /// A card the user already acted on keeps its first decision.
+    pub(super) fn finish_ai_by_tag(&self, tag: &str, kind: &str) -> usize {
+        let now = Local::now().to_rfc3339();
+        let mut settled = 0usize;
+        {
+            let mut items = self.ai_items.lock().expect("ai notification lock");
+            for item in items.iter_mut() {
+                if item.state != NotificationState::Pending {
+                    continue;
+                }
+                let Some(ai) = item.ai.as_mut() else {
+                    continue;
+                };
+                if ai.tag.as_deref() != Some(tag) || ai.resolution.is_some() {
+                    continue;
+                }
+                ai.resolution = Some(AiResolution {
+                    kind: kind.to_string(),
+                    action_id: None,
+                    action_label: None,
+                    value: None,
+                    at: now.clone(),
+                });
+                item.state = NotificationState::Ignored;
+                settled += 1;
+            }
+        }
+        if settled > 0 {
+            self.refresh_window();
+        }
+        settled
+    }
+
     /// Waits for a user decision. Returns the stored resolution when the user
     /// already acted, `Pending` on timeout, `Gone` when the card was dropped.
     ///

@@ -116,6 +116,12 @@ export type NotificationHandleResult = {
   transitioned: boolean;
 };
 
+/** Result of 修复: the enqueued workflow task (null if the reply carried none). */
+export type NotificationFixResult = {
+  ok: boolean;
+  task: { id: string; workflow: string } | null;
+};
+
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
   scope: "mine",
@@ -151,6 +157,9 @@ export const notificationApi = {
   state: () => featureCommand<NotificationStateSnapshot>("notification_state_get"),
   handle: (notificationId: string) =>
     featureCommand<NotificationHandleResult>("notification_handle", { notificationId }),
+  /** 用 Agent 修复: enqueue a workflow task for this bug, then open it. */
+  fix: (notificationId: string) =>
+    featureCommand<NotificationFixResult>("notification_fix_bug", { notificationId }),
   view: (notificationId: string) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_view", {
       notificationId,

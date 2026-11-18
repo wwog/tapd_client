@@ -10,6 +10,8 @@ import { invoke } from "@tauri-apps/api/core";
 export type ProjectAgentConfig = {
   repoPath: string;
   rule: string;
+  /** The TAPD project's own name, learned when a bug is first handed over. */
+  name?: string;
 };
 
 /** Wire protocols dsh's `llm-pi-ai` accepts; the order is the form's order. */

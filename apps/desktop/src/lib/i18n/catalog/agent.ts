@@ -168,6 +168,10 @@ export const agent = {
     "说明会追加到任务提示词。",
     "Appended to the task prompt.",
   ],
+  "agent.enqueue.teamHint": [
+    "同事协作在任务创建后固定，AI 可与同事分工。",
+    "Team collaboration is fixed when the task is created; the agent can share work with coworkers.",
+  ],
 
   // Stream.
   "agent.stream.noSession": ["还没有选择会话", "No session selected"],

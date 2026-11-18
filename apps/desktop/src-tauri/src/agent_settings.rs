@@ -36,6 +36,10 @@ pub struct ProjectAgentConfig {
     /// Project-specific rules. Not part of the built-in prompt: `tapd_get_bug`
     /// returns them as its own `projectRule` field for external agents.
     pub rule: String,
+    /// The TAPD project's own name, filled in the first time a bug is handed
+    /// over. Empty rows fall back to the repository's folder name.
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -511,9 +515,19 @@ impl AgentConfig {
             .map(|(workspace_id, project)| {
                 let repo_path = project.repo_path.trim().to_string();
                 let rule = project.rule.trim().to_string();
-                (workspace_id, ProjectAgentConfig { repo_path, rule })
+                let name = project.name.trim().to_string();
+                (
+                    workspace_id,
+                    ProjectAgentConfig {
+                        repo_path,
+                        rule,
+                        name,
+                    },
+                )
             })
-            .filter(|(_, project)| !project.repo_path.is_empty() || !project.rule.is_empty())
+            .filter(|(_, project)| {
+                !project.repo_path.is_empty() || !project.rule.is_empty() || !project.name.is_empty()
+            })
             .collect();
 
         self
@@ -877,6 +891,24 @@ mod tests {
         };
         let out = render_prompt("{{task_id}} {{bug_id}} {{unknown}}", &vars);
         assert_eq!(out, "task-1 1001 {{unknown}}");
+    }
+
+    #[test]
+    fn a_learned_project_name_survives_the_sanitizer() {
+        let mut config = AgentConfig::default();
+        config.projects.insert(
+            "ws".into(),
+            ProjectAgentConfig {
+                repo_path: " /repo ".into(),
+                rule: " rule ".into(),
+                name: " 优衣库 ".into(),
+            },
+        );
+        let config = config.sanitized();
+        let project = config.projects.get("ws").expect("project kept");
+        assert_eq!(project.name, "优衣库");
+        assert_eq!(project.repo_path, "/repo");
+        assert_eq!(project.rule, "rule");
     }
 
     #[test]
