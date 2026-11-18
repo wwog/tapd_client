@@ -33,6 +33,7 @@
 | 分割节点 | Split | `SplitNode` | `direction: "row" \| "column"` + children + sizes |
 | 组 | Group | `GroupNode` | 标签容器（旧称「挤压容器」） |
 | 标签栏 | Tab strip | `TabStrip` | 组顶部 |
+| 标签右侧槽 | Tab trailing slot | `ActiveTabExtra` | 标签栏右端；只渲染本组聚焦标签的声明，换标签即换内容 |
 | 标签 | Tab | `TabItem` | 预览标签 / 固定标签 |
 | 面板 | Panel | `PanelRef` / `PanelHost` | 标签背后的内容实例 |
 | 分割条 | Sash | `Sash` | 相邻组之间的拖拽条 |
@@ -45,6 +46,8 @@
 - `primary` 主组：主视图，承载页面标签，始终存在。项目页（`bugs` / `local`，带 `projectId`）每个项目一个、可关闭，本地项目标签稳定排在最前；全局页（设置 / Agent / 同事 / MCP / 项目 / 账号）共用**一个**导航标签，左侧导航切换时替换内容而不是追加，且只在它是可见页时保留：激活任一项目标签会收起它，再点左侧导航时重新出现。本地项目页没有自己的活动栏入口，选中时活动栏「缺陷」保持高亮。
 - `secondary` 副组：右侧，缺陷详情 / 资源管理器 / 文件的默认落点。
 - `bottom` 底组：终端默认落点，横跨窗口下方。
+
+标签栏右端的 `ActiveTabExtra` 属于**该组当前聚焦的标签**，而不是组或它的角色：同一个页面被拖到副组后仍带着自己的动作，切换标签就切换槽内内容，没有声明时槽位不渲染。具体声明由 `App` 的 `activeTabExtra(panel)` 决定，目前缺陷列表声明「打开」（绑定的项目目录）、Agent 声明「打开」（选中会话的工作目录：worktree → 仓库 → 聊天临时目录），其他页面留空。
 
 默认树（`defaultLayout()`）：
 

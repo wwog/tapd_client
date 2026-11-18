@@ -44,8 +44,11 @@ type WorkbenchProps = {
   page: PageHostServices;
   /** Primary group strip actions: the side bar toggle, left of the tabs. */
   primaryLeading?: ReactNode;
-  /** Primary group strip actions on the right (project-open button). */
-  primaryActions?: ReactNode;
+  /**
+   * Trailing slot of every group's tab strip (`ActiveTabExtra`). App decides
+   * per focused tab; a handler that returns nothing leaves the slot empty.
+   */
+  activeTabExtra?: (panel: PanelRef) => ReactNode;
   /** One app-level strip above the layout area (recovery report). */
   banner?: ReactNode;
 };
@@ -65,7 +68,7 @@ export function Workbench({
   services: baseServices,
   page,
   primaryLeading,
-  primaryActions,
+  activeTabExtra,
   banner,
 }: WorkbenchProps) {
   const [bodies, setBodies] = useState<Record<string, HTMLElement | null>>({});
@@ -342,13 +345,13 @@ export function Workbench({
           )
         }
         primaryLeading={primaryLeading}
-        primaryActions={primaryActions}
+        activeTabExtra={activeTabExtra}
         onRegisterBody={registerBody}
         onSpawnTerminal={spawnTerminal}
         onTabPointerDown={startTabDrag}
       />
     ),
-    [api, primaryActions, primaryLeading, registerBody, spawnTerminal, startTabDrag],
+    [api, activeTabExtra, primaryLeading, registerBody, spawnTerminal, startTabDrag],
   );
 
   return (

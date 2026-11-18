@@ -22,6 +22,7 @@ import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
+import { AgentOpenButton } from "./components/AgentOpenButton";
 import { CompanionDialog } from "./components/CompanionDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
@@ -55,7 +56,6 @@ import {
 } from "./workbench/layout/defaults";
 import { GROUP_INSET } from "./workbench/components/SplitView";
 import type {
-  PageView,
   PanelRef,
   WorkbenchLayoutApi,
 } from "./workbench/layout/types";
@@ -684,19 +684,30 @@ export default function App() {
     );
   }
 
-  const primaryGroup =
-    layoutApi.groups.find((group) => group.role === "primary") ??
-    layoutApi.groups[0];
-  const primaryActivePanel = primaryGroup?.panels.find(
-    (panel) => panel.id === primaryGroup.activePanelId,
-  );
-  const primaryResource =
-    primaryActivePanel?.resource.type === "page"
-      ? primaryActivePanel.resource
-      : null;
-  const primaryView: PageView | null = primaryResource?.view ?? null;
-  /** Project of the primary tab (its own id, else the active selection). */
-  const primaryProjectId = primaryResource?.projectId ?? workspace?.id ?? null;
+  /**
+   * Trailing slot of the tab strip (`ActiveTabExtra`): the focused tab in a
+   * group declares its own action there. The 缺陷列表 opens the bound project
+   * folder; Agent opens the selected session's working directory. Pages without
+   * such an action declare nothing and the slot stays empty.
+   */
+  const activeTabExtra = (panel: PanelRef) => {
+    if (panel.resource.type !== "page") return null;
+    const { view: panelView, projectId } = panel.resource;
+    if (panelView === "bugs") {
+      const targetId = projectId ?? workspace?.id;
+      return targetId ? (
+        <ProjectOpenButton
+          key={targetId}
+          workspaceId={targetId}
+          onError={(text) => showToast("error", text)}
+        />
+      ) : null;
+    }
+    if (panelView === "agent") {
+      return <AgentOpenButton toast={showToast} />;
+    }
+    return null;
+  };
 
   /** Leading strip action: the side bar toggle sits above the tabs. */
   const primaryLeading = !projectListHidden ? (
@@ -720,15 +731,6 @@ export default function App() {
       {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
     </button>
   ) : null;
-
-  const primaryActions =
-    primaryView === "bugs" && primaryProjectId ? (
-      <ProjectOpenButton
-        key={primaryProjectId}
-        workspaceId={primaryProjectId}
-        onError={(text) => showToast("error", text)}
-      />
-    ) : null;
 
   /** Sign out after the unsaved-edit confirmation (if any). */
   const performLogout = () => {
@@ -935,7 +937,7 @@ export default function App() {
             services={services}
             page={page}
             primaryLeading={primaryLeading}
-            primaryActions={primaryActions}
+            activeTabExtra={activeTabExtra}
           />
 
           {!sidebar.hidden && !projectListHidden ? (
