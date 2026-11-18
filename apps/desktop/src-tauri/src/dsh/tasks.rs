@@ -848,6 +848,43 @@ async fn refresh_review(
     Ok(())
 }
 
+/// Startup recovery for a write-back that lost its live turn (app exit, runtime
+/// restart, or a host prompt queued before the Agent existed). The git steps are
+/// already done, so the safe move is the host write-back rather than leaving the
+/// task in `finalizing` forever.
+pub async fn recover_finalizing(app: &AppHandle) {
+    let Ok(state) = shared(app) else {
+        return;
+    };
+    let cache = state.cache.clone();
+    let Ok(records) = blocking(move || task_store::load_all(&cache)).await else {
+        return;
+    };
+    for record in records {
+        if record.task.workflow != Workflow::Finalizing
+            || record
+                .task
+                .finalize
+                .as_ref()
+                .and_then(|finalize| finalize.step)
+                != Some(FinalizeStep::Writeback)
+            || (record.meta.comment_posted && record.meta.status_updated)
+            || live_running(app, &record.task.id)
+        {
+            continue;
+        }
+        let mut record = record;
+        record.meta.writeback_attempts = HOST_WRITEBACK_ATTEMPTS;
+        record.touch();
+        if save_record(app, record.clone(), Workflow::Finalizing)
+            .await
+            .unwrap_or(false)
+        {
+            let _ = settle_writeback(app, record, &now()).await;
+        }
+    }
+}
+
 /// Hidden write-back turns the host gives the model before it takes over.
 /// The first prompt is attempt 1; the retry after the first incomplete turn is
 /// attempt 2, and when *that* turn also ends incomplete the host writes TAPD
@@ -981,6 +1018,7 @@ async fn host_writeback(app: &AppHandle, record: TaskRecord, at: &str) -> Result
         Ok(pair) => pair,
         Err(error) => return incomplete_writeback(app, record, at, error).await,
     };
+    let bug = resolved_bug_id(app, &workspace, &bug).await;
 
     let gaps = writeback_gaps(&record.meta);
     if gaps.comment {
@@ -1165,6 +1203,14 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
     let detail =
         crate::commands::bugs::fetch_bug_detail(app, &request.workspace_id, &request.bug_id)
             .await?;
+    // TAPD's comment/transition APIs need the long entity id; the short id is
+    // only for display, the bug link and the branch name.
+    let long_id = detail.summary.id.trim().to_string();
+    let bug_id = if long_id.is_empty() {
+        request.bug_id.clone()
+    } else {
+        long_id
+    };
     // The first bug handed over from a workspace learns its display name; the
     // session list keeps grouping by it instead of the repository folder name.
     remember_project_name(app, request.workspace_id.trim(), &detail.workspace_name);
@@ -1198,7 +1244,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
             kind: ProjectKind::Tapd,
         }),
         title: title.clone(),
-        bug_id: Some(request.bug_id.clone()),
+        bug_id: Some(bug_id.clone()),
         workflow: Workflow::Queued,
         status: SessionStatus::Idle,
         repo_path: repo_path.clone(),
@@ -1219,7 +1265,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
         json_path: export.bug_json,
         repo_path: work_dir.path.clone(),
         workspace_name,
-        bug_id: request.bug_id,
+        bug_id,
         severity,
         priority,
         user_prompt: request.extra_prompt.unwrap_or_default(),
@@ -2001,7 +2047,63 @@ async fn begin_writeback(app: &AppHandle, record: TaskRecord) -> Result<DshTask,
         .await;
     }
     emit(app);
+    spawn_writeback_watchdog(app.clone(), record.task.id.clone(), record.meta.writeback_attempts);
     Ok(record.task)
+}
+
+/// A write-back turn that never ends must not sit in `finalizing` forever: a
+/// model can keep retrying a tool that returns the same error. After the stall
+/// window this counts the attempt as consumed, stops the turn, and lets the
+/// host fallback finish the missing TAPD writes.
+const WRITEBACK_STALL_SECS: u64 = 300;
+
+fn spawn_writeback_watchdog(app: AppHandle, session_id: String, attempt: u32) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(WRITEBACK_STALL_SECS)).await;
+        let Ok(Some(record)) = load_record(&app, &session_id).await else {
+            return;
+        };
+        if record.task.workflow != Workflow::Finalizing
+            || record
+                .task
+                .finalize
+                .as_ref()
+                .and_then(|finalize| finalize.step)
+                != Some(FinalizeStep::Writeback)
+            || (record.meta.comment_posted && record.meta.status_updated)
+        {
+            return;
+        }
+        // A retry or a newer attempt owns the row now.
+        if record.meta.writeback_attempts != attempt {
+            return;
+        }
+        let mut record = record;
+        // A stalled turn is the last attempt: the settle path then writes the
+        // missing half itself instead of asking the model again.
+        record.meta.writeback_attempts = HOST_WRITEBACK_ATTEMPTS;
+        record.touch();
+        if !save_record(&app, record.clone(), Workflow::Finalizing)
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if live_running(&app, &session_id) {
+            if let Ok(bridge) = bridge(&app) {
+                let _ = bridge.cancel_session(&session_id).await;
+            }
+        }
+        // Let `finish_turn` settle a cancelled turn; an already-idle row with
+        // no live session (for example after a restart) is settled here.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let Ok(Some(fresh)) = load_record(&app, &session_id).await else {
+            return;
+        };
+        if fresh.task.workflow == Workflow::Finalizing {
+            let _ = settle_writeback(&app, fresh, &now()).await;
+        }
+    });
 }
 
 /// Records the failed step and keeps the task in `finalizing`.
@@ -2243,6 +2345,7 @@ async fn tapd_transitions(app: &AppHandle, session_id: &str) -> Result<Value, St
         return Err(not_found(session_id));
     };
     let (workspace, bug) = writeback_bug(&record)?;
+    let bug = resolved_bug_id(app, &workspace, &bug).await;
     let info = crate::bug_write::load_transition_info(app, &workspace, &bug).await?;
     let transitions: Vec<Value> = info
         .transitions
@@ -2266,6 +2369,7 @@ async fn tapd_comment(
         return Err(not_found(session_id));
     };
     let (workspace, bug) = writeback_bug(&record)?;
+    let bug = resolved_bug_id(app, &workspace, &bug).await;
     let comment = params
         .get("comment")
         .and_then(Value::as_str)
@@ -2302,6 +2406,7 @@ async fn tapd_status(app: &AppHandle, session_id: &str, params: &Value) -> Resul
         return Err(not_found(session_id));
     };
     let (workspace, bug) = writeback_bug(&record)?;
+    let bug = resolved_bug_id(app, &workspace, &bug).await;
     if record.meta.status_updated {
         return Ok(json!({
             "from": record.meta.status_from,
@@ -2364,6 +2469,30 @@ fn writeback_bug(record: &TaskRecord) -> Result<(String, String), String> {
         .filter(|id| !id.trim().is_empty())
         .ok_or_else(|| tr("dsh.task.state.invalid").to_string())?;
     Ok((workspace, bug))
+}
+
+/// TAPD's write APIs want the long entity id; a row created before the enqueue
+/// fix may still carry the short display id. Resolve it once for the call (the
+/// row itself is not rewritten; the user's data is disposable and the new
+/// enqueue stores the long id).
+async fn resolved_bug_id(app: &AppHandle, workspace: &str, bug: &str) -> String {
+    if bug.len() >= 16 {
+        return bug.to_string();
+    }
+    match crate::commands::bugs::fetch_bug_detail(app, workspace, bug).await {
+        Ok(detail) => {
+            let long = detail.summary.id.trim();
+            if long.is_empty() {
+                bug.to_string()
+            } else {
+                long.to_string()
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, bug, "short bug id was not resolved");
+            bug.to_string()
+        }
+    }
 }
 
 static WRITEBACK_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();

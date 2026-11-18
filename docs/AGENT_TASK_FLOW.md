@@ -270,7 +270,14 @@ ctx.tools.register(definition, { when: ({ agent }) => phaseOf(agent.session.id) 
 `dsh_task_retry_finalize`：从 `finalize_step` 重试（commit 幂等、merge 可重试、cleanup 可重试、
 writeback 重新触发回合）。没有 `dsh_task_merge`。
 
-旧任务迁移：`awaiting_merge` → `Finalizing(step=merge)`，用户点重试即可完成合并与回写。
+回写可靠性：
+
+- TAPD 的评论/状态接口使用长 entity id；入队时存 `detail.summary.id`，旧行如果还是短 ID，
+  在回写调用时解析一次（不重写行）。
+- 回写回合 5 分钟仍未结束（例如模型反复重试同一个报错工具）会被取消并计为一次失败；
+  `attempts >= 2` 时宿主直接补写评论/状态，任务置 done 并在 `finalize.notice` 说明。
+- 应用启动时，`finalizing(step=writeback)` 且没有 live 会话的未完成任务直接走宿主兜底，
+  避免重启后丢失 host-prompt 永久卡住。
 
 ---
 

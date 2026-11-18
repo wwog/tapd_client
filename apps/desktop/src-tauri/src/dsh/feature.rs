@@ -48,6 +48,11 @@ pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
     if let Err(error) = super::tasks::schedule(app).await {
         tracing::warn!(%error, "queued dsh tasks were not scheduled");
     }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        super::tasks::recover_finalizing(&handle).await;
+    });
     Ok(status)
 }
 
@@ -60,6 +65,11 @@ pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
     if let Err(error) = super::tasks::schedule(app).await {
         tracing::warn!(%error, "queued dsh tasks were not scheduled after a restart");
     }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        super::tasks::recover_finalizing(&handle).await;
+    });
     Ok(status)
 }
 
