@@ -12,7 +12,6 @@ import { ArrowDown } from "lucide-react";
 
 import { Button, Spinner } from "../components/ui";
 import { t, useLocale } from "../lib/i18n";
-import { TodoCard } from "../../../shared/agent/TodoCard";
 import { TurnBlock as ChildTurnBlock } from "../../../shared/agent/TurnBlock";
 import type { AgentNotice, AgentTurnBlock } from "../../../shared/agent/types";
 import type { AgentSubagentRow } from "../../../shared/agent/subagents";
@@ -20,13 +19,14 @@ import type { DshEntry } from "../lib/dsh";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { UserBubble } from "./MessageParts";
+import { PromptNavigator } from "./PromptNavigator";
+import { buildPromptItems, type PromptNavItem } from "./promptNav";
 import { TurnBlock } from "./TurnBlock";
 import { groupTurns } from "./turns";
 import { assembleSessionSubagents, isPendingChild } from "./subagents";
 import { agentActions, agentStore, isSessionRunning } from "./store";
 
 const EMPTY_ITEMS: DshEntry[] = [];
-const EMPTY_TODOS: never[] = [];
 
 /**
  * Committed history plus the live attempt on top, grouped per turn. The page
@@ -38,9 +38,9 @@ const EMPTY_TODOS: never[] = [];
  * memoized on its real input and every settled turn gets the same props, so
  * the per-token cost is the live tail instead of the whole transcript.
  *
- * The session todo card sits above the turns (session-level state, no turn),
- * and each turn's `subagent` calls render as the shared sub-agent fold with
- * child transcripts assembled in `subagents.ts`.
+ * Each turn's `subagent` calls render as the shared sub-agent fold with child
+ * transcripts assembled in `subagents.ts`. The session todo card is not here:
+ * it floats in the tab row's attention corner (`AgentWorkspace` → `StreamHud`).
  */
 export function MessageStream({ visible = true }: { visible?: boolean }) {
   const state = agentStore.use();
@@ -48,12 +48,10 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   const sessionId = state.selectedId;
   const history = sessionId ? state.entries[sessionId] : undefined;
   const live = sessionId ? state.live[sessionId] : undefined;
-  const session = sessionId ? state.sessions[sessionId] : undefined;
   const pending = (sessionId ? state.pendingPrompts[sessionId] : undefined) ?? [];
   const approvals = state.approvals.filter((item) => item.sessionId === sessionId);
   const questions = state.questions.filter((item) => item.sessionId === sessionId);
   const items = history?.items ?? EMPTY_ITEMS;
-  const todos = session?.todos ?? EMPTY_TODOS;
 
   const committedCalls = useMemo(
     () =>
@@ -117,6 +115,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   // Grouping is memoized on the committed rows: the live overlay re-renders
   // per token and must not re-split the transcript.
   const blocks = useMemo(() => groupTurns(items), [items]);
+  const promptItems = useMemo(() => buildPromptItems(blocks, locale), [blocks, locale]);
   const running = isSessionRunning(state, sessionId);
 
   // The live stream belongs to the turn whose `turn/end` has not landed yet;
@@ -238,10 +237,6 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   // the bottom, so the tail can keep streaming without dragging them down.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
-  const todoKey = useMemo(
-    () => `${todos.length}:${todos.map((todo) => todo.status).join("")}`,
-    [todos],
-  );
   const lastUserSeq = useMemo(() => {
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const entry = items[index];
@@ -265,7 +260,6 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         pending.length,
         approvals.length,
         questions.length,
-        todoKey,
       ].join(":"),
     [
       approvals.length,
@@ -276,7 +270,6 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       liveTools.length,
       pending.length,
       questions.length,
-      todoKey,
     ],
   );
 
@@ -305,6 +298,19 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     const stuck = distance < 48;
     stickRef.current = stuck;
     setAwayFromBottom(!stuck);
+  }, []);
+
+  // A prompt jump is a positioning action: stop following the tail first so
+  // the next streaming delta cannot drag the reader back down.
+  const jumpToPrompt = useCallback((item: PromptNavItem) => {
+    const element = scrollRef.current;
+    if (!element) return;
+    stickRef.current = false;
+    setAwayFromBottom(true);
+    const target =
+      element.querySelector<HTMLElement>(`[data-agent-user="${item.seq}"]`) ??
+      element.querySelector<HTMLElement>(`[data-agent-turn="${item.key}"]`);
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
   // An instant jump, not a smooth one: the bottom-follow pins the tail on the
@@ -345,8 +351,16 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
   return (
     <div
-      className={clsx("relative flex min-h-0 flex-1 flex-col", !visible && "hidden")}
+      className={clsx(
+        "@container relative flex min-h-0 flex-1 flex-col",
+        !visible && "hidden",
+      )}
     >
+      <PromptNavigator
+        items={promptItems}
+        currentKey={promptItems[0]?.key}
+        onJump={jumpToPrompt}
+      />
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -354,16 +368,14 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         // scroll anchoring on made a fold's height animation drag the scroll
         // position with it, which reads as a stutter/jump under the pointer.
         style={{ overflowAnchor: "none" }}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4"
       >
         <div
           className={clsx(
-            "mx-auto flex w-full max-w-3xl flex-col gap-5",
+            "mx-auto flex w-full max-w-[46rem] flex-col gap-5",
             (quiet || loading || failed) && "min-h-full justify-center",
           )}
         >
-          {todos.length > 0 ? <TodoCard todos={todos} locale={locale} /> : null}
-
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
               <Spinner />

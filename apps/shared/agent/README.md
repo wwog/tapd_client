@@ -22,7 +22,9 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `TodoCard` | 会话级 todo 列表卡片（`todo/write`），流顶部一张，不属于任何轮次 |
+| `TodoCard` | 会话级 todo 列表卡片（`todo/write`），不属于任何轮次；伴侣端放在轮次上方的整宽卡（`TodoCard` 收起/展开）+ 共用的 `TodoList` 行 |
+| `TodoHud` | 桌面「对话 / 轨迹」行右侧浮动的 todo：收起是「当前任务 / 任务 x/y」的小胶囊（不遮挡对话），展开是 `w-80` 面板（标题 + 进度 + 同一份 `TodoList`），面板落在这行下方 |
+| `StreamHud` | 视图 tab 行右侧的浮动提示区：宿主把它放进「对话 / 轨迹」那一行（`items` 是 `{ id, content }` 列表，容器 `pointer-events-none`，卡片自己接管点击）；`StreamHudCard` 是通用胶囊/面板壳（收起 `h-8` 胶囊、hover 换展开图标、展开右上「收起为胶囊」、Escape 收起、面板 `top-full` 落到行下方）；终端数 / 子 agent 数按同一契约往里加 |
 | `TurnBlock` | 一个轮次的壳：完成态 `已工作`（过程折叠，收起后只剩它和最后一段说明）/ 展开后的根级子 agent + 流程列表 / 运行态 `工作中` / 失败重试 |
 | `FlowBlock` | 一个流程：概要行（或运行中的最新步骤）+ 按执行顺序的步骤（思考行 / 工具叶子行）+ 说明（流程自身不折叠说明；整轮 `已工作` 收起时随过程一起隐藏） |
 | `SubagentRow` | 根级子 agent 行：description 单行、彩色 icon、展开即子会话 |

@@ -1,0 +1,425 @@
+# 内置 Agent 任务流（2026-11-18 决策版）
+
+本文是 dsh 内置 Agent 任务流的实现契约。它取代 `docs/DSH.md` §9 中与非 Worktree 流程、
+自动收尾、推送远端相关的描述；其余章节（桥、权限、审批、团队）仍然有效。
+
+## 0. 一句话
+
+**执行阶段模型只碰代码，不知道 TAPD 的存在；AI 主动提交审核；人审核通过后宿主完成
+提交/合并/清理，再让模型在收尾阶段通过条件工具写 TAPD。所有工作流任务都在独立 worktree 中运行。**
+
+## 1. 决策（2026-11-18）
+
+1. **所有 bug / local 工作流任务都在独立 worktree 中运行**。删除非 Worktree 工作流分支。
+2. **不 push 远端**。审核通过 = 提交 → 合并主仓库 → 删除 worktree；后续推送由用户用自由会话
+   或未来的 git 功能完成。
+3. **所有有改动的任务都必须人工审核**。删除“极简单流程自动收尾”，不做自动通过。
+4. **执行阶段模型看不到任何 TAPD 工具**（连工具名都不出现在 schema/提示词里）。
+   审核通过、进入收尾阶段后才通过条件工具出现，并由系统提示词说明怎么做。
+5. **自由会话默认不使用 worktree**；会话创建后，输入框上方的“新建 worktree”开关可按会话启用，
+   默认关闭。自由会话没有审核/合并/回写，worktree 只是隔离工作区。
+6. **队列并行数保留**（`executionUnits`，1–8），并真正落地为工作流任务的并发上限；
+   配置里的 `worktreeEnabled` 删除。
+7. **会话列表按项目分组**；每个分组头可新建自由会话；默认存在“未关联项目”分组。
+   手动新建的会话永远是自由会话。
+8. **移动端审核**用内置资源管理器文件查看：文件列表 + `#/file?ws=__session__:<id>&path=<相对路径>`，
+   不要求逐文件 diff 面板。
+
+---
+
+## 2. 会话模型
+
+| | bug / local 会话 | 自由会话（chat） |
+|---|---|---|
+| 创建入口 | 缺陷详情 / 事项页 | 项目分组头的「+」 |
+| workflow | queued → running → awaiting_review → finalizing → done | 无 workflow，只有实时状态 |
+| 执行目录 | 永远独立 worktree | 默认项目仓库或 scratch；开关启用后为 worktree |
+| 工具面 | 执行阶段 `task_submit`；收尾阶段 TAPD 工具 | 永远没有任务/TAPD 工具 |
+| 审核界面 | 有 | 无 |
+| TAPD 回写 | 有（bug 任务） | 无 |
+| 列表表现 | workflow chip、排队/待审核角标 | 实时状态点、项目分组 |
+
+`project` 字段对两类会话都可有：bug/local 是任务归属，chat 是分组 + 默认 cwd。
+
+---
+
+## 3. 状态机
+
+```rust
+pub enum Workflow {
+    Queued,          // 等待执行槽位
+    Running,         // AI 正在改代码
+    AwaitingReview,  // 有改动，等用户审核
+    Finalizing,      // 提交 → 合并 → 清理 → TAPD 回写
+    Done,
+    Failed,
+    Canceled,
+}
+```
+
+迁移时旧 `awaiting_merge` 映射为 `Finalizing`（`finalize_step = merge`）；
+旧的非 Worktree 活动任务（running/awaiting_review/awaiting_merge）映射为 `Canceled`，
+并把原因写进 `finalize.notice`。终态行不变。
+
+允许的迁移（`can_move`）：
+
+```
+Queued          -> Running | Canceled | Failed
+Running         -> AwaitingReview | Done | Canceled | Failed
+AwaitingReview  -> Finalizing | Running | Canceled
+Finalizing      -> Done
+Done/Failed/Canceled -> 终态（用户发新消息时由 reopen_for_input 重新打开 Running）
+```
+
+说明：
+
+- `task.submit` 成功且有改动 → `Running -> AwaitingReview`（立即；审核界面切换）。
+  无改动 → `Running -> Done`。重复调用返回 `outcome: already`。
+- `turn/end` 兜底：AI 没调用 `task_submit` 但有改动 → `AwaitingReview`；无改动 → `Done`。
+  已经进入 `AwaitingReview` 时只刷新 `changes`，不重复迁移。
+- 用户从 `AwaitingReview` 发消息 → `Running`（沿用 `reopen_for_input`），清空本轮待审核状态。
+- `Finalizing` 内的失败停在 `Finalizing`，用 `finalize_step` 标记失败步骤，`dsh_task_retry_finalize`
+  从该步骤重试。`Finalizing` 不允许取消（改动已合并）。
+- 子 agent 会话不参与状态机；phase 只按任务根会话设置。
+
+---
+
+## 4. 工具与阶段
+
+### 4.1 阶段（phase）
+
+每个根会话有且只有一个 phase：
+
+| phase | 何时 | 可见工具 |
+|---|---|---|
+| `chat` | 自由会话 | 无 |
+| `none` | 队列中 / done / failed / canceled | 无 |
+| `execute` | workflow = running | `task_submit` |
+| `review` | workflow = awaiting_review | 无 |
+| `writeback` | workflow = finalizing 且 git 步骤已完成 | `tapd_get_transitions` / `tapd_add_comment` / `tapd_update_status` / `task_complete` |
+
+**执行阶段不能出现任何 `tapd_*` 工具。** 现有 `tapd_ping` 删除。
+
+### 4.2 工具定义
+
+执行阶段（仅 bug/local）：
+
+```ts
+task_submit({
+  summary: string,        // 必填，根因/改动摘要
+  verification?: string,  // 怎么验证的
+  risks?: string,         // 风险点
+})
+```
+
+收尾阶段（仅 bug）：
+
+```ts
+tapd_get_transitions()                 // 当前状态 + 合法目标
+tapd_add_comment({ comment: string })  // 评论，绑定当前会话的 bug
+tapd_update_status({ status: string }) // 只允许合法目标；默认 resolved
+task_complete({ note?: string })       // 校验评论+状态都完成，置 done
+```
+
+规则：
+
+- 工具不接受 `bugId`/`workspaceId`；宿主用 session 绑定解析，防止跨 bug 写。
+- 评论长度上限 8000 字符；重复调用幂等（返回 `duplicate: true`）。
+- `tapd_update_status` 复用 `bug_write::perform_transition`，`new` 的 bug 会自动先受理再 resolved。
+- `task_complete` 在评论或状态未完成时返回 tool error（不结束回合），AI 可在同一回合修正。
+- 工具实现走宿主 RPC（见 §5），不暴露宿主 HTTP token 给 dsh 进程。
+
+### 4.3 实现方式：条件注册
+
+```ts
+ctx.tools.register(definition, { when: ({ agent }) => phaseOf(agent.session.id) === 'execute' })
+```
+
+- `when` 每个模型 step 求值一次；false 时工具从 schema、描述、PTC bindings、执行面全部消失。
+- `when` 只读内存 phase map，不做 RPC、不改注册。
+- 服务端（宿主 RPC）在执行前再次校验 phase / kind / bug 绑定；即使 map 过期或模型伪造调用也写不进去。
+- 不需要动态加载/卸载插件；插件常驻，工具按阶段可见即可。
+
+---
+
+## 5. 宿主 ↔ 插件协议
+
+在现有 `tapd-bridge` NDJSON 通道上新增帧。
+
+### 5.1 宿主 → 插件
+
+`task-phase`（请求，需要 ack）：
+
+```json
+{ "type": "task-phase", "requestId": 12, "sessionId": "s1",
+  "phase": "execute|review|writeback|chat|none", "kind": "bug|local_item|chat" }
+```
+
+插件更新内存 map 后回 `{ "requestId": 12, "ok": true }`。
+
+`task-phases`（快照，连接/重连后）：
+
+```json
+{ "type": "task-phases", "phases": [
+  { "sessionId": "s1", "phase": "writeback", "kind": "bug" }
+] }
+```
+
+`host-prompt`（宿主发起的隐藏回合，收尾用）：
+
+```json
+{ "type": "host-prompt", "sessionId": "s1", "text": "代码已提交并合并……" }
+```
+
+插件用 `createUserMessage({ content: [{ type: "text", text }], source: { kind: "host" } })`
+走 `agent.followup`；转录 UI 不把它渲染成用户发言。宿主先推 `task-phase` 并等 ack，再发
+`host-prompt`，保证同一回合第一次组装时写回段和工具都已就绪。
+
+### 5.2 插件 → 宿主
+
+```json
+{ "type": "host", "requestId": "p-7", "method": "task.submit",
+  "sessionId": "s1", "params": { ... } }
+```
+
+宿主回：
+
+```json
+{ "type": "host-reply", "requestId": "p-7", "ok": true, "data": { ... } }
+```
+
+方法：
+
+| method | params | data |
+|---|---|---|
+| `task.submit` | `{ summary, verification?, risks? }` | `{ outcome: "review" \| "done" \| "already", phase }` |
+| `task.complete` | `{ note? }` | `{ done: true }`，未完成时 `ok:false, error` |
+| `tapd.transitions` | `{}` | `{ current, alias, transitions: [{ key, label }] }` |
+| `tapd.comment` | `{ comment }` | `{ duplicate?: boolean }` |
+| `tapd.status` | `{ status }` | `{ from, to }` |
+
+宿主校验：token、session 存在、phase、kind、bug 绑定；失败返回 `ok:false` + 可读 error。
+
+请求 id 由插件生成并带 `p-` 前缀，避免与宿主数字 id 冲突。
+
+---
+
+## 6. 系统提示词
+
+两个条件 section（`ctx.systemPrompt.section({ text: ctx => ... })`，空字符串会被丢弃）：
+
+### 6.1 执行段（phase = execute，bug/local）
+
+> 代码修改完成后，必须调用 `task_submit`，用 summary 说明根因与改动，用 verification 说明
+> 你如何验证，用 risks 说明风险点；调用后停止继续修改。不要 git commit、不要 push、不要写
+> 任何外部系统。
+
+### 6.2 收尾段（phase = writeback，bug）
+
+> 代码已由宿主提交并合并到主仓库，worktree 已清理；不要 push、不要修改代码。
+> 现在只做 TAPD 收尾：
+> 1. `tapd_get_transitions` 确认合法目标；
+> 2. `tapd_add_comment` 写评论（根因、改动、验证、风险、分支、提交）；
+> 3. `tapd_update_status` 置为 resolved；
+> 4. `task_complete`。
+> 工具失败按错误提示修正后重试。
+
+收尾触发消息由宿主发送，`source.kind = "host"`（转录 UI 不显示为用户发言），正文带
+分支、commit、变更统计和 bug 链接。
+
+---
+
+## 7. 审核界面
+
+### 桌面
+
+`AgentWorkspace` 在 `awaiting_review | finalizing` 时把主区切为 `ReviewView`，保留
+「审核 / 对话」切换：
+
+- 头部：项目名、仓库路径、branch/worktree、变更统计。
+- AI 摘要：`task.review`（summary / verification / risks）。
+- 文件列表：`dsh_task_changes` 返回的相对路径、状态、+/−。
+  - 「应用内查看」：`dsh_task_diff { sessionId, file }` 展开逐文件 diff。
+  - 「IDE 打开」：`open_file(绝对路径, kind=file)`，沿用 `open_with` 选择器；
+    项目目录用 `open_directory`。
+- 底部：`通过并收尾` / `继续修改` / `放弃`。
+- `finalizing`：步骤条「提交 → 合并 → 清理 → 回写」，失败显示 `finalize.error` 与重试。
+- `done`：提交 hash、分支、评论/状态结果、「在 TAPD 打开」。
+
+### 移动端
+
+- 同一份 `task.review` 摘要 + 文件列表。
+- 文件行导航到 `#/file?ws=__session__:<sessionId>&path=<相对路径>`，由内置文件查看器展示。
+- 底部：通过 / 放弃；finalizing 显示步骤与错误。
+- 不要求逐文件 diff 面板。
+
+---
+
+## 8. 收尾（不 push）
+
+`dsh_task_approve`（仅 `awaiting_review`，且无活跃回合）：
+
+1. `commit`：worktree 内 `git add -A` + 确定性 message（worktree 隔离，不会混入无关改动）。
+2. `merge`：主仓库 `git merge --no-ff`；冲突 abort 并停在 `finalizing`。
+3. `cleanup`：worktree 干净则 `git worktree remove`；脏则保留并记 `notice`。
+4. `writeback`：phase=writeback（推 `task-phase` 并等 ack）→ 发 `source.kind=host` 的触发消息。
+5. `task_complete` 成功或回写回合结束时评论+状态都已完成 → `Done`；否则停在 `finalizing`，
+   `finalize.error` 说明未完成项，可重试。
+
+`dsh_task_retry_finalize`：从 `finalize_step` 重试（commit 幂等、merge 可重试、cleanup 可重试、
+writeback 重新触发回合）。没有 `dsh_task_merge`。
+
+旧任务迁移：`awaiting_merge` → `Finalizing(step=merge)`，用户点重试即可完成合并与回写。
+
+---
+
+## 9. 队列并行
+
+- 配置只保留 `executionUnits`（1–8，默认 2）；删除 `worktreeEnabled`。
+- 入队时完成导出与 worktree 创建，任务进入 `Queued`，提示词存 `meta.pendingPrompt`。
+- 调度：`active = 有 live 会话且 workflow = Running 的任务数`；`active < units` 时按
+  `createdAt` 升序启动 `Queued`。
+- 释放槽位：任务离开 `Running`（→ awaiting_review / done / failed / canceled）时触发调度。
+- 应用重启后，`Queued` 任务按当前 live 会话数重新调度；持久化 `Running` 但无 live 会话的任务
+  不算槽位，等用户打开/恢复。
+- 自由会话（含 chat worktree）不占工作流队列。
+
+---
+
+## 10. 自由会话的 worktree 开关
+
+- 位置：输入框上方一行紧凑开关「新建 worktree」，仅 `kind=chat` 显示，默认关。
+- 启用条件：会话空闲、所属项目已配置仓库。未关联项目或未配置仓库时禁用并给出提示。
+- 启用：从项目 HEAD 创建 `worktrees/<sessionId>`，分支 `chat/<8 位 id>`；把会话 cwd 移到
+  worktree（桥 `assign` + 可写根），写回 `worktreePath` / `branch` / `meta.worktree=true`。
+- 关闭：会话空闲且 worktree 干净时移除 worktree，cwd 回到项目仓库（未关联则 scratch）；
+  脏则拒绝并提示「worktree 有未提交改动」。分支有提交时保留分支，否则删除。
+- 自由会话没有审核/合并/回写；用户可在会话内或未来 git 功能里处理提交/推送。
+- `session_root` 对带 worktree 的 chat 必须返回 worktree（当前实现先返回 chat scratch，需要改）。
+- `feature::prompt` 只在 chat 没有 worktree 时分配 chat scratch（当前每次 prompt 都会分配，需要改）。
+
+---
+
+## 11. 会话列表与项目分组
+
+- 分组 = 所有已配置项目（TAPD 项目 + 本地项目）+ 默认「未关联项目」（恒在最后）。
+- 每个分组头有「+」：新建自由会话。删掉列表顶部的全局「新建会话」按钮。
+- 分组内：bug/local 任务 + 该项目下的自由会话；按最近活动排序；折叠偏好沿用
+  `agent.collapsed-projects.v1`。
+- 手动新建的会话永远 `kind=chat`；即使创建时选了项目，也没有 workflow。
+- 项目分组的新会话 cwd = 项目仓库；默认分组 = chat scratch。
+- `dsh_projects` 返回 `{ projects: [{ kind, id, name, repoPath }] }`，供空分组渲染。
+
+---
+
+## 12. 契约
+
+### 12.1 前端类型
+
+```ts
+export type DshTaskWorkflow =
+  | "queued"
+  | "running"
+  | "awaiting_review"
+  | "finalizing"
+  | "done"
+  | "failed"
+  | "canceled";
+
+export type DshTaskReview = {
+  summary: string;
+  verification?: string;
+  risks?: string;
+  files: string[];
+};
+
+export type DshTaskFinalize = {
+  step: "commit" | "merge" | "cleanup" | "writeback" | null;
+  error?: string;
+  instructions?: string;
+  notice?: string;
+};
+
+export type DshTaskFile = {
+  path: string;            // 相对 worktree 根
+  status: "added" | "modified" | "deleted" | "renamed" | "untracked";
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type DshTask = {
+  id: string;
+  kind: "chat" | "bug" | "local_item";
+  project: { id: string; name: string; kind: "tapd" | "local" } | null;
+  title: string;
+  bugId?: string;
+  workflow: DshTaskWorkflow;
+  status: DshSessionStatus;
+  repoPath: string;
+  worktreePath?: string;
+  branch?: string;
+  jsonPath: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  changes?: { files: number; additions: number; deletions: number } | null;
+  review?: DshTaskReview | null;
+  finalize?: DshTaskFinalize | null;
+};
+```
+
+`merge` 字段删除，由 `finalize` 取代。
+
+### 12.2 命令
+
+| 名称 | 入参 | 返回 |
+|---|---|---|
+| `dsh_tasks` | — | `{ tasks }` |
+| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments? }` | `{ task }`（可能 `queued`） |
+| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments? }` | `{ task }` |
+| `dsh_task_approve` | `{ sessionId }` | `{ task }` |
+| `dsh_task_retry_finalize` | `{ sessionId }` | `{ task }` |
+| `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }` |
+| `dsh_task_changes` | `{ sessionId }` | `{ files: DshTaskFile[], truncated }` |
+| `dsh_task_diff` | `{ sessionId, file? }` | `{ diff, truncated }` |
+| `dsh_task_resume` | `{ sessionId }` | `{ task }` |
+| `dsh_task_delete` | `{ sessionId }` | `{ sessionId }` |
+| `dsh_new_session` | `{ project?: { kind, id } }` | `{ sessionId }` |
+| `dsh_projects` | — | `{ projects }` |
+| `dsh_chat_worktree` | `{ sessionId, enabled }` | `{ task }` |
+| `dsh_session_dir` | `{ sessionId }` | `{ path, exists }` |
+
+事件：`dsh://tasks { tasks }`。
+
+### 12.3 配置
+
+- 删除 `worktreeEnabled`。
+- 保留 `executionUnits`（1–8，默认 2），用于工作流任务并发。
+- 旧配置里的 `worktreeEnabled` 读入时忽略。
+
+---
+
+## 13. 迁移
+
+1. `cache.sqlite3` 的 `dsh_tasks` 行内 JSON：`workflow` 旧值 `awaiting_merge` → `finalizing`，
+   `finalize.step = "merge"`。
+2. 旧非 Worktree 活动任务（`meta.worktree = false` 且 workflow 非终态）→ `canceled`，
+   `finalize.notice = "非 Worktree 任务流已下线，请重新发起"`。导出目录保留。
+3. 旧 `merge` 字段读入时映射到 `finalize.error/instructions`。
+4. 不需要 SQL 列迁移；如新增列再升 schema 版本。
+
+---
+
+## 14. 实施分工（文件所有权）
+
+- **Rust 工作流核心**：`dsh/tasks.rs`、`task_store.rs`、`worktree.rs`、`writeback.rs`、
+  `feature.rs`、`runtime.rs`、`bridge.rs`、`agent_settings.rs`、`crates/tapd-i18n/src/catalog/dsh_task.rs`。
+- **插件**：`dsh/plugins/tapd-bridge/index.js`、`dsh/plugins/tapd-tools/index.js`。
+- **桌面 UI**：`apps/desktop/src/agent/*`、`apps/desktop/src/lib/dsh.ts`、
+  `apps/desktop/src/lib/i18n/catalog/agent.ts`、`AgentConfigTab.tsx`。
+- **移动端**：`apps/companion/src/**`、`apps/desktop/src-tauri/src/companion/feature.rs`、
+  移动端 i18n 目录。
+
+验收：`pnpm typecheck`、`pnpm i18n:check`、`cargo check --workspace`、`pnpm test:policy`、
+相关 cargo 测试；TestAgent 走一遍 queued → running → review → finalizing → done。

@@ -64,8 +64,8 @@ export function Composer() {
       : t("common.send");
 
   return (
-    <div className="px-4 pb-3 pt-2">
-      <div className="mx-auto max-w-3xl">
+    <div className="px-6 pb-3 pt-2">
+      <div className="mx-auto max-w-[46rem]">
         {chat ? <ChatTeamBar /> : null}
         <div className="rounded-xl border border-border bg-surface transition focus-within:border-slate-300">
           <textarea
@@ -98,7 +98,10 @@ export function Composer() {
                 disabled={primaryDisabled}
                 onClick={() => (running ? void stop() : void send())}
                 className={clsx(
-                  "grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-700",
+                  // Semantic primary, not `bg-slate-900`: the dark theme
+                  // inverts slate, so that painted a white block under a white
+                  // arrow. `primary-foreground` keeps the glyph readable.
+                  "grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition hover:bg-primary-hover",
                   "disabled:cursor-default disabled:bg-slate-200 disabled:text-slate-400",
                 )}
               >

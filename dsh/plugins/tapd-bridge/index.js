@@ -470,11 +470,36 @@ export function apply(ctx) {
     }
   }
 
-  const applyPending = (sessionId) => {
+  /**
+   * Applies everything queued for a session whose edges have arrived.
+   *
+   * `deferTeam` exists for `agent/created`: the engine's own creation hooks run
+   * right after ours, including agent-team's startup hook that writes the
+   * configured default (`team/mode true`). Applying the queued toggle in the
+   * same turn raced that write — `setEnabled(false)` read a projection that had
+   * not seen the default yet, decided it was already off, skipped the append,
+   * and the engine then recorded true, flipping the switch on after the first
+   * message. One task later the default is in the log, so the toggle appends a
+   * real `team/mode false`. Model / plan / cwd do not have that no-op, so they
+   * stay synchronous and land before the first turn resolves its route.
+   */
+  const applyPending = (sessionId, { deferTeam = false } = {}) => {
     const cwd = assignments.get(sessionId)
     if (cwd !== undefined) applyAssignment(sessionId, cwd)
     const enabled = teamModes.get(sessionId)
-    if (enabled !== undefined) applyTeamMode(sessionId, enabled)
+    if (enabled !== undefined) {
+      if (deferTeam) {
+        setTimeout(() => {
+          try {
+            applyTeamMode(sessionId, enabled)
+          } catch (error) {
+            warn(`team ${sessionId}`, error)
+          }
+        }, 0)
+      } else {
+        applyTeamMode(sessionId, enabled)
+      }
+    }
     const selection = modelSelections.get(sessionId)
     if (selection !== undefined) applyModelSelection(sessionId, selection)
     const plan = planModes.get(sessionId)
@@ -494,7 +519,7 @@ export function apply(ctx) {
     }
   })
   ctx.on('agent/created', ({ agent } = {}) => {
-    applyPending(agent?.session?.id)
+    applyPending(agent?.session?.id, { deferTeam: true })
     // A resumed Agent lost the runtime-only grant its predecessor had.
     restoreSandboxRoot(agent)
   })

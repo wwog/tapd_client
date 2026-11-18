@@ -245,9 +245,13 @@ function TurnBlockImpl({
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3" data-agent-turn={block.key}>
       {users.map((entry) => (
-        <div key={entryKey(entry)} className="flex flex-col">
+        <div
+          key={entryKey(entry)}
+          className="flex scroll-mt-4 flex-col"
+          data-agent-user={entry.seq}
+        >
           <UserBubble text={entry.text} locale={locale} />
           <MessageMeta at={entry.at} text={entry.text} align="right" locale={locale} />
         </div>

@@ -209,9 +209,17 @@ async fn set(app: &AppHandle, request: TeamSetRequest) -> Result<Value, String> 
         .set_team_mode(&request.session_id, request.enabled)
         .await?;
 
-    let mut team = wait_for_mode(&bridge, &request.session_id, request.enabled)
-        .await
-        .unwrap_or_else(|| DshTeam::empty(&request.session_id));
+    // A session the runtime has never reported has nothing to wait for: the
+    // plugin queued the toggle for its future Agent, and no echo can arrive
+    // before that Agent exists. Waiting the full timeout here only left the
+    // switch disabled for three seconds after every new chat was allocated.
+    let known = bridge.team(&request.session_id);
+    let mut team = match known {
+        Some(_) => wait_for_mode(&bridge, &request.session_id, request.enabled)
+            .await
+            .unwrap_or_else(|| DshTeam::empty(&request.session_id)),
+        None => DshTeam::empty(&request.session_id),
+    };
     // The plugin queues a toggle for a session whose Agent does not exist yet
     // (a fresh chat before its first message). The board echo only arrives once
     // the Agent is created, so reporting the old mode here would flip the

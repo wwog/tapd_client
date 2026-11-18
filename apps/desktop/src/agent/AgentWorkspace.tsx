@@ -2,10 +2,13 @@ import { Profiler, useMemo } from "react";
 
 import { Segmented } from "../components/Segmented";
 import { Markdown } from "../components/Markdown";
-import { t } from "../lib/i18n";
+import { t, useLocale } from "../lib/i18n";
 import { api } from "../lib/api";
 import type { FileTabTarget } from "../lib/fs";
 import { AgentHostProvider, type AgentHost } from "../../../shared/agent/host";
+import { StreamHud, type StreamHudItem } from "../../../shared/agent/StreamHud";
+import { TodoHud } from "../../../shared/agent/TodoHud";
+import type { AgentTodo } from "../../../shared/agent/types";
 import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
@@ -93,6 +96,10 @@ function useAgentHost(
   }, [sessionId, toast, onOpenFile]);
 }
 
+/** Stable empties: the workspace re-renders per streaming token. */
+const NO_TODOS: AgentTodo[] = [];
+const NO_HUD: StreamHudItem[] = [];
+
 /**
  * Task list + stream. The page has no header of its own: the window tab already
  * names it, so the conversation starts at the top. Settings live in a dialog
@@ -106,9 +113,21 @@ function useAgentHost(
  */
 export function AgentWorkspace({ toast, onOpenFile }: Props) {
   const state = agentStore.use();
+  const locale = useLocale();
   const host = useAgentHost(state.selectedId, { toast, onOpenFile });
   const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
   const view = agentTaskView(state, state.selectedId);
+  // The attention corner lives in the view-tab row: a folded capsule sits on
+  // that row instead of covering the transcript. TODO is the first tenant;
+  // terminals and sub-agents push their own items here.
+  const todos = (state.selectedId ? state.sessions[state.selectedId]?.todos : undefined) ?? NO_TODOS;
+  const hudItems = useMemo<StreamHudItem[]>(
+    () =>
+      todos.length > 0
+        ? [{ id: "todo", content: <TodoHud todos={todos} locale={locale} /> }]
+        : NO_HUD,
+    [todos, locale],
+  );
   // Team mode is per session, and only workflow tasks get the header switch.
   // The board replaces the transcript for any session that chose it; a chat
   // keeps its transcript unless the reader explicitly opens the board.
@@ -130,8 +149,8 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
           <TaskList />
           <div className="flex min-w-0 flex-1 flex-col">
             {state.selectedId ? (
-              <div className="shrink-0 border-b border-border px-5 py-2">
-                <div className="mx-auto flex max-w-3xl items-center justify-center">
+              <div className="relative shrink-0 px-6 py-2">
+                <div className="mx-auto flex max-w-[46rem] items-center justify-center">
                   <Segmented
                     value={view}
                     onChange={(next) => agentActions.setTaskView(state.selectedId!, next)}
@@ -141,6 +160,7 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
                     ]}
                   />
                 </div>
+                <StreamHud items={hudItems} locale={locale} />
               </div>
             ) : null}
             {selected && teamUi ? <TeamBar key={`team:${selected.id}`} task={selected} /> : null}
@@ -158,7 +178,7 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
               <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
             ) : null}
             {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
-            <div className="shrink-0 border-t border-border">
+            <div className="shrink-0">
               <RuntimeNotice />
               <Composer />
             </div>

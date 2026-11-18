@@ -1272,13 +1272,22 @@ export const agentActions = {
   },
 
   /**
-   * Switches team mode for one session. The returned board replaces the local
-   * copy, and an explicit pane choice is dropped so the new default applies.
+   * Switches team mode for one session. The switch answers the click before the
+   * round trip (a queued toggle for a session without an Agent yet has no echo
+   * to wait for), and the returned board replaces the local copy. An explicit
+   * pane choice is dropped so the new default applies.
    */
   setTeamEnabled: async (sessionId: string, enabled: boolean): Promise<void> => {
     if (agentStore.get().teamBusy[sessionId]) return;
+    const previous = agentStore.get().team[sessionId];
+    const optimistic: DshTeam = previous
+      ? { ...previous, enabled }
+      : { sessionId, enabled, tasks: [] };
     update((state) => ({
       ...state,
+      // Live state, not a spinner: the engine records the choice as soon as it
+      // accepts the control frame.
+      team: { ...state.team, [sessionId]: optimistic },
       teamBusy: { ...state.teamBusy, [sessionId]: true },
       teamErrors: { ...state.teamErrors, [sessionId]: null },
     }));
@@ -1291,10 +1300,16 @@ export const agentActions = {
         return { ...state, teamViews };
       });
     } catch (error) {
-      update((state) => ({
-        ...state,
-        teamErrors: { ...state.teamErrors, [sessionId]: String(error) },
-      }));
+      update((state) => {
+        const team = { ...state.team };
+        if (previous) team[sessionId] = previous;
+        else delete team[sessionId];
+        return {
+          ...state,
+          team,
+          teamErrors: { ...state.teamErrors, [sessionId]: String(error) },
+        };
+      });
     } finally {
       update((state) => ({
         ...state,

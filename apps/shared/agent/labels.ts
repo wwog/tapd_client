@@ -12,6 +12,13 @@ const LABELS = {
   "todo.progress": ["{done}/{total}", "{done}/{total}"],
   "todo.current": ["当前：{content}", "Now: {content}"],
   "todo.empty": ["还没有任务", "No tasks yet"],
+
+  // The stream's floating attention corner (todo card, later terminals and
+  // sub-agents). The region label is read by screen readers only.
+  "hud.region": ["重点提示", "Attention"],
+  "hud.expand": ["展开状态", "Expand"],
+  "hud.collapse": ["收起为胶囊", "Collapse to capsule"],
+
   "subagent.group": ["子 agent", "Subagents"],
   "subagent.running": ["工作中", "Working"],
   "subagent.done": ["已完成", "Done"],
