@@ -101,7 +101,13 @@ type SpanLabelKey =
   | "traj.kindAssistant"
   | "traj.kindTool"
   | "traj.kindNotice"
-  | "traj.kindSystem";
+  | "traj.kindSystem"
+  | "traj.kindInject"
+  | "traj.kindRequest"
+  | "traj.kindRetry"
+  | "traj.kindAttempt"
+  | "traj.kindCompaction"
+  | "traj.kindSeed";
 
 const KIND_LABEL: Record<TrajSpan["kind"], SpanLabelKey> = {
   user: "traj.kindUser",
@@ -109,6 +115,13 @@ const KIND_LABEL: Record<TrajSpan["kind"], SpanLabelKey> = {
   tool: "traj.kindTool",
   notice: "traj.kindNotice",
   system: "traj.kindSystem",
+  context: "traj.kindInject",
+  request: "traj.kindRequest",
+  retry: "traj.kindRetry",
+  attempt: "traj.kindAttempt",
+  compaction: "traj.kindCompaction",
+  subcall: "traj.kindTool",
+  seed: "traj.kindSeed",
 };
 
 function spanLabel(span: TrajSpan, record: TrajRecord | undefined, locale: AgentLocale): string {
@@ -637,6 +650,13 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                       span.kind === "assistant" && "bg-violet-400",
                       span.kind === "notice" && "bg-slate-400/70",
                       span.kind === "system" && "bg-cyan-500/85",
+                      span.kind === "context" && "bg-teal-500/85",
+                      span.kind === "request" && "bg-indigo-500/85",
+                      span.kind === "retry" && "bg-rose-500/85",
+                      span.kind === "attempt" && "bg-rose-400/60",
+                      span.kind === "compaction" && "bg-indigo-400/60",
+                      span.kind === "subcall" && "bg-amber-500/55",
+                      span.kind === "seed" && "bg-slate-400/50",
                       span.isError && "bg-rose-500",
                       dimmed && "opacity-15",
                       !dimmed && outside && "opacity-20",

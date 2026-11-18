@@ -9,7 +9,19 @@
 import type { AgentEntry, AgentLocale } from "../types";
 import { agentLabel } from "../labels";
 
-export type TrajKind = "user" | "assistant" | "tool" | "notice" | "system";
+export type TrajKind =
+  | "user"
+  | "assistant"
+  | "tool"
+  | "notice"
+  | "system"
+  | "context"
+  | "request"
+  | "retry"
+  | "attempt"
+  | "compaction"
+  | "subcall"
+  | "seed";
 
 /** One in-flight call of the live attempt; the host's stream shape fits as-is. */
 export type LiveToolCall = { callId?: string; name: string; args: string };
@@ -122,6 +134,53 @@ function stateOf(entry: AgentEntry): TrajState {
   return "complete";
 }
 
+/** Tool-vocabulary status (`running`/`ok`/`error`) → row state. */
+function statusState(status: "running" | "ok" | "error"): TrajState {
+  if (status === "error") return "error";
+  return status === "running" ? "running" : "complete";
+}
+
+/** `初始 · m1 · 30 个工具` — one line for the request-header row. */
+function requestText(
+  entry: Extract<AgentEntry, { kind: "request" }>,
+  locale: AgentLocale,
+): string {
+  const REASONS = {
+    initial: "traj.requestInitial",
+    resume: "traj.requestResume",
+    change: "traj.requestChange",
+    series: "traj.requestSeries",
+  } as const;
+  const reason = agentLabel(
+    REASONS[entry.reason as keyof typeof REASONS] ?? "traj.requestInitial",
+    locale,
+  );
+  const route = [entry.provider, entry.model].filter(Boolean).join("/");
+  return [
+    reason,
+    route,
+    agentLabel("traj.requestTools", locale, { count: entry.tools.length }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** `第 2/5 次 · 8.0 秒后重试` — the wait facts behind one retry row. */
+function retryMeta(
+  entry: Extract<AgentEntry, { kind: "retry" }>,
+  locale: AgentLocale,
+): string {
+  const attempt = entry.maxRetries === undefined
+    ? agentLabel("traj.retryMeta", locale, { retry: entry.retry })
+    : agentLabel("traj.retryMetaMax", locale, {
+        retry: entry.retry,
+        max: entry.maxRetries,
+      });
+  return `${attempt} · ${agentLabel("traj.retryDelay", locale, {
+    delay: formatDurationMs(entry.delayMs, locale),
+  })}`;
+}
+
 function stepTitle(step: number, locale: AgentLocale): string {
   return agentLabel("traj.groupStep", locale, { step });
 }
@@ -191,6 +250,8 @@ export function deriveTrajectory(entries: readonly AgentEntry[], locale: AgentLo
   const records: TrajRecord[] = [];
   let index = 0;
   let lastAssistant: { index: number; turn: number; step: number } | undefined;
+  // Tool call id → ledger index; a PTC sub-call hangs under its parent call.
+  const toolIndexByCallId = new Map<string, number>();
 
   for (const entry of entries) {
     if (entry.kind === "turn") continue;
@@ -268,6 +329,144 @@ export function deriveTrajectory(entries: readonly AgentEntry[], locale: AgentLo
       });
       continue;
     }
+    if (entry.kind === "context") {
+      // What else the step saw: injected instructions, cwd notices, the
+      // host's hidden prompts, session changes.
+      records.push({
+        id: `context:${entry.seq}`,
+        index,
+        kind: "context",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: previewText(
+          entry.producer === undefined ? entry.text : `${entry.producer} · ${entry.text}`,
+        ),
+        state: "complete",
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
+    if (entry.kind === "request") {
+      // The surface the request was built on: route, capacity, tool names.
+      records.push({
+        id: `request:${entry.seq}`,
+        index,
+        kind: "request",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: requestText(entry, locale),
+        state: "complete",
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
+    if (entry.kind === "retry") {
+      records.push({
+        id: `retry:${entry.seq}`,
+        index,
+        kind: "retry",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: previewText(entry.message),
+        result: retryMeta(entry, locale),
+        state: "complete",
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
+    if (entry.kind === "attempt") {
+      records.push({
+        id: `attempt:${entry.seq}`,
+        index,
+        kind: "attempt",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: agentLabel("traj.attemptNoMessage", locale),
+        state: "complete",
+        startedAtMs: entry.startedAtMs ?? atMs(entry.at),
+        endedAtMs: entry.endedAtMs ?? atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
+    if (entry.kind === "compaction") {
+      records.push({
+        id: `compaction:${entry.seq}`,
+        index,
+        kind: "compaction",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: previewText(
+          entry.summary ?? agentLabel("traj.compactionRunning", locale),
+        ),
+        ...(entry.shadowedTokens === undefined
+          ? {}
+          : {
+              result: agentLabel("traj.compactionSaved", locale, {
+                tokens: entry.shadowedTokens.toLocaleString(),
+              }),
+            }),
+        state: statusState(entry.status),
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
+    if (entry.kind === "subcall") {
+      const raw = resultText(entry.result);
+      const result =
+        raw === undefined
+          ? entry.status === "running"
+            ? undefined
+            : agentLabel("traj.noOutput", locale)
+          : previewText(raw);
+      records.push({
+        id: `subcall:${entry.callId || entry.seq}`,
+        index,
+        kind: "subcall",
+        turn: entry.turn,
+        step: entry.step,
+        group: stepTitle(entry.step, locale),
+        text: toolText(entry.name, entry.args),
+        ...(result === undefined ? {} : { result }),
+        state: statusState(entry.status),
+        startedAtMs: entry.startedAtMs ?? atMs(entry.at),
+        ...(entry.endedAtMs === undefined ? {} : { endedAtMs: entry.endedAtMs }),
+        entry,
+        ...(toolIndexByCallId.get(entry.parentCallId) === undefined
+          ? {}
+          : { parentIndex: toolIndexByCallId.get(entry.parentCallId) }),
+      });
+      continue;
+    }
+    if (entry.kind === "seed") {
+      records.push({
+        id: `seed:${entry.seq}`,
+        index,
+        kind: "seed",
+        turn: 0,
+        step: 0,
+        group: agentLabel("traj.groupMessage", locale),
+        text: agentLabel("traj.seedText", locale),
+        state: "complete",
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
+      });
+      continue;
+    }
     const raw = resultText(entry.result);
     const result =
       raw === undefined
@@ -283,6 +482,7 @@ export function deriveTrajectory(entries: readonly AgentEntry[], locale: AgentLo
       lastAssistant.step === entry.step
         ? lastAssistant.index
         : undefined;
+    toolIndexByCallId.set(entry.callId, index);
     records.push({
       id: `tool:${entry.callId || entry.seq}`,
       index,
@@ -464,6 +664,14 @@ export function matchesQuery(record: TrajRecord, query: string): boolean {
     entry?.kind === "notice" ? entry.text : "",
     entry?.kind === "notice" ? entry.stopReason ?? "" : "",
     entry?.kind === "system" ? entry.text : "",
+    entry?.kind === "context" ? entry.text : "",
+    entry?.kind === "context" ? entry.producer ?? "" : "",
+    entry?.kind === "request" ? entry.tools.join("\n") : "",
+    entry?.kind === "retry" ? entry.message : "",
+    entry?.kind === "retry" ? entry.code : "",
+    entry?.kind === "compaction" ? entry.summary ?? "" : "",
+    entry?.kind === "subcall" ? entry.args : "",
+    entry?.kind === "subcall" ? resultText(entry.result) ?? "" : "",
   ]
     .join("\n")
     .toLowerCase();

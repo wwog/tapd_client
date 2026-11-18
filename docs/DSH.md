@@ -452,6 +452,45 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 { "kind": "system", "seq": 14, "at": "…", "turn": 1, "step": 1,
   "text": "You are an AI agent powered by DeepSeek Harness. …",
   "update": false }                    // 省略 = false；replace 型节点为 true
+
+// 注入上下文（非人类来源的 user/message，或 developer/message）。只进轨迹。
+{ "kind": "context", "seq": 15, "at": "…", "turn": 1, "step": 1,
+  "text": "The working directory changed from …",
+  "producer": "/new/cwd",              // 可省略；dsh contextProducer：变更路径 / 技能名 / 引用标签，否则 source.kind
+  "form": "notice" }                   // 可省略；source.form 原样
+
+// 请求头（request/header）：下一次请求的路由、容量与工具名（schema 不出日志）。
+{ "kind": "request", "seq": 20, "at": "…", "turn": 1, "step": 1,
+  "reason": "initial",                 // initial | resume | change | series
+  "provider": "p1", "model": "m1", "effort": "high", "maxTokens": 4096,
+  "tools": ["bash", "read"] }
+
+// 请求级重试（llm/retry）。llm/retry-started 只标记等待结束，不产生行。
+{ "kind": "retry", "seq": 21, "at": "…", "turn": 1, "step": 2,
+  "provider": "p1", "retry": 1, "maxRetries": 5, "delayMs": 8000,
+  "message": "HTTP 429", "code": "rate_limited", "status": 429 }
+
+// 未产出回复的请求尝试（assistant/attempt）：失败、重试中被取消的流。
+{ "kind": "attempt", "seq": 22, "at": "…", "turn": 1, "step": 2,
+  "startedAtMs": 1700000000000, "endedAtMs": 1700000000500 }
+
+// 压缩周期（compaction/start → summary → end），一行原地合并（同 tool 行）。
+{ "kind": "compaction", "seq": 30, "at": "…", "turn": 2, "step": 0,
+  "status": "ok",                      // running | ok | error
+  "summary": "compacted summary",      // compaction/summary 到达后出现
+  "shadowedTokens": 12345,             // 被替换范围的启发式 token 价
+  "error": "…" }                       // compaction/end 携带错误时
+
+// PTC 子调用（tool/ptc-dispatch-start + tool/ptc-dispatch），一行原地合并；
+// parentCallId 指向父工具行的 callId。子调用不进模型上下文，只进轨迹。
+{ "kind": "subcall", "seq": 40, "at": "…", "turn": 1, "step": 3,
+  "callId": "run1:ptc:0", "parentCallId": "run1",
+  "name": "bash", "args": "{\"cmd\":\"ls\"}",
+  "status": "ok", "result": "file.txt",
+  "startedAtMs": 1700000002000, "endedAtMs": 1700000002050 }
+
+// 继承历史边界（session/end-seed）：这行之前是 fork 前缀 / 恢复的历史。
+{ "kind": "seed", "seq": 4, "at": "…", "inherited": true }
 ```
 
 规则（实现见 `crates/dsh-host/src/transcript.rs`）：
@@ -459,19 +498,41 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - `tool` 行使用 **`tool/call` 的 seq**；`tool/result` 到达时原地更新该行并以同一 `seq`
   重新发一条 `dsh://entry`。前端按 `seq` 覆盖即可，不要按到达顺序追加。
 - 只有工具调用、没有文本/推理的 assistant 消息**不产生行**（对应的 `tool` 行已表达）。
-- `user/message` 只在 `data.source.kind == "user"`（无 `source` 的旧日志也按人类输入处理）时产生
-  `user` 行；`agent-instructions`、时间采样等注入上下文虽然也是 `user/message`，但**不进入对话**
-  （否则会把 AGENTS.md 渲染成用户气泡），它们仍留在 dsh 自己的会话日志里。
+- `user/message` 在 `data.source.kind == "user"`（无 `source` 的旧日志也按人类输入处理）时产生
+  `user` 行；其他来源（`agent-instructions`、时间采样、工作目录变更、`host` 隐藏提示等）产生
+  一行 `{ kind: "context", seq, at, turn, step, text, producer?, form? }`——对话区不渲染，
+  轨迹可见（模型这一步还看到了什么）；`producer` 是 dsh `contextProducer` 的展示标签
+  （变更路径 / 技能名 / 引用标签，否则 source.kind），`text` 为空不产生行。它们都**不进**
+  `messageCount`、不影响标题。
 - `data.source.kind == "subagent-settled"` 的 `user/message`（子 agent 结束通知落在父会话日志里）
   产生一行 `{ kind: "notice", seq, at, turn, step, text, summary, stopReason?, senderSessionId }`：
   `text` 是通知文本块，`summary` / `stopReason` / `senderSessionId` 来自 `source`（结束原因省略时
   键省略），它**不进** `messageCount`、不影响标题；`senderSessionId` 是子会话 id，前端据此把该行
   挂到子 agent 的轨迹组里。
+- `developer/message`（会话增量变更，如工具集追加）同样产生 `context` 行，`turn`/`step`
+  取事件自带值。
+- `request/header` 产生一行 `{ kind: "request", …, reason, provider?, model?, effort?,
+  maxTokens?, tools }`：`reason` 是 `initial`/`resume`/`change`/`series`；`tools` 只存工具名，
+  schema/description 留在日志里。
+- `llm/retry` 产生一行 `{ kind: "retry", …, provider, retry, maxRetries?, delayMs, message,
+  code, status? }`（失败文本 + 等待事实）；`llm/retry-started` 与 `compaction/prune` 不产生行。
+- `assistant/attempt` 产生一行 `{ kind: "attempt", …, startedAtMs?, endedAtMs? }`，计时取
+  内嵌 stream 的首尾数据块时间。
+- `compaction/start` 打开一行 `{ kind: "compaction", status: "running" }`（按 `compactionId`
+  记录映射）；`summary` / `end` 到达时原地合并（summary 文本、`shadowedTokens`、error），
+  并以各自的 seq 重发该行。start 丢失（旧日志）时 summary/end 直接触发开行。
+- `tool/ptc-dispatch-start` / `tool/ptc-dispatch` 产生一行 `{ kind: "subcall", … }`，机制同
+  `tool` 行（start 的 seq、dispatch 原地合并）；`arguments` 是日志里的归一化值（字符串原样，
+  其他值紧凑重序列化）。
+- `session/end-seed` 产生一行 `{ kind: "seed", seq, at, inherited? }`。
 - `system/message` 是一次请求实际渲染出的系统提示词，产生一行
   `{ kind: "system", seq, at, turn, step, text, update? }`：`turn` / `step` 取事件自带值，
   `surfaceOp` 不是 `append`（阶段切换或归一化重写）时 `update: true`。它**只进轨迹面板**，
   对话区按请求上下文处理（不渲染气泡、不计 `messageCount`、不影响标题）；归一化留下的
   空节点（`text` 为空）不产生行。
+- `context` / `system` / `request` / `retry` / `attempt` / `compaction` / `subcall` / `seed`
+  都是**轨迹专用行**：对话区（`groupTurns`）直接跳过，只有 `user` / `assistant` / `tool` /
+  `turn` / `notice` 进对话。
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
@@ -491,7 +552,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   dsh 会自动插入一条 `source.kind = "model-selection"` 的提示消息，按上面的规则也不会变成
   用户气泡。
 - `plan/mode` 只更新会话的 `planActive`，**不产生行**；引擎在进入/退出计划模式时写入。
-- 未知事件类型（`request/header` 等）忽略，每种类型只记一条 debug 日志。
+- 未知事件类型忽略，每种类型只记一条 debug 日志。
 - 跨来源去重：快照与 `session.event` 可能重复同一 `seq`，只应用一次。
 
 ### 8.4 会话 `DshSession`

@@ -406,6 +406,136 @@ pub enum DshEntry {
         #[serde(default, skip_serializing_if = "is_false")]
         update: bool,
     },
+    /// Injected request context: a `user/message` whose source is not a human
+    /// (working-directory notices, time samples, agent instructions, the
+    /// host's hidden prompts, …) or a `developer/message` session change. The
+    /// conversation view skips it; the trajectory shows what else the step
+    /// saw. `producer` is a display label (dsh's `contextProducer`: changed
+    /// paths, skill name, or the durable source kind).
+    Context {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        producer: Option<String>,
+        /// `source.form` when the log carried one (instructions/notice/…).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        form: Option<String>,
+    },
+    /// The full request header (`request/header`): the route and capacity the
+    /// next request was built with, plus the tool names (schemas stay in the
+    /// log — a row carries names only).
+    Request {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        /// `RequestHeaderReason`: initial / resume / change / series.
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u64>,
+        tools: Vec<String>,
+    },
+    /// One provider-routed retry wait (`llm/retry`). The failure text is the
+    /// substance; `llm/retry-started` only marks the wait ending and prices
+    /// nothing, so it produces no row.
+    Retry {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        provider: String,
+        retry: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_retries: Option<u64>,
+        delay_ms: u64,
+        message: String,
+        code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u64>,
+    },
+    /// A request attempt that committed no surface message
+    /// (`assistant/attempt`): failed, retried or cancelled mid-stream. The
+    /// embedded stream's first/last chunk is all the timing there is.
+    Attempt {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at_ms: Option<u64>,
+    },
+    /// One compaction cycle (`compaction/start` → `summary` → `end`), merged
+    /// in place like a tool row: the row opens running and settles with the
+    /// summary text and, on failure, the error.
+    Compaction {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        status: ToolStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// Heuristic token price of the shadowed range.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadowed_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// One PTC sub-call (`tool/ptc-dispatch-start` + `tool/ptc-dispatch`),
+    /// nested inside a parent tool call and never re-entering model context.
+    /// Same lifecycle as a tool row: opens running, settles in place.
+    Subcall {
+        seq: u64,
+        at: String,
+        #[serde(default)]
+        turn: u64,
+        #[serde(default)]
+        step: u64,
+        /// The sub-call's own id (`<parent>:ptc:<n>`).
+        call_id: String,
+        /// The `run_code` call this dispatch happened inside.
+        parent_call_id: String,
+        name: String,
+        /// The dispatched value; already JSON text when the log carried a
+        /// string, otherwise re-serialized compactly.
+        args: String,
+        status: ToolStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at_ms: Option<u64>,
+    },
+    /// The inherited-history boundary (`session/end-seed`): log from before
+    /// this session owned the work (fork prefix / restored cut).
+    Seed {
+        seq: u64,
+        at: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        inherited: bool,
+    },
 }
 
 fn is_false(value: &bool) -> bool {
@@ -421,7 +551,14 @@ impl DshEntry {
             | Self::Tool { seq, .. }
             | Self::Turn { seq, .. }
             | Self::Notice { seq, .. }
-            | Self::System { seq, .. } => *seq,
+            | Self::System { seq, .. }
+            | Self::Context { seq, .. }
+            | Self::Request { seq, .. }
+            | Self::Retry { seq, .. }
+            | Self::Attempt { seq, .. }
+            | Self::Compaction { seq, .. }
+            | Self::Subcall { seq, .. }
+            | Self::Seed { seq, .. } => *seq,
         }
     }
 
@@ -434,7 +571,14 @@ impl DshEntry {
             | Self::Tool { at, .. }
             | Self::Turn { at, .. }
             | Self::Notice { at, .. }
-            | Self::System { at, .. } => at,
+            | Self::System { at, .. }
+            | Self::Context { at, .. }
+            | Self::Request { at, .. }
+            | Self::Retry { at, .. }
+            | Self::Attempt { at, .. }
+            | Self::Compaction { at, .. }
+            | Self::Subcall { at, .. }
+            | Self::Seed { at, .. } => at,
         }
     }
 }
@@ -491,6 +635,10 @@ struct SessionRecord {
     seen: BTreeSet<u64>,
     /// `callId` → index in `entries`, for merging `tool/result` into its call.
     calls: HashMap<String, usize>,
+    /// `subCallId` → index in `entries`, for merging `tool/ptc-dispatch`.
+    subcalls: HashMap<String, usize>,
+    /// `compactionId` → index in `entries`, for merging a compaction cycle.
+    compactions: HashMap<String, usize>,
     /// Row seq → the event seq that last touched it. A tool row keeps its
     /// call's seq while the result lands much later, so incremental readers
     /// page on this instead of the row's own seq.
@@ -547,6 +695,8 @@ impl Transcript {
                 entries: Vec::new(),
                 seen: BTreeSet::new(),
                 calls: HashMap::new(),
+                subcalls: HashMap::new(),
+                compactions: HashMap::new(),
                 last_update: HashMap::new(),
                 orphans: HashMap::new(),
                 first_user_seen: false,
@@ -588,6 +738,18 @@ impl Transcript {
                 | "plan/mode"
                 | "todo/write"
                 | "system/message"
+                | "developer/message"
+                | "request/header"
+                | "assistant/attempt"
+                | "llm/retry"
+                | "llm/retry-started"
+                | "compaction/start"
+                | "compaction/summary"
+                | "compaction/end"
+                | "compaction/prune"
+                | "tool/ptc-dispatch-start"
+                | "tool/ptc-dispatch"
+                | "session/end-seed"
         );
         if !known {
             let first = self.reported_unknown.insert(kind.to_string());
@@ -604,6 +766,19 @@ impl Transcript {
         let entry = match kind {
             "user/message" => record.push_user(seq, at, event),
             "system/message" => record.push_system(seq, at, event),
+            "developer/message" => record.push_context(seq, at, event),
+            "request/header" => record.push_request(seq, at, event),
+            "assistant/attempt" => record.push_attempt(seq, at, event),
+            "llm/retry" => record.push_retry(seq, at, event),
+            // Timing-only companions: the wait ending and the prune's shadow
+            // price change no row the panel shows.
+            "llm/retry-started" | "compaction/prune" => None,
+            "compaction/start" => record.push_compaction(seq, at, event),
+            "compaction/summary" => record.merge_compaction(seq, at, event, false),
+            "compaction/end" => record.merge_compaction(seq, at, event, true),
+            "tool/ptc-dispatch-start" => record.push_subcall(seq, at, event),
+            "tool/ptc-dispatch" => record.merge_subcall(seq, event),
+            "session/end-seed" => record.push_seed(seq, at, event),
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
             "tool/result" => record.merge_tool_result(seq, event),
@@ -910,7 +1085,23 @@ impl SessionRecord {
             return Some(self.push_notice(seq, at, event));
         }
         if matches!(source_kind, Some(kind) if kind != "user") {
-            return None;
+            // Injected context (workspace instructions, time samples,
+            // agent.inject, the host's hidden prompts) is transcript content
+            // for the trajectory, but never a human turn: no title, no count.
+            let text = join_text_blocks(event.pointer("/data/content"));
+            if text.trim().is_empty() {
+                return None;
+            }
+            let entry = DshEntry::Context {
+                seq,
+                at: at.to_string(),
+                turn: self.turn,
+                step: self.step,
+                text,
+                producer: producer_label(event.pointer("/data/source")),
+                form: form_of(event.pointer("/data/source")),
+            };
+            return Some(self.commit(entry, seq));
         }
         let text = join_text_blocks(event.pointer("/data/content"));
         if !self.first_user_seen {
@@ -1228,6 +1419,302 @@ impl SessionRecord {
         Some(entry)
     }
 
+    /// Appends a row and records its seq as the last update. Every new-row
+    /// path funnels here so the incremental-read contract stays uniform.
+    fn commit(&mut self, entry: DshEntry, seq: u64) -> DshEntry {
+        self.entries.push(entry.clone());
+        self.last_update.insert(seq, seq);
+        entry
+    }
+
+    /// Injected request context. `developer/message` carries the same message
+    /// shape (`content` + `source`) the injected `user/message` rows use; both
+    /// render through one [`DshEntry::Context`] row.
+    fn push_context(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let message = event.pointer("/data/message");
+        let text = join_text_blocks(message.and_then(|value| value.get("content")));
+        if text.trim().is_empty() {
+            return None;
+        }
+        let entry = DshEntry::Context {
+            seq,
+            at: at.to_string(),
+            turn: self.event_turn(event),
+            step: self.event_step(event),
+            text,
+            producer: producer_label(message.and_then(|value| value.get("source"))),
+            form: form_of(message.and_then(|value| value.get("source"))),
+        };
+        Some(self.commit(entry, seq))
+    }
+
+    /// The full request header. Tool schemas stay in the log; a row carries
+    /// the names only, which is what "what could this step call" needs.
+    fn push_request(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let header = event.pointer("/data/header");
+        let config = header.and_then(|value| value.get("config"));
+        let string_in = |key: &str| {
+            config
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let number_in = |key: &str| {
+            config
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_u64)
+        };
+        let tools = header
+            .and_then(|value| value.get("tools"))
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let entry = DshEntry::Request {
+            seq,
+            at: at.to_string(),
+            turn: self.turn,
+            step: self.step,
+            reason: event
+                .pointer("/data/reason")
+                .and_then(Value::as_str)
+                .unwrap_or("initial")
+                .to_string(),
+            provider: string_in("provider"),
+            model: string_in("model"),
+            effort: string_in("reasoningEffort"),
+            max_tokens: number_in("maxTokens"),
+            tools,
+        };
+        Some(self.commit(entry, seq))
+    }
+
+    /// A request attempt that produced no committed message. The stream's
+    /// first and last chunk bracket whatever reached the wire.
+    fn push_attempt(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let stream = event.pointer("/data/stream").and_then(Value::as_array);
+        let started_at_ms = stream
+            .and_then(|chunks| chunks.first())
+            .and_then(|chunk| chunk.get("time"))
+            .and_then(Value::as_u64);
+        let ended_at_ms = stream
+            .and_then(|chunks| chunks.last())
+            .and_then(|chunk| chunk.get("time"))
+            .and_then(Value::as_u64);
+        let entry = DshEntry::Attempt {
+            seq,
+            at: at.to_string(),
+            turn: self.event_turn(event),
+            step: self.event_step(event),
+            started_at_ms,
+            ended_at_ms,
+        };
+        Some(self.commit(entry, seq))
+    }
+
+    /// One provider-routed retry wait; the failure text is the substance.
+    fn push_retry(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let failure = event.pointer("/data/failure");
+        let entry = DshEntry::Retry {
+            seq,
+            at: at.to_string(),
+            turn: self.event_turn(event),
+            step: self.event_step(event),
+            provider: event
+                .pointer("/data/provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            retry: event
+                .pointer("/data/retry")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            max_retries: event
+                .pointer("/data/maxRetries")
+                .and_then(Value::as_u64),
+            delay_ms: event
+                .pointer("/data/delayMs")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            message: failure
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            code: failure
+                .and_then(|value| value.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            status: failure.and_then(|value| value.get("status")).and_then(Value::as_u64),
+        };
+        Some(self.commit(entry, seq))
+    }
+
+    /// Opens one compaction cycle's row; `summary` and `end` merge into it.
+    fn push_compaction(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let id = compaction_id(event);
+        let entry = DshEntry::Compaction {
+            seq,
+            at: at.to_string(),
+            turn: event
+                .pointer("/data/turn")
+                .and_then(Value::as_u64)
+                .unwrap_or(self.turn),
+            step: self.step,
+            status: ToolStatus::Running,
+            summary: None,
+            shadowed_tokens: None,
+            error: None,
+        };
+        if !id.is_empty() {
+            self.compactions.insert(id, self.entries.len());
+        }
+        Some(self.commit(entry, seq))
+    }
+
+    /// Applies `compaction/summary` or `compaction/end` to the cycle's row. A
+    /// cycle whose `start` is missing (older log) still opens a row here, so
+    /// the summary text is never lost.
+    fn merge_compaction(
+        &mut self,
+        seq: u64,
+        at: &str,
+        event: &Value,
+        ended: bool,
+    ) -> Option<DshEntry> {
+        let id = compaction_id(event);
+        if self.compactions.get(&id).is_none() {
+            self.push_compaction(seq, at, event)?;
+        }
+        let index = *self.compactions.get(&id)?;
+        let summary = join_text_blocks(event.pointer("/data/summary"));
+        let shadowed_tokens = event
+            .pointer("/data/shadowedTokenCount")
+            .and_then(Value::as_u64);
+        let error = if ended {
+            event
+                .pointer("/data/error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let entry = match self.entries.get_mut(index) {
+            Some(DshEntry::Compaction {
+                summary: row_summary,
+                shadowed_tokens: row_shadowed,
+                error: row_error,
+                status,
+                ..
+            }) => {
+                if !summary.is_empty() {
+                    *row_summary = Some(summary);
+                }
+                if shadowed_tokens.is_some() {
+                    *row_shadowed = shadowed_tokens;
+                }
+                if ended {
+                    *row_error = error;
+                    *status = if row_error.is_some() {
+                        ToolStatus::Error
+                    } else {
+                        ToolStatus::Ok
+                    };
+                }
+                self.entries[index].clone()
+            }
+            _ => return None,
+        };
+        self.last_update.insert(entry.seq(), seq);
+        Some(entry)
+    }
+
+    /// Opens one PTC sub-call row, nested under its parent tool call.
+    fn push_subcall(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let call_id = event
+            .pointer("/data/subCallId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let entry = DshEntry::Subcall {
+            seq,
+            at: at.to_string(),
+            turn: self.turn,
+            step: self.step,
+            call_id: call_id.clone(),
+            parent_call_id: event
+                .pointer("/data/parentCallId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            name: event
+                .pointer("/data/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            args: args_text(event.pointer("/data/arguments")),
+            status: ToolStatus::Running,
+            result: None,
+            started_at_ms: event.get("time").and_then(Value::as_u64),
+            ended_at_ms: None,
+        };
+        if !call_id.is_empty() {
+            self.subcalls.insert(call_id, self.entries.len());
+        }
+        Some(self.commit(entry, seq))
+    }
+
+    /// Applies `tool/ptc-dispatch` to its sub-call row. A start strictly
+    /// precedes its dispatch (both append inside the parent's execution), so
+    /// no orphan buffering is needed here.
+    fn merge_subcall(&mut self, seq: u64, event: &Value) -> Option<DshEntry> {
+        let call_id = event
+            .pointer("/data/subCallId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let index = *self.subcalls.get(call_id)?;
+        let text = join_text_blocks(event.pointer("/data/content"));
+        let failed = event
+            .pointer("/data/isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let entry = match self.entries.get_mut(index) {
+            Some(DshEntry::Subcall {
+                status,
+                result,
+                ended_at_ms: ended,
+                ..
+            }) => {
+                *status = if failed { ToolStatus::Error } else { ToolStatus::Ok };
+                *result = Some(text);
+                *ended = event.get("time").and_then(Value::as_u64);
+                self.entries[index].clone()
+            }
+            _ => return None,
+        };
+        self.last_update.insert(entry.seq(), seq);
+        Some(entry)
+    }
+
+    /// The inherited-history boundary. Nothing before it belongs to this
+    /// session's own lifecycle.
+    fn push_seed(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let entry = DshEntry::Seed {
+            seq,
+            at: at.to_string(),
+            inherited: event
+                .pointer("/data/inherited")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        Some(self.commit(entry, seq))
+    }
+
     fn push_turn(
         &mut self,
         seq: u64,
@@ -1272,6 +1759,73 @@ fn join_text_blocks(content: Option<&Value>) -> String {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
         .filter_map(|block| block.get("text").and_then(Value::as_str))
         .collect()
+}
+
+/// dsh's `contextProducer`: a readable label for an injected message's
+/// source — the changed paths for agent instructions, the skill name, the
+/// referenced labels, else the durable source kind itself.
+fn producer_label(source: Option<&Value>) -> Option<String> {
+    let source = source?;
+    let kind = source.get("kind").and_then(Value::as_str)?;
+    let specific = match kind {
+        "session-reference" => joined_field(source, "references", "label"),
+        "agent-instructions" => joined_field(source, "changes", "path"),
+        "skill-invocation" => source
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    };
+    Some(
+        specific
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| kind.to_string()),
+    )
+}
+
+/// dsh's `contextForm`: the source's own presentation form, verbatim.
+fn form_of(source: Option<&Value>) -> Option<String> {
+    source?
+        .get("form")
+        .and_then(Value::as_str)
+        .filter(|form| !form.is_empty())
+        .map(str::to_string)
+}
+
+/// Joins `source[key][*][field]` with ", " — the shape `references[].label`
+/// and `changes[].path` share.
+fn joined_field(source: &Value, key: &str, field: &str) -> Option<String> {
+    let joined = source
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get(field).and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// A compaction cycle's durable identity, shared by start/summary/end.
+fn compaction_id(event: &Value) -> String {
+    event
+        .pointer("/data/compactionId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// PTC dispatch arguments are logged as their normalized value: a string
+/// stays verbatim, anything else is re-serialized compactly.
+fn args_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value.to_string(),
+        None => "{}".to_string(),
+    }
 }
 
 fn join_reasoning_blocks(content: Option<&Value>) -> Option<String> {
@@ -1427,10 +1981,13 @@ mod tests {
         let mut transcript = Transcript::default();
         let mut injected = user(0, "workspace instructions");
         injected["data"]["source"] = json!({ "kind": "agent-instructions", "form": "instructions" });
-        assert!(transcript
-            .ingest("s1", &injected, "2026-11-16T00:00:00.000Z")
-            .entry
-            .is_none());
+        // It is a context row now (trajectory-only), never a human turn.
+        assert!(matches!(
+            transcript
+                .ingest("s1", &injected, "2026-11-16T00:00:00.000Z")
+                .entry,
+            Some(DshEntry::Context { .. })
+        ));
         assert!(transcript.session("s1").unwrap().title.is_empty());
 
         transcript.ingest("s1", &user(1, "real question"), "2026-11-16T00:00:01.000Z");
@@ -1503,6 +2060,279 @@ mod tests {
         ));
         assert_eq!(transcript.entries("s1").unwrap().len(), 2);
         assert_eq!(transcript.session("s1").unwrap().message_count, 0);
+    }
+
+    fn injected_context(seq: u64, source: Value) -> Value {
+        let mut value = event("user/message", seq);
+        value["data"] = json!({
+            "id": format!("m{seq}"),
+            "role": "user",
+            "content": [{ "type": "text", "text": "The working directory changed." }],
+            "source": source,
+        });
+        value
+    }
+
+    #[test]
+    fn injected_context_and_developer_changes_become_context_rows() {
+        let mut transcript = Transcript::default();
+        let injected = transcript.ingest(
+            "s1",
+            &injected_context(
+                1,
+                json!({
+                    "kind": "agent-instructions",
+                    "form": "instructions",
+                    "changes": [{ "path": "AGENTS.md" }, { "path": "docs/" }]
+                }),
+            ),
+            "2026-11-16T00:00:01.000Z",
+        );
+        assert!(matches!(
+            &injected.entry,
+            Some(DshEntry::Context { seq: 1, text, producer, form, .. })
+                if text == "The working directory changed."
+                    && producer.as_deref() == Some("AGENTS.md, docs/")
+                    && form.as_deref() == Some("instructions")
+        ));
+        // Context, not a bubble: no title, no message count.
+        let session = transcript.session("s1").unwrap();
+        assert_eq!(session.message_count, 0);
+        assert!(session.title.is_empty());
+
+        // An opaque producer keeps its durable kind, like dsh's default arm.
+        let skill = transcript.ingest(
+            "s1",
+            &injected_context(2, json!({ "kind": "time-context" })),
+            "2026-11-16T00:00:02.000Z",
+        );
+        assert!(matches!(
+            &skill.entry,
+            Some(DshEntry::Context { producer, .. }) if producer.as_deref() == Some("time-context")
+        ));
+
+        // `developer/message` carries its own turn/step and the same shape.
+        let mut developer = event("developer/message", 3);
+        developer["data"] = json!({
+            "turn": 2,
+            "step": 3,
+            "message": {
+                "role": "developer",
+                "content": [{ "type": "text", "text": "tools added" }],
+                "source": { "kind": "policy-update" }
+            }
+        });
+        let changed = transcript.ingest("s1", &developer, "2026-11-16T00:00:03.000Z");
+        assert!(matches!(
+            &changed.entry,
+            Some(DshEntry::Context { seq: 3, turn: 2, step: 3, text, producer, .. })
+                if text == "tools added" && producer.as_deref() == Some("policy-update")
+        ));
+    }
+
+    #[test]
+    fn request_header_rows_carry_the_route_and_tool_names_only() {
+        let mut transcript = Transcript::default();
+        let mut header = event("request/header", 1);
+        header["data"] = json!({
+            "reason": "initial",
+            "header": {
+                "config": {
+                    "provider": "p1",
+                    "model": "m1",
+                    "reasoningEffort": "high",
+                    "maxTokens": 4096
+                },
+                "adapterDefaults": {},
+                "tools": [
+                    { "name": "bash", "description": "run a command", "schema": { "deep": true } },
+                    { "name": "read" }
+                ]
+            }
+        });
+        let ingested = transcript.ingest("s1", &header, "2026-11-16T00:00:01.000Z");
+        assert!(matches!(
+            &ingested.entry,
+            Some(DshEntry::Request {
+                seq: 1, reason, provider, model,
+                effort, max_tokens: Some(4096), tools, ..
+            })
+            if reason == "initial" && provider.as_deref() == Some("p1")
+                && model.as_deref() == Some("m1") && effort.as_deref() == Some("high")
+                && tools == &["bash".to_string(), "read".to_string()]
+        ));
+        // Schemas and descriptions stay in the log.
+        let row = serde_json::to_value(ingested.entry.as_ref().unwrap()).unwrap();
+        assert!(row.to_string().find("description").is_none());
+    }
+
+    #[test]
+    fn retries_and_attempts_expose_failed_requests() {
+        let mut transcript = Transcript::default();
+        let mut attempt = event("assistant/attempt", 1);
+        attempt["data"] = json!({
+            "turn": 1,
+            "step": 2,
+            "stream": [
+                { "time": 1_700_000_000_000u64, "record": { "type": "text-delta" } },
+                { "time": 1_700_000_000_500u64, "record": { "type": "text-delta" } }
+            ]
+        });
+        let tried = transcript.ingest("s1", &attempt, "2026-11-16T00:00:01.000Z");
+        assert!(matches!(
+            &tried.entry,
+            Some(DshEntry::Attempt {
+                seq: 1, turn: 1, step: 2,
+                started_at_ms: Some(1_700_000_000_000),
+                ended_at_ms: Some(1_700_000_000_500), ..
+            })
+        ));
+
+        let mut retry = event("llm/retry", 2);
+        retry["data"] = json!({
+            "retryId": "r1",
+            "turn": 1,
+            "step": 2,
+            "provider": "p1",
+            "mode": "normal",
+            "policyKey": "net",
+            "retry": 1,
+            "maxRetries": 5,
+            "delayMs": 8000,
+            "failure": { "message": "HTTP 429", "code": "rate_limited", "status": 429 }
+        });
+        let waited = transcript.ingest("s1", &retry, "2026-11-16T00:00:02.000Z");
+        assert!(matches!(
+            &waited.entry,
+            Some(DshEntry::Retry {
+                seq: 2, provider, retry: 1, max_retries: Some(5),
+                delay_ms: 8000, message, code, status: Some(429), ..
+            })
+            if provider == "p1" && message == "HTTP 429" && code == "rate_limited"
+        ));
+
+        // The wait ending changes no row; it prices nothing the panel shows.
+        let mut started = event("llm/retry-started", 3);
+        started["data"] = json!({ "retryId": "r1", "turn": 1, "step": 2, "retry": 1 });
+        let resumed = transcript.ingest("s1", &started, "2026-11-16T00:00:03.000Z");
+        assert!(resumed.entry.is_none());
+    }
+
+    #[test]
+    fn compaction_cycles_merge_into_one_row() {
+        let mut transcript = Transcript::default();
+        let mut start = event("compaction/start", 1);
+        start["data"] = json!({ "compactionId": "c1", "turn": 2 });
+        let opened = transcript.ingest("s1", &start, "2026-11-16T00:00:01.000Z");
+        assert!(matches!(
+            &opened.entry,
+            Some(DshEntry::Compaction { seq: 1, turn: 2, status: ToolStatus::Running, .. })
+        ));
+
+        let mut summary = event("compaction/summary", 2);
+        summary["data"] = json!({
+            "compactionId": "c1",
+            "summary": [{ "type": "text", "text": "compacted summary" }],
+            "shadowedRange": { "start": 0, "end": 10 },
+            "shadowedTokenCount": 12345,
+            "provider": "p1",
+            "model": "m1"
+        });
+        let summarized = transcript.ingest("s1", &summary, "2026-11-16T00:00:02.000Z");
+        assert!(matches!(
+            &summarized.entry,
+            Some(DshEntry::Compaction {
+                seq: 1, status: ToolStatus::Running,
+                summary: Some(text), shadowed_tokens: Some(12345), ..
+            }) if text == "compacted summary"
+        ));
+
+        let mut end = event("compaction/end", 3);
+        end["data"] = json!({ "compactionId": "c1", "turn": 2 });
+        let closed = transcript.ingest("s1", &end, "2026-11-16T00:00:03.000Z");
+        assert!(matches!(
+            &closed.entry,
+            Some(DshEntry::Compaction {
+                seq: 1, status: ToolStatus::Ok,
+                summary: Some(text), shadowed_tokens: Some(12345), error: None, ..
+            }) if text == "compacted summary"
+        ));
+
+        // A cycle whose start is missing still opens a row, straight to error.
+        let mut failed = event("compaction/end", 4);
+        failed["data"] = json!({ "compactionId": "c2", "turn": 3, "error": "summarizer failed" });
+        let broken = transcript.ingest("s1", &failed, "2026-11-16T00:00:04.000Z");
+        assert!(matches!(
+            &broken.entry,
+            Some(DshEntry::Compaction {
+                seq: 4, status: ToolStatus::Error,
+                error: Some(message), ..
+            }) if message == "summarizer failed"
+        ));
+        assert_eq!(transcript.entries("s1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn subcall_rows_pair_start_and_dispatch() {
+        let mut transcript = Transcript::default();
+        let mut parent = event("tool/call", 1);
+        parent["data"] = json!({
+            "turn": 1, "step": 1, "callId": "run1", "name": "run_code",
+            "arguments": "{}"
+        });
+        transcript.ingest("s1", &parent, "2026-11-16T00:00:01.000Z");
+
+        let mut dispatch_start = event("tool/ptc-dispatch-start", 2);
+        dispatch_start["data"] = json!({
+            "rootCallId": "run1",
+            "parentCallId": "run1",
+            "subCallId": "run1:ptc:0",
+            "name": "bash",
+            "arguments": { "cmd": "ls" }
+        });
+        let opened = transcript.ingest("s1", &dispatch_start, "2026-11-16T00:00:02.000Z");
+        assert!(matches!(
+            &opened.entry,
+            Some(DshEntry::Subcall {
+                seq: 2, call_id, parent_call_id, name, args,
+                status: ToolStatus::Running, result: None, ..
+            })
+            if call_id == "run1:ptc:0" && parent_call_id == "run1"
+                && name == "bash" && args == r#"{"cmd":"ls"}"#
+        ));
+
+        let mut dispatch = event("tool/ptc-dispatch", 3);
+        dispatch["data"] = json!({
+            "rootCallId": "run1",
+            "parentCallId": "run1",
+            "subCallId": "run1:ptc:0",
+            "name": "bash",
+            "arguments": { "cmd": "ls" },
+            "isError": true,
+            "content": [{ "type": "text", "text": "boom" }],
+            "error": { "name": "BashError", "code": "exit_1" }
+        });
+        let settled = transcript.ingest("s1", &dispatch, "2026-11-16T00:00:03.000Z");
+        assert!(matches!(
+            &settled.entry,
+            Some(DshEntry::Subcall {
+                seq: 2, status: ToolStatus::Error,
+                result: Some(text),
+                started_at_ms: Some(_), ended_at_ms: Some(_), ..
+            }) if text == "boom"
+        ));
+    }
+
+    #[test]
+    fn end_seed_marks_the_inherited_boundary() {
+        let mut transcript = Transcript::default();
+        let mut seed = event("session/end-seed", 1);
+        seed["data"] = json!({ "inherited": true });
+        let ingested = transcript.ingest("s1", &seed, "2026-11-16T00:00:01.000Z");
+        assert!(matches!(
+            &ingested.entry,
+            Some(DshEntry::Seed { seq: 1, inherited: true, .. })
+        ));
     }
 
     /// A `subagent-settled` user/message, as dsh writes it into the parent log

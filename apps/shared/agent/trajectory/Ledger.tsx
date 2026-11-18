@@ -9,11 +9,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Bot,
+  CircleDashed,
   FileText,
+  GitBranch,
   Globe,
+  History,
   Image as ImageIcon,
+  Layers,
   Loader2,
+  Minimize2,
+  Package,
   PenLine,
+  RefreshCw,
   ScrollText,
   Search,
   Sparkles,
@@ -62,6 +69,27 @@ function KindIcon({ record }: { record: TrajRecord }) {
   if (record.kind === "system") {
     return <ScrollText size={12} className="shrink-0 text-cyan-600" aria-hidden="true" />;
   }
+  if (record.kind === "context") {
+    return <Layers size={12} className="shrink-0 text-teal-600" aria-hidden="true" />;
+  }
+  if (record.kind === "request") {
+    return <Package size={12} className="shrink-0 text-indigo-600" aria-hidden="true" />;
+  }
+  if (record.kind === "retry") {
+    return <RefreshCw size={12} className="shrink-0 text-rose-500" aria-hidden="true" />;
+  }
+  if (record.kind === "attempt") {
+    return <CircleDashed size={12} className="shrink-0 text-rose-400" aria-hidden="true" />;
+  }
+  if (record.kind === "compaction") {
+    return <Minimize2 size={12} className="shrink-0 text-indigo-500" aria-hidden="true" />;
+  }
+  if (record.kind === "subcall") {
+    return <GitBranch size={12} className="shrink-0 text-amber-600" aria-hidden="true" />;
+  }
+  if (record.kind === "seed") {
+    return <History size={12} className="shrink-0 text-slate-400" aria-hidden="true" />;
+  }
   const Icon =
     record.kind === "assistant"
       ? Sparkles
@@ -92,15 +120,45 @@ function kindTagClass(record: TrajRecord): string {
   if (record.kind === "assistant") return "text-violet-700 bg-violet-50";
   if (record.kind === "notice") return "text-slate-600 bg-slate-100";
   if (record.kind === "system") return "text-cyan-700 bg-cyan-50";
+  if (record.kind === "context") return "text-teal-700 bg-teal-50";
+  if (record.kind === "request") return "text-indigo-700 bg-indigo-50";
+  if (record.kind === "retry" || record.kind === "attempt") {
+    return "text-rose-700 bg-rose-50";
+  }
+  if (record.kind === "compaction") return "text-indigo-700 bg-indigo-50";
+  // A sub-call shares the tool family's look; the icon tells them apart.
+  if (record.kind === "subcall") return "text-amber-700 bg-amber-50";
+  if (record.kind === "seed") return "text-slate-600 bg-slate-100";
   return "text-amber-700 bg-amber-50";
 }
 
 function kindLabel(record: TrajRecord, locale: AgentLocale): string {
-  if (record.kind === "user") return agentLabel("traj.kindUser", locale);
-  if (record.kind === "assistant") return agentLabel("traj.kindAssistant", locale);
-  if (record.kind === "notice") return agentLabel("traj.kindNotice", locale);
-  if (record.kind === "system") return agentLabel("traj.kindSystem", locale);
-  return agentLabel("traj.kindTool", locale);
+  switch (record.kind) {
+    case "user":
+      return agentLabel("traj.kindUser", locale);
+    case "assistant":
+      return agentLabel("traj.kindAssistant", locale);
+    case "notice":
+      return agentLabel("traj.kindNotice", locale);
+    case "system":
+      return agentLabel("traj.kindSystem", locale);
+    case "context":
+      return agentLabel("traj.kindInject", locale);
+    case "request":
+      return agentLabel("traj.kindRequest", locale);
+    case "retry":
+      return agentLabel("traj.kindRetry", locale);
+    case "attempt":
+      return agentLabel("traj.kindAttempt", locale);
+    case "compaction":
+      return agentLabel("traj.kindCompaction", locale);
+    case "subcall":
+      return agentLabel("traj.kindTool", locale);
+    case "seed":
+      return agentLabel("traj.kindSeed", locale);
+    default:
+      return agentLabel("traj.kindTool", locale);
+  }
 }
 
 /** Builds display rows: turn folds, call folds and per-turn separators. */
@@ -488,7 +546,9 @@ export function TrajectoryLedger({
                         record.result === undefined
                           ? "grid-cols-1"
                           : "grid-cols-[minmax(0,3fr)_minmax(0,2fr)]",
-                        record.kind === "tool" && "font-mono",
+                        record.kind === "tool" || record.kind === "subcall"
+                          ? "font-mono"
+                          : "",
                       )}
                     >
                       <ScrollingName

@@ -63,6 +63,30 @@ const TABS: Record<TrajRecord["kind"], readonly { id: Tab; label: TabLabelKey }[
     { id: "preview", label: "traj.tabPreview" },
     { id: "raw", label: "traj.tabRaw" },
   ],
+  context: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "preview", label: "traj.tabPreview" },
+    { id: "raw", label: "traj.tabRaw" },
+  ],
+  request: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "preview", label: "traj.tabPreview" },
+    { id: "raw", label: "traj.tabRaw" },
+  ],
+  retry: [{ id: "summary", label: "traj.tabSummary" }, { id: "raw", label: "traj.tabRaw" }],
+  attempt: [{ id: "summary", label: "traj.tabSummary" }, { id: "timing", label: "traj.tabTiming" }],
+  compaction: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "preview", label: "traj.tabPreview" },
+    { id: "raw", label: "traj.tabRaw" },
+  ],
+  subcall: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "input", label: "traj.tabInput" },
+    { id: "output", label: "traj.tabOutput" },
+    { id: "timing", label: "traj.tabTiming" },
+  ],
+  seed: [{ id: "summary", label: "traj.tabSummary" }],
 };
 
 const DETAILS_MIN_WIDTH = 320;
@@ -79,6 +103,13 @@ function kindLabel(kind: TrajRecord["kind"], locale: AgentLocale): string {
   if (kind === "assistant") return agentLabel("traj.kindAssistant", locale);
   if (kind === "notice") return agentLabel("traj.kindNotice", locale);
   if (kind === "system") return agentLabel("traj.kindSystem", locale);
+  if (kind === "context") return agentLabel("traj.kindInject", locale);
+  if (kind === "request") return agentLabel("traj.kindRequest", locale);
+  if (kind === "retry") return agentLabel("traj.kindRetry", locale);
+  if (kind === "attempt") return agentLabel("traj.kindAttempt", locale);
+  if (kind === "compaction") return agentLabel("traj.kindCompaction", locale);
+  if (kind === "subcall") return agentLabel("traj.kindTool", locale);
+  if (kind === "seed") return agentLabel("traj.kindSeed", locale);
   return agentLabel("traj.kindTool", locale);
 }
 
@@ -92,6 +123,11 @@ function KindTag({ kind, locale }: { kind: TrajRecord["kind"]; locale: AgentLoca
         kind === "assistant" && "bg-violet-50 text-violet-700",
         kind === "notice" && "bg-slate-100 text-slate-600",
         kind === "system" && "bg-cyan-50 text-cyan-700",
+        kind === "context" && "bg-teal-50 text-teal-700",
+        kind === "request" && "bg-indigo-50 text-indigo-700",
+        (kind === "retry" || kind === "attempt") && "bg-rose-50 text-rose-700",
+        kind === "compaction" && "bg-indigo-50 text-indigo-700",
+        kind === "seed" && "bg-slate-100 text-slate-600",
         kind === "tool" && "bg-amber-50 text-amber-700",
       )}
     >
@@ -323,15 +359,24 @@ export function TrajectoryInspector({
   useEffect(() => setTab("summary"), [record.id]);
 
   const entry = record.entry;
-  const args = entry?.kind === "tool" ? entry.args : undefined;
-  const result = entry?.kind === "tool" ? resultText(entry.result) : undefined;
+  const args =
+    entry?.kind === "tool" || entry?.kind === "subcall" ? entry.args : undefined;
+  const result =
+    entry?.kind === "tool" || entry?.kind === "subcall"
+      ? resultText(entry.result)
+      : undefined;
   const messageText =
     entry?.kind === "assistant" ||
     entry?.kind === "user" ||
     entry?.kind === "notice" ||
-    entry?.kind === "system"
+    entry?.kind === "system" ||
+    entry?.kind === "context"
       ? entry.text
-      : undefined;
+      : entry?.kind === "compaction"
+        ? entry.summary
+        : undefined;
+  const request = entry?.kind === "request" ? entry : undefined;
+  const context = entry?.kind === "context" ? entry : undefined;
   const thinking = entry?.kind === "assistant" ? entry.reasoning : undefined;
   const parent = parentAssistant(records, record);
   const location =
@@ -398,17 +443,46 @@ export function TrajectoryInspector({
       {tab === "summary" ? (
         <>
           <dl className="py-2 text-ui-xs">
-            {record.kind === "tool" && parent !== undefined ? (
+            {(record.kind === "tool" || record.kind === "subcall") && parent !== undefined ? (
               <Row label={agentLabel("traj.hierarchy", locale)}>
                 <button
                   type="button"
                   className="inline-flex items-center gap-0.5 text-slate-600 transition hover:text-slate-900"
                   onClick={() => onSelect(parent.index)}
                 >
-                  {agentLabel("traj.assistantMessage", locale)}
+                  {record.kind === "subcall"
+                    ? agentLabel("traj.parentTool", locale)
+                    : agentLabel("traj.assistantMessage", locale)}
                   <ChevronRight size={11} className="text-slate-300" />
                 </button>
               </Row>
+            ) : null}
+            {context?.producer !== undefined ? (
+              <Row label={agentLabel("traj.contextProducer", locale)}>
+                {context.producer}
+              </Row>
+            ) : null}
+            {context?.form !== undefined ? (
+              <Row label={agentLabel("traj.contextForm", locale)}>{context.form}</Row>
+            ) : null}
+            {request !== undefined ? (
+              <>
+                <Row label={agentLabel("traj.reasonLabel", locale)}>{request.reason}</Row>
+                <Row label={agentLabel("traj.providerLabel", locale)}>
+                  {request.provider ?? agentLabel("traj.notAvailable", locale)}
+                </Row>
+                <Row label={agentLabel("traj.modelLabel", locale)}>
+                  {request.model ?? agentLabel("traj.notAvailable", locale)}
+                </Row>
+                {request.effort !== undefined ? (
+                  <Row label={agentLabel("traj.effortLabel", locale)}>{request.effort}</Row>
+                ) : null}
+                {request.maxTokens !== undefined ? (
+                  <Row label={agentLabel("traj.maxTokensLabel", locale)}>
+                    {request.maxTokens.toLocaleString()}
+                  </Row>
+                ) : null}
+              </>
             ) : null}
             <Row label={agentLabel("traj.status", locale)}>
               <span className={record.state === "error" ? "text-rose-600" : undefined}>
@@ -429,7 +503,7 @@ export function TrajectoryInspector({
           </dl>
 
           <div className="flex flex-col">
-            {record.kind === "tool" ? (
+            {record.kind === "tool" || record.kind === "subcall" ? (
               <>
                 <Section label={agentLabel("traj.tabInput", locale)} onOpen={() => activate("input")}>
                   <Payload text={args} locale={locale} preview />
@@ -437,11 +511,13 @@ export function TrajectoryInspector({
                 <Section label={agentLabel("traj.tabOutput", locale)} onOpen={() => activate("output")}>
                   <Payload text={result} locale={locale} preview />
                 </Section>
-                <Section label={agentLabel("traj.tabSchema", locale)} onOpen={() => activate("schema")}>
-                  <p className="py-1 text-ui-xs text-slate-400">
-                    {agentLabel("traj.schemaUnavailable", locale)}
-                  </p>
-                </Section>
+                {record.kind === "tool" ? (
+                  <Section label={agentLabel("traj.tabSchema", locale)} onOpen={() => activate("schema")}>
+                    <p className="py-1 text-ui-xs text-slate-400">
+                      {agentLabel("traj.schemaUnavailable", locale)}
+                    </p>
+                  </Section>
+                ) : null}
               </>
             ) : (
               <Section label={agentLabel("traj.tabPreview", locale)} onOpen={() => activate("preview")}>
@@ -474,9 +550,19 @@ export function TrajectoryInspector({
               </p>
             </div>
           ) : null}
-          <p className="whitespace-pre-wrap break-words text-ui-xs leading-5 text-slate-700 select-text">
-            {messageText ?? record.text}
-          </p>
+          {request !== undefined ? (
+            <ul className="flex flex-col gap-1 font-mono text-ui-xs leading-5 text-slate-700 select-text">
+              {request.tools.map((name) => (
+                <li key={name} className="min-w-0 truncate">
+                  {name}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="whitespace-pre-wrap break-words text-ui-xs leading-5 text-slate-700 select-text">
+              {messageText ?? record.text}
+            </p>
+          )}
         </div>
       ) : null}
 
@@ -484,9 +570,22 @@ export function TrajectoryInspector({
         <Payload
           locale={locale}
           text={
-            [thinking, messageText]
-              .filter((value): value is string => value !== undefined && value !== "")
-              .join("\n\n") || record.text
+            request !== undefined
+              ? JSON.stringify(
+                  {
+                    reason: request.reason,
+                    provider: request.provider,
+                    model: request.model,
+                    effort: request.effort,
+                    maxTokens: request.maxTokens,
+                    tools: request.tools,
+                  },
+                  null,
+                  2,
+                )
+              : [thinking, messageText]
+                  .filter((value): value is string => value !== undefined && value !== "")
+                  .join("\n\n") || record.text
           }
         />
       ) : null}

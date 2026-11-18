@@ -86,6 +86,95 @@ export type AgentEntry =
       text: string;
       /** The prompt replaced an earlier one (phase change / normalization). */
       update?: boolean;
+    }
+  | {
+      /** Injected request context (a non-human `user/message` source, or a
+       *  `developer/message`). Trajectory only. */
+      kind: "context";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      text: string;
+      /** Display label for the producer (paths / skill name / source kind). */
+      producer?: string;
+      /** `source.form` (instructions / notice / …) when carried. */
+      form?: string;
+    }
+  | {
+      /** The full request header (`request/header`): route + tool names. */
+      kind: "request";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      /** initial / resume / change / series. */
+      reason: string;
+      provider?: string;
+      model?: string;
+      effort?: string;
+      maxTokens?: number;
+      tools: string[];
+    }
+  | {
+      /** One provider-routed retry wait (`llm/retry`). */
+      kind: "retry";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      provider: string;
+      retry: number;
+      maxRetries?: number;
+      delayMs: number;
+      message: string;
+      code: string;
+      status?: number;
+    }
+  | {
+      /** A request attempt that committed no message (`assistant/attempt`). */
+      kind: "attempt";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      startedAtMs?: number;
+      endedAtMs?: number;
+    }
+  | {
+      /** One compaction cycle, merged in place (start → summary → end). */
+      kind: "compaction";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      status: "running" | "ok" | "error";
+      summary?: string;
+      shadowedTokens?: number;
+      error?: string;
+    }
+  | {
+      /** A PTC sub-call nested in a parent tool call (`tool/ptc-dispatch*`). */
+      kind: "subcall";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      callId: string;
+      parentCallId: string;
+      name: string;
+      args: string;
+      status: "running" | "ok" | "error";
+      result?: string;
+      startedAtMs?: number;
+      endedAtMs?: number;
+    }
+  | {
+      /** The inherited-history boundary (`session/end-seed`). */
+      kind: "seed";
+      seq: number;
+      at: string;
+      inherited?: boolean;
     };
 
 /** Per-reply token accounting, as the assistant entry carries it. */

@@ -294,7 +294,81 @@ export type DshEntry =
       text: string;
       /** The prompt replaced an earlier one (phase change / normalization). */
       update?: boolean;
-    } & DshEntryPosition);
+    } & DshEntryPosition)
+  | ({
+      /** Injected request context (non-human `user/message` source, or
+       *  `developer/message`). Trajectory only. */
+      kind: "context";
+      seq: number;
+      at: string;
+      text: string;
+      producer?: string;
+      form?: string;
+    } & DshEntryPosition)
+  | ({
+      /** The full request header: route + capacity + tool names. */
+      kind: "request";
+      seq: number;
+      at: string;
+      reason: string;
+      provider?: string;
+      model?: string;
+      effort?: string;
+      maxTokens?: number;
+      tools: string[];
+    } & DshEntryPosition)
+  | ({
+      /** One provider-routed retry wait (`llm/retry`). */
+      kind: "retry";
+      seq: number;
+      at: string;
+      provider: string;
+      retry: number;
+      maxRetries?: number;
+      delayMs: number;
+      message: string;
+      code: string;
+      status?: number;
+    } & DshEntryPosition)
+  | ({
+      /** A request attempt that committed no message (`assistant/attempt`). */
+      kind: "attempt";
+      seq: number;
+      at: string;
+      startedAtMs?: number;
+      endedAtMs?: number;
+    } & DshEntryPosition)
+  | ({
+      /** One compaction cycle, merged in place (start → summary → end). */
+      kind: "compaction";
+      seq: number;
+      at: string;
+      status: "running" | "ok" | "error";
+      summary?: string;
+      shadowedTokens?: number;
+      error?: string;
+    } & DshEntryPosition)
+  | ({
+      /** A PTC sub-call nested in a parent tool call. */
+      kind: "subcall";
+      seq: number;
+      at: string;
+      callId: string;
+      parentCallId: string;
+      name: string;
+      args: string;
+      status: "running" | "ok" | "error";
+      result?: string;
+      startedAtMs?: number;
+      endedAtMs?: number;
+    } & DshEntryPosition)
+  | {
+      /** The inherited-history boundary (`session/end-seed`). */
+      kind: "seed";
+      seq: number;
+      at: string;
+      inherited?: boolean;
+    };
 
 /* -------------------------------------------------------------------------
    Blocking requests: approvals and user questions (docs/DSH.md §4.4, §8.7)
