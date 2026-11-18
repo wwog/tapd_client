@@ -6,6 +6,9 @@
 //! the workflow compare-and-swap that keeps late turn events from overriding a
 //! newer state.
 //!
+//! There is no payload migration: the shape in this file is the only one the
+//! app reads. A database from an older build is cleared by the user.
+//!
 //! The database is the shared offline cache (`cache.sqlite3`); when it failed to
 //! open the store reports the localized "unavailable" error instead of losing
 //! tasks silently.
@@ -19,16 +22,18 @@ use crate::cache::Cache;
 /// Every task, newest first (`updatedAt`, then insertion order for ties).
 pub(super) fn load_all(cache: &Cache) -> Result<Vec<TaskRecord>, String> {
     with_conn(cache, |conn| {
-        let mut statement = conn
-            .prepare("SELECT payload FROM dsh_tasks ORDER BY updated_at DESC, rowid DESC")
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(sql_error)?;
+        let payloads = {
+            let mut statement = conn
+                .prepare("SELECT payload FROM dsh_tasks ORDER BY updated_at DESC, rowid DESC")
+                .map_err(sql_error)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(sql_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?
+        };
         let mut records = Vec::new();
-        for row in rows {
-            let payload = row.map_err(sql_error)?;
-            match serde_json::from_str::<TaskRecord>(&payload) {
+        for payload in payloads {
+            match decode(&payload) {
                 Ok(record) => records.push(record),
                 // One unreadable row must not hide the rest; it is also not
                 // worth failing the whole list a user is looking at.
@@ -47,11 +52,10 @@ pub(super) fn load(cache: &Cache, id: &str) -> Result<Option<TaskRecord>, String
             })
             .optional()
             .map_err(sql_error)?;
-        payload
-            .map(|payload| {
-                serde_json::from_str::<TaskRecord>(&payload).map_err(|error| error.to_string())
-            })
-            .transpose()
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        Ok(Some(decode(&payload)?))
     })
 }
 
@@ -152,11 +156,16 @@ fn sql_error(error: rusqlite::Error) -> String {
     error.to_string()
 }
 
+fn decode(payload: &str) -> Result<TaskRecord, String> {
+    serde_json::from_str(payload).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsh::tasks::{DshTask, TaskKind, TaskMeta};
+    use crate::dsh::tasks::{DshTask, TaskKind, TaskMeta, Workflow};
     use dsh_host::transcript::SessionStatus;
+
     fn cache() -> Cache {
         Cache::open(std::env::temp_dir().join(format!(
             "tapd-dsh-task-store-{}.sqlite3",
@@ -183,10 +192,11 @@ mod tests {
                 message_count: 0,
                 changes: None,
                 review: None,
-                merge: None,
+                finalize: None,
             },
             meta: TaskMeta {
                 workspace_id: Some("ws".to_string()),
+                worktree: true,
                 ..TaskMeta::default()
             },
         }
@@ -268,4 +278,5 @@ mod tests {
         delete(&cache, "a").expect("delete");
         assert!(load_all(&cache).expect("load").is_empty());
     }
+
 }

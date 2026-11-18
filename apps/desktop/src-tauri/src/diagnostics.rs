@@ -163,7 +163,6 @@ fn agent_summary(data_dir: &Path) -> Value {
         .collect::<Vec<_>>();
 
     json!({
-        "worktreeEnabled": config.worktree_enabled,
         "executionUnits": config.execution_units,
         "projects": projects,
     })

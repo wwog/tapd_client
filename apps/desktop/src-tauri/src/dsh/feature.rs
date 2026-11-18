@@ -41,14 +41,26 @@ pub fn status(app: &AppHandle) -> Result<DshStatus, String> {
 }
 
 pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
-    runtime(app)?.ensure_ready(app).await
+    let status = runtime(app)?.ensure_ready(app).await?;
+    // App restart: queued tasks are rescheduled against the live sessions the
+    // new runtime has. A row persisted as running without a live session does
+    // not hold a slot and waits for the user to open it.
+    if let Err(error) = super::tasks::schedule(app).await {
+        tracing::warn!(%error, "queued dsh tasks were not scheduled");
+    }
+    Ok(status)
 }
 
 /// Stops and starts in one step so startup-only settings (permission mode,
 /// model catalog, coworkers) take effect. Unlike `start`, it is not a no-op
 /// while the process is alive.
 pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
-    runtime(app)?.restart(app).await
+    let status = runtime(app)?.restart(app).await?;
+    // The old process owned every live session; the queue has to be rebuilt.
+    if let Err(error) = super::tasks::schedule(app).await {
+        tracing::warn!(%error, "queued dsh tasks were not scheduled after a restart");
+    }
+    Ok(status)
 }
 
 /// Stops the current turn of one session without ending the task. `turn/end`
@@ -167,12 +179,16 @@ fn dsh_sessions_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// Allocates an id and its (empty) registry row. The runtime creates the real
 /// session on the first prompt.
 pub async fn new_session(app: &AppHandle) -> Result<Value, String> {
-    let session_id = uuid::Uuid::new_v4().to_string();
-    bridge(app)?.create_session(app, &session_id);
-    // Chats live in the same unified list as tasks, so the row exists before
-    // the first message; `tasks::observe` names it from the first user line.
-    super::tasks::create_chat(app, &session_id).await?;
-    Ok(json!({ "sessionId": session_id }))
+    new_session_in(app, None).await
+}
+
+/// A manual session is always a free chat; the optional project only groups it
+/// and supplies its default cwd (§11 of the task-flow contract).
+pub async fn new_session_in(
+    app: &AppHandle,
+    project: Option<super::tasks::ProjectRef>,
+) -> Result<Value, String> {
+    super::tasks::new_session(app, project).await
 }
 
 /// Ensures the runtime is up, then queues one prompt. The registry row exists
@@ -186,11 +202,18 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
         tracing::warn!(%error, session = session_id, "task row was not reopened");
     }
-    // Free chats get their own scratch directory: a session with no project
-    // must never read or write a repository the user did not choose. Tasks
-    // assign their worktree right after this, so they are unaffected.
+    // A free chat works in its worktree, its project repository, or its own
+    // scratch directory — in that order. A session with no project must never
+    // read or write a repository the user did not choose. Tasks assign their
+    // worktree through the scheduler, so they never reach this branch.
     if super::tasks::kind_of(app, session_id).await == Some(super::tasks::TaskKind::Chat) {
-        assign_chat_workspace(app, session_id).await;
+        if let Some(cwd) = super::tasks::chat_cwd(app, session_id).await {
+            if let Ok(bridge) = bridge(app) {
+                if let Err(error) = bridge.assign_session(session_id, &cwd).await {
+                    tracing::warn!(%error, session = session_id, "chat cwd was not assigned");
+                }
+            }
+        }
     }
     // A session restored from a previous run is not open in the runtime: the
     // SDK would answer with a fresh empty session under the same id. History
@@ -204,6 +227,9 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     // Creates a new Agent before the prompt (and re-applies the route) so the
     // very first step uses the session's chosen model.
     state.prepare_session(app, session_id, !restored).await;
+    // The phase frame and the prompt use different channels; await the plugin's
+    // ack so the first step already sees the right tools and prompt section.
+    super::tasks::sync_phase(app, session_id).await?;
     let receipt = state.query(app, session_id, text).await?;
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
 }
@@ -233,37 +259,9 @@ pub async fn retry_turn(app: &AppHandle, session_id: &str) -> Result<Value, Stri
         state.resume_session(app, session_id).await?;
     }
     state.prepare_session(app, session_id, !restored).await;
+    super::tasks::sync_phase(app, session_id).await?;
     bridge.retry_session(session_id)?;
     Ok(json!({ "sessionId": session_id, "ok": true }))
-}
-
-/// Creates and queues the per-chat working directory. Best effort: the
-/// runtime-wide default is already a neutral scratch area, so a failed
-/// assignment cannot land the chat in a repository.
-async fn assign_chat_workspace(app: &AppHandle, session_id: &str) {
-    let Some(state) = app.try_state::<Arc<crate::state::AppState>>() else {
-        return;
-    };
-    let target = state
-        .paths
-        .data_dir
-        .join("dsh")
-        .join("chats")
-        .join(session_id);
-    let dir = target.clone();
-    let created = tauri::async_runtime::spawn_blocking(move || {
-        std::fs::create_dir_all(&dir).map(|_| dir.to_string_lossy().to_string())
-    })
-    .await;
-    let Ok(Ok(cwd)) = created else {
-        tracing::warn!(session = session_id, "chat workspace could not be created");
-        return;
-    };
-    if let Ok(bridge) = bridge(app) {
-        if let Err(error) = bridge.assign_session(session_id, &cwd).await {
-            tracing::warn!(%error, session = session_id, "chat workspace was not assigned");
-        }
-    }
 }
 
 /// Switches one session's model route. The choice is durable in that session's
@@ -422,6 +420,22 @@ struct WorktreeRequest {
     path: String,
 }
 
+/// A new session, optionally scoped to one project group.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewSessionPayload {
+    #[serde(default)]
+    project: Option<super::tasks::ProjectRef>,
+}
+
+/// The chat worktree toggle.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatWorktreePayload {
+    session_id: String,
+    enabled: bool,
+}
+
 /// One session-mode write. Both fields are optional so a plan toggle does not
 /// rewrite the permission mode; at least one must be present.
 #[derive(Deserialize)]
@@ -517,6 +531,11 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
             .await
         }
         "dsh_worktrees" => super::tasks::worktrees(app).await,
+        "dsh_projects" => super::tasks::projects(app).await,
+        "dsh_chat_worktree" => {
+            let request: ChatWorktreePayload = parse(payload, "dsh_chat_worktree")?;
+            super::tasks::chat_worktree(app, &request.session_id, request.enabled).await
+        }
         "dsh_session_dir" => {
             let request: SessionRequest = parse(payload, "dsh_session_dir")?;
             super::tasks::session_dir(app, &request.session_id).await
@@ -562,7 +581,10 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
                 },
             )
         }
-        "dsh_new_session" => new_session(app).await,
+        "dsh_new_session" => {
+            let request: NewSessionPayload = parse(payload, "dsh_new_session")?;
+            new_session_in(app, request.project).await
+        }
         "dsh_models_discover" => {
             let request: DiscoverPayload = parse(payload, "dsh_models_discover")?;
             runtime(app)?

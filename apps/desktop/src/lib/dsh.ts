@@ -251,11 +251,12 @@ export type DshAgentConfig = AgentConfig;
 
 export type DshTaskKind = "chat" | "bug" | "local_item";
 
-/** The only list grouping and the only state machine. */
+/** The only list grouping and the only state machine (docs/AGENT_TASK_FLOW.md §3). */
 export type DshTaskWorkflow =
+  | "queued"
   | "running"
   | "awaiting_review"
-  | "awaiting_merge"
+  | "finalizing"
   | "done"
   | "failed"
   | "canceled";
@@ -266,22 +267,53 @@ export type DshTaskProject = {
   kind: "tapd" | "local";
 };
 
+/** A configured project, whether or not it owns a session (list grouping). */
+export type DshProject = DshTaskProject & {
+  /** Empty when the project has no repository configured. */
+  repoPath: string;
+};
+
 export type DshTaskChanges = {
   files: number;
   additions: number;
   deletions: number;
 };
 
-/** Reserved for a model-written review; no producer yet. */
+/** What the model reported when it asked for review (from `task_submit`). */
 export type DshTaskReview = {
   summary: string;
+  verification?: string;
+  risks?: string;
   files: string[];
-  risk?: string;
 };
 
-export type DshTaskMerge = {
+/** Where the host is in commit → merge → cleanup → writeback. */
+export type DshFinalizeStep = "commit" | "merge" | "cleanup" | "writeback";
+
+export type DshTaskFinalize = {
+  /** The step that is running (or failed, when `error` is set). */
+  step: DshFinalizeStep | null;
   error?: string;
   instructions?: string;
+  /** Non-fatal remark, e.g. a worktree kept because it was dirty. */
+  notice?: string;
+};
+
+export type DshTaskFileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked";
+
+/** One changed file as `dsh_task_changes` reports it. */
+export type DshTaskFile = {
+  /** Relative to the worktree root. */
+  path: string;
+  status: DshTaskFileStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
 };
 
 export type DshTask = {
@@ -303,7 +335,7 @@ export type DshTask = {
   messageCount: number;
   changes?: DshTaskChanges | null;
   review?: DshTaskReview | null;
-  merge?: DshTaskMerge | null;
+  finalize?: DshTaskFinalize | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -353,7 +385,6 @@ export const dshApi = {
    *  it never lands in the context twice. */
   retryTurn: (sessionId: string) =>
     feature<{ sessionId: string; ok: true }>("dsh_session_retry", { sessionId }),
-  newSession: () => invoke<{ sessionId: string }>("dsh_new_session"),
   sessions: () => invoke<{ sessions: DshSessionRow[] }>("dsh_sessions"),
   pending: () => invoke<{ requests: DshPendingRequest[] }>("dsh_pending"),
   sessionEntries: (sessionId: string) =>
@@ -425,11 +456,15 @@ type DshFeatureCommand =
   | "dsh_task_enqueue_bug"
   | "dsh_task_enqueue_local"
   | "dsh_task_approve"
-  | "dsh_task_merge"
+  | "dsh_task_retry_finalize"
   | "dsh_task_cancel"
+  | "dsh_task_changes"
   | "dsh_task_diff"
   | "dsh_task_resume"
   | "dsh_task_delete"
+  | "dsh_new_session"
+  | "dsh_projects"
+  | "dsh_chat_worktree"
   | "dsh_policy_set"
   | "dsh_team_get"
   | "dsh_team_set";
@@ -466,14 +501,33 @@ export const dshTaskApi = {
     }),
   approve: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),
-  merge: (sessionId: string) =>
-    feature<{ task: DshTask }>("dsh_task_merge", { sessionId }),
+  /** Resumes commit/merge/cleanup/writeback from `finalize.step`. */
+  retryFinalize: (sessionId: string) =>
+    feature<{ task: DshTask }>("dsh_task_retry_finalize", { sessionId }),
   cancel: (sessionId: string, stash = false) =>
     feature<{ task: DshTask }>("dsh_task_cancel", { sessionId, stash }),
-  diff: (sessionId: string) =>
-    feature<{ diff: string; truncated: boolean }>("dsh_task_diff", { sessionId }),
+  /** Changed files of the task's worktree; `file` narrows the diff to one. */
+  changes: (sessionId: string) =>
+    feature<{ files: DshTaskFile[]; truncated: boolean }>("dsh_task_changes", {
+      sessionId,
+    }),
+  diff: (sessionId: string, file?: string) =>
+    feature<{ diff: string; truncated: boolean }>("dsh_task_diff", {
+      sessionId,
+      ...(file ? { file } : {}),
+    }),
   resume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
+  /** Creates a free chat, optionally already grouped under a project. */
+  newSession: (project?: { kind: DshTaskProject["kind"]; id: string }) =>
+    feature<{ sessionId: string }>("dsh_new_session", {
+      ...(project ? { project } : {}),
+    }),
+  /** Every configured project, for the task list's empty groups. */
+  projects: () => feature<{ projects: DshProject[] }>("dsh_projects"),
+  /** Opts one free chat into (or out of) its own git worktree. */
+  chatWorktree: (sessionId: string, enabled: boolean) =>
+    feature<{ task: DshTask }>("dsh_chat_worktree", { sessionId, enabled }),
   /** Removes the row, its log and whatever directory the app made for it. */
   delete: (sessionId: string) =>
     feature<{ sessionId: string }>("dsh_task_delete", { sessionId }),

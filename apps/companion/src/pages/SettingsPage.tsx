@@ -455,8 +455,6 @@ export function SettingsPage() {
     window.setTimeout(() => setLinkCopied(false), 1500);
   };
 
-  const worktreeEnabled = agentConfig?.worktreeEnabled ?? false;
-
   return (
     <div className="pb-6">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
@@ -693,20 +691,13 @@ export function SettingsPage() {
         title={t("mobile.settings.writeBackHint")}
       >
         <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.agentExecution")}</h3>
-        <SwitchRow
-          label={t("mobile.settings.worktreeIsolation")}
-          title={t("mobile.settings.worktreeHint")}
-          checked={worktreeEnabled}
-          disabled={!agentConfig}
-          onChange={(value) => void patchConfig({ worktreeEnabled: value })}
-        />
         <SettingRow label={t("mobile.settings.executionUnits")}>
           <Stepper
             label={t("mobile.settings.executionUnits")}
-            value={worktreeEnabled ? agentConfig?.executionUnits ?? 2 : 1}
+            value={agentConfig?.executionUnits ?? 2}
             min={UNITS_MIN}
             max={UNITS_MAX}
-            disabled={!agentConfig || !worktreeEnabled}
+            disabled={!agentConfig}
             onChange={(value) => void patchConfig({ executionUnits: value })}
           />
         </SettingRow>

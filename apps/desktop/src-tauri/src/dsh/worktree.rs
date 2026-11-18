@@ -6,6 +6,7 @@
 //! mutates a repository. Failures carry git's own stderr — the caller wraps
 //! them in a localized message so the UI never shows a bare English string.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -33,6 +34,15 @@ pub fn head(dir: &str) -> Result<Option<String>, String> {
     let output = git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"], &[1])?;
     let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!head.is_empty()).then_some(head))
+}
+
+/// The checked-out branch of `repo_path`, for display in the composer work bar.
+/// A detached HEAD has no branch name and answers `None`.
+pub fn current_branch(repo_path: &str) -> Result<Option<String>, String> {
+    let repo = repo_root(repo_path)?;
+    let output = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"], &[])?;
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!branch.is_empty() && branch != "HEAD").then_some(branch))
 }
 
 /// Tip commit of `branch`. The merge path compares it with the task baseline:
@@ -89,10 +99,56 @@ pub fn remove(repo_path: &str, work_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Deletes a local branch. Used when a chat worktree is turned off and the
+/// branch never advanced past its baseline.
+pub fn delete_branch(repo_path: &str, branch: &str) -> Result<(), String> {
+    git(repo_path, &["branch", "-D", branch], &[])?;
+    Ok(())
+}
+
 /// Whether the working tree (including untracked files) has any change.
 pub fn is_dirty(dir: &str) -> Result<bool, String> {
     let output = git(dir, &["status", "--porcelain"], &[])?;
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+/// Per-path change kind from `git status --porcelain` (NUL separated).
+///
+/// The workspace summary calls git with `--no-renames`, so it cannot tell an
+/// untracked file from an added one. This map supplies exactly the two kinds the
+/// review screen distinguishes; unknown paths fall back to the summary's own
+/// `ChangeKind`.
+pub fn status_kinds(dir: &str) -> Result<HashMap<String, String>, String> {
+    let output = git(dir, &["status", "--porcelain", "-z"], &[])?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut kinds = HashMap::new();
+    let mut parts = text.split('\0').filter(|part| !part.is_empty());
+    while let Some(entry) = parts.next() {
+        // `XY <path>`; a rename/copy entry carries the source path as the next
+        // NUL-separated token.
+        if entry.len() < 4 {
+            continue;
+        }
+        let code = &entry[..2];
+        let path = &entry[3..];
+        let kind = if code == "??" {
+            "untracked"
+        } else if code.starts_with('R') {
+            "renamed"
+        } else if code.starts_with('D') {
+            "deleted"
+        } else if code.contains('A') {
+            "added"
+        } else {
+            "modified"
+        };
+        kinds.insert(path.to_string(), kind.to_string());
+        if code.starts_with('R') || code.starts_with('C') {
+            // Consume the rename/copy source path.
+            parts.next();
+        }
+    }
+    Ok(kinds)
 }
 
 /// Stages everything and commits it. Returns the new HEAD, or `None` when the
@@ -188,6 +244,16 @@ pub fn branch_name(prefix: &str, id: &str, session_id: &str) -> String {
     } else {
         format!("{prefix}/{id}-{short}")
     }
+}
+
+/// Branch for a free conversation's worktree: `chat/<8 位 id>`.
+pub fn chat_branch(session_id: &str) -> String {
+    let short: String = session_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    format!("chat/{}", if short.is_empty() { "session" } else { &short })
 }
 
 /// One git invocation. `allowed` lists exit codes that are not failures
@@ -359,6 +425,24 @@ mod tests {
 
         stash_all(&target.to_string_lossy(), "cancel").expect("stash");
         assert_eq!(is_dirty(&target.to_string_lossy()).expect("clean"), false);
+    }
+
+    #[test]
+    fn chat_branches_are_short_and_path_safe() {
+        assert_eq!(chat_branch("9f3a1c2d-0000-0000"), "chat/9f3a1c2d");
+        assert_eq!(chat_branch("中文"), "chat/session");
+        assert!(!chat_branch("").ends_with('/'));
+    }
+
+    #[test]
+    fn status_kinds_tell_untracked_apart_from_added() {
+        let temp = TempRepo::new("kinds");
+        let repo = temp.repo();
+        std::fs::write(temp.root.join("repo/new.txt"), "new\n").expect("write");
+        std::fs::write(temp.root.join("repo/README.md"), "changed\n").expect("write");
+        let kinds = status_kinds(&repo).expect("status");
+        assert_eq!(kinds.get("new.txt").map(String::as_str), Some("untracked"));
+        assert_eq!(kinds.get("README.md").map(String::as_str), Some("modified"));
     }
 
     #[test]

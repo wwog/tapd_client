@@ -90,27 +90,71 @@ export type DshTodo = {
 };
 
 /* -------------------------------------------------------------------------
-   Unified task list (docs/DSH.md §9.1)
+   Unified task list (docs/AGENT_TASK_FLOW.md §12.1)
    ------------------------------------------------------------------------- */
 
 export type DshTaskKind = "chat" | "bug" | "local_item";
 export type DshProjectKind = "tapd" | "local";
+
+/**
+ * The workflow state machine (docs/AGENT_TASK_FLOW.md §3): `queued` waits for
+ * an execution slot, `awaiting_review` is the human gate and `finalizing` is
+ * the host's commit → merge → cleanup → TAPD writeback run.
+ */
 export type DshWorkflow =
+  | "queued"
   | "running"
   | "awaiting_review"
-  | "awaiting_merge"
+  | "finalizing"
   | "done"
   | "failed"
   | "canceled";
 
 export type DshTaskProject = { id: string; name: string; kind: DshProjectKind };
 
+/** One project group header source (`dsh_projects`). */
+export type DshProjectOption = {
+  kind: DshProjectKind;
+  id: string;
+  name: string;
+  repoPath?: string;
+};
+
 export type DshTaskChanges = { files: number; additions: number; deletions: number };
 
-/** Reserved for a model-written review; no producer yet. */
-export type DshTaskReview = { summary: string; files: string[]; risk: string };
+/** What the model wrote with `task_submit`; shown on the review screen. */
+export type DshTaskReview = {
+  summary: string;
+  verification?: string;
+  risks?: string;
+  files: string[];
+};
 
-export type DshTaskMerge = { error?: string; instructions?: string };
+export type DshFinalizeStep = "commit" | "merge" | "cleanup" | "writeback";
+
+/** Host-side finishing progress; `step` marks where a failure stopped. */
+export type DshTaskFinalize = {
+  step: DshFinalizeStep | null;
+  error?: string;
+  instructions?: string;
+  notice?: string;
+};
+
+export type DshTaskFileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked";
+
+/** One changed file inside the task's worktree. */
+export type DshTaskFile = {
+  path: string;
+  status: DshTaskFileStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
 
 /** One list row = one dsh session plus our workflow metadata. */
 export type DshTask = {
@@ -132,7 +176,7 @@ export type DshTask = {
   messageCount: number;
   changes?: DshTaskChanges | null;
   review?: DshTaskReview | null;
-  merge?: DshTaskMerge | null;
+  finalize?: DshTaskFinalize | null;
 };
 
 export function isTerminalWorkflow(workflow: DshWorkflow): boolean {
@@ -295,8 +339,11 @@ export const dshApi = {
     ),
   pending: () => feature<{ requests: DshPendingRequest[] }>("dsh_pending"),
 
-  /** Allocates a session id; the runtime creates the session at first prompt. */
-  newSession: () => feature<{ sessionId: string }>("dsh_new_session"),
+  /** Allocates a session id; the runtime creates the session at first prompt.
+   *  A project scopes the chat to that repo (and its group); manual sessions
+   *  are always free chats. */
+  newSession: (project?: { kind: DshProjectKind; id: string }) =>
+    feature<{ sessionId: string }>("dsh_new_session", project ? { project } : {}),
   prompt: (sessionId: string, text: string) =>
     feature<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
   /** Stops the running turn; pending approval/question requests settle as cancelled. */
@@ -324,13 +371,20 @@ export const dshApi = {
   policyGet: () => feature<{ mode: DshPermissionMode }>("dsh_policy_get"),
 
   tasks: () => feature<{ tasks: DshTask[] }>("dsh_tasks"),
+  /** Commits → merges → cleans the worktree → starts TAPD writeback. */
   taskApprove: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),
-  taskMerge: (sessionId: string) =>
-    feature<{ task: DshTask }>("dsh_task_merge", { sessionId }),
+  /** Re-runs finishing from `finalize.step`. */
+  taskRetryFinalize: (sessionId: string) =>
+    feature<{ task: DshTask }>("dsh_task_retry_finalize", { sessionId }),
   /** `stash` preserves the working tree changes instead of discarding them. */
   taskCancel: (sessionId: string, stash = false) =>
     feature<{ task: DshTask }>("dsh_task_cancel", { sessionId, stash }),
+  /** The changed files of the task's worktree (review screen list). */
+  taskChanges: (sessionId: string) =>
+    feature<{ files: DshTaskFile[]; truncated: boolean }>("dsh_task_changes", {
+      sessionId,
+    }),
   taskDiff: (sessionId: string, file?: string) =>
     feature<{ diff: string; truncated: boolean }>("dsh_task_diff", {
       sessionId,
@@ -339,6 +393,12 @@ export const dshApi = {
   /** Reattaches a task's persisted dsh session after a desktop restart. */
   taskResume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
+
+  /** Every configured project (TAPD + local) so empty groups still render. */
+  projects: () => feature<{ projects: DshProjectOption[] }>("dsh_projects"),
+  /** Free-chat worktree switch; only meaningful for an idle chat session. */
+  chatWorktree: (sessionId: string, enabled: boolean) =>
+    feature<{ task: DshTask }>("dsh_chat_worktree", { sessionId, enabled }),
 
   /** The persisted board of one session; disabled with no tasks by default. */
   teamGet: (sessionId: string) => feature<{ team: DshTeam }>("dsh_team_get", { sessionId }),

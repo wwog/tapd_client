@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { createPortal } from "react-dom";
-import { ArrowUp, ChevronLeft, LoaderCircle, Square, X } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronLeft,
+  FolderGit2,
+  GitBranch,
+  LayoutGrid,
+  LoaderCircle,
+  MessageSquare,
+  RefreshCw,
+  Square,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 
 import { asApiError } from "../lib/api";
 import {
@@ -14,7 +25,6 @@ import {
   type CatalogProvider,
   type DshModelsCatalog,
 } from "../lib/agentModels";
-import { Badge } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
 import { TodoCard } from "../../../shared/agent/TodoCard";
 import { AgentHostProvider } from "../../../shared/agent/host";
@@ -23,22 +33,25 @@ import {
   applyAgentTask,
   applyAgentTeam,
   dshApi,
-  isTerminalWorkflow,
   refreshAgentFeed,
   useAgentFeed,
   watchAgentTeam,
   type DshAnswer,
   type DshApprovalOutcome,
   type DshEntry,
+  type DshFinalizeStep,
   type DshPendingRequest,
   type DshPermissionMode,
   type DshSession,
   type DshTask,
+  type DshTaskFile,
+  type DshTaskFileStatus,
   type DshTeam,
   type DshTeamTask,
   type DshTeamTaskStatus,
   type ModelSelection,
 } from "../lib/dsh";
+import { fileHash } from "../lib/files";
 import { resolveLocaleMode, t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { usePrefs } from "../lib/prefs";
@@ -72,7 +85,23 @@ const MAX_SCOPES = 3;
 
 type ApprovalPending = Extract<DshPendingRequest, { kind: "approval" }>;
 type QuestionPending = Extract<DshPendingRequest, { kind: "question" }>;
-type TaskAction = "approve" | "merge" | "cancel" | "diff";
+type TaskAction = "approve" | "retry" | "cancel";
+
+/** The host's finishing pipeline, in the order the steps run. */
+const FINALIZE_STEPS: ReadonlyArray<{ step: DshFinalizeStep; label: MessageKey }> = [
+  { step: "commit", label: "mobile.agent.finalizeStepCommit" },
+  { step: "merge", label: "mobile.agent.finalizeStepMerge" },
+  { step: "cleanup", label: "mobile.agent.finalizeStepCleanup" },
+  { step: "writeback", label: "mobile.agent.finalizeStepWriteback" },
+];
+
+const FILE_STATUS_LABELS: Record<DshTaskFileStatus, MessageKey> = {
+  added: "mobile.agent.fileAdded",
+  modified: "mobile.agent.fileModified",
+  deleted: "mobile.agent.fileDeleted",
+  renamed: "mobile.agent.fileRenamed",
+  untracked: "mobile.agent.fileUntracked",
+};
 
 function TranscriptSkeleton() {
   return (
@@ -118,61 +147,179 @@ function TaskButton(props: {
   );
 }
 
-function DiffSheet(props: {
-  open: boolean;
-  diff: { text: string; truncated: boolean } | null;
-  error: string | null;
-  busy: boolean;
-  onClose: () => void;
+/** One labelled paragraph of the model's review note. */
+function ReviewField(props: { label: string; text: string }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="shrink-0 text-ui-2xs text-slate-400">{props.label}</span>
+      <span className="min-w-0 flex-1 select-text whitespace-pre-wrap text-ui-xs leading-5 text-slate-700">
+        {props.text}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Review / finishing screen for a workflow task (docs/AGENT_TASK_FLOW.md §7).
+ * The model's own summary and the changed files (tapping one opens the
+ * built-in file viewer scoped to the session's worktree). Finishing shows the
+ * commit → merge → cleanup → writeback pipeline and the failure detail; the
+ * approve/discard/retry gate itself sits in the sticky composer area so it
+ * never scrolls away.
+ */
+function ReviewPanel(props: {
+  task: DshTask;
+  sessionId: string;
+  files: DshTaskFile[] | null;
+  filesTruncated: boolean;
+  filesLoading: boolean;
+  filesError: string | null;
+  onRefresh: () => void;
 }) {
-  if (!props.open) return null;
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex flex-col bg-canvas"
-      style={{
-        // The portal escapes #root's safe-area padding.
-        paddingTop: "env(safe-area-inset-top)",
-        paddingBottom: "env(safe-area-inset-bottom)",
-      }}
-    >
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-canvas px-2 py-2">
+  const review = props.task.review;
+  const finalize = props.task.finalize;
+  const finalizing = props.task.workflow === "finalizing";
+  const currentStep = finalize?.step
+    ? FINALIZE_STEPS.findIndex((item) => item.step === finalize.step)
+    : -1;
+  const changes = props.task.changes;
+
+  return (
+    <section className="border-b border-border bg-canvas">
+      <div className="flex items-center gap-2 px-4 pt-2.5 pb-1">
+        <h2 className="min-w-0 flex-1 text-ui-caption text-slate-900">
+          {finalizing ? t("mobile.agent.finalizeTitle") : t("mobile.agent.reviewTitle")}
+        </h2>
+        {changes ? (
+          <span className="shrink-0 font-mono text-ui-2xs">
+            <span className="text-emerald-600">+{changes.additions}</span>
+            <span className="ml-1 text-rose-600">−{changes.deletions}</span>
+          </span>
+        ) : null}
         <button
           type="button"
-          aria-label={t("common.close")}
-          onClick={props.onClose}
-          className="shrink-0 rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
+          aria-label={t("common.refresh")}
+          title={t("common.refresh")}
+          onClick={props.onRefresh}
+          className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
         >
-          <X size={18} />
+          <RefreshCw size={13} className={props.filesLoading ? "animate-spin" : undefined} />
         </button>
-        <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900">
-          {t("mobile.agent.viewDiff")}
-        </span>
-        {props.diff?.truncated ? (
-          <Badge tone="amber">{t("mobile.agent.diffTruncated")}</Badge>
-        ) : null}
-      </header>
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain bg-surface">
-        {props.busy ? (
-          <p className="px-4 py-6 text-ui-caption text-slate-400">{t("common.reading")}</p>
-        ) : props.error ? (
-          <p
-            className="px-4 py-6 text-ui-caption leading-5 text-rose-600"
-            title={t("mobile.agent.diffFailed")}
-          >
-            {props.error}
-          </p>
-        ) : props.diff && props.diff.text ? (
-          <pre className="w-max min-w-full px-3 py-3 font-mono text-ui-xs leading-5 break-normal whitespace-pre text-slate-700 select-text">
-            {props.diff.text}
-          </pre>
-        ) : (
-          <p className="px-4 py-6 text-ui-caption text-slate-400">
-            {t("mobile.agent.diffEmpty")}
-          </p>
-        )}
       </div>
-    </div>,
-    document.body,
+
+      {review && (review.summary || review.verification || review.risks) ? (
+        <div className="space-y-1 px-4 pb-2">
+          {review.summary ? (
+            <ReviewField label={t("mobile.agent.reviewSummary")} text={review.summary} />
+          ) : null}
+          {review.verification ? (
+            <ReviewField
+              label={t("mobile.agent.reviewVerification")}
+              text={review.verification}
+            />
+          ) : null}
+          {review.risks ? (
+            <ReviewField label={t("mobile.agent.reviewRisks")} text={review.risks} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {finalizing ? (
+        <div className="flex flex-wrap items-center gap-1 px-4 pb-2">
+          {FINALIZE_STEPS.map((item, index) => {
+            const done = currentStep >= 0 && index < currentStep;
+            const active = index === currentStep;
+            return (
+              <span key={item.step} className="flex items-center gap-1">
+                {index > 0 ? <span className="text-ui-2xs text-slate-300">→</span> : null}
+                <span
+                  className={`rounded-md px-1.5 py-0.5 text-ui-2xs ${
+                    active
+                      ? "bg-sky-50 text-sky-700"
+                      : done
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "text-slate-400"
+                  }`}
+                >
+                  {t(item.label)}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className="flex items-center gap-2 px-4 pb-1 text-ui-2xs text-slate-500">
+        <span className="shrink-0">{t("mobile.agent.reviewFiles")}</span>
+        {props.files ? <span className="text-slate-400">{props.files.length}</span> : null}
+        {props.filesTruncated ? (
+          <span className="shrink-0 rounded-md bg-amber-50 px-1.5 py-0.5 text-amber-700">
+            {t("mobile.agent.reviewTruncated")}
+          </span>
+        ) : null}
+      </div>
+
+      {props.filesLoading && props.files === null ? (
+        <p className="px-4 py-2 text-ui-xs text-slate-400">{t("mobile.agent.reviewLoading")}</p>
+      ) : null}
+
+      {props.filesError ? (
+        <p
+          className="px-4 py-2 text-ui-xs leading-5 text-rose-600"
+          title={t("mobile.agent.reviewLoadFailed")}
+        >
+          {props.filesError}
+        </p>
+      ) : null}
+
+      {props.files?.map((file) => (
+        <button
+          key={file.path}
+          type="button"
+          onClick={() =>
+            navigate(fileHash(`__session__:${props.sessionId}`, file.path))
+          }
+          className="flex min-h-11 w-full items-center gap-2 border-t border-border px-4 py-2 text-left transition active:bg-overlay-soft"
+        >
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-ui-xs text-slate-700"
+            title={file.path}
+          >
+            {file.path}
+          </span>
+          <span className="shrink-0 rounded-md border border-border px-1 text-ui-2xs text-slate-500">
+            {t(FILE_STATUS_LABELS[file.status])}
+          </span>
+          {file.binary ? null : (
+            <span className="shrink-0 font-mono text-ui-2xs">
+              <span className="text-emerald-600">+{file.additions}</span>
+              <span className="ml-1 text-rose-600">−{file.deletions}</span>
+            </span>
+          )}
+        </button>
+      ))}
+
+      {props.files && props.files.length === 0 && !props.filesError ? (
+        <p className="px-4 py-2 text-ui-xs text-slate-400">
+          {t("mobile.agent.reviewNoFiles")}
+        </p>
+      ) : null}
+
+      {finalizing && finalize?.error ? (
+        <p className="select-text px-4 pt-2 text-ui-xs leading-5 text-rose-600">
+          {finalize.error}
+        </p>
+      ) : null}
+      {finalizing && finalize?.instructions ? (
+        <pre className="mx-4 mt-1 overflow-x-auto rounded-lg border border-border bg-surface px-2.5 py-2 font-mono text-ui-2xs leading-5 whitespace-pre-wrap text-slate-600 select-text">
+          {finalize.instructions}
+        </pre>
+      ) : null}
+      {finalizing && finalize?.notice ? (
+        <p className="px-4 pt-2 text-ui-2xs leading-5 text-amber-700">{finalize.notice}</p>
+      ) : null}
+
+    </section>
   );
 }
 
@@ -486,66 +633,32 @@ function QuestionSheet(props: { pending: QuestionPending; onClose: () => void })
    Team board (docs/DSH.md §9.5)
    ------------------------------------------------------------------------- */
 
-function TeamSwitch(props: {
-  checked: boolean;
-  disabled: boolean;
+/** One compact choice in the composer work bar; active is a soft fill. */
+function WorkPill(props: {
+  icon: LucideIcon;
   label: string;
-  onChange: (value: boolean) => void;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick?: () => void;
 }) {
+  const Icon = props.icon;
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={props.checked}
-      aria-label={props.label}
-      title={props.label}
+      aria-pressed={props.active}
       disabled={props.disabled}
-      onClick={() => props.onChange(!props.checked)}
-      className={`relative h-6 w-10 shrink-0 rounded-full border transition ${
-        props.checked ? "border-sky-300 bg-sky-100" : "border-border bg-slate-100"
-      } ${props.disabled ? "opacity-40" : "active:bg-overlay-soft"}`}
+      title={props.title}
+      onClick={props.onClick}
+      className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-ui-2xs transition ${
+        props.active
+          ? "bg-sky-50 text-sky-700"
+          : "text-slate-500 active:bg-overlay-soft"
+      } ${props.disabled ? "opacity-50" : ""}`}
     >
-      <span
-        className={`absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all ${
-          props.checked ? "left-[calc(100%-20px)] bg-sky-500" : "left-0.5 bg-slate-400"
-        }`}
-      />
+      <Icon size={11} />
+      {props.label}
     </button>
-  );
-}
-
-/** Transcript/board choice; the board is the default while team mode is on. */
-function ViewSwitch(props: {
-  value: "chat" | "board";
-  onChange: (value: "chat" | "board") => void;
-}) {
-  const options: ReadonlyArray<{ value: "chat" | "board"; label: MessageKey }> = [
-    { value: "chat", label: "mobile.agent.viewChat" },
-    { value: "board", label: "mobile.agent.viewBoard" },
-  ];
-  return (
-    <div
-      role="tablist"
-      className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
-    >
-      {options.map((option) => {
-        const active = option.value === props.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => props.onChange(option.value)}
-            className={`rounded-md px-2.5 py-1 text-ui-sm transition ${
-              active ? "bg-slate-100 text-slate-900" : "text-slate-500 active:bg-overlay-soft"
-            }`}
-          >
-            {t(option.label)}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
@@ -764,9 +877,14 @@ export function AgentSessionPage(props: { id: string }) {
 
   const [taskBusy, setTaskBusy] = useState<TaskAction | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
-  const [diffOpen, setDiffOpen] = useState(false);
-  const [diff, setDiff] = useState<{ text: string; truncated: boolean } | null>(null);
-  const [diffError, setDiffError] = useState<string | null>(null);
+  /** Review file list (`dsh_task_changes`); `null` until the first read. */
+  const [reviewFiles, setReviewFiles] = useState<DshTaskFile[] | null>(null);
+  const [reviewFilesTruncated, setReviewFilesTruncated] = useState(false);
+  const [reviewFilesLoading, setReviewFilesLoading] = useState(false);
+  const [reviewFilesError, setReviewFilesError] = useState<string | null>(null);
+  /** Free-chat worktree switch (only meaningful for `kind: "chat"`). */
+  const [worktreeBusy, setWorktreeBusy] = useState(false);
+  const [worktreeError, setWorktreeError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [activeQuestion, setActiveQuestion] = useState<number | null>(null);
@@ -778,6 +896,7 @@ export function AgentSessionPage(props: { id: string }) {
   const alive = useRef(true);
   const entriesInFlight = useRef(false);
   const sessionsInFlight = useRef(false);
+  const reviewInFlight = useRef(false);
   const childCursors = useRef<Record<string, number>>({});
   const childInFlight = useRef<Set<string>>(new Set());
   /** Session ids whose sub-agent fold is currently open (controlled). */
@@ -860,6 +979,25 @@ export function AgentSessionPage(props: { id: string }) {
     }
   }, []);
 
+  /** The review screen's changed-file list; one read per workflow phase. */
+  const loadReviewFiles = useCallback(async () => {
+    if (reviewInFlight.current) return;
+    reviewInFlight.current = true;
+    setReviewFilesLoading(true);
+    try {
+      const result = await dshApi.taskChanges(id);
+      if (!alive.current) return;
+      setReviewFiles(result.files);
+      setReviewFilesTruncated(result.truncated);
+      setReviewFilesError(null);
+    } catch (err) {
+      if (alive.current) setReviewFilesError(asApiError(err).message);
+    } finally {
+      reviewInFlight.current = false;
+      if (alive.current) setReviewFilesLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     void loadEntries(false);
     void loadSessions();
@@ -922,6 +1060,22 @@ export function AgentSessionPage(props: { id: string }) {
   useEffect(() => {
     if (sessionStatus && sessionStatus !== "running") void loadEntries(false);
   }, [sessionStatus, loadEntries]);
+
+  /** Review and finishing share one screen; a chat never has a workflow gate. */
+  const reviewWorkflow =
+    task && task.kind !== "chat" ? task.workflow : null;
+  const reviewing =
+    reviewWorkflow === "awaiting_review" || reviewWorkflow === "finalizing";
+  useEffect(() => {
+    if (!reviewing) {
+      setReviewFiles(null);
+      setReviewFilesTruncated(false);
+      setReviewFilesError(null);
+      setReviewFilesLoading(false);
+      return;
+    }
+    void loadReviewFiles();
+  }, [reviewing, reviewWorkflow, loadReviewFiles]);
 
   /* -- Child transcripts: lazy per open fold ------------------------------ */
 
@@ -1069,31 +1223,27 @@ export function AgentSessionPage(props: { id: string }) {
     }
   };
 
+  /** Approve = commit + merge + cleanup + writeback; no second confirmation. */
   const approveTask = () => void runTaskAction("approve", () => dshApi.taskApprove(id));
-  const mergeTask = () => void runTaskAction("merge", () => dshApi.taskMerge(id));
-  const cancelTask = (stash: boolean) =>
-    void runTaskAction("cancel", () => dshApi.taskCancel(id, stash));
+  /** `stash` keeps the worktree changes when the task is abandoned. */
+  const abandonTask = () => void runTaskAction("cancel", () => dshApi.taskCancel(id, true));
+  const retryFinalize = () =>
+    void runTaskAction("retry", () => dshApi.taskRetryFinalize(id));
 
-  const openDiff = async () => {
-    if (taskBusy) return;
-    setTaskBusy("diff");
-    setDiff(null);
-    setDiffError(null);
-    setDiffOpen(true);
+  /** Free-chat worktree switch; the host moves the session's cwd in place. */
+  const toggleChatWorktree = async (enabled: boolean) => {
+    if (worktreeBusy) return;
+    setWorktreeBusy(true);
+    setWorktreeError(null);
     try {
-      const result = await dshApi.taskDiff(id);
-      if (alive.current) setDiff({ text: result.diff, truncated: result.truncated });
+      const { task: updated } = await dshApi.chatWorktree(id, enabled);
+      applyAgentTask(updated);
+      void refreshAgentFeed();
     } catch (err) {
-      if (alive.current) setDiffError(asApiError(err).message);
+      if (alive.current) setWorktreeError(asApiError(err).message);
     } finally {
-      if (alive.current) setTaskBusy(null);
+      if (alive.current) setWorktreeBusy(false);
     }
-  };
-
-  const closeDiff = () => {
-    setDiffOpen(false);
-    setDiff(null);
-    setDiffError(null);
   };
 
   const team = feed.teams[id];
@@ -1343,6 +1493,15 @@ export function AgentSessionPage(props: { id: string }) {
   const agentLocale: AgentLocale = resolveLocaleMode(prefs.locale);
   const todos = sessionRow?.todos ?? [];
   const sessionRunning = (sessionRow?.status ?? task?.status ?? "idle") === "running";
+  // Both work-bar choices are start-only: a task is created with the config
+  // default, a chat may change them until its first message.
+  const started =
+    task != null &&
+    (task.kind !== "chat" || task.messageCount > 0 || sessionRunning);
+  const canChoose = Boolean(task?.project && !started);
+  const lockedHint = t("mobile.agent.workBarLocked");
+  /** Why the free-chat worktree switch is off (or disabled) right now. */
+  const worktreeHint = started ? lockedHint : t("mobile.agent.chatWorktreeHint");
 
   /** Same cards in either pane; the board puts them above the groups. */
   const pendingCards = (
@@ -1366,8 +1525,8 @@ export function AgentSessionPage(props: { id: string }) {
         area grows and the composer always sits on the tab bar — not floating
         under short content. */}
     <div className="flex min-h-full flex-col">
-      {/* Header and workflow actions share one sticky block: opening a task
-          must never scroll its primary action out from under the title. */}
+      {/* Header, pane switch and the team toggle share one sticky block; the
+          review gate lives at the top of the scrolling message area. */}
       <div className="sticky top-0 z-20 bg-canvas">
         <header className="flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
           <button
@@ -1389,117 +1548,6 @@ export function AgentSessionPage(props: { id: string }) {
           <PaneSwitch value={pane} onChange={setPane} />
         </div>
 
-        {task && task.kind !== "chat" ? (
-          <section className="border-b border-border bg-canvas px-4 py-1.5">
-            <div className="flex items-center gap-2">
-              <div
-                className="inline-flex min-w-0 items-center gap-2 text-ui-xs text-slate-500"
-                title={t("mobile.agent.teamToggleHint")}
-              >
-                <TeamSwitch
-                  checked={teamEnabled}
-                  disabled={teamBusy}
-                  label={t("mobile.agent.teamToggle")}
-                  onChange={(value) => void toggleTeam(value)}
-                />
-                <span className="truncate">{t("mobile.agent.teamToggle")}</span>
-              </div>
-              {teamEnabled ? (
-                <div className="ml-auto">
-                  <ViewSwitch
-                    value={boardView ? "board" : "chat"}
-                    onChange={(value) => setTeamView(value)}
-                  />
-                </div>
-              ) : null}
-            </div>
-            {teamError ? (
-              <p
-                className="mt-1 text-ui-xs leading-5 text-rose-600"
-                title={t("mobile.agent.teamToggleFailed")}
-              >
-                {teamError}
-              </p>
-            ) : null}
-          </section>
-        ) : null}
-
-        {task && !isTerminalWorkflow(task.workflow) ? (
-          <section className="border-b border-border px-4 py-2.5">
-          <div className="flex flex-wrap items-center gap-2">
-            {task.workflow === "awaiting_review" ? (
-              <>
-                <TaskButton
-                  label={t("mobile.agent.approve")}
-                  tone="primary"
-                  busy={taskBusy === "approve"}
-                  disabled={taskBusy !== null}
-                  onClick={approveTask}
-                />
-                <TaskButton
-                  label={t("mobile.agent.viewDiff")}
-                  busy={taskBusy === "diff"}
-                  disabled={taskBusy !== null}
-                  onClick={() => void openDiff()}
-                />
-                <TaskButton
-                  label={t("mobile.agent.stopAndStash")}
-                  tone="danger"
-                  busy={taskBusy === "cancel"}
-                  disabled={taskBusy !== null}
-                  onClick={() => cancelTask(true)}
-                />
-              </>
-            ) : task.workflow === "awaiting_merge" ? (
-              <>
-                <TaskButton
-                  label={t("mobile.agent.merge")}
-                  tone="primary"
-                  busy={taskBusy === "merge"}
-                  disabled={taskBusy !== null}
-                  onClick={mergeTask}
-                />
-                <TaskButton
-                  label={t("mobile.agent.viewDiff")}
-                  busy={taskBusy === "diff"}
-                  disabled={taskBusy !== null}
-                  onClick={() => void openDiff()}
-                />
-                <TaskButton
-                  label={t("mobile.agent.cancelTask")}
-                  tone="danger"
-                  busy={taskBusy === "cancel"}
-                  disabled={taskBusy !== null}
-                  onClick={() => cancelTask(false)}
-                />
-              </>
-            ) : null}
-          </div>
-          {task.workflow === "awaiting_merge" &&
-          (task.merge?.error || task.merge?.instructions) ? (
-            <div className="mt-2 space-y-1">
-              {task.merge?.error ? (
-                <p className="select-text text-ui-xs leading-5 text-rose-600">
-                  {task.merge.error}
-                </p>
-              ) : null}
-              {task.merge?.instructions ? (
-                <pre className="select-text overflow-x-auto rounded-lg border border-border bg-surface px-2.5 py-2 font-mono text-ui-2xs leading-5 whitespace-pre-wrap text-slate-600">
-                  {task.merge.instructions}
-                </pre>
-              ) : null}
-            </div>
-          ) : null}
-          {taskError ? (
-            <p
-              className="mt-2 text-ui-xs leading-5 text-rose-600"
-              title={t("common.actionFailed")}
-            >
-              {taskError}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
       </div>
 
       {resuming ? (
@@ -1509,6 +1557,20 @@ export function AgentSessionPage(props: { id: string }) {
       ) : null}
 
       <div className="min-h-0 flex-1">
+      {/* The review gate sits at the top of the message area, so the summary
+          and file list are the first thing a running task returns to. */}
+      {reviewing && task ? (
+        <ReviewPanel
+          task={task}
+          sessionId={id}
+          files={reviewFiles}
+          filesTruncated={reviewFilesTruncated}
+          filesLoading={reviewFilesLoading}
+          filesError={reviewFilesError}
+          onRefresh={() => void loadReviewFiles()}
+        />
+      ) : null}
+
       {feed.tasksError ? (
         <p className="px-4 pb-1 text-ui-xs text-rose-600" title={t("mobile.agent.loadFailed")}>
           {feed.tasksError}
@@ -1607,6 +1669,53 @@ export function AgentSessionPage(props: { id: string }) {
           its bottom row — pinned above the tab bar. While the session runs the
           primary button is the stop state of send, not a separate control. */}
       <div className="sticky bottom-14 z-20 border-t border-border bg-canvas px-3 pb-2 pt-2">
+        {/* The workflow gate: approve/discard while in review, retry while the
+            host is finishing. It stays above the composer so a long file list
+            never hides the primary action. */}
+        {task && task.kind !== "chat" && reviewing ? (
+          <div className="mb-1.5">
+            <div className="flex items-center gap-2">
+              {task.workflow === "finalizing" ? (
+                <TaskButton
+                  label={
+                    taskBusy === "retry"
+                      ? t("mobile.agent.finalizeRetrying")
+                      : t("mobile.agent.finalizeRetry")
+                  }
+                  tone="primary"
+                  busy={taskBusy === "retry"}
+                  disabled={taskBusy !== null || sessionRunning}
+                  onClick={retryFinalize}
+                />
+              ) : (
+                <>
+                  <TaskButton
+                    label={t("mobile.agent.approve")}
+                    tone="primary"
+                    busy={taskBusy === "approve"}
+                    disabled={taskBusy !== null || sessionRunning}
+                    onClick={approveTask}
+                  />
+                  <TaskButton
+                    label={t("mobile.agent.abandon")}
+                    tone="danger"
+                    busy={taskBusy === "cancel"}
+                    disabled={taskBusy !== null || sessionRunning}
+                    onClick={abandonTask}
+                  />
+                </>
+              )}
+            </div>
+            {taskError ? (
+              <p
+                className="mt-1 text-ui-xs leading-5 text-rose-600"
+                title={t("common.actionFailed")}
+              >
+                {taskError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {composerError ? (
           <p
             className="mb-1 text-ui-xs leading-5 text-rose-600"
@@ -1616,6 +1725,82 @@ export function AgentSessionPage(props: { id: string }) {
           </p>
         ) : null}
         <div className="rounded-xl border border-border bg-surface transition focus-within:border-slate-300">
+          {task?.project ? (
+            <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5">
+              <FolderGit2 size={11} className="shrink-0 text-slate-400" />
+              <span
+                className="min-w-0 truncate text-ui-2xs text-slate-500"
+                title={task.project.name}
+              >
+                {task.project.name}
+              </span>
+              {task.branch ? (
+                <>
+                  <span className="shrink-0 text-slate-300">·</span>
+                  <GitBranch size={10} className="shrink-0 text-slate-400" />
+                  <span
+                    className="min-w-0 max-w-[38%] shrink-0 truncate font-mono text-ui-2xs text-slate-400"
+                    title={task.branch}
+                  >
+                    {task.branch}
+                  </span>
+                </>
+              ) : null}
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {teamEnabled ? (
+                  <WorkPill
+                    icon={boardView ? MessageSquare : LayoutGrid}
+                    label={
+                      boardView
+                        ? t("mobile.agent.viewChat")
+                        : t("mobile.agent.viewBoard")
+                    }
+                    onClick={() => setTeamView(boardView ? "chat" : "board")}
+                  />
+                ) : null}
+                <WorkPill
+                  icon={Users}
+                  label={t("mobile.agent.teamToggle")}
+                  active={teamEnabled}
+                  disabled={!canChoose || teamBusy}
+                  title={canChoose ? t("mobile.agent.teamToggleHint") : lockedHint}
+                  onClick={() => void toggleTeam(!teamEnabled)}
+                />
+                {task.kind === "chat" ? (
+                  <WorkPill
+                    icon={GitBranch}
+                    label={t("mobile.agent.chatWorktree")}
+                    active={Boolean(task.worktreePath)}
+                    disabled={!canChoose || worktreeBusy}
+                    title={canChoose ? t("mobile.agent.chatWorktreeHint") : worktreeHint}
+                    onClick={() => void toggleChatWorktree(!task.worktreePath)}
+                  />
+                ) : (
+                  <WorkPill
+                    icon={GitBranch}
+                    label={t("mobile.agent.chatWorktree")}
+                    active
+                    disabled
+                    title={lockedHint}
+                  />
+                )}
+              </span>
+            </div>
+          ) : null}
+          {worktreeError || teamError ? (
+            <p
+              className="border-b border-border px-2.5 py-1 text-ui-2xs leading-4 text-rose-600"
+              title={
+                worktreeError
+                  ? t("mobile.agent.chatWorktreeFailed")
+                  : teamError
+                    ? t("mobile.agent.teamToggleFailed")
+                    : undefined
+              }
+            >
+              {worktreeError || teamError}
+            </p>
+          ) : null}
           <textarea
             ref={textareaRef}
             value={draft}
@@ -1666,14 +1851,6 @@ export function AgentSessionPage(props: { id: string }) {
           </div>
         ) : null}
       </div>
-
-      <DiffSheet
-        open={diffOpen}
-        diff={diff}
-        error={diffError}
-        busy={taskBusy === "diff"}
-        onClose={closeDiff}
-      />
 
       {openQuestion ? (
         <QuestionSheet

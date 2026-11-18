@@ -9,7 +9,6 @@ export const agent = {
   "agent.tab.config": ["配置", "Configuration"],
 
   // Task list.
-  "agent.session.new": ["新建会话", "New session"],
   "agent.session.delete": ["删除会话", "Delete conversation"],
   "agent.session.deleteHint": [
     "删除「{title}」及其对话记录？它自己的 worktree 会一起删掉（未提交的改动也会丢失），仓库不受影响。",
@@ -34,9 +33,11 @@ export const agent = {
     "Use \"Fix with agent\" on a bug, or \"Hand to Agent\" on a work item.",
   ],
   "agent.task.loadFailed": ["任务列表读取失败", "Could not load tasks"],
+  "agent.task.newInProject": ["在「{name}」中新建会话", "New conversation in “{name}”"],
+  "agent.task.workflowQueued": ["排队中", "Queued"],
   "agent.task.workflowRunning": ["进行中", "Running"],
   "agent.task.workflowAwaitingReview": ["待审核", "In review"],
-  "agent.task.workflowAwaitingMerge": ["待合并", "To merge"],
+  "agent.task.workflowFinalizing": ["收尾中", "Finishing"],
   "agent.task.workflowDone": ["已完成", "Done"],
   "agent.task.workflowFailed": ["失败", "Failed"],
   "agent.task.workflowCanceled": ["已取消", "Canceled"],
@@ -47,26 +48,79 @@ export const agent = {
   "agent.task.fix": ["修复", "Fix"],
   "agent.task.changes": ["{files} 个文件", "{files} files"],
   "agent.task.changesHint": ["相对任务起点的改动", "Changes since the task started"],
-  "agent.task.viewDiff": ["查看改动", "View changes"],
   "agent.task.hideDiff": ["收起改动", "Hide changes"],
   "agent.task.diffEmpty": ["没有改动", "No changes"],
   "agent.task.diffTruncated": [
     "改动过大，只显示前一部分。",
     "The diff is too large; only the first part is shown.",
   ],
-  "agent.task.approve": ["通过并提交", "Approve and commit"],
-  "agent.task.cancelStash": ["停止并储藏", "Stop and stash"],
-  "agent.task.merge": ["合并回主仓库", "Merge into the repository"],
-  "agent.task.cancel": ["取消任务", "Cancel task"],
   "agent.task.stop": ["停止", "Stop"],
   "agent.task.openExport": ["打开导出目录", "Open export folder"],
 
-  // Team board (P5).
-  "agent.team.toggle": ["团队协作", "Team collaboration"],
-  "agent.team.toggleHint": [
-    "开启后主 Agent 把可拆分的工作登记在任务板上，并派给同事子 agent。",
-    "With team collaboration on, the lead registers splittable work on the board and hands it to coworker subagents.",
+  // Review surface (awaiting_review / finalizing).
+  "agent.review.tabReview": ["审核", "Review"],
+  "agent.review.tabChat": ["对话", "Chat"],
+  "agent.review.projectDir": ["项目目录", "Project folder"],
+  "agent.review.openProject": ["打开项目目录：{path}", "Open the project folder: {path}"],
+  "agent.review.worktreeDir": ["Worktree", "Worktree"],
+  "agent.review.openWorktree": ["打开 worktree：{path}", "Open the worktree: {path}"],
+  "agent.review.branch": ["分支", "Branch"],
+  "agent.review.openFailed": ["打不开：{error}", "Cannot open that: {error}"],
+  "agent.review.noPath": ["无法确定「{path}」的绝对路径", "Cannot resolve “{path}” to an absolute path"],
+  "agent.review.summary": ["AI 摘要", "AI summary"],
+  "agent.review.verification": ["验证", "Verification"],
+  "agent.review.risks": ["风险", "Risks"],
+  "agent.review.files": ["改动文件", "Changed files"],
+  "agent.review.filesHint": [
+    "「应用内查看」展开逐文件 diff；「IDE 打开」用保存的打开方式打开这个文件。",
+    "“View here” expands the per-file diff; “Open in IDE” opens the file with the saved app.",
   ],
+  "agent.review.filesLoadFailed": ["改动列表读取失败", "Could not load the changed files"],
+  "agent.review.viewHere": ["应用内查看", "View here"],
+  "agent.review.openIde": ["IDE 打开", "Open in IDE"],
+  "agent.review.binary": ["二进制", "Binary"],
+  "agent.review.truncated": [
+    "文件过多，只显示前一部分。",
+    "Too many files; only the first part is shown.",
+  ],
+  "agent.review.statusAdded": ["新增", "Added"],
+  "agent.review.statusModified": ["修改", "Modified"],
+  "agent.review.statusDeleted": ["删除", "Deleted"],
+  "agent.review.statusRenamed": ["重命名", "Renamed"],
+  "agent.review.statusUntracked": ["未跟踪", "Untracked"],
+  "agent.review.approve": ["通过并收尾", "Approve and finish"],
+  "agent.review.approveHint": [
+    "提交 worktree 的改动，合并回主仓库并清理，然后让 Agent 回写 TAPD。",
+    "Commits the worktree, merges it into the repository, cleans up, then has the agent write back to TAPD.",
+  ],
+  "agent.review.continue": ["继续修改", "Keep editing"],
+  "agent.review.continueHint": ["回到对话，让 Agent 继续修改。", "Go back to the conversation and let the agent keep editing."],
+  "agent.review.continuePlaceholder": [
+    "说明还要改什么…",
+    "Describe what still needs to change…",
+  ],
+  "agent.review.discard": ["放弃", "Discard"],
+  "agent.review.discardHint": [
+    "先储藏 worktree 的改动，再取消任务。",
+    "Stashes the worktree changes, then cancels the task.",
+  ],
+  "agent.review.finalize": ["收尾进度", "Finishing"],
+  "agent.review.finalizeHint": [
+    "提交 → 合并 → 清理 → 回写；失败的那一步可以重试。",
+    "Commit → merge → clean up → write back; a failed step can be retried.",
+  ],
+  "agent.review.stepCommit": ["提交", "Commit"],
+  "agent.review.stepMerge": ["合并", "Merge"],
+  "agent.review.stepCleanup": ["清理", "Clean up"],
+  "agent.review.stepWriteback": ["回写", "Write back"],
+  "agent.review.finalizing": ["正在收尾…", "Finishing…"],
+  "agent.review.retry": ["重试", "Retry"],
+  "agent.review.retryHint": [
+    "从失败的那一步继续收尾。",
+    "Continue finishing from the step that failed.",
+  ],
+
+  // Team board (P5).
   "agent.team.viewChat": ["会话", "Chat"],
   "agent.team.viewBoard": ["任务板", "Board"],
   "agent.team.lead": ["协调者", "Coordinator"],
@@ -84,11 +138,24 @@ export const agent = {
   ],
   "agent.team.loadFailed": ["任务板读取失败", "Could not load the board"],
 
-  // Free-chat header: the session-local collaboration switch.
+  // Composer work bar: the two session-local choices, fixed once it starts.
   "agent.chat.team": ["同事协作", "Coworkers"],
   "agent.chat.teamHint": [
-    "本会话让同事一起干活，主 Agent 可把工作派给同事子 agent。默认关闭，任务会话继承配置。",
-    "Let coworkers join this chat, with the lead handing parts to coworker subagents. Off by default; task sessions inherit the config.",
+    "会话开始时选择是否让同事一起干活；发送第一条消息后不可更改。",
+    "Choose whether coworkers join this session before it starts; the choice is fixed after the first message.",
+  ],
+  "agent.chat.worktree": ["Worktree", "Worktree"],
+  "agent.chat.worktreeHint": [
+    "会话开始时选择是否在自己的 git worktree 中工作；发送第一条消息后不可更改。",
+    "Choose whether this session works in its own git worktree before it starts; the choice is fixed after the first message.",
+  ],
+  "agent.chat.lockedHint": [
+    "会话已经开始，同事协作与 worktree 不可再更改。",
+    "The session has started; coworkers and the worktree can no longer be changed.",
+  ],
+  "agent.chat.worktreeFailed": [
+    "切换 worktree 失败：{error}",
+    "Could not switch the worktree: {error}",
   ],
 
   // Enqueue sheet (bug footer, bug row, local item row).
@@ -370,15 +437,10 @@ export const agent = {
     "附加到每一次任务。",
     "Appended to every task.",
   ],
-  "agent.config.worktree": ["Worktree 隔离", "Worktree isolation"],
-  "agent.config.worktreeHint": [
-    "每个任务在独立的 git worktree 中运行。",
-    "Each task runs in its own git worktree.",
-  ],
-  "agent.config.units": ["执行单元", "Execution units"],
+  "agent.config.units": ["并行任务数", "Parallel tasks"],
   "agent.config.unitsHint": [
-    "同时运行的任务数，1–8；关闭 worktree 时固定为 1。",
-    "Concurrent tasks, 1-8; fixed at 1 when worktree isolation is off.",
+    "同时运行的工作流任务数，1–8；超出的任务排队等待。",
+    "How many workflow tasks may run at once, 1-8; the rest wait in the queue.",
   ],
   "agent.config.permission": ["默认权限模式", "Default permission mode"],
   "agent.config.permissionHint": [

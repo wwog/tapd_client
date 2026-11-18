@@ -1,60 +1,60 @@
-//! TAPD write-back after a task's changes reach the main repository.
+//! TAPD write-back text for the finishing turn.
 //!
-//! The comment and the status transition reuse the same helpers the bug detail
-//! panel uses, so the workflow rules (for example "a `new` bug must be accepted
-//! before it can be resolved") stay in one place. Local projects have no TAPD
-//! counterpart, so their tasks skip this module entirely.
+//! The host no longer writes TAPD itself: after the code is committed, merged
+//! and the worktree is cleaned up, the model receives one hidden `host-prompt`
+//! turn whose tools are the conditional `tapd_*` set. This module builds that
+//! message so the facts (branch, commit, change counts, bug link) come from the
+//! task row instead of the model's memory.
 
-use serde_json::Value;
 use tapd_i18n::tr_args;
-use tauri::AppHandle;
 
 use super::{DshTask, TaskChanges};
-use crate::bug_write;
 
-/// Adds a summary comment and moves the bug to `resolved`.
-///
-/// The transition runs first: when it succeeds and the comment fails, a retry
-/// only repeats the comment instead of the (already performed) transition. A
-/// failure surfaces to the caller, which keeps the task in `awaiting_merge` so
-/// the user can retry.
-pub(super) async fn write_back(
-    app: &AppHandle,
-    task: &DshTask,
-    workspace_id: &str,
-    changes: Option<&TaskChanges>,
-) -> Result<(), String> {
-    let Some(bug_id) = task.bug_id.as_deref().filter(|id| !id.trim().is_empty()) else {
-        return Ok(());
-    };
-    bug_write::perform_transition(app, workspace_id, bug_id, "resolved", &Value::Null)
-        .await
-        .map(|_| ())
-        .map_err(|error| tr_args("dsh.task.writeback.failed", &[&error]))?;
-
-    let comment = comment(task, changes);
-    bug_write::add_comment(app, workspace_id, bug_id, &comment)
-        .await
-        .map(|_| ())
-        .map_err(|error| tr_args("dsh.task.writeback.failed", &[&error]))
+/// The hidden turn that starts the write-back phase (docs/AGENT_TASK_FLOW.md §6.2).
+pub(super) fn prompt(task: &DshTask, changes: Option<&TaskChanges>, commit: Option<&str>) -> String {
+    let changes = changes.cloned().unwrap_or_default();
+    let branch = text_or(task.branch.as_deref(), "-");
+    let commit = text_or(commit, "-");
+    let link = bug_link(task);
+    tr_args(
+        "dsh.task.writeback.prompt",
+        &[
+            &branch,
+            &commit,
+            &changes.files,
+            &changes.additions,
+            &changes.deletions,
+            &link,
+        ],
+    )
 }
 
-/// The comment body: a one-line summary and, for worktree tasks, the branch
-/// that carries the work.
-fn comment(task: &DshTask, changes: Option<&TaskChanges>) -> String {
-    let changes = changes.cloned().unwrap_or_default();
-    let mut comment = tr_args(
-        "dsh.task.writeback.comment",
-        &[&changes.files, &changes.additions, &changes.deletions],
-    );
-    if let Some(branch) = task
-        .branch
+fn text_or(value: Option<&str>, fallback: &str) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+/// The bug's own page, so the write-back turn can quote it in the comment.
+fn bug_link(task: &DshTask) -> String {
+    let workspace = task
+        .project
+        .as_ref()
+        .map(|project| project.id.trim())
+        .filter(|id| !id.is_empty());
+    let bug = task
+        .bug_id
         .as_deref()
-        .filter(|branch| !branch.trim().is_empty())
-    {
-        comment.push_str(&tr_args("dsh.task.writeback.branch", &[&branch]));
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match (workspace, bug) {
+        (Some(workspace), Some(bug)) => {
+            format!("https://www.tapd.cn/{workspace}/bugtrace/bugs/view?bug_id={bug}")
+        }
+        _ => "-".to_string(),
     }
-    comment
 }
 
 #[cfg(test)]
@@ -63,7 +63,7 @@ mod tests {
     use super::*;
     use dsh_host::transcript::SessionStatus;
 
-    fn task(branch: Option<&str>) -> DshTask {
+    fn task() -> DshTask {
         DshTask {
             id: "s1".to_string(),
             kind: TaskKind::Bug,
@@ -74,35 +74,44 @@ mod tests {
             }),
             title: "登录崩溃".to_string(),
             bug_id: Some("42".to_string()),
-            workflow: Workflow::AwaitingMerge,
+            workflow: Workflow::Finalizing,
             status: SessionStatus::Idle,
             repo_path: "/repo".to_string(),
-            worktree_path: branch.map(|_| "/worktree".to_string()),
-            branch: branch.map(str::to_string),
+            worktree_path: None,
+            branch: Some("tapd/42-ab12cd".to_string()),
             json_path: "/tmp/bug.json".to_string(),
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
             updated_at: "2026-01-01T00:00:00.000Z".to_string(),
             message_count: 0,
             changes: None,
             review: None,
-            merge: None,
+            finalize: None,
         }
     }
 
     #[test]
-    fn comment_reports_counts_and_the_branch() {
+    fn the_prompt_carries_branch_commit_counts_and_the_bug_link() {
         let changes = TaskChanges {
             files: 2,
             additions: 30,
             deletions: 4,
         };
-        let with_branch = comment(&task(Some("tapd/42-ab12cd")), Some(&changes));
-        assert!(with_branch.contains('2'));
-        assert!(with_branch.contains("30"));
-        assert!(with_branch.contains("tapd/42-ab12cd"));
+        let text = prompt(&task(), Some(&changes), Some("abc123"));
+        assert!(text.contains("tapd/42-ab12cd"));
+        assert!(text.contains("abc123"));
+        assert!(text.contains('2'));
+        assert!(text.contains("30"));
+        assert!(text.contains("https://www.tapd.cn/ws/bugtrace/bugs/view?bug_id=42"));
+        assert!(text.contains("task_complete"));
+    }
 
-        let without = comment(&task(None), None);
-        assert!(!without.contains("tapd/"));
-        assert!(without.contains('0'));
+    #[test]
+    fn missing_facts_fall_back_instead_of_leaving_placeholders() {
+        let mut task = task();
+        task.branch = None;
+        task.bug_id = None;
+        let text = prompt(&task, None, None);
+        assert!(!text.contains("{0}"));
+        assert!(!text.contains("{5}"));
     }
 }

@@ -618,6 +618,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 
 ## 9. 任务工作流与权限模式（P3 / P4 契约）
 
+> **2026-11-18 起，任务工作流以 [`docs/AGENT_TASK_FLOW.md`](AGENT_TASK_FLOW.md) 为准。**
+> 统一任务列表、桥、权限、审批、团队仍按本节实现；非 Worktree 流程、`awaiting_merge`、
+> 自动收尾和推送远端已被新契约取代。
+
 本节是 P3/P4 的唯一契约。前端只消费本节的结构；实现分别落在
 `dsh/policy.rs`（P3）与 `dsh/tasks.rs`（P4）。
 

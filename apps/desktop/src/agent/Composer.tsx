@@ -1,25 +1,81 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Loader2, Send, Square } from "lucide-react";
+import {
+  FolderGit2,
+  GitBranch,
+  LayoutGrid,
+  Loader2,
+  MessageSquare,
+  Send,
+  Square,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 
 import { t } from "../lib/i18n";
-import { ChatTeamBar } from "./ChatTeamBar";
+import { showToast } from "../lib/toast";
+import { ScrollingName } from "../components/ScrollingName";
 import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModePicker } from "./SessionModePicker";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { SessionUsageBar } from "./usage/SessionUsageBar";
-import { agentActions, agentStore, isSessionRunning } from "./store";
+import {
+  agentActions,
+  agentStore,
+  agentTeamView,
+  isSessionRunning,
+  taskReviewable,
+} from "./store";
 
 /** Draft key before any session exists; the text follows the first one. */
 const NEW_SESSION_KEY = "__new";
 
 /**
+ * One compact control in the composer's work bar. It reads as text until it is
+ * active; the only border in the composer is the card's own, so a row of these
+ * never turns into a second toolbar.
+ */
+function WorkBarButton(props: {
+  icon: LucideIcon;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+  error?: string | null;
+  onClick?: () => void;
+}) {
+  const Icon = props.icon;
+  return (
+    <button
+      type="button"
+      aria-pressed={props.active}
+      disabled={props.disabled}
+      title={props.error || props.title}
+      onClick={props.onClick}
+      className={clsx(
+        "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-ui-2xs transition",
+        props.active
+          ? "bg-sky-50 text-sky-700"
+          : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
+        props.error && "text-rose-600",
+        props.disabled &&
+          "cursor-default opacity-50 hover:bg-transparent hover:text-slate-500",
+      )}
+    >
+      <Icon size={11} />
+      {props.label}
+    </button>
+  );
+}
+
+/**
  * Enter sends, Shift+Enter adds a line.
  *
- * One bordered card holds the editor and its toolbar: the text sits above the
- * controls, and only the card is outlined, so the two read as one field. The
- * primary button is a single state machine — while the session is running it
- * stops the turn, otherwise it sends the draft.
+ * One bordered card holds the work bar, the editor and its toolbar: the top
+ * row names the project and branch and carries the two start-only choices
+ * (coworkers, worktree); the text sits below; only the card is outlined.
+ * The primary button is a single state machine — while the session is running
+ * it stops the turn, otherwise it sends the draft.
  */
 export function Composer() {
   const state = agentStore.use();
@@ -27,18 +83,51 @@ export function Composer() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [worktreeBusy, setWorktreeBusy] = useState(false);
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const text = drafts[sessionId] ?? "";
   const setText = (value: string) =>
     setDrafts((current) => ({ ...current, [sessionId]: value }));
   const block = runtimeBlock(state);
   const running = isSessionRunning(state, state.selectedId);
-  // Free chats get the collaboration bar; task sessions carry their own header.
   const task = state.tasks?.find((item) => item.id === state.selectedId);
   const chat = !task || task.kind === "chat";
+  const reviewing = taskReviewable(task);
+  const project = task?.project ?? null;
+  const branch = task?.branch ?? null;
+  const worktree = Boolean(task?.worktreePath);
+
+  // Both choices are start-only: a task is created with the config default, a
+  // free chat may switch them until its first message. After that the row is
+  // read-only (the controls stay visible so the state is still legible).
+  const started =
+    task != null &&
+    (task.kind !== "chat" ||
+      task.messageCount > 0 ||
+      (state.pendingPrompts[task.id]?.length ?? 0) > 0 ||
+      task.status === "running");
+  const canChoose = Boolean(task && project && !started);
+
+  const team = task ? state.team[task.id] : undefined;
+  const teamEnabled = task
+    ? (state.chatTeamDrafts[task.id] ?? Boolean(team?.enabled))
+    : false;
+  const teamBusy = task ? Boolean(state.teamBusy[task.id]) : false;
+  const teamError = task ? state.teamErrors[task.id] : null;
+  const teamView = task ? agentTeamView(state, task.id) : "chat";
+
+  // 「继续修改」in the review pane switches back here and asks for the caret.
+  const focusAt = state.composerFocusAt;
+  useEffect(() => {
+    if (focusAt > 0) editorRef.current?.focus();
+  }, [focusAt]);
 
   const send = async () => {
     if (block !== null || sending || !text.trim()) return;
     const draftKey = sessionId;
+    // From the review tab a message means "keep editing": show the transcript
+    // first, so the reply lands where the reader can follow it.
+    if (reviewing && task) agentActions.setReviewView(task.id, "chat");
     setSending(true);
     const accepted = await agentActions.sendPrompt(text);
     if (accepted) {
@@ -55,6 +144,30 @@ export function Composer() {
     setStopping(false);
   };
 
+  /** Session-level workspace choice; a dirty worktree refuses to be removed. */
+  const toggleWorktree = async (enabled: boolean) => {
+    if (!task || worktreeBusy || !canChoose) return;
+    setWorktreeBusy(true);
+    try {
+      await agentActions.chatWorktree(task.id, enabled);
+    } catch (error) {
+      showToast("error", t("agent.chat.worktreeFailed", { error: String(error) }));
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const toggleTeam = () => {
+    if (!task || teamBusy || !canChoose) return;
+    void agentActions.setTeamEnabled(task.id, !teamEnabled);
+  };
+
+  const toggleBoard = () => {
+    if (!task) return;
+    agentActions.setTeamView(task.id, teamView === "board" ? "chat" : "board");
+  };
+
+  const lockedHint = t("agent.chat.lockedHint");
   const primaryBusy = running ? stopping : sending;
   const primaryDisabled = running ? stopping : block !== null || sending || !text.trim();
   const primaryTitle = running
@@ -66,13 +179,72 @@ export function Composer() {
   return (
     <div className="px-6 pb-3 pt-2">
       <div className="mx-auto max-w-[46rem]">
-        {chat ? <ChatTeamBar /> : null}
-        <div className="rounded-xl border border-border bg-surface transition focus-within:border-slate-300">
+        <div className="rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
+          {project ? (
+            <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+              <span className="flex min-w-0 items-center gap-1.5 text-ui-xs text-slate-500">
+                <FolderGit2 size={12} className="shrink-0" />
+                <ScrollingName text={project.name} className="max-w-[12rem]" />
+                {branch ? (
+                  <>
+                    <span className="shrink-0 text-slate-300">·</span>
+                    <GitBranch size={12} className="shrink-0" />
+                    <ScrollingName text={branch} className="max-w-[14rem]" />
+                  </>
+                ) : null}
+              </span>
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {teamEnabled ? (
+                  <WorkBarButton
+                    icon={teamView === "board" ? MessageSquare : LayoutGrid}
+                    label={
+                      teamView === "board"
+                        ? t("agent.team.viewChat")
+                        : t("agent.team.viewBoard")
+                    }
+                    onClick={toggleBoard}
+                  />
+                ) : null}
+                <WorkBarButton
+                  icon={Users}
+                  label={t("agent.chat.team")}
+                  active={teamEnabled}
+                  disabled={!canChoose || teamBusy}
+                  error={teamError}
+                  title={canChoose ? t("agent.chat.teamHint") : lockedHint}
+                  onClick={toggleTeam}
+                />
+                {chat ? (
+                  <WorkBarButton
+                    icon={GitBranch}
+                    label={t("agent.chat.worktree")}
+                    active={worktree}
+                    disabled={!canChoose || worktreeBusy}
+                    title={canChoose ? t("agent.chat.worktreeHint") : lockedHint}
+                    onClick={() => void toggleWorktree(!worktree)}
+                  />
+                ) : (
+                  <WorkBarButton
+                    icon={GitBranch}
+                    label={t("agent.chat.worktree")}
+                    active
+                    disabled
+                    title={lockedHint}
+                  />
+                )}
+              </span>
+            </div>
+          ) : null}
           <textarea
+            ref={editorRef}
             value={text}
             rows={3}
             title={t("agent.composer.hint")}
-            placeholder={t("agent.composer.placeholder")}
+            placeholder={
+              reviewing
+                ? t("agent.review.continuePlaceholder")
+                : t("agent.composer.placeholder")
+            }
             onChange={(event) => setText(event.target.value)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" || event.shiftKey) return;

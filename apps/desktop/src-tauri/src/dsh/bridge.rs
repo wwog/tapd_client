@@ -48,14 +48,22 @@ use tapd_i18n::tr;
 /// a slow answer is normal; an unanswered one must still free the caller.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// A `task-phase` frame must be acknowledged before a prompt is sent into the
+/// phase (otherwise the tools the prompt tells the model to use would not be
+/// registered yet). The plugin only touches an in-memory map, so this is short.
+const PHASE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Inbound frame types that answer a pending request. A reply type missing
 /// here is dropped and its caller times out, so every new request frame adds
 /// its reply here as well.
-const REPLY_TYPES: [&str; 4] = [
+const REPLY_TYPES: [&str; 5] = [
     "models-applied",
     "models-discovered",
     "plugins-listed",
     "tools-listed",
+    // The plugin acknowledges `task-phase` / `task-phases`; only the former is
+    // awaited (the write-back turn cannot start without it).
+    "task-phase-applied",
 ];
 
 /// What the child needs to reach this listener.
@@ -195,9 +203,89 @@ impl BridgeState {
                 return Err(tapd_i18n::tr_args("dsh.call.timeout", &[&method]));
             }
         };
+        if reply.get("ok").and_then(Value::as_bool) == Some(false) {
+            let error = reply
+                .get("error")
+                .and_then(Value::as_str)
+                .filter(|error| !error.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| tr("dsh.bridge.rejected").to_string());
+            return Err(error);
+        }
         match reply.get("error").and_then(Value::as_str) {
             Some(error) if !error.is_empty() => Err(error.to_string()),
             _ => Ok(reply),
+        }
+    }
+
+    /// Queues one `task-phase` frame for a live session. Fire-and-forget: the
+    /// plugin still acks it, but the caller does not wait (the follow-up
+    /// snapshot keeps a lost frame from mattering).
+    pub fn send_task_phase(&self, session_id: &str, phase: &str, kind: &str) -> Result<(), String> {
+        let id = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        self.send_control(json!({
+            "type": "task-phase",
+            "requestId": id,
+            "sessionId": session_id,
+            "phase": phase,
+            "kind": kind,
+        }))
+    }
+
+    /// The acknowledged form, used before a write-back turn: the prompt cannot
+    /// run until the plugin's phase map says `writeback`.
+    pub async fn request_task_phase(
+        &self,
+        session_id: &str,
+        phase: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        self.request(
+            json!({
+                "type": "task-phase",
+                "sessionId": session_id,
+                "phase": phase,
+                "kind": kind,
+            }),
+            PHASE_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The whole phase map, sent after `hello` and after any list change.
+    pub fn send_task_phases(&self, phases: Value) -> Result<(), String> {
+        self.send_control(json!({ "type": "task-phases", "phases": phases }))
+    }
+
+    /// A hidden host-authored turn. The plugin creates it with
+    /// `source.kind = "host"` so the transcript does not show a user line.
+    pub fn send_host_prompt(&self, session_id: &str, text: &str) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "host-prompt",
+            "sessionId": session_id,
+            "text": text,
+        }))
+    }
+
+    /// Answers one plugin call. `requestId` is the plugin's `p-<n>` string.
+    pub fn send_host_reply(&self, request_id: &str, result: Result<Value, String>) {
+        let frame = match result {
+            Ok(data) => json!({
+                "type": "host-reply",
+                "requestId": request_id,
+                "ok": true,
+                "data": data,
+            }),
+            Err(error) => json!({
+                "type": "host-reply",
+                "requestId": request_id,
+                "ok": false,
+                "error": error,
+            }),
+        };
+        if let Err(error) = self.send_control(frame) {
+            tracing::warn!(%error, request_id, "host reply could not be delivered");
         }
     }
 
@@ -657,8 +745,23 @@ impl BridgeState {
 
     /// Applies one NDJSON message from the plugin.
     fn dispatch(&self, app: &AppHandle, message: &Value) {
-        match message.get("type").and_then(Value::as_str) {
-            Some("hello") => {
+        let frame_type = message.get("type").and_then(Value::as_str);
+        // `task-phase` acks carry no `type`, only the numeric request id the
+        // host assigned. They are replies to a pending request, like the named
+        // reply kinds below.
+        if frame_type.is_none() {
+            if message.get("requestId").and_then(Value::as_u64).is_some() {
+                self.resolve_reply(message);
+            } else {
+                tracing::warn!("agent bridge: frame without a type");
+            }
+            return;
+        }
+        let Some(frame_type) = frame_type else {
+            return;
+        };
+        match frame_type {
+            "hello" => {
                 tracing::info!("agent bridge connected");
                 // The plugin may have connected after a default-mode frame was
                 // attempted; replay it so the running gate is never stale.
@@ -667,10 +770,25 @@ impl BridgeState {
                         tracing::debug!(%error, "default mode was not replayed on connect");
                     }
                 }
+                // A reconnect has an empty phase map; the task rows are the
+                // source, so push the whole map before the next turn.
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    super::tasks::publish_phases(&app).await;
+                });
             }
-            Some("snapshot") => self.ingest_snapshot(app, message),
-            Some("session-meta") => self.ingest_session_meta(app, message),
-            Some("event") => {
+            "host" => {
+                // The plugin's conditional tools call back here. The work can
+                // hit the network (TAPD), so it must not block the reader.
+                let app = app.clone();
+                let frame = message.clone();
+                tauri::async_runtime::spawn(async move {
+                    super::tasks::host_rpc(&app, &frame).await;
+                });
+            }
+            "snapshot" => self.ingest_snapshot(app, message),
+            "session-meta" => self.ingest_session_meta(app, message),
+            "event" => {
                 let session_id = message.get("sessionId").and_then(Value::as_str);
                 let event = message.get("event");
                 match (session_id, event) {
@@ -678,13 +796,12 @@ impl BridgeState {
                     _ => tracing::warn!("agent bridge: malformed event frame"),
                 }
             }
-            Some("stream") => self.ingest_stream(app, message),
-            Some("stats") => self.ingest_stats(app, message),
-            Some("team") => self.ingest_team(app, message),
-            Some("notice") => super::policy::notice(message),
-            Some(kind) if REPLY_TYPES.contains(&kind) => self.resolve_reply(message),
-            Some(other) => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
-            None => tracing::warn!("agent bridge: frame without a type"),
+            "stream" => self.ingest_stream(app, message),
+            "stats" => self.ingest_stats(app, message),
+            "team" => self.ingest_team(app, message),
+            "notice" => super::policy::notice(message),
+            kind if REPLY_TYPES.contains(&kind) => self.resolve_reply(message),
+            other => tracing::debug!(kind = other, "agent bridge: unknown frame type"),
         }
     }
 
@@ -1362,6 +1479,101 @@ mod tests {
         let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
         assert!(frame.get("reasoningEffort").is_none());
         assert_eq!(bridge.desired_selection("s1", None), Some(plain));
+    }
+
+    #[tokio::test]
+    async fn task_phase_frames_and_snapshots_carry_the_token() {
+        let bridge = BridgeState::default();
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge
+            .send_task_phase("s1", "execute", "bug")
+            .expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "task-phase");
+        assert_eq!(frame["token"], "t");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["phase"], "execute");
+        assert_eq!(frame["kind"], "bug");
+        assert!(frame["requestId"].as_u64().is_some());
+
+        bridge
+            .send_task_phases(json!([{ "sessionId": "s1", "phase": "none", "kind": "bug" }]))
+            .expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "task-phases");
+        assert_eq!(frame["phases"][0]["phase"], "none");
+
+        bridge
+            .send_host_prompt("s1", "finish it")
+            .expect("queued");
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "host-prompt");
+        assert_eq!(frame["sessionId"], "s1");
+        assert_eq!(frame["text"], "finish it");
+    }
+
+    #[tokio::test]
+    async fn host_replies_use_the_plugin_request_id() {
+        let bridge = BridgeState::default();
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        bridge.send_host_reply("p-7", Ok(json!({ "outcome": "review" })));
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "host-reply");
+        assert_eq!(frame["requestId"], "p-7");
+        assert_eq!(frame["ok"], true);
+        assert_eq!(frame["data"]["outcome"], "review");
+
+        bridge.send_host_reply("p-8", Err("nope".into()));
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["requestId"], "p-8");
+        assert_eq!(frame["ok"], false);
+        assert_eq!(frame["error"], "nope");
+    }
+
+    #[tokio::test]
+    async fn an_ack_resolves_the_waiting_task_phase_request() {
+        let bridge = std::sync::Arc::new(BridgeState::default());
+        *bridge.token.lock().unwrap() = Some("t".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.claim_control(1, tx);
+
+        let waiting = {
+            let bridge = bridge.clone();
+            tokio::spawn(async move {
+                bridge
+                    .request_task_phase("s1", "writeback", "bug")
+                    .await
+            })
+        };
+        // The frame the plugin receives; its `requestId` is the one it acks.
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        let request_id = frame["requestId"].as_u64().expect("numeric id");
+        bridge.resolve_reply(&json!({ "requestId": request_id, "ok": true }));
+        assert!(waiting.await.expect("join").is_ok());
+
+        // An explicit rejection surfaces the plugin's error.
+        let waiting = {
+            let bridge = bridge.clone();
+            tokio::spawn(async move {
+                bridge
+                    .request_task_phase("s1", "writeback", "bug")
+                    .await
+            })
+        };
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        let request_id = frame["requestId"].as_u64().expect("numeric id");
+        bridge.resolve_reply(&json!({
+            "requestId": request_id,
+            "ok": false,
+            "error": "no map",
+        }));
+        assert_eq!(waiting.await.expect("join").unwrap_err(), "no map");
     }
 
     #[tokio::test]

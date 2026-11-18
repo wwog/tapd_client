@@ -12,10 +12,10 @@ import type { AgentTodo } from "../../../shared/agent/types";
 import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
+import { ReviewView } from "./ReviewView";
 import { RuntimeNotice } from "./RuntimeNotice";
 import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
-import { TeamBar } from "./TeamBar";
 import { TeamBoard } from "./TeamBoard";
 import { openAgentPath, resolveAgentImage } from "./localOpen";
 import { installAgentPerf, recordAgentCommit } from "./perf";
@@ -23,11 +23,12 @@ import { MessageUsageChip } from "./usage/MessageUsageChip";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
 import {
   agentActions,
-  agentHasTeamUi,
+  agentReviewView,
   agentStore,
   agentTaskView,
   agentTeamView,
   isSessionRunning,
+  taskReviewable,
 } from "./store";
 
 type Props = {
@@ -107,7 +108,8 @@ const NO_HUD: StreamHudItem[] = [];
  * picker); the pane explains why it cannot send right now plus the workflow
  * actions of the selected task.
  *
- * The pane bar switches between the conversation and the trajectory ledger.
+ * The pane bar switches between the conversation and the trajectory ledger;
+ * a task waiting for review swaps both for the review surface（审核 / 对话).
  * The transcript stays mounted (hidden) so a round trip keeps its scroll
  * position; the ledger keeps its own folds, selection and search.
  */
@@ -128,15 +130,23 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
         : NO_HUD,
     [todos, locale],
   );
-  // Team mode is per session, and only workflow tasks get the header switch.
   // The board replaces the transcript for any session that chose it; a chat
-  // keeps its transcript unless the reader explicitly opens the board.
-  const teamUi = agentHasTeamUi(state, state.selectedId);
-  const board = view === "chat" && agentTeamView(state, state.selectedId) === "board";
+  // keeps its transcript unless the reader explicitly opens the board. The
+  // team/worktree choices themselves live in the composer's work bar.
+  // A reviewable task swaps the main pane for the review surface; the
+  // transcript stays mounted (hidden) so「对话」returns to the same scroll.
+  const reviewable = taskReviewable(selected);
+  const reviewView = agentReviewView(state, state.selectedId);
+  const showReview = reviewable && reviewView === "review";
+  // A reviewable task's「对话」tab always means the transcript, even if the
+  // session was left on the trajectory ledger before the review began.
+  const paneView = reviewable ? "chat" : view;
+  const board =
+    !showReview && paneView === "chat" && agentTeamView(state, state.selectedId) === "board";
   const stream = (
     <MessageStream
       key={`chat:${state.selectedId ?? "draft"}`}
-      visible={view === "chat" && !board}
+      visible={paneView === "chat" && !board && !showReview}
     />
   );
 
@@ -151,22 +161,35 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
             {state.selectedId ? (
               <div className="relative shrink-0 px-6 py-2">
                 <div className="mx-auto flex max-w-[46rem] items-center justify-center">
-                  <Segmented
-                    value={view}
-                    onChange={(next) => agentActions.setTaskView(state.selectedId!, next)}
-                    options={[
-                      { value: "chat", label: t("agent.traj.viewChat") },
-                      { value: "trajectory", label: t("agent.traj.viewTrajectory") },
-                    ]}
-                  />
+                  {reviewable ? (
+                    <Segmented
+                      value={reviewView}
+                      onChange={(next) =>
+                        agentActions.setReviewView(state.selectedId!, next)
+                      }
+                      options={[
+                        { value: "review", label: t("agent.review.tabReview") },
+                        { value: "chat", label: t("agent.review.tabChat") },
+                      ]}
+                    />
+                  ) : (
+                    <Segmented
+                      value={view}
+                      onChange={(next) => agentActions.setTaskView(state.selectedId!, next)}
+                      options={[
+                        { value: "chat", label: t("agent.traj.viewChat") },
+                        { value: "trajectory", label: t("agent.traj.viewTrajectory") },
+                      ]}
+                    />
+                  )}
                 </div>
                 <StreamHud items={hudItems} locale={locale} />
               </div>
             ) : null}
-            {selected && teamUi ? <TeamBar key={`team:${selected.id}`} task={selected} /> : null}
             {selected && selected.kind !== "chat" ? (
               <TaskActions key={selected.id} task={selected} />
             ) : null}
+            {showReview && selected ? <ReviewView key={`review:${selected.id}`} task={selected} /> : null}
             {import.meta.env.DEV ? (
               <Profiler id="agent-stream" onRender={onStreamRender}>
                 {stream}
@@ -174,13 +197,15 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
             ) : (
               stream
             )}
-            {state.selectedId && view === "trajectory" ? (
+            {state.selectedId && paneView === "trajectory" && !showReview ? (
               <TrajectoryPane key={`traj:${state.selectedId}`} sessionId={state.selectedId} />
             ) : null}
             {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
             <div className="shrink-0">
               <RuntimeNotice />
-              <Composer />
+              {/* While the host commits and merges, input is closed: the
+                  review pane owns the retry decision. */}
+              {selected?.workflow === "finalizing" ? null : <Composer />}
             </div>
           </div>
         </div>

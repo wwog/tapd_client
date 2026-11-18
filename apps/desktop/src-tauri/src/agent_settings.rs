@@ -4,7 +4,8 @@
 //! - 每个 TAPD 项目对应的本地仓库路径与项目规则（MCP 匹配 `root`、内置 Agent 的
 //!   working directory 都用它）；
 //! - 提示词模板（缺陷修复、提交、合并、本地事项）；
-//! - Git worktree 隔离与并行执行单元；以及用户启用的同事。
+//! - 工作流任务的并行执行单元；以及用户启用的同事。所有任务都在独立
+//!   worktree 中运行，没有开关。
 //!
 //! 旧的外置 CLI 流程里的运行时、可执行路径、默认模型、访问权限、TUI 就绪 /
 //! 静默阈值全部删除：内置 dsh 运行时的模型与权限在 `docs/DSH.md` 描述的
@@ -40,8 +41,6 @@ pub struct ProjectAgentConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
-    /// Legacy map kept only for migration; use `projects` instead.
-    pub repo_mappings: BTreeMap<String, String>,
     /// TAPD workspace id -> repository path + project rules.
     pub projects: BTreeMap<String, ProjectAgentConfig>,
     pub prompt_template: String,
@@ -49,22 +48,15 @@ pub struct AgentConfig {
     /// now the collaboration roster: it is not written into any prompt.
     pub coworker_ids: Vec<String>,
     /// 团队协作：开启后新会话默认进入 Agent Team（任务板），工作由 lead 分配。
-    /// `None` marks a config written before this switch existed; the roster
-    /// then decides, exactly as the old 同事 switch did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_enabled: Option<bool>,
-    /// 每个任务在独立的 git worktree 中运行。关闭时并发固定为 1。
     #[serde(default)]
-    pub worktree_enabled: bool,
-    /// 同时运行的任务数；仅在开启 worktree 时生效。
+    pub team_enabled: bool,
+    /// 同时运行的工作流任务数（1–8）。所有任务都在独立 worktree 中运行，
+    /// 这里的上限只决定并发。
     #[serde(default = "default_execution_units")]
     pub execution_units: u32,
     /// 自定义模型供应商与模型目录。内置运行时启动时渲染进 profile。
     #[serde(default)]
     pub dsh_models: DshModelsConfig,
-    /// 单供应商时代留下的配置，只在读取时迁移一次，不再写出。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dsh_model: Option<DshModelConfig>,
     /// 权限模式（P3）：自主 / 变更前通知 / 完全访问。运行时启动时生效。
     #[serde(default)]
     pub permission_mode: PermissionMode,
@@ -102,41 +94,6 @@ impl PermissionMode {
             "notify" => Some(Self::Notify),
             "full" => Some(Self::Full),
             _ => None,
-        }
-    }
-}
-
-/// 单供应商时代的模型配置。只在读取旧 `agent.json` 时出现，读入即迁移成
-/// [`DshModelsConfig`]，之后不再写出。
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DshModelConfig {
-    /// 小写字母开头的标识，渲染进 profile 的 providers key。
-    pub provider_id: String,
-    pub display_name: String,
-    /// OpenAI 兼容 / Anthropic / Gemini 网关地址。
-    pub base_url: String,
-    /// `openai-completions` | `anthropic` | `gemini`。
-    pub protocol: String,
-    pub api_key: String,
-    /// 会话默认模型 id；目录外 id 也可直接填。
-    pub model: String,
-    pub context_window: u64,
-    /// 目录里的其它可选模型，每行一个 id（空行忽略）。
-    pub models: Vec<String>,
-}
-
-impl Default for DshModelConfig {
-    fn default() -> Self {
-        Self {
-            provider_id: "custom".to_string(),
-            display_name: String::new(),
-            base_url: String::new(),
-            protocol: "openai-completions".to_string(),
-            api_key: String::new(),
-            model: String::new(),
-            context_window: 128_000,
-            models: Vec::new(),
         }
     }
 }
@@ -419,51 +376,6 @@ impl DshModelsConfig {
             }
         }
     }
-
-    /// 单供应商时代的配置迁移：地址还在时保留成一个供应商。
-    fn from_legacy(legacy: DshModelConfig) -> Self {
-        let base_url = legacy.base_url.trim().to_string();
-        if base_url.is_empty() {
-            return Self::default();
-        }
-        let provider_id = slug_id(&legacy.provider_id);
-        let provider_id = if provider_id.is_empty() {
-            "custom".to_string()
-        } else {
-            provider_id
-        };
-        let active_model = legacy.model.trim().to_string();
-        let mut ids: Vec<String> = Vec::new();
-        for id in std::iter::once(&active_model).chain(legacy.models.iter()) {
-            let id = id.trim();
-            if id.is_empty() || ids.iter().any(|existing| existing == id) {
-                continue;
-            }
-            ids.push(id.to_string());
-        }
-        let models: Vec<DshModelEntry> = ids
-            .into_iter()
-            .map(|id| DshModelEntry {
-                id,
-                context_window: legacy.context_window,
-                ..Default::default()
-            })
-            .collect();
-        Self {
-            providers: vec![DshProvider {
-                id: provider_id.clone(),
-                name: legacy.display_name,
-                base_url,
-                protocol: legacy.protocol,
-                api_key: legacy.api_key,
-                enabled: true,
-                models,
-            }],
-            active_provider_id: provider_id,
-            active_model_id: active_model,
-            model_efforts: BTreeMap::new(),
-        }
-    }
 }
 
 /// profiles are dictionary keys and credential refs; keep them boring. Only
@@ -564,7 +476,7 @@ fn sanitize_model(mut entry: DshModelEntry) -> Option<DshModelEntry> {
     })
 }
 
-/// Worktree 开启后默认并行两个任务：再多也不利于排查。
+/// 默认并行两个工作流任务：再多也不利于排查。
 fn default_execution_units() -> u32 {
     2
 }
@@ -572,62 +484,26 @@ fn default_execution_units() -> u32 {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            repo_mappings: BTreeMap::new(),
             projects: BTreeMap::new(),
             prompt_template: tr(DEFAULT_PROMPT_KEY).to_string(),
             coworker_ids: Vec::new(),
-            team_enabled: None,
-            worktree_enabled: false,
+            team_enabled: false,
             execution_units: default_execution_units(),
             dsh_models: DshModelsConfig::default(),
-            dsh_model: None,
             permission_mode: PermissionMode::Auto,
         }
     }
 }
 
 impl AgentConfig {
-    /// Team collaboration for new sessions. A config written before the switch
-    /// existed asked for the team by enabling coworkers, so the roster is the
-    /// fallback instead of a silent "off".
-    pub fn team_enabled(&self) -> bool {
-        self.team_enabled.unwrap_or(!self.coworker_ids.is_empty())
-    }
-
     fn sanitized(mut self) -> Self {
-        if self.prompt_template.trim().is_empty()
-            || template_uses_removed_contract(&self.prompt_template)
-        {
+        if self.prompt_template.trim().is_empty() {
             self.prompt_template = tr(DEFAULT_PROMPT_KEY).to_string();
         }
 
         self.coworker_ids = normalize_coworker_ids(std::mem::take(&mut self.coworker_ids));
-        // Resolve the legacy fallback once, so every reader sees a real bool.
-        self.team_enabled = Some(self.team_enabled());
         self.execution_units = self.execution_units.clamp(1, 8);
-
-        // One-time migration of the single-provider form; the field stops being
-        // written as soon as the provider list carries the same data.
-        let legacy = self.dsh_model.take();
-        let mut models = std::mem::take(&mut self.dsh_models);
-        if models.providers.is_empty() {
-            if let Some(legacy) = legacy {
-                models = DshModelsConfig::from_legacy(legacy);
-            }
-        }
-        self.dsh_models = models.sanitized();
-
-        // Migrate the old id -> path map into per-project settings once.
-        for (workspace_id, path) in std::mem::take(&mut self.repo_mappings) {
-            let path = path.trim().to_string();
-            if path.is_empty() {
-                continue;
-            }
-            self.projects
-                .entry(workspace_id)
-                .or_insert_with(ProjectAgentConfig::default)
-                .repo_path = path;
-        }
+        self.dsh_models = std::mem::take(&mut self.dsh_models).sanitized();
 
         self.projects = self
             .projects
@@ -641,20 +517,6 @@ impl AgentConfig {
             .collect();
 
         self
-    }
-
-    /// How many tasks may run in parallel. Without worktree isolation the
-    /// tasks would share one working tree, so the queue stays serial.
-    ///
-    /// Used by the worktree task flow (P4); kept here so the rule lives with
-    /// the settings it depends on.
-    #[allow(dead_code)]
-    pub(crate) fn effective_execution_units(&self) -> usize {
-        if self.worktree_enabled {
-            self.execution_units.clamp(1, 8) as usize
-        } else {
-            1
-        }
     }
 }
 
@@ -719,14 +581,15 @@ pub async fn agent_settings_get(app: tauri::AppHandle) -> Result<AgentConfig, St
     Ok(config_for(&app))
 }
 
-/// Replaces the settings. The saved value is sanitized (legacy prompt
-/// contracts, empty project entries, unit bounds). A running runtime adopts a
-/// changed catalog immediately; a stopped one renders it at its next start.
+/// Replaces the settings. The saved value is sanitized (empty project entries,
+/// unit bounds). A running runtime adopts a changed catalog immediately; a
+/// stopped one renders it at its next start.
 #[tauri::command]
 pub async fn agent_settings_set(
     app: tauri::AppHandle,
     config: AgentConfig,
 ) -> Result<AgentConfig, String> {
+    let before = config_for(&app).execution_units;
     let saved = save_for(&app, &config)?;
     use tauri::Manager;
     if let Some(state) = app.try_state::<std::sync::Arc<crate::dsh::runtime::RuntimeState>>() {
@@ -734,6 +597,13 @@ pub async fn agent_settings_set(
         // the restart button on screen, which is the honest fallback.
         if let Err(error) = state.sync_catalog(&app, &saved).await {
             tracing::warn!(%error, "model catalog was not applied to the running runtime");
+        }
+    }
+    // Raising the cap should start queued work immediately, not wait for the
+    // next enqueue. Lowering it never interrupts a running task.
+    if saved.execution_units > before {
+        if let Err(error) = crate::dsh::tasks::schedule(&app).await {
+            tracing::warn!(%error, "queued tasks were not rescheduled");
         }
     }
     Ok(saved)
@@ -768,7 +638,7 @@ pub async fn agent_model_effort_set(
 
 /// `settings_agent_get` / `settings_agent_set` over `feature_command`.
 ///
-/// The phone may edit worktree isolation and execution units; the model
+/// The phone may edit the execution-unit cap; the model
 /// providers (API keys included), prompt template and project rules stay
 /// desktop-only. The response is a projection for exactly that reason:
 /// returning the whole config would put every provider key on the paired wire.
@@ -787,17 +657,19 @@ pub async fn command(
         "settings_agent_set" => {
             let patch: Patch = serde_json::from_value(payload)
                 .map_err(|error| error.to_string())?;
-            if patch.worktree_enabled.is_none() && patch.execution_units.is_none() {
+            let Some(units) = patch.execution_units else {
                 return Err("no supported field".to_string());
-            }
+            };
             let mut config = config_for(app);
-            if let Some(enabled) = patch.worktree_enabled {
-                config.worktree_enabled = enabled;
+            let before = config.execution_units;
+            config.execution_units = units;
+            let saved = save_for(app, &config)?;
+            if saved.execution_units > before {
+                if let Err(error) = crate::dsh::tasks::schedule(app).await {
+                    tracing::warn!(%error, "queued tasks were not rescheduled");
+                }
             }
-            if let Some(units) = patch.execution_units {
-                config.execution_units = units;
-            }
-            Ok(json!({ "config": companion_view(&save_for(app, &config)?) }))
+            Ok(json!({ "config": companion_view(&saved) }))
         }
         other => Err(format!("unknown settings command: {other}")),
     }
@@ -806,7 +678,6 @@ pub async fn command(
 /// The only settings the paired phone renders and edits.
 fn companion_view(config: &AgentConfig) -> serde_json::Value {
     serde_json::json!({
-        "worktreeEnabled": config.worktree_enabled,
         "executionUnits": config.execution_units,
     })
 }
@@ -860,8 +731,6 @@ fn companion_models(config: &AgentConfig) -> serde_json::Value {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Patch {
-    #[serde(default)]
-    worktree_enabled: Option<bool>,
     #[serde(default)]
     execution_units: Option<u32>,
 }
@@ -971,26 +840,6 @@ fn attachment_kind(path: &str) -> &'static str {
     }
 }
 
-/// Templates that still point at removed tools or placeholders cannot work.
-/// Replacing them is validation, not a migration: no old template text is kept.
-fn template_uses_removed_contract(template: &str) -> bool {
-    [
-        "{{md_path}}",
-        "{{project_rule}}",
-        "tapd_request_review",
-        "agent_task_report",
-        "tapd_claim_bug",
-        "tapd_release_bug",
-        "tapd_export_bug_md",
-        // The host commits, merges and writes back now: a template that still
-        // asks the model to do it would duplicate those writes.
-        "tapd_add_bug_comment",
-        "tapd_update_bug_status",
-        "tapd_get_bug_transitions",
-    ]
-    .iter()
-    .any(|marker| template.contains(marker))
-}
 
 fn normalize_coworker_ids(values: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1028,83 +877,6 @@ mod tests {
         };
         let out = render_prompt("{{task_id}} {{bug_id}} {{unknown}}", &vars);
         assert_eq!(out, "task-1 1001 {{unknown}}");
-    }
-
-    #[test]
-    fn team_default_is_migrated_from_the_roster_once() {
-        // Configs written before the switch existed asked for the team by
-        // enabling coworkers; sanitize resolves that to a real bool.
-        let migrated = AgentConfig {
-            coworker_ids: vec!["author".into()],
-            ..Default::default()
-        }
-        .sanitized();
-        assert_eq!(migrated.team_enabled, Some(true));
-        assert!(migrated.team_enabled());
-        // A roster without the fallback (explicitly off) stays off.
-        let off = AgentConfig {
-            coworker_ids: vec!["author".into()],
-            team_enabled: Some(false),
-            ..Default::default()
-        }
-        .sanitized();
-        assert!(!off.team_enabled());
-        // No roster, no switch: a single agent.
-        assert!(!AgentConfig::default().sanitized().team_enabled());
-    }
-
-    #[test]
-    fn legacy_contract_template_is_replaced() {
-        let config = AgentConfig {
-            prompt_template: "run tapd_claim_bug first".into(),
-            ..Default::default()
-        }
-        .sanitized();
-        assert!(!config.prompt_template.contains("tapd_claim_bug"));
-    }
-
-    #[test]
-    fn legacy_repo_mappings_become_projects() {
-        let mut config = AgentConfig::default();
-        config.repo_mappings.insert("ws".into(), " /repo ".into());
-        let config = config.sanitized();
-        assert_eq!(config.projects["ws"].repo_path, "/repo");
-        assert!(config.repo_mappings.is_empty());
-    }
-
-    #[test]
-    fn legacy_single_provider_becomes_one_provider() {
-        let config = AgentConfig {
-            dsh_model: Some(DshModelConfig {
-                provider_id: "Acme Gateway".into(),
-                display_name: "Acme".into(),
-                base_url: " https://acme.example/v1/ ".into(),
-                protocol: "anthropic".into(),
-                api_key: " k ".into(),
-                model: "acme-think".into(),
-                context_window: 262_144,
-                models: vec!["acme-fast".into(), "acme-think".into()],
-            }),
-            ..Default::default()
-        }
-        .sanitized();
-
-        assert!(config.dsh_model.is_none());
-        let models = &config.dsh_models;
-        assert_eq!(models.providers.len(), 1);
-        let provider = &models.providers[0];
-        assert_eq!(provider.id, "acmegateway");
-        assert_eq!(provider.base_url, "https://acme.example/v1");
-        // The old form offered a spelling upstream rejects.
-        assert_eq!(provider.protocol, "anthropic-messages");
-        assert_eq!(provider.api_key, "k");
-        assert_eq!(
-            provider.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["acme-think", "acme-fast"]
-        );
-        assert_eq!(provider.models[0].context_window, 262_144);
-        assert_eq!(models.active_model_id, "acme-think");
-        assert!(models.is_configured());
     }
 
     #[test]

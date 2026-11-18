@@ -22,6 +22,7 @@
     "changelog": "node scripts/changelog.mjs",
     "test:rust": "pnpm build:companion && pnpm build:sidecar:debug && cargo test --workspace",
     "test:policy": "node --test scripts/dsh/policy.test.mjs",
+    "test:task-phase": "node --test scripts/dsh/task-phase.test.mjs",
     "perf:agent": "node scripts/agent-perf-lab.mjs"
   }
 }

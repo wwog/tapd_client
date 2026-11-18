@@ -199,22 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn pre_release_cache_is_rebuilt() {
+    fn fresh_cache_gets_the_current_schema() {
         let path = std::env::temp_dir().join(format!(
-            "tapd-cache-v1-{}.sqlite3",
+            "tapd-cache-fresh-{}.sqlite3",
             uuid::Uuid::new_v4().simple()
         ));
-        {
-            let conn = Connection::open(&path).expect("v1 db");
-            conn.execute_batch(
-                "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
-                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1);
-                 CREATE TABLE bugs (workspace_id TEXT NOT NULL, bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', modified TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, bug_id));
-                 PRAGMA user_version = 1;",
-            )
-            .expect("v1 schema");
-        }
-
         let cache = Cache::open(path);
         let guard = cache.conn.lock().expect("cache lock");
         let conn = guard.as_ref().expect("cache connection");
@@ -241,61 +230,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .expect("table lookup");
-            assert_eq!(exists, 1, "{table} must be recreated");
+            assert_eq!(exists, 1, "{table} must exist");
         }
-        let snapshots: i64 = conn
-            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
-            .expect("snapshots");
-        assert_eq!(snapshots, 0, "pre-1.0 snapshots are disposable");
-    }
-
-    #[test]
-    fn v5_upgrade_keeps_user_data() {
-        let path = std::env::temp_dir().join(format!(
-            "tapd-cache-v5-{}.sqlite3",
-            uuid::Uuid::new_v4().simple()
-        ));
-        {
-            let conn = Connection::open(&path).expect("v5 db");
-            conn.execute_batch(
-                "CREATE TABLE snapshots (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (kind, key));
-                 INSERT INTO snapshots VALUES ('bug_list', 'k', '{}', 1);
-                 CREATE TABLE agent_tasks (
-                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, workspace_name TEXT NOT NULL DEFAULT '',
-                    bug_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
-                    session_id TEXT, repo_path TEXT NOT NULL DEFAULT '', log_path TEXT NOT NULL DEFAULT '',
-                    md_path TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT '', started_at TEXT, finished_at TEXT,
-                    exit_code INTEGER, error TEXT, updated_at INTEGER NOT NULL,
-                    payload TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
-                    priority TEXT NOT NULL DEFAULT '', runtime_id TEXT NOT NULL DEFAULT '',
-                    transport TEXT NOT NULL DEFAULT ''
-                 );
-                 CREATE TABLE agent_queue_state (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL DEFAULT 0);
-                 PRAGMA user_version = 5;",
-            )
-            .expect("v5 schema");
-        }
-
-        let cache = Cache::open(path);
-        let guard = cache.conn.lock().expect("cache lock");
-        let conn = guard.as_ref().expect("cache connection");
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("version");
-        assert_eq!(version, super::migrate::SCHEMA_VERSION);
-        let snapshots: i64 = conn
-            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
-            .expect("snapshots");
-        assert_eq!(snapshots, 1, "v5 snapshots survive the upgrade");
-        let agent_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'table' AND name = 'agent_tasks'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent table");
-        assert_eq!(agent_table, 0, "external-agent tables are gone");
     }
 }

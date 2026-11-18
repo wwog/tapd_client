@@ -5,7 +5,13 @@ import { ChevronRight, FolderOpen, Plus, Settings2, Trash2 } from "lucide-react"
 import { api, relativeTime } from "../lib/api";
 import { t, type MessageKey } from "../lib/i18n";
 import { showToast } from "../lib/toast";
-import type { DshSessionStatus, DshTask, DshTaskWorkflow } from "../lib/dsh";
+import type {
+  DshProject,
+  DshSessionStatus,
+  DshTask,
+  DshTaskProject,
+  DshTaskWorkflow,
+} from "../lib/dsh";
 import { dshTaskApi } from "../lib/dsh";
 import { readPref, writePref } from "../lib/uiPrefs";
 import { Badge, Button, Spinner } from "../components/ui";
@@ -16,44 +22,77 @@ import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./stor
 
 /** Which project groups are folded shut, by group key. */
 const COLLAPSED_PREF = "agent.collapsed-projects.v1";
+/** The group that collects sessions without a project; always rendered last. */
+const NO_PROJECT_KEY = "none";
 
 const WORKFLOW: Record<
   DshTaskWorkflow,
   { label: MessageKey; tone: "neutral" | "blue" | "green" | "amber" | "red" | "cyan" }
 > = {
+  queued: { label: "agent.task.workflowQueued", tone: "neutral" },
   running: { label: "agent.task.workflowRunning", tone: "blue" },
   awaiting_review: { label: "agent.task.workflowAwaitingReview", tone: "amber" },
-  awaiting_merge: { label: "agent.task.workflowAwaitingMerge", tone: "cyan" },
+  finalizing: { label: "agent.task.workflowFinalizing", tone: "cyan" },
   done: { label: "agent.task.workflowDone", tone: "green" },
   failed: { label: "agent.task.workflowFailed", tone: "red" },
   canceled: { label: "agent.task.workflowCanceled", tone: "neutral" },
 };
 
-type TaskGroup = { key: string; name: string; tasks: DshTask[] };
+type TaskGroup = {
+  key: string;
+  name: string;
+  /** The project a header「+」creates in; `null` for「未关联项目」. */
+  project: Pick<DshTaskProject, "kind" | "id"> | null;
+  tasks: DshTask[];
+};
 
-/** Projects in first-seen (newest activity) order; chat rows come last. */
-function groupTasks(tasks: DshTask[]): TaskGroup[] {
+const projectKey = (project: Pick<DshTaskProject, "kind" | "id">): string =>
+  `${project.kind}:${project.id}`;
+
+/**
+ * One group per configured project, in the backend's order, plus a trailing
+ * group for everything without a project. Empty projects still get their
+ * header (and its +), which is how a project is picked for a new chat.
+ */
+function groupTasks(
+  tasks: DshTask[],
+  projects: DshProject[] | null,
+): TaskGroup[] {
   const groups = new Map<string, TaskGroup>();
-  for (const task of tasks) {
-    const key = task.project ? `${task.project.kind}:${task.project.id}` : "none";
+  const ensure = (
+    project: Pick<DshTaskProject, "kind" | "id"> | null,
+    name: string,
+  ): TaskGroup => {
+    const key = project ? projectKey(project) : NO_PROJECT_KEY;
     let group = groups.get(key);
     if (!group) {
-      group = {
-        key,
-        name: task.project?.name || t("agent.task.noProject"),
-        tasks: [],
-      };
+      group = { key, name, project, tasks: [] };
       groups.set(key, group);
     }
-    group.tasks.push(task);
+    return group;
+  };
+
+  for (const project of projects ?? []) {
+    ensure({ kind: project.kind, id: project.id }, project.name);
   }
-  const ordered = [...groups.values()].filter((group) => group.key !== "none");
-  const none = groups.get("none");
+  for (const task of tasks) {
+    const project = task.project;
+    ensure(
+      project,
+      project?.name || t("agent.task.noProject"),
+    ).tasks.push(task);
+  }
+
+  const ordered = [...groups.values()].filter(
+    (group) => group.key !== NO_PROJECT_KEY,
+  );
+  ensure(null, t("agent.task.noProject"));
+  const none = groups.get(NO_PROJECT_KEY);
   if (none) ordered.push(none);
   return ordered;
 }
 
-/** Fixed-width task column: create, then every task grouped by project. */
+/** Fixed-width task column: every project group, then the unassigned chats. */
 export function TaskList() {
   const state = agentStore.use();
   const [deleting, setDeleting] = useState<DshTask | null>(null);
@@ -92,20 +131,12 @@ export function TaskList() {
     pending.set(item.sessionId, (pending.get(item.sessionId) ?? 0) + 1);
   }
 
+  const groups = ordered ? groupTasks(ordered, state.projects) : [];
+  const empty = ordered !== null && ordered.length === 0 && !state.projects?.length;
+
   return (
     <aside className="flex h-full min-h-0 w-[248px] shrink-0 flex-col border-r border-border">
-      <div className="p-2">
-        <Button
-          size="sm"
-          className="w-full"
-          icon={<Plus size={13} />}
-          onClick={() => void agentActions.newSession()}
-        >
-          {t("agent.session.new")}
-        </Button>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 pt-2">
         {tasks === null ? (
           state.tasksError ? (
             <div className="px-1 py-4 text-ui-caption text-slate-400">
@@ -126,7 +157,7 @@ export function TaskList() {
               {t("common.loading")}
             </div>
           )
-        ) : (ordered?.length ?? 0) === 0 ? (
+        ) : empty ? (
           <div
             className="px-2 py-8 text-center text-ui-caption text-slate-400"
             title={t("agent.task.emptyHint")}
@@ -134,26 +165,42 @@ export function TaskList() {
             {t("agent.task.empty")}
           </div>
         ) : (
-          groupTasks(ordered ?? []).map((group) => {
+          groups.map((group) => {
             const folded = collapsed.has(group.key);
             const rows = folded ? [] : group.tasks;
             return (
               <section key={group.key} className="mt-1 first:mt-0">
-                <button
-                  type="button"
-                  aria-expanded={!folded}
-                  onClick={() => toggleGroup(group.key)}
-                  className="flex w-full items-center gap-1 rounded px-1 py-1 text-left text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
-                >
-                  <ChevronRight
-                    size={11}
-                    className={clsx("shrink-0 transition-transform", !folded && "rotate-90")}
-                  />
-                  <ScrollingName text={group.name} className="min-w-0 flex-1" />
-                  <span className="shrink-0 tabular-nums text-ui-2xs text-slate-300">
-                    {group.tasks.length}
-                  </span>
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-expanded={!folded}
+                    onClick={() => toggleGroup(group.key)}
+                    className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+                  >
+                    <ChevronRight
+                      size={11}
+                      className={clsx("shrink-0 transition-transform", !folded && "rotate-90")}
+                    />
+                    <ScrollingName text={group.name} className="min-w-0 flex-1" />
+                    <span className="shrink-0 tabular-nums text-ui-2xs text-slate-300">
+                      {group.tasks.length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    title={t("agent.task.newInProject", { name: group.name })}
+                    aria-label={t("agent.task.newInProject", { name: group.name })}
+                    onClick={() => {
+                      // The new row lands in this group; a folded group would
+                      // hide the session the click just created.
+                      if (collapsed.has(group.key)) toggleGroup(group.key);
+                      void agentActions.newSession(group.project ?? undefined);
+                    }}
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
+                  >
+                    <Plus size={12} />
+                  </button>
+                </div>
                 {rows.length > 0 ? (
                   <div className="flex flex-col gap-0.5">
                     {rows.map((task) => (
@@ -249,7 +296,11 @@ function TaskRow({
   pending: number;
   onMenu: (task: DshTask, x: number, y: number) => void;
 }) {
-  const workflow = WORKFLOW[task.workflow];
+  // A row written by a build that still used `awaiting_merge` must not blank
+  // the whole list; it reads as the finalize stage it migrated into.
+  const workflow =
+    (WORKFLOW as Record<string, (typeof WORKFLOW)[DshTaskWorkflow]>)[task.workflow] ??
+    WORKFLOW.finalizing;
 
   return (
     <div className="group relative">

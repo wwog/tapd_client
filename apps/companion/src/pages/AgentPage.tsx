@@ -6,8 +6,10 @@ import { Badge, type BadgeTone } from "../components/Badge";
 import {
   dshApi,
   useAgentFeed,
+  type DshProjectOption,
   type DshStatus,
   type DshTask,
+  type DshTaskProject,
   type DshWorkflow,
 } from "../lib/dsh";
 import { relativeTime } from "../lib/format";
@@ -33,18 +35,20 @@ const PHASE_DOTS: Record<DshStatus["phase"], string> = {
 };
 
 const WORKFLOW_LABELS: Record<DshWorkflow, MessageKey> = {
+  queued: "mobile.agent.workflowQueued",
   running: "mobile.agent.workflowRunning",
   awaiting_review: "mobile.agent.workflowReview",
-  awaiting_merge: "mobile.agent.workflowMerge",
+  finalizing: "mobile.agent.workflowFinalizing",
   done: "mobile.agent.workflowDone",
   failed: "mobile.agent.workflowFailed",
   canceled: "mobile.agent.workflowCanceled",
 };
 
 const WORKFLOW_TONES: Record<DshWorkflow, BadgeTone> = {
+  queued: "neutral",
   running: "blue",
   awaiting_review: "amber",
-  awaiting_merge: "cyan",
+  finalizing: "cyan",
   done: "green",
   failed: "red",
   canceled: "neutral",
@@ -73,25 +77,60 @@ function ListSkeleton() {
    Task list
    ------------------------------------------------------------------------- */
 
-type TaskGroup = { key: string; project: DshTask["project"]; tasks: DshTask[] };
+/** The default "no project" group; its key never collides with a real one. */
+const NO_PROJECT_GROUP = "";
 
-/** Group by project (local projects included); newest first inside a group. */
-function groupTasks(tasks: DshTask[]): TaskGroup[] {
+type TaskGroup = {
+  key: string;
+  project: DshTaskProject | null;
+  tasks: DshTask[];
+};
+
+const projectKey = (project: DshTaskProject): string => `${project.kind}:${project.id}`;
+
+const newestFirst = (left: DshTask, right: DshTask): number =>
+  right.updatedAt.localeCompare(left.updatedAt);
+
+const latestActivity = (group: TaskGroup): string => group.tasks[0]?.updatedAt ?? "";
+
+/**
+ * Groups = every configured project + the default "no project" group. Projects
+ * keep a header even when they have no sessions; groups follow their newest
+ * session and the default group is always last.
+ */
+function groupTasks(tasks: DshTask[], projects: DshProjectOption[]): TaskGroup[] {
   const groups = new Map<string, TaskGroup>();
+  const ensure = (project: DshTaskProject): TaskGroup => {
+    const key = projectKey(project);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, project, tasks: [] };
+      groups.set(key, group);
+    }
+    return group;
+  };
+
+  for (const project of projects) ensure(project);
+
+  const noProject: TaskGroup = {
+    key: NO_PROJECT_GROUP,
+    project: null,
+    tasks: [],
+  };
   for (const task of tasks) {
-    const key = task.project?.id ?? "";
-    const group = groups.get(key);
-    if (group) group.tasks.push(task);
-    else groups.set(key, { key, project: task.project, tasks: [task] });
+    if (task.project) ensure(task.project).tasks.push(task);
+    else noProject.tasks.push(task);
   }
-  const list = [...groups.values()];
-  for (const group of list) {
-    group.tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-  // Groups follow their newest task, so the whole list stays newest-first.
-  list.sort((left, right) =>
-    (right.tasks[0]?.updatedAt ?? "").localeCompare(left.tasks[0]?.updatedAt ?? ""),
-  );
+
+  for (const group of groups.values()) group.tasks.sort(newestFirst);
+  noProject.tasks.sort(newestFirst);
+
+  const list = [...groups.values()].sort((left, right) => {
+    const delta = latestActivity(right).localeCompare(latestActivity(left));
+    if (delta !== 0) return delta;
+    return (left.project?.name ?? "").localeCompare(right.project?.name ?? "");
+  });
+  list.push(noProject);
   return list;
 }
 
@@ -137,8 +176,12 @@ export function AgentPage() {
     title: MessageKey;
   } | null>(null);
   const [starting, setStarting] = useState(false);
-  const [creating, setCreating] = useState(false);
+  /** Group key whose "+" is creating a session; `null` when idle. */
+  const [creating, setCreating] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** Every configured project, so empty groups still render a header. */
+  const [projects, setProjects] = useState<DshProjectOption[] | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
 
   const alive = useRef(true);
   useEffect(() => {
@@ -163,19 +206,34 @@ export function AgentPage() {
     }
   }, []);
 
+  const refreshProjects = useCallback(async () => {
+    try {
+      const { projects: rows } = await dshApi.projects();
+      if (!alive.current) return;
+      setProjects(rows);
+      setProjectsError(null);
+    } catch (err) {
+      if (!alive.current) return;
+      setProjectsError(asApiError(err).message);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshStatus();
+    void refreshProjects();
     const timer = window.setInterval(() => {
       if (!isPageHidden()) void refreshStatus();
     }, LIST_POLL_MS);
     const off = onPageVisibilityChange(() => {
-      if (!isPageHidden()) void refreshStatus();
+      if (isPageHidden()) return;
+      void refreshStatus();
+      void refreshProjects();
     });
     return () => {
       window.clearInterval(timer);
       off();
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, refreshProjects]);
 
   /** A stopped or failed runtime gets one explicit start/retry button. */
   const startRuntime = async () => {
@@ -199,21 +257,28 @@ export function AgentPage() {
     }
   };
 
-  const createSession = async () => {
-    if (creating) return;
-    setCreating(true);
+  /** A group's "+" creates a free chat; the project scopes its cwd/group. */
+  const createSession = async (project: DshTaskProject | null) => {
+    if (creating !== null) return;
+    const key = project ? projectKey(project) : NO_PROJECT_GROUP;
+    setCreating(key);
     setActionError(null);
     try {
-      const { sessionId } = await dshApi.newSession();
+      const { sessionId } = await dshApi.newSession(
+        project ? { kind: project.kind, id: project.id } : undefined,
+      );
       navigate(`#/agent/session/${encodeURIComponent(sessionId)}`);
     } catch (err) {
       if (alive.current) setActionError(asApiError(err).message);
     } finally {
-      if (alive.current) setCreating(false);
+      if (alive.current) setCreating(null);
     }
   };
 
-  const groups = useMemo(() => groupTasks(feed.tasks ?? []), [feed.tasks]);
+  const groups = useMemo(
+    () => groupTasks(feed.tasks ?? [], projects ?? []),
+    [feed.tasks, projects],
+  );
 
   const runtimeLabel =
     status?.phase === "ready"
@@ -227,15 +292,6 @@ export function AgentPage() {
     <div>
       <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-canvas px-4 py-2">
         <h1 className="min-w-0 flex-1 text-ui-base text-slate-900">{t("mobile.tab.agent")}</h1>
-        <button
-          type="button"
-          disabled={creating}
-          onClick={() => void createSession()}
-          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
-        >
-          {creating ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}
-          {creating ? t("mobile.agent.creating") : t("mobile.agent.newSession")}
-        </button>
       </header>
 
       <section className="border-b border-border px-4 py-3">
@@ -315,27 +371,66 @@ export function AgentPage() {
         </p>
       ) : null}
 
-      {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
-
-      {feed.tasks && feed.tasks.length === 0 && !feed.tasksError ? (
+      {projectsError && projects === null ? (
         <p
-          className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title={t("mobile.agent.emptyHint")}
+          className="px-4 py-2 text-ui-xs text-rose-600"
+          title={t("mobile.agent.projectsLoadFailed")}
         >
-          {t("mobile.agent.empty")}
+          {projectsError}
         </p>
       ) : null}
 
-      {groups.map((group) => (
-        <section key={group.key || "__none__"}>
-          <h2 className="border-b border-border bg-overlay-soft px-4 py-1.5 text-ui-2xs text-slate-500">
-            {group.project?.name ?? t("mobile.agent.noProject")}
-          </h2>
-          {group.tasks.map((task) => (
-            <TaskRow key={task.id} task={task} />
-          ))}
-        </section>
-      ))}
+      {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
+
+      {groups.map((group) => {
+        const name = group.project?.name ?? t("mobile.agent.noProject");
+        return (
+          <section key={group.key || "__none__"}>
+            <div className="flex items-center gap-2 border-b border-border bg-overlay-soft px-4 py-1">
+              <h2 className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500" title={name}>
+                {name}
+              </h2>
+              {group.tasks.length > 0 ? (
+                <span className="shrink-0 text-ui-2xs text-slate-400">
+                  {group.tasks.length}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                aria-label={t("mobile.agent.newSessionInProject", { project: name })}
+                title={
+                  creating === group.key
+                    ? t("mobile.agent.creating")
+                    : t("mobile.agent.newSessionInProject", { project: name })
+                }
+                disabled={creating !== null}
+                onClick={() => void createSession(group.project)}
+                className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
+              >
+                {creating === group.key ? (
+                  <LoaderCircle size={14} className="animate-spin" />
+                ) : (
+                  <Plus size={14} />
+                )}
+              </button>
+            </div>
+            {group.tasks.map((task) => (
+              <TaskRow key={task.id} task={task} />
+            ))}
+            {group.project === null &&
+            group.tasks.length === 0 &&
+            feed.tasks !== null &&
+            !feed.tasksError ? (
+              <p
+                className="px-4 py-10 text-center text-ui-base text-slate-400"
+                title={t("mobile.agent.emptyHint")}
+              >
+                {t("mobile.agent.empty")}
+              </p>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }

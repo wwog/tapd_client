@@ -1,42 +1,47 @@
-//! Task workflow over dsh sessions (P4).
+//! Task workflow over dsh sessions (docs/AGENT_TASK_FLOW.md).
 //!
-//! Contract: docs/DSH.md §9. `command` is the feature surface both windows and
-//! the paired phone use; the unified task list, worktree, review and merge all
-//! live behind it.
+//! `command` is the feature surface both windows and the paired phone use; the
+//! unified task list, the worktree, the review gate and the host-driven finish
+//! all live behind it.
 //!
 //! One list holds every task. `workflow` is the only state machine:
 //!
 //! ```text
-//! running ──turn end, no changes──────────────▶ done
-//!    │  └──turn end, changes──▶ awaiting_review
-//!    │                                │ approve (worktree off) ──▶ done
-//!    ├──approve (worktree on)─────────┴──▶ awaiting_merge ──merge──▶ done
-//!    └──cancel / merge failure / inspection failure
-//!        (cancel)  ──▶ canceled
-//!        (failure) ──▶ failed
+//! queued ──slot──▶ running ──task_submit / turn end, no changes──▶ done
+//!                    │  └──task_submit / turn end, changes──▶ awaiting_review
+//!                    │                                        │ approve
+//!                    │                                        ▼
+//!                    │                     finalizing (commit → merge → cleanup
+//!                    │                                     → writeback) ──▶ done
+//!                    └──cancel / failure──▶ canceled / failed
 //! ```
 //!
 //! Terminal states never move. Every write is a compare-and-swap on the stored
 //! `workflow`, so a late `turn/end`, a cancel pressed during a merge, or two
 //! buttons at once cannot rewrite a newer state.
 //!
+//! All bug / local tasks run in an isolated worktree. Enqueue prepares the
+//! export, the worktree and the prompt, then parks the task in `Queued`; the
+//! scheduler starts it when a slot frees up. Free conversations never join the
+//! queue.
+//!
 //! Persistence is [`super::task_store`] (the `dsh_tasks` table). There is no
 //! in-memory registry: the DB row is the one source, which makes a restart
 //! behave exactly like the live path.
 //!
 //! The bridge owns the turn signal: [`observe`] is called from its publish path
-//! for every committed entry.
+//! for every committed entry, and the plugin's `host` frames reach [`host_rpc`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use dsh_host::transcript::{DshEntry, DshSession, SessionStatus, TurnState};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use tapd_i18n::{tr, tr_args};
 use tapd_local::WorkItemStatus;
-use tapd_workspace::{ChangeSummary, TaskWorkspace};
+use tapd_workspace::{ChangeKind, ChangeSummary, TaskWorkspace};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::bridge::BridgeState;
@@ -47,8 +52,8 @@ use crate::state::SharedState;
 
 // The three collaborators live next to this file but are private to the task
 // module: nothing outside `dsh::tasks` may write a task row, run task git
-// plumbing or write TAPD back. `#[path]` expresses that privacy instead of
-// widening the crate surface.
+// plumbing or build write-back text. `#[path]` expresses that privacy instead
+// of widening the crate surface.
 #[path = "task_store.rs"]
 mod task_store;
 #[path = "worktree.rs"]
@@ -60,27 +65,29 @@ mod writeback;
 pub const EVENT_TASKS: &str = "dsh://tasks";
 
 // ---------------------------------------------------------------------------
-// Model (docs/DSH.md §9.1)
+// Model (docs/AGENT_TASK_FLOW.md §12.1)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
-    /// A free conversation with no project behind it. No P4 flow creates one
-    /// yet; the variant is part of the §9.1 contract.
-    #[allow(dead_code)]
+    /// A free conversation: no workflow, no project task, no review.
     Chat,
     Bug,
     LocalItem,
 }
 
 impl TaskKind {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Chat => "chat",
             Self::Bug => "bug",
             Self::LocalItem => "local_item",
         }
+    }
+
+    fn is_task(self) -> bool {
+        self != Self::Chat
     }
 }
 
@@ -91,32 +98,76 @@ pub enum ProjectKind {
     Local,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Workflow {
+    /// Waiting for an execution slot.
+    Queued,
+    /// The model is changing code.
     Running,
+    /// Changes exist and the user has to approve them.
     AwaitingReview,
-    AwaitingMerge,
+    /// Commit → merge → cleanup → TAPD write-back.
+    Finalizing,
     Done,
     Failed,
     Canceled,
 }
 
 impl Workflow {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
+            Self::Queued => "queued",
             Self::Running => "running",
             Self::AwaitingReview => "awaiting_review",
-            Self::AwaitingMerge => "awaiting_merge",
+            Self::Finalizing => "finalizing",
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Canceled => "canceled",
         }
     }
 
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "queued" => Some(Self::Queued),
+            "running" => Some(Self::Running),
+            "awaiting_review" => Some(Self::AwaitingReview),
+            "finalizing" => Some(Self::Finalizing),
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
+            "canceled" => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+
     fn is_terminal(self) -> bool {
         matches!(self, Self::Done | Self::Failed | Self::Canceled)
     }
+}
+
+impl Serialize for Workflow {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Workflow {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown task workflow: {raw}"))
+        })
+    }
+}
+
+/// One step of the finishing chain. `step` on [`TaskFinalize`] is where a
+/// failure stopped; retrying starts from exactly there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizeStep {
+    Commit,
+    Merge,
+    Cleanup,
+    Writeback,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,23 +186,30 @@ pub struct TaskChanges {
     pub deletions: usize,
 }
 
-/// Reserved for a model-written review. Nothing produces it yet: the built-in
-/// runtime has no summarizer, and duplicating `changes` here would be a second
-/// source for the same fact.
-#[allow(dead_code)] // contract field; no producer until a review step exists
+/// What the model wrote with `task_submit`; the review screen renders it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReview {
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risks: Option<String>,
+    #[serde(default)]
     pub files: Vec<String>,
-    pub risk: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskMerge {
-    pub error: String,
-    pub instructions: String,
+/// Host-side finishing progress. Replaces the old `merge` object.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TaskFinalize {
+    pub step: Option<FinalizeStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -172,8 +230,10 @@ pub struct DshTask {
     pub updated_at: String,
     pub message_count: u32,
     pub changes: Option<TaskChanges>,
+    #[serde(default)]
     pub review: Option<TaskReview>,
-    pub merge: Option<TaskMerge>,
+    #[serde(default)]
+    pub finalize: Option<TaskFinalize>,
 }
 
 /// Internal facts the contract does not expose. They travel in the same JSON
@@ -184,8 +244,8 @@ pub(super) struct TaskMeta {
     pub workspace_id: Option<String>,
     /// Commit the task started from; the diff and review baseline.
     pub baseline: Option<String>,
-    /// Whether the task ran in an isolated worktree (it still owns a branch
-    /// after the directory is removed).
+    /// Whether the session works in an isolated worktree (chats toggle this;
+    /// workflow tasks always set it).
     pub worktree: bool,
     pub local_project_id: Option<String>,
     pub local_item_id: Option<String>,
@@ -194,6 +254,18 @@ pub(super) struct TaskMeta {
     pub local_previous_status: Option<String>,
     /// Package directory holding `bug.json` / `quest.json`.
     pub export_dir: Option<String>,
+    /// Prompt waiting for an execution slot. Cleared once the session starts.
+    pub pending_prompt: Option<String>,
+    /// Commit the finishing chain created in the worktree.
+    pub commit: Option<String>,
+    /// The branch was already merged; a retry does not merge it twice.
+    pub merged: bool,
+    /// The write-back comment was posted, so `tapd_add_comment` is idempotent.
+    pub comment_posted: bool,
+    /// The status transition already ran.
+    pub status_updated: bool,
+    pub status_from: Option<String>,
+    pub status_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -218,20 +290,34 @@ impl TaskRecord {
         }
     }
 
-    /// The directory the session and the review operate on.
+    /// The directory the session and the review operate on. A finished task
+    /// whose worktree was removed falls back to the repository.
     fn work_dir(&self) -> String {
-        if self.meta.worktree {
-            self.task.worktree_path.clone().unwrap_or_default()
-        } else {
-            self.task.repo_path.clone()
+        match self
+            .task
+            .worktree_path
+            .clone()
+            .filter(|path| !path.trim().is_empty())
+        {
+            Some(path) => path,
+            None => self.task.repo_path.clone(),
         }
     }
 }
 
 fn workspace_for(record: &TaskRecord) -> TaskWorkspace {
+    // After the finishing chain removes a clean worktree, the branch is the
+    // precise target: the repository's live tree may since have gained commits
+    // that have nothing to do with this task.
+    let cleaned = record.meta.worktree && record.task.worktree_path.is_none();
+    let work_dir = if cleaned {
+        String::new()
+    } else {
+        record.work_dir()
+    };
     TaskWorkspace::new(
         record.task.repo_path.clone(),
-        record.work_dir(),
+        work_dir,
         record.task.branch.clone(),
         record.meta.baseline.clone(),
         Vec::new(),
@@ -257,12 +343,10 @@ fn transition(record: &mut TaskRecord, next: Workflow) -> Result<Workflow, Strin
 fn can_move(from: Workflow, to: Workflow) -> bool {
     use Workflow::*;
     match from {
-        Running => matches!(
-            to,
-            AwaitingReview | AwaitingMerge | Done | Canceled | Failed
-        ),
-        AwaitingReview => matches!(to, AwaitingMerge | Done | Canceled),
-        AwaitingMerge => matches!(to, Done | Canceled),
+        Queued => matches!(to, Running | Canceled | Failed),
+        Running => matches!(to, AwaitingReview | Done | Canceled | Failed),
+        AwaitingReview => matches!(to, Finalizing | Canceled),
+        Finalizing => matches!(to, Done),
         Done | Failed | Canceled => false,
     }
 }
@@ -272,8 +356,15 @@ fn can_move(from: Workflow, to: Workflow) -> bool {
 /// This is deliberately *not* an edge in [`can_move`]: a log replay or a late
 /// event must never reopen a task. Only a path that accepted fresh input calls
 /// it, so "已完成" stops being true exactly when the user asks for more work.
+///
+/// `AwaitingReview` is included per the contract: sending another message is
+/// the "继续修改" path, and the pending review is cleared with it.
 fn reopen_target(workflow: Workflow) -> Option<Workflow> {
-    matches!(workflow, Workflow::Done | Workflow::Failed).then_some(Workflow::Running)
+    matches!(
+        workflow,
+        Workflow::Done | Workflow::Failed | Workflow::AwaitingReview
+    )
+    .then_some(Workflow::Running)
 }
 
 /// Whether a turn end means the work itself did not finish. Reviewing the
@@ -300,6 +391,106 @@ fn review_outcome(summary: &ChangeSummary) -> (Workflow, Option<TaskChanges>) {
     }
 }
 
+fn change_counts(summary: &ChangeSummary) -> TaskChanges {
+    TaskChanges {
+        files: summary.file_count,
+        additions: summary.additions,
+        deletions: summary.deletions,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase (docs/AGENT_TASK_FLOW.md §4.1)
+// ---------------------------------------------------------------------------
+
+/// The one phase a root session can be in. Sent to the plugin as a string so
+/// the plugin map stays a plain data structure.
+fn phase_of(record: &TaskRecord) -> &'static str {
+    if record.task.kind == TaskKind::Chat {
+        return "chat";
+    }
+    match record.task.workflow {
+        Workflow::Running => "execute",
+        Workflow::AwaitingReview => "review",
+        Workflow::Finalizing => {
+            let step = record.task.finalize.as_ref().and_then(|finalize| finalize.step);
+            if step == Some(FinalizeStep::Writeback) {
+                "writeback"
+            } else {
+                "none"
+            }
+        }
+        _ => "none",
+    }
+}
+
+fn phase_row(record: &TaskRecord) -> Value {
+    json!({
+        "sessionId": record.task.id,
+        "phase": phase_of(record),
+        "kind": record.task.kind.as_str(),
+    })
+}
+
+/// Pushes the full phase map. Sent after `hello` (and on every list change) so
+/// a reconnected plugin cannot keep a stale map.
+pub async fn publish_phases(app: &AppHandle) {
+    let Ok(state) = shared(app) else {
+        return;
+    };
+    let cache = state.cache.clone();
+    let Ok(records) = blocking(move || task_store::load_all(&cache)).await else {
+        return;
+    };
+    let phases: Vec<Value> = records.iter().map(phase_row).collect();
+    if let Ok(bridge) = bridge(app) {
+        if let Err(error) = bridge.send_task_phases(Value::Array(phases)) {
+            tracing::debug!(%error, "task phases were not pushed");
+        }
+    }
+}
+
+/// One session's phase, queued ahead of a host reply so the plugin's `when`
+/// predicates are already correct when the model continues.
+fn push_phase(app: &AppHandle, record: &TaskRecord) {
+    if let Ok(bridge) = bridge(app) {
+        let _ = bridge.send_task_phase(&record.task.id, phase_of(record), record.task.kind.as_str());
+    }
+}
+
+/// Awaits the plugin's ack for the session's current phase.
+///
+/// The phase frame and the SDK prompt travel on different channels, so a
+/// fire-and-forget update can lose the race against the first model step: the
+/// model would then see the previous phase's tool set and prompt section (or
+/// none at all). Every path that is about to send a real turn calls this
+/// first. A missing task row (a draft chat) has no phase; the plugin's map is
+/// already keyed by session id, so the call is cheap and idempotent.
+pub async fn sync_phase(app: &AppHandle, session_id: &str) -> Result<(), String> {
+    let Some(record) = load_record(app, session_id).await? else {
+        return Ok(());
+    };
+    // Chats have no task tools or prompt section, so their phase never has to
+    // be awaited before the first turn (a cold plugin socket would only add
+    // latency). A snapshot still publishes `chat` for the plugin's mirror.
+    if record.task.kind == TaskKind::Chat {
+        return Ok(());
+    }
+    let Ok(bridge) = bridge(app) else {
+        return Ok(());
+    };
+    // Best effort: a cold plugin socket must not block the user's turn. The
+    // next snapshot corrects the map, and the server-side phase checks still
+    // protect every TAPD write. The write-back path awaits its ack separately.
+    if let Err(error) = bridge
+        .request_task_phase(session_id, phase_of(&record), record.task.kind.as_str())
+        .await
+    {
+        tracing::debug!(%error, session = session_id, "phase ack was not received");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Command surface
 // ---------------------------------------------------------------------------
@@ -311,11 +502,14 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_task_enqueue_bug" => enqueue_bug(app, parse(payload, name)?).await,
         "dsh_task_enqueue_local" => enqueue_local(app, parse(payload, name)?).await,
         "dsh_task_approve" => approve(app, parse(payload, name)?).await,
-        "dsh_task_merge" => merge(app, parse(payload, name)?).await,
+        "dsh_task_retry_finalize" => retry_finalize(app, parse(payload, name)?).await,
         "dsh_task_cancel" => cancel(app, parse(payload, name)?).await,
+        "dsh_task_changes" => changes(app, parse(payload, name)?).await,
         "dsh_task_diff" => diff(app, parse(payload, name)?).await,
         "dsh_task_resume" => resume(app, parse(payload, name)?).await,
         "dsh_task_delete" => delete_session(app, parse(payload, name)?).await,
+        // `dsh_task_merge` is gone: the finishing chain owns the merge and the
+        // write-back now. Old callers get the localized invalid-state error.
         other => Err(format!("unknown dsh task command: {other}")),
     }
 }
@@ -362,6 +556,14 @@ struct DiffRequest {
     session_id: String,
     #[serde(default)]
     file: Option<String>,
+}
+
+/// One project a free conversation can be created under.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectRef {
+    pub kind: ProjectKind,
+    pub id: String,
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(payload: Value, name: &str) -> Result<T, String> {
@@ -454,145 +656,2009 @@ fn first_line(text: &str) -> Option<String> {
     Some(line.chars().take(60).collect())
 }
 
+/// The persisted kind of a session, when it has a task row at all. Draft ids
+/// the UI knows but the store does not return `None`.
+pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
+    let record = load_record(app, session_id).await.ok()??;
+    Some(record.task.kind)
+}
+
+/// Schedules the review of a finished turn. Idempotent: a task that already
+/// left `running` only has its change counts refreshed.
+pub fn on_turn_end(
+    app: &AppHandle,
+    session_id: &str,
+    at: &str,
+    reason: Option<&str>,
+    error: Option<&str>,
+) {
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    let at = at.to_string();
+    let reason = reason.map(str::to_string);
+    let error = error.map(str::to_string);
+    tauri::async_runtime::spawn(async move {
+        if let Err(problem) =
+            finish_turn(&app, &session_id, &at, reason.as_deref(), error.as_deref()).await
+        {
+            tracing::warn!(%problem, session = session_id, "failed to settle a finished dsh turn");
+        }
+    });
+}
+
+async fn finish_turn(
+    app: &AppHandle,
+    session_id: &str,
+    at: &str,
+    reason: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let Some(record) = load_record(app, session_id).await? else {
+        return Ok(());
+    };
+    match record.task.workflow {
+        Workflow::Running => {}
+        // Already reviewed: a second turn end only refreshes the counts.
+        Workflow::AwaitingReview => {
+            refresh_review(app, record, session_id, at).await?;
+            return Ok(());
+        }
+        // The write-back turn ended: finish only when both writes happened.
+        Workflow::Finalizing => {
+            settle_writeback(app, record, at).await?;
+            return Ok(());
+        }
+        _ => return Ok(()),
+    }
+
+    // A chat has no repository, so there is nothing to review; its workflow
+    // stays `running`. The row still records activity: the list sorts and
+    // displays chats by it long after the live session is gone.
+    if record.task.kind == TaskKind::Chat {
+        let mut record = record;
+        record.task.message_count = live_sessions(app)
+            .get(session_id)
+            .map(|session| session.message_count as u32)
+            .unwrap_or(record.task.message_count);
+        record.touch_at(at);
+        let expected = record.task.workflow;
+        if save_record(app, record, expected).await? {
+            emit(app);
+        }
+        return Ok(());
+    }
+
+    // A user stop is settled by the cancel command that owns `canceled` here;
+    // reviewing an aborted turn would race that transition.
+    if reason == Some("aborted") {
+        return Ok(());
+    }
+
+    let workspace = workspace_for(&record);
+    let summary = match blocking(move || {
+        workspace
+            .summary()
+            .map_err(|error| error.message().to_string())
+    })
+    .await
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            // The task cannot be reviewed, so it must not claim to be running
+            // forever. `failed` is terminal; the turn row still carries the
+            // model's own failure reason.
+            fail_task(app, session_id, &error).await;
+            return Err(error);
+        }
+    };
+
+    // A failed turn on a clean tree did no work: reviewing it would report
+    // "done" precisely because the model never ran. A failed turn that *did*
+    // change files still needs the review it earned.
+    if failed_turn(reason) && summary.file_count == 0 {
+        fail_task(app, session_id, error.unwrap_or("turn failed")).await;
+        return Ok(());
+    }
+
+    let Some(mut record) = load_record(app, session_id).await? else {
+        return Ok(());
+    };
+    if record.task.workflow != Workflow::Running {
+        // A cancel (or an earlier turn end) won while the diff was computed.
+        return Ok(());
+    }
+    let (next, changes) = review_outcome(&summary);
+    let expected = transition(&mut record, next)?;
+    record.task.changes = changes;
+    record.task.finalize = None;
+    record.task.message_count = live_sessions(app)
+        .get(session_id)
+        .map(|session| session.message_count as u32)
+        .unwrap_or(record.task.message_count);
+    record.touch_at(at);
+
+    if !save_record(app, record.clone(), expected).await? {
+        return Ok(());
+    }
+    complete_local(app, &record).await;
+    push_phase(app, &record);
+    emit(app);
+    // A turn leaving `running` frees its execution slot.
+    reschedule(app);
+    Ok(())
+}
+
+/// Refreshes the change counts of a task already waiting for review. The
+/// workflow is not touched: the user is still looking at the same review.
+async fn refresh_review(
+    app: &AppHandle,
+    record: TaskRecord,
+    session_id: &str,
+    at: &str,
+) -> Result<(), String> {
+    let workspace = workspace_for(&record);
+    let Ok(summary) = blocking(move || {
+        workspace
+            .summary()
+            .map_err(|error| error.message().to_string())
+    })
+    .await
+    else {
+        return Ok(());
+    };
+    let mut record = record;
+    if summary.file_count > 0 {
+        record.task.changes = Some(change_counts(&summary));
+    }
+    record.task.message_count = live_sessions(app)
+        .get(session_id)
+        .map(|session| session.message_count as u32)
+        .unwrap_or(record.task.message_count);
+    record.touch_at(at);
+    let expected = record.task.workflow;
+    if save_record(app, record, expected).await? {
+        emit(app);
+    }
+    Ok(())
+}
+
+/// The write-back turn ended. `task_complete` occasionally loses the race with
+/// the turn end (the model calls it as its last step), so both are accepted.
+async fn settle_writeback(app: &AppHandle, record: TaskRecord, at: &str) -> Result<(), String> {
+    let step = record
+        .task
+        .finalize
+        .as_ref()
+        .and_then(|finalize| finalize.step);
+    if step != Some(FinalizeStep::Writeback) {
+        return Ok(());
+    }
+    let mut record = record;
+    if record.meta.comment_posted && record.meta.status_updated {
+        let expected = transition(&mut record, Workflow::Done)?;
+        record.task.finalize = None;
+        record.touch_at(at);
+        if save_record(app, record.clone(), expected).await? {
+            complete_local(app, &record).await;
+            emit(app);
+            if let Ok(bridge) = bridge(app) {
+                let _ = bridge.send_task_phase(&record.task.id, "none", record.task.kind.as_str());
+            }
+        }
+        return Ok(());
+    }
+    {
+        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
+        finalize.step = Some(FinalizeStep::Writeback);
+        finalize.error = Some(tr("dsh.task.finalize.incomplete").to_string());
+        finalize.instructions = Some(tr("dsh.task.finalize.instructions.writeback").to_string());
+    }
+    record.touch_at(at);
+    let expected = record.task.workflow;
+    if save_record(app, record, expected).await? {
+        emit(app);
+    }
+    Ok(())
+}
+
+async fn fail_task(app: &AppHandle, session_id: &str, reason: &str) {
+    tracing::warn!(session = session_id, %reason, "dsh task failed");
+    let Ok(Some(mut record)) = load_record(app, session_id).await else {
+        return;
+    };
+    let Ok(expected) = transition(&mut record, Workflow::Failed) else {
+        return;
+    };
+    record.touch();
+    if let Ok(true) = save_record(app, record, expected).await {
+        emit(app);
+        reschedule(app);
+    }
+}
+
+/// Reopens a finished or failed task for the turn about to start.
+///
+/// Called only from paths that just accepted new input (a prompt, a retry).
+/// Log replay and late events never reach it, so a restored session cannot
+/// resurrect a task it already settled.
+pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), String> {
+    let Some(mut record) = load_record(app, session_id).await? else {
+        return Ok(());
+    };
+    let Some(next) = reopen_target(record.task.workflow) else {
+        return Ok(());
+    };
+    let expected = record.task.workflow;
+    record.task.workflow = next;
+    // A fresh turn reviews afresh: nothing pending from the previous round.
+    record.task.review = None;
+    record.task.changes = None;
+    record.task.finalize = None;
+    record.meta.comment_posted = false;
+    record.meta.status_updated = false;
+    record.meta.status_from = None;
+    record.meta.status_to = None;
+    let saved = save_record(app, record, expected).await?;
+    if saved {
+        emit(app);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Enqueue: bug
+// ---------------------------------------------------------------------------
+
+async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Value, String> {
+    let state = shared(app)?;
+    let config = agent_settings::config_for(app);
+    let project = config
+        .projects
+        .get(request.workspace_id.trim())
+        .cloned()
+        .filter(|project| !project.repo_path.trim().is_empty())
+        .ok_or_else(|| tr("dsh.task.repo.missing").to_string())?;
+
+    let repo_hint = project.repo_path.clone();
+    let repo_path = blocking(move || worktree::repo_root(&repo_hint))
+        .await
+        .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
+
+    let detail =
+        crate::commands::bugs::fetch_bug_detail(app, &request.workspace_id, &request.bug_id)
+            .await?;
+    let export =
+        crate::export::export_detail(app, &state.paths, &request.workspace_id, None, &detail)
+            .await
+            .map_err(|error| tr_args("dsh.task.export.failed", &[&error]))?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    // Every workflow task runs in its own worktree; there is no other branch.
+    let (work_dir, branch) = prepare_worktree(
+        app,
+        &repo_path,
+        &session_id,
+        "tapd",
+        &request.bug_id,
+    )
+    .await?;
+
+    let title = text_or(&detail.summary.title, &request.bug_id);
+    let severity = labelled(&detail.summary.severity_label, &detail.summary.severity);
+    let priority = labelled(&detail.summary.priority_label, &detail.summary.priority);
+    let workspace_name = text_or(&detail.workspace_name, &request.workspace_id);
+    let created_at = now();
+    let task = DshTask {
+        id: session_id.clone(),
+        kind: TaskKind::Bug,
+        project: Some(TaskProject {
+            id: request.workspace_id.clone(),
+            name: workspace_name.clone(),
+            kind: ProjectKind::Tapd,
+        }),
+        title: title.clone(),
+        bug_id: Some(request.bug_id.clone()),
+        workflow: Workflow::Queued,
+        status: SessionStatus::Idle,
+        repo_path: repo_path.clone(),
+        worktree_path: Some(work_dir.path.clone()),
+        branch: Some(branch),
+        json_path: export.bug_json.clone(),
+        created_at: created_at.clone(),
+        updated_at: created_at,
+        message_count: 0,
+        changes: None,
+        review: None,
+        finalize: None,
+    };
+
+    let vars = PromptVars {
+        task_id: session_id.clone(),
+        title,
+        json_path: export.bug_json,
+        repo_path: work_dir.path.clone(),
+        workspace_name,
+        bug_id: request.bug_id,
+        severity,
+        priority,
+        user_prompt: request.extra_prompt.unwrap_or_default(),
+        attachments: request.attachments,
+        coworker: coworker_section(app, &config),
+    };
+    let prompt = build_prompt(&config, vars, &project.rule, false);
+    let record = TaskRecord {
+        task,
+        meta: TaskMeta {
+            workspace_id: Some(request.workspace_id),
+            baseline: Some(work_dir.baseline),
+            worktree: true,
+            export_dir: Some(export.dir),
+            pending_prompt: Some(prompt),
+            ..TaskMeta::default()
+        },
+    };
+    launch(app, record, None).await
+}
+
+// ---------------------------------------------------------------------------
+// Enqueue: local work item
+// ---------------------------------------------------------------------------
+
+async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<Value, String> {
+    let state = shared(app)?;
+    let store = state.local.clone();
+    let item_id = request.item_id.clone();
+    let (item, project) = blocking(move || store.item_with_project(&item_id)).await?;
+    if item.project_id != request.project_id.trim() {
+        return Err(tr("local.item.notfound").to_string());
+    }
+
+    let repo_hint = project.repo_path.clone();
+    let repo_path = blocking(move || worktree::repo_root(&repo_hint))
+        .await
+        .map_err(|_| tr("dsh.task.local.repo").to_string())?;
+
+    let config = agent_settings::config_for(app);
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let (work_dir, branch) =
+        prepare_worktree(app, &repo_path, &session_id, "local", &item.id).await?;
+
+    let document = crate::export::local::LocalExportDocument {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        description: item.description.clone(),
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        repo_path: repo_path.clone(),
+        project_rule: project.rule.clone(),
+        created_at: item.created_at.clone(),
+    };
+    let paths = state.paths.clone();
+    let json_path = blocking(move || {
+        crate::export::local::run_local_export(&paths, &document)
+            .map(|path| path.to_string_lossy().to_string())
+    })
+    .await?;
+
+    let created_at = now();
+    let task = DshTask {
+        id: session_id.clone(),
+        kind: TaskKind::LocalItem,
+        project: Some(TaskProject {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            kind: ProjectKind::Local,
+        }),
+        title: item.title.clone(),
+        bug_id: None,
+        workflow: Workflow::Queued,
+        status: SessionStatus::Idle,
+        repo_path: repo_path.clone(),
+        worktree_path: Some(work_dir.path.clone()),
+        branch: Some(branch),
+        json_path: json_path.clone(),
+        created_at: created_at.clone(),
+        updated_at: created_at,
+        message_count: 0,
+        changes: None,
+        review: None,
+        finalize: None,
+    };
+
+    let vars = PromptVars {
+        task_id: session_id,
+        title: item.title,
+        json_path: json_path.clone(),
+        repo_path: work_dir.path.clone(),
+        workspace_name: project.name.clone(),
+        bug_id: String::new(),
+        severity: String::new(),
+        priority: String::new(),
+        user_prompt: request.extra_prompt.unwrap_or_default(),
+        attachments: request.attachments,
+        coworker: coworker_section(app, &config),
+    };
+    let prompt = build_prompt(&config, vars, &project.rule, true);
+    let record = TaskRecord {
+        task,
+        meta: TaskMeta {
+            baseline: Some(work_dir.baseline),
+            worktree: true,
+            local_project_id: Some(project.id.clone()),
+            local_item_id: Some(item.id.clone()),
+            local_previous_status: Some(item.status.as_str().to_string()),
+            export_dir: Some(
+                std::path::Path::new(&json_path)
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ),
+            pending_prompt: Some(prompt),
+            ..TaskMeta::default()
+        },
+    };
+    let link = LocalLink {
+        item_id: item.id,
+        previous_status: item.status,
+    };
+    launch(app, record, Some(link)).await
+}
+
+/// Creates the isolated worktree a task runs in and names its branch.
+async fn prepare_worktree(
+    app: &AppHandle,
+    repo_path: &str,
+    session_id: &str,
+    prefix: &str,
+    key: &str,
+) -> Result<(worktree::CreatedWorktree, String), String> {
+    let state = shared(app)?;
+    let target = state.paths.worktrees_dir.join(session_id);
+    let repo = repo_path.to_string();
+    let branch = worktree::branch_name(prefix, key, session_id);
+    let branch_for_create = branch.clone();
+    let created = blocking(move || worktree::create(&repo, &target, &branch_for_create))
+        .await
+        .map_err(|error| tr_args("dsh.task.worktree.failed", &[&error]))?;
+    Ok((created, branch))
+}
+
+/// Item facts for rolling a local link back when the launch fails.
+struct LocalLink {
+    item_id: String,
+    previous_status: WorkItemStatus,
+}
+
+/// Writes the row, links the local item, then asks the scheduler to run it.
+/// The session itself starts only when a slot is available; any failure removes
+/// the row and the worktree, because the list must never show a half task.
+async fn launch(
+    app: &AppHandle,
+    record: TaskRecord,
+    local: Option<LocalLink>,
+) -> Result<Value, String> {
+    if let Err(error) = insert_task(app, &record).await {
+        remove_worktree_dir(&record).await;
+        return Err(error);
+    }
+
+    if let Some(link) = local.as_ref() {
+        let Ok(state) = shared(app) else {
+            rollback(app, &record, local.as_ref()).await;
+            return Err(tr("dsh.state.unavailable").to_string());
+        };
+        let store = state.local.clone();
+        let item_id = link.item_id.clone();
+        let task_id = record.task.id.clone();
+        let at = now();
+        if let Err(error) = blocking(move || store.attach_task(&item_id, &task_id, &at)).await {
+            rollback(app, &record, local.as_ref()).await;
+            return Err(error);
+        }
+    }
+
+    emit(app);
+    schedule(app).await?;
+
+    let task_id = record.task.id.clone();
+    let Some(mut fresh) = load_record(app, &task_id).await? else {
+        return Err(not_found(&task_id));
+    };
+    overlay(&mut fresh.task, &live_sessions(app));
+    Ok(json!({ "task": fresh.task }))
+}
+
+/// Best-effort cleanup for a task that never reached the store.
+async fn rollback(app: &AppHandle, record: &TaskRecord, local: Option<&LocalLink>) {
+    let Ok(state) = shared(app) else {
+        return;
+    };
+    let cache = state.cache.clone();
+    let id = record.task.id.clone();
+    if let Err(error) = blocking(move || task_store::delete(&cache, &id)).await {
+        tracing::error!(%error, "failed to remove a rolled-back dsh task row");
+    }
+    remove_worktree_dir(record).await;
+    if let Some(link) = local {
+        let store = state.local.clone();
+        let item_id = link.item_id.clone();
+        let task_id = record.task.id.clone();
+        let at = now();
+        // `attach_task` also moved the item to in_progress; a failed launch must
+        // put it back exactly where the user had it. `forget_task` matches on
+        // the stored task id, not the item id.
+        let previous = link.previous_status.as_str().to_string();
+        if let Err(error) = blocking(move || {
+            store.forget_task(&task_id, &at)?;
+            store
+                .update_item(&item_id, None, None, Some(previous.as_str()))
+                .map(|_| ())
+        })
+        .await
+        {
+            tracing::warn!(%error, "failed to roll back a local item link");
+        }
+    }
+}
+
+async fn remove_worktree_dir(record: &TaskRecord) {
+    let Some(path) = record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return;
+    };
+    let repo = record.task.repo_path.clone();
+    if let Err(error) = blocking(move || worktree::remove(&repo, &path)).await {
+        tracing::warn!(%error, "failed to remove the worktree");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Queue scheduling (docs/AGENT_TASK_FLOW.md §9)
+// ---------------------------------------------------------------------------
+
+static SCHEDULE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn schedule_lock() -> &'static tokio::sync::Mutex<()> {
+    SCHEDULE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Number of workflow tasks that hold a slot: `running` *and* live. Rows
+/// persisted as running without a live session (an app restart) do not count;
+/// they wait for the user to open them.
+fn active_slots(records: &[TaskRecord], live: &HashSet<String>) -> usize {
+    records
+        .iter()
+        .filter(|record| {
+            record.task.kind.is_task()
+                && record.task.workflow == Workflow::Running
+                && live.contains(&record.task.id)
+        })
+        .count()
+}
+
+fn next_queued(records: &[TaskRecord]) -> Option<TaskRecord> {
+    records
+        .iter()
+        .filter(|record| record.task.kind.is_task() && record.task.workflow == Workflow::Queued)
+        .min_by(|left, right| {
+            left.task
+                .created_at
+                .cmp(&right.task.created_at)
+                .then_with(|| left.task.id.cmp(&right.task.id))
+        })
+        .cloned()
+}
+
+/// Starts queued tasks while a slot is free, oldest first. Safe to call from
+/// any path: the lock serialises schedulers and every start claims its row with
+/// a compare-and-swap.
+pub async fn schedule(app: &AppHandle) -> Result<(), String> {
+    let _guard = schedule_lock().lock().await;
+    let units = agent_settings::config_for(app).execution_units.clamp(1, 8) as usize;
+    let mut started_here = 0usize;
+    for _ in 0..32 {
+        let state = shared(app)?;
+        let cache = state.cache.clone();
+        let records = blocking(move || task_store::load_all(&cache)).await?;
+        let live: HashSet<String> = live_sessions(app).into_keys().collect();
+        if active_slots(&records, &live) + started_here >= units {
+            return Ok(());
+        }
+        let Some(record) = next_queued(&records) else {
+            return Ok(());
+        };
+        if start_queued(app, record).await {
+            started_here += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Starts one queued task. The row is claimed (`queued → running`) before the
+/// session exists, so a second scheduler cannot start it twice; a failed start
+/// becomes a terminal `failed` instead of a stuck queue entry.
+async fn start_queued(app: &AppHandle, record: TaskRecord) -> bool {
+    let id = record.task.id.clone();
+    let prompt = record.meta.pending_prompt.clone().unwrap_or_default();
+    let mut record = record;
+    let Ok(expected) = transition(&mut record, Workflow::Running) else {
+        return false;
+    };
+    record.meta.pending_prompt = None;
+    record.touch();
+    match save_record(app, record.clone(), expected).await {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(%error, session = id, "failed to claim a queued task");
+            return false;
+        }
+    }
+    push_phase(app, &record);
+    emit(app);
+
+    if prompt.trim().is_empty() {
+        fail_task(app, &id, tr("dsh.task.state.invalid")).await;
+        return false;
+    }
+    if let Err(error) = start_session(app, &id, &record.work_dir(), &prompt).await {
+        fail_task(app, &id, &error).await;
+        return false;
+    }
+    true
+}
+
+/// A scheduler run triggered after a slot frees up.
+fn reschedule(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = schedule(&app).await {
+            tracing::warn!(%error, "failed to reschedule queued dsh tasks");
+        }
+    });
+}
+
+/// The session starting directory is assigned before the first prompt. The
+/// runtime boots first: the bridge only accepts control frames once its plugin
+/// has connected, and a cold start needs a moment for that socket.
+async fn start_session(
+    app: &AppHandle,
+    session_id: &str,
+    work_dir: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    if let Ok(bridge) = bridge(app) {
+        // Register the row before the runtime reports events for it, so the
+        // slot count and the unified list see a live session.
+        bridge.create_session(app, session_id);
+    }
+    let runtime = runtime(app)?;
+    runtime.ensure_ready(app).await?;
+    // Create the Agent and lock in the configured model before the first turn;
+    // the worktree assignment below then moves its directory.
+    runtime.prepare_session(app, session_id, true).await;
+    assign_session_with_retry(app, session_id, work_dir).await?;
+    // The first step must already see the execute-phase tool and prompt.
+    sync_phase(app, session_id).await?;
+    runtime.query(app, session_id, prompt).await?;
+    Ok(())
+}
+
+/// Waits briefly for the plugin connection instead of failing the launch on
+/// the first frame. After the budget the error is surfaced: running in the
+/// wrong directory is worse than not starting.
+async fn assign_session_with_retry(
+    app: &AppHandle,
+    session_id: &str,
+    work_dir: &str,
+) -> Result<(), String> {
+    let bridge = bridge(app)?;
+    let mut last_error = None;
+    for attempt in 0..30 {
+        match bridge.assign_session(session_id, work_dir).await {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt == 29 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(last_error.unwrap_or_else(|| tr("dsh.bridge.unavailable").to_string()))
+}
+
+/// The roster belongs to the solo path. With team collaboration on, work is
+/// assigned on the board and the prompt carries no coworker names at all.
+fn coworker_section(app: &AppHandle, config: &AgentConfig) -> String {
+    if config.team_enabled {
+        String::new()
+    } else {
+        coworker::prompt_section(app, &config.coworker_ids)
+    }
+}
+
+fn build_prompt(config: &AgentConfig, vars: PromptVars, rule: &str, local: bool) -> String {
+    let template = if local {
+        tr(agent_settings::LOCAL_PROMPT_KEY)
+    } else {
+        config.prompt_template.as_str()
+    };
+    let mut prompt = agent_settings::render_prompt(template, &vars);
+    let rule = rule.trim();
+    if !rule.is_empty() {
+        // The template contract has no `{{project_rule}}` slot (it was removed
+        // with the external-tool flow), so project rules are appended.
+        prompt.push_str(tr("dsh.task.prompt.rule"));
+        prompt.push_str(rule);
+    }
+    prompt
+}
+
+// ---------------------------------------------------------------------------
+// Approve / finalize (docs/AGENT_TASK_FLOW.md §8)
+// ---------------------------------------------------------------------------
+
+static FINALIZE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn finalize_lock() -> &'static tokio::sync::Mutex<()> {
+    FINALIZE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Approves a reviewed task and runs the finishing chain. The task enters
+/// `finalizing` before any git command, so a crash mid-chain leaves a retryable
+/// row instead of a half-merged one.
+async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.kind == TaskKind::Chat {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    // Approving commits the tree, so it is only safe once the turn stopped:
+    // a live turn would keep writing after the snapshot.
+    if live_running(app, &request.session_id) {
+        return Err(tr("dsh.task.approve.busy").to_string());
+    }
+    if record.task.workflow != Workflow::AwaitingReview {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    let Ok(_guard) = finalize_lock().try_lock() else {
+        return Err(tr("dsh.task.finalize.busy").to_string());
+    };
+    // Re-read under the lock: a cancel or a second approve may have moved it.
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.workflow != Workflow::AwaitingReview {
+        return Ok(task_value(app, record.task));
+    }
+    let mut record = record;
+    let expected = transition(&mut record, Workflow::Finalizing)?;
+    record.task.finalize = Some(TaskFinalize {
+        step: Some(FinalizeStep::Commit),
+        ..TaskFinalize::default()
+    });
+    record.touch();
+    if !save_record(app, record, expected).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    let task = run_finalize(app, &request.session_id).await?;
+    Ok(task_value(app, task))
+}
+
+/// Retries the finishing chain from `finalize.step`. Each step is idempotent:
+/// an existing commit is not repeated, an already merged branch is not merged
+/// again, and a removed worktree is skipped.
+async fn retry_finalize(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.workflow != Workflow::Finalizing {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    if live_running(app, &request.session_id) {
+        return Err(tr("dsh.task.approve.busy").to_string());
+    }
+    let Ok(_guard) = finalize_lock().try_lock() else {
+        return Err(tr("dsh.task.finalize.busy").to_string());
+    };
+    let Some(mut record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.workflow != Workflow::Finalizing {
+        return Ok(task_value(app, record.task));
+    }
+    // The retry starts a clean attempt; the failed step itself stays recorded.
+    if let Some(finalize) = record.task.finalize.as_mut() {
+        finalize.error = None;
+        finalize.instructions = None;
+    }
+    record.touch();
+    if !save_record(app, record, Workflow::Finalizing).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    let task = run_finalize(app, &request.session_id).await?;
+    Ok(task_value(app, task))
+}
+
+/// Runs (or resumes) the commit → merge → cleanup → writeback chain. A failed
+/// step is recorded on the row and the task stays `finalizing` for a retry.
+async fn run_finalize(app: &AppHandle, session_id: &str) -> Result<DshTask, String> {
+    for _ in 0..8 {
+        let Some(record) = load_record(app, session_id).await? else {
+            return Err(not_found(session_id));
+        };
+        if record.task.workflow != Workflow::Finalizing {
+            return Ok(record.task);
+        }
+        let step = record
+            .task
+            .finalize
+            .as_ref()
+            .and_then(|finalize| finalize.step)
+            .unwrap_or(FinalizeStep::Commit);
+        match step {
+            FinalizeStep::Commit => {
+                let work_dir = record.work_dir();
+                if work_dir.trim().is_empty() {
+                    return fail_finalize(
+                        app,
+                        record,
+                        FinalizeStep::Commit,
+                        tr("dsh.task.state.invalid").to_string(),
+                        tr("dsh.task.finalize.instructions.commit").to_string(),
+                    )
+                    .await;
+                }
+                let message = commit_message(&record.task);
+                let committed = blocking(move || worktree::commit_all(&work_dir, &message)).await;
+                let committed = match committed {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        let failure = tr_args("dsh.task.commit.failed", &[&error]);
+                        return fail_finalize(
+                            app,
+                            record,
+                            FinalizeStep::Commit,
+                            failure,
+                            tr("dsh.task.finalize.instructions.commit").to_string(),
+                        )
+                        .await;
+                    }
+                };
+                let mut record = record;
+                if let Some(commit) = committed {
+                    record.meta.commit = Some(commit);
+                }
+                if let Some(changes) = summary_changes(&record).await {
+                    record.task.changes = Some(changes);
+                }
+                if !advance_finalize(app, record, FinalizeStep::Merge, None).await? {
+                    return Err(tr("dsh.task.busy").to_string());
+                }
+            }
+            FinalizeStep::Merge => {
+                let Some(branch) = record
+                    .task
+                    .branch
+                    .clone()
+                    .filter(|branch| !branch.trim().is_empty())
+                else {
+                    return fail_finalize(
+                        app,
+                        record,
+                        FinalizeStep::Merge,
+                        tr("dsh.task.state.invalid").to_string(),
+                        tr("dsh.task.finalize.instructions.commit").to_string(),
+                    )
+                    .await;
+                };
+                if !record.meta.merged && !branch_merged(&record, &branch).await {
+                    let repo = record.task.repo_path.clone();
+                    let branch_for_merge = branch.clone();
+                    let baseline = record.meta.baseline.clone();
+                    let message = format!("Merge branch '{branch}'");
+                    let attempt = blocking(move || {
+                        if worktree::is_dirty(&repo)? {
+                            return Err(tr("dsh.task.merge.dirty").to_string());
+                        }
+                        // `merge --no-ff` exits 0 ("Already up to date") when
+                        // the branch never advanced, and then the ancestor proof
+                        // would pass vacuously. A reverted task must not be
+                        // declared merged.
+                        if let Some(baseline) = baseline.as_deref() {
+                            if worktree::branch_tip(&repo, &branch_for_merge)? == baseline {
+                                return Err(tr("dsh.task.merge.empty").to_string());
+                            }
+                        }
+                        worktree::merge_no_ff(&repo, &branch_for_merge, &message)?;
+                        if !worktree::is_ancestor(&repo, &branch_for_merge, "HEAD")? {
+                            return Err(tr("dsh.task.merge.ancestor").to_string());
+                        }
+                        Ok(())
+                    })
+                    .await;
+                    if let Err(error) = attempt {
+                        let failure = tr_args("dsh.task.merge.failed", &[&error]);
+                        return fail_finalize(
+                            app,
+                            record,
+                            FinalizeStep::Merge,
+                            failure,
+                            merge_instructions(&branch),
+                        )
+                        .await;
+                    }
+                }
+                let mut record = record;
+                record.meta.merged = true;
+                if !advance_finalize(app, record, FinalizeStep::Cleanup, None).await? {
+                    return Err(tr("dsh.task.busy").to_string());
+                }
+            }
+            FinalizeStep::Cleanup => {
+                let mut record = record;
+                let mut notice = None;
+                if let Some(path) = record
+                    .task
+                    .worktree_path
+                    .clone()
+                    .filter(|path| !path.trim().is_empty())
+                {
+                    if std::path::Path::new(&path).is_dir() {
+                        let probe = path.clone();
+                        let dirty = blocking(move || worktree::is_dirty(&probe))
+                            .await
+                            .unwrap_or(true);
+                        if dirty {
+                            // `remove --force` would silently discard edits made
+                            // after approval; keep the directory and say so.
+                            notice = Some(tr("dsh.task.finalize.dirty").to_string());
+                        } else {
+                            let repo = record.task.repo_path.clone();
+                            let target = path.clone();
+                            match blocking(move || worktree::remove(&repo, &target)).await {
+                                Ok(()) => record.task.worktree_path = None,
+                                Err(error) => {
+                                    let failure = tr_args("dsh.task.git.failed", &[&error]);
+                                    return fail_finalize(
+                                        app,
+                                        record,
+                                        FinalizeStep::Cleanup,
+                                        failure,
+                                        tr("dsh.task.finalize.instructions.cleanup").to_string(),
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    } else {
+                        record.task.worktree_path = None;
+                    }
+                }
+                if !advance_finalize(app, record, FinalizeStep::Writeback, notice).await? {
+                    return Err(tr("dsh.task.busy").to_string());
+                }
+            }
+            FinalizeStep::Writeback => return begin_writeback(app, record).await,
+        }
+    }
+    Err(tr("dsh.task.state.invalid").to_string())
+}
+
+/// The git steps are done. Local items finish here; a bug gets a hidden
+/// `host-prompt` turn whose conditional tools write TAPD.
+async fn begin_writeback(app: &AppHandle, record: TaskRecord) -> Result<DshTask, String> {
+    let mut record = record;
+    if record.task.kind != TaskKind::Bug
+        || (record.meta.comment_posted && record.meta.status_updated)
+    {
+        let expected = transition(&mut record, Workflow::Done)?;
+        record.task.finalize = None;
+        record.touch();
+        if !save_record(app, record.clone(), expected).await? {
+            return Err(tr("dsh.task.busy").to_string());
+        }
+        complete_local(app, &record).await;
+        emit(app);
+        if let Ok(bridge) = bridge(app) {
+            let _ = bridge.send_task_phase(&record.task.id, "none", record.task.kind.as_str());
+        }
+        return Ok(record.task);
+    }
+
+    // A `tapd_*` tool must not exist one moment before the phase frame. The
+    // plugin acks, so the prompt that follows cannot race the map update.
+    let ack = match bridge(app) {
+        Ok(bridge) => {
+            bridge
+                .request_task_phase(&record.task.id, "writeback", record.task.kind.as_str())
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = ack {
+        return fail_finalize(
+            app,
+            record,
+            FinalizeStep::Writeback,
+            error,
+            tr("dsh.task.finalize.instructions.writeback").to_string(),
+        )
+        .await;
+    }
+    let text = writeback::prompt(
+        &record.task,
+        record.task.changes.as_ref(),
+        record.meta.commit.as_deref(),
+    );
+    if let Err(error) = bridge(app).and_then(|bridge| bridge.send_host_prompt(&record.task.id, &text))
+    {
+        return fail_finalize(
+            app,
+            record,
+            FinalizeStep::Writeback,
+            error,
+            tr("dsh.task.finalize.instructions.writeback").to_string(),
+        )
+        .await;
+    }
+    {
+        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
+        finalize.step = Some(FinalizeStep::Writeback);
+        finalize.error = None;
+        finalize.instructions = None;
+    }
+    record.touch();
+    if !save_record(app, record.clone(), Workflow::Finalizing).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    Ok(record.task)
+}
+
+/// Records the failed step and keeps the task in `finalizing`.
+async fn fail_finalize(
+    app: &AppHandle,
+    mut record: TaskRecord,
+    step: FinalizeStep,
+    error: String,
+    instructions: String,
+) -> Result<DshTask, String> {
+    {
+        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
+        finalize.step = Some(step);
+        finalize.error = Some(error);
+        finalize.instructions = Some(instructions);
+    }
+    record.touch();
+    let saved = save_record(app, record.clone(), Workflow::Finalizing).await?;
+    emit(app);
+    if !saved {
+        tracing::warn!("a finalize failure was not persisted");
+    }
+    Ok(record.task)
+}
+
+/// Moves the finalize step forward and clears a stale error.
+async fn advance_finalize(
+    app: &AppHandle,
+    mut record: TaskRecord,
+    step: FinalizeStep,
+    notice: Option<String>,
+) -> Result<bool, String> {
+    {
+        let finalize = record.task.finalize.get_or_insert_with(TaskFinalize::default);
+        finalize.step = Some(step);
+        finalize.error = None;
+        finalize.instructions = None;
+        // The notice always describes this attempt: a kept worktree from an
+        // earlier try must not survive a successful cleanup.
+        finalize.notice = notice;
+    }
+    record.touch();
+    let saved = save_record(app, record, Workflow::Finalizing).await?;
+    emit(app);
+    Ok(saved)
+}
+
+async fn summary_changes(record: &TaskRecord) -> Option<TaskChanges> {
+    let workspace = workspace_for(record);
+    blocking(move || {
+        workspace
+            .summary()
+            .map(|summary| change_counts(&summary))
+            .map_err(|error| error.message().to_string())
+    })
+    .await
+    .ok()
+}
+
+async fn branch_merged(record: &TaskRecord, branch: &str) -> bool {
+    let repo = record.task.repo_path.clone();
+    let branch = branch.to_string();
+    blocking(move || {
+        Ok::<_, String>(worktree::is_ancestor(&repo, &branch, "HEAD").unwrap_or(false))
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn merge_instructions(branch: &str) -> String {
+    tr_args("dsh.task.merge.instructions", &[&branch])
+}
+
+/// Deterministic commit subject; no model turn participates in approvals.
+fn commit_message(task: &DshTask) -> String {
+    let title: String = task
+        .title
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let title: String = title.chars().take(120).collect();
+    match task.bug_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        Some(bug_id) => format!("tapd({bug_id}): {title}"),
+        None => format!(
+            "local({}): {title}",
+            task.project
+                .as_ref()
+                .map(|project| project.id.as_str())
+                .unwrap_or("item")
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host RPC: the plugin's conditional tools call back here
+// ---------------------------------------------------------------------------
+
+/// Handles one `{type:"host"}` frame. Runs off the socket reader so a slow
+/// TAPD call cannot block transcript frames; the reply goes through the same
+/// control channel.
+pub async fn host_rpc(app: &AppHandle, frame: &Value) {
+    let Some(request_id) = frame.get("requestId").and_then(Value::as_str) else {
+        tracing::warn!("agent bridge: host frame without a request id");
+        return;
+    };
+    let method = frame
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let session_id = frame
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let params = frame.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result = dispatch_host(app, method, session_id, &params).await;
+    if let Ok(bridge) = bridge(app) {
+        bridge.send_host_reply(request_id, result);
+    }
+}
+
+async fn dispatch_host(
+    app: &AppHandle,
+    method: &str,
+    session_id: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    match method {
+        "task.submit" => task_submit(app, session_id, params).await,
+        "task.complete" => task_complete(app, session_id).await,
+        "tapd.transitions" => tapd_transitions(app, session_id).await,
+        "tapd.comment" => tapd_comment(app, session_id, params).await,
+        "tapd.status" => tapd_status(app, session_id, params).await,
+        other => Err(tr_args("dsh.task.host.unknown", &[&other])),
+    }
+}
+
+/// `task_submit`: the execute-phase tool. Changes move the task to review;
+/// nothing means the model found nothing to do.
+async fn task_submit(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    if !record.task.kind.is_task() {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    match record.task.workflow {
+        // Repeated calls are harmless: report the outcome without rewriting.
+        Workflow::AwaitingReview | Workflow::Done => {
+            return Ok(json!({ "outcome": "already", "phase": phase_of(&record) }));
+        }
+        Workflow::Running => {}
+        _ => return Err(tr("dsh.task.state.invalid").to_string()),
+    }
+    let summary_text = params
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| tr("dsh.task.submit.summary").to_string())?
+        .to_string();
+    let verification = optional_text(params, "verification");
+    let risks = optional_text(params, "risks");
+
+    let workspace = workspace_for(&record);
+    let summary = blocking(move || {
+        workspace
+            .summary()
+            .map_err(|error| error.message().to_string())
+    })
+    .await?;
+
+    // Re-read: the turn may have ended while the diff ran.
+    let Some(mut record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    if record.task.workflow != Workflow::Running {
+        return Ok(json!({ "outcome": "already", "phase": phase_of(&record) }));
+    }
+    let (next, changes) = review_outcome(&summary);
+    record.task.review = Some(TaskReview {
+        summary: summary_text,
+        verification,
+        risks,
+        files: summary.files.iter().map(|file| file.path.clone()).collect(),
+    });
+    record.task.changes = changes;
+    record.task.finalize = None;
+    let expected = transition(&mut record, next)?;
+    record.touch();
+    let phase = phase_of(&record);
+    if !save_record(app, record.clone(), expected).await? {
+        return Ok(json!({ "outcome": "already", "phase": phase }));
+    }
+    complete_local(app, &record).await;
+    push_phase(app, &record);
+    emit(app);
+    // The task left `running`, so its execution slot is free again.
+    reschedule(app);
+    let outcome = if next == Workflow::Done {
+        "done"
+    } else {
+        "review"
+    };
+    Ok(json!({ "outcome": outcome, "phase": phase }))
+}
+
+/// `task_complete`: only after both the comment and the status transition.
+async fn task_complete(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let _guard = writeback_lock().lock().await;
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    writeback_bug(&record)?;
+    if !(record.meta.comment_posted && record.meta.status_updated) {
+        return Err(tr("dsh.task.complete.pending").to_string());
+    }
+    let mut record = record;
+    let expected = transition(&mut record, Workflow::Done)?;
+    record.task.finalize = None;
+    record.touch();
+    if !save_record(app, record.clone(), expected).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    complete_local(app, &record).await;
+    emit(app);
+    if let Ok(bridge) = bridge(app) {
+        let _ = bridge.send_task_phase(&record.task.id, "none", record.task.kind.as_str());
+    }
+    Ok(json!({ "done": true }))
+}
+
+async fn tapd_transitions(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    let (workspace, bug) = writeback_bug(&record)?;
+    let info = crate::bug_write::load_transition_info(app, &workspace, &bug).await?;
+    let transitions: Vec<Value> = info
+        .transitions
+        .iter()
+        .map(|(key, label)| json!({ "key": key, "label": label }))
+        .collect();
+    Ok(json!({
+        "current": info.current_status,
+        "alias": crate::bug_write::info_label(&info.current_status, &info),
+        "transitions": transitions,
+    }))
+}
+
+async fn tapd_comment(
+    app: &AppHandle,
+    session_id: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let _guard = writeback_lock().lock().await;
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    let (workspace, bug) = writeback_bug(&record)?;
+    let comment = params
+        .get("comment")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| tr("dsh.task.comment.empty").to_string())?
+        .to_string();
+    if comment.chars().count() > 8000 {
+        return Err(tr("dsh.task.comment.tooLong").to_string());
+    }
+    // Idempotent: a retry (or two tool calls in one turn) posts once.
+    if record.meta.comment_posted {
+        return Ok(json!({ "duplicate": true }));
+    }
+    crate::bug_write::add_comment(app, &workspace, &bug, &comment)
+        .await
+        .map_err(|error| tr_args("dsh.task.writeback.failed", &[&error]))?;
+
+    let Some(mut record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    record.meta.comment_posted = true;
+    record.touch();
+    if !save_record(app, record, Workflow::Finalizing).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    Ok(json!({}))
+}
+
+async fn tapd_status(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
+    let _guard = writeback_lock().lock().await;
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    let (workspace, bug) = writeback_bug(&record)?;
+    if record.meta.status_updated {
+        return Ok(json!({
+            "from": record.meta.status_from,
+            "to": record.meta.status_to,
+        }));
+    }
+    let status = params
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("resolved")
+        .to_string();
+    // Reuses the same helper as the bug panel: a `new` bug is accepted before
+    // it can be resolved, and illegal targets surface TAPD's own list.
+    let outcome =
+        crate::bug_write::perform_transition(app, &workspace, &bug, &status, &Value::Null)
+            .await
+            .map_err(|error| tr_args("dsh.task.writeback.failed", &[&error]))?;
+
+    let Some(mut record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    record.meta.status_updated = true;
+    record.meta.status_from = Some(outcome.original_status.clone());
+    record.meta.status_to = Some(outcome.status.clone());
+    record.touch();
+    if !save_record(app, record, Workflow::Finalizing).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    Ok(json!({ "from": outcome.original_status, "to": outcome.status }))
+}
+
+/// The row every `tapd.*` tool operates on: a bug task in the write-back step.
+/// Everything else (chat, local item, wrong step, missing bug binding) is a
+/// tool error, so a forged or stale call cannot write another bug.
+fn writeback_bug(record: &TaskRecord) -> Result<(String, String), String> {
+    if record.task.kind != TaskKind::Bug || record.task.workflow != Workflow::Finalizing {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    let step = record
+        .task
+        .finalize
+        .as_ref()
+        .and_then(|finalize| finalize.step);
+    if step != Some(FinalizeStep::Writeback) {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    let bug = record
+        .task
+        .bug_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| tr("dsh.task.state.invalid").to_string())?;
+    let workspace = record
+        .meta
+        .workspace_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| tr("dsh.task.state.invalid").to_string())?;
+    Ok((workspace, bug))
+}
+
+static WRITEBACK_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn writeback_lock() -> &'static tokio::sync::Mutex<()> {
+    WRITEBACK_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn optional_text(params: &Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+// ---------------------------------------------------------------------------
+// Changes / cancel / resume / diff
+// ---------------------------------------------------------------------------
+
+/// The changed files of a task's worktree, for the review list.
+async fn changes(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.kind == TaskKind::Chat {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    let workspace = workspace_for(&record);
+    let summary = blocking(move || {
+        workspace
+            .summary()
+            .map_err(|error| error.message().to_string())
+    })
+    .await?;
+    let dir = record.work_dir();
+    let kinds = if !dir.trim().is_empty() && std::path::Path::new(&dir).is_dir() {
+        blocking(move || worktree::status_kinds(&dir))
+            .await
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let files: Vec<Value> = summary
+        .files
+        .iter()
+        .map(|file| {
+            let status = kinds
+                .get(&file.path)
+                .cloned()
+                .unwrap_or_else(|| change_kind_name(file.status).to_string());
+            json!({
+                "path": file.path,
+                "status": status,
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "binary": file.binary,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "files": files,
+        "truncated": summary.file_count > summary.files.len(),
+    }))
+}
+
+fn change_kind_name(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Added => "added",
+        ChangeKind::Modified => "modified",
+        ChangeKind::Deleted => "deleted",
+    }
+}
+
+async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    if record.task.workflow.is_terminal() {
+        // Canceling a finished task is a no-op: terminal states never regress.
+        return Ok(task_value(app, record.task));
+    }
+    // `finalizing` changes are already in the main repository; there is nothing
+    // left to abandon. The contract forbids canceling it.
+    if record.task.workflow == Workflow::Finalizing {
+        return Err(tr("dsh.task.cancel.busy").to_string());
+    }
+
+    // Merging and canceling must not interleave: the branch merge and its
+    // write-back are one physical step.
+    let Ok(_guard) = finalize_lock().try_lock() else {
+        return Err(tr("dsh.task.cancel.busy").to_string());
+    };
+
+    if let Ok(bridge) = bridge(app) {
+        if let Err(error) = bridge.cancel_session(&record.task.id).await {
+            // A task restored from a previous app run has no live turn; the
+            // cancel still has to persist.
+            tracing::debug!(%error, session = %record.task.id, "no live turn to cancel");
+        }
+    }
+
+    let was_queued = record.task.workflow == Workflow::Queued;
+    if request.stash && !was_queued {
+        let work_dir = record.work_dir();
+        if !work_dir.is_empty() {
+            let id = record.task.id.clone();
+            let message = format!("tapd task {id} canceled");
+            blocking(move || worktree::stash_all(&work_dir, &message))
+                .await
+                .map_err(|error| tr_args("dsh.task.cancel.stash", &[&error]))?;
+        }
+    }
+
+    let Some(mut record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    let expected = transition(&mut record, Workflow::Canceled)?;
+    record.task.finalize = None;
+    record.task.message_count = live_sessions(app)
+        .get(&request.session_id)
+        .map(|session| session.message_count as u32)
+        .unwrap_or(record.task.message_count);
+    if was_queued {
+        // Nothing ran, so the fresh worktree is only clutter.
+        remove_worktree_dir(&record).await;
+        record.task.worktree_path = None;
+        record.meta.pending_prompt = None;
+    }
+    record.touch();
+
+    if !save_record(app, record.clone(), expected).await? {
+        return Err(tr("dsh.task.state.invalid").to_string());
+    }
+    // Canceling a local-item task used to leave the item stuck in in_progress
+    // with a dangling agentTaskId: `attach_task` is the only thing that moves
+    // it, and `complete_local` only runs for Done. Undo the link here.
+    if record.task.kind == TaskKind::LocalItem {
+        if let Some(item_id) = record.meta.local_item_id.clone() {
+            let store = shared(app)?.local.clone();
+            let task_id = record.task.id.clone();
+            let previous = record
+                .meta
+                .local_previous_status
+                .clone()
+                .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string());
+            let at = now();
+            if let Err(error) = blocking(move || {
+                store.forget_task(&task_id, &at)?;
+                store
+                    .update_item(&item_id, None, None, Some(previous.as_str()))
+                    .map(|_| ())
+            })
+            .await
+            {
+                tracing::warn!(%error, "failed to revert the canceled item link");
+            }
+        }
+    }
+    push_phase(app, &record);
+    emit(app);
+    // A canceled running task frees its slot.
+    reschedule(app);
+    Ok(task_value(app, record.task))
+}
+
+async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    // A queued task has no session yet. Opening it asks the scheduler for a
+    // slot instead of resuming a session the runtime never created.
+    if record.task.workflow == Workflow::Queued {
+        schedule(app).await?;
+        let Some(fresh) = load_record(app, &request.session_id).await? else {
+            return Err(not_found(&request.session_id));
+        };
+        return Ok(task_value(app, fresh.task));
+    }
+
+    let runtime = runtime(app)?;
+    runtime.ensure_ready(app).await?;
+    // The shared helper also snapshots the session's model choice before the
+    // SDK resume resets it to the runtime default.
+    if let Err(error) = runtime.resume_session(app, &request.session_id).await {
+        return Err(tr_args("dsh.task.resume.failed", &[&error]));
+    }
+
+    // Re-attaching a persisted session is not activity: bumping `updated_at`
+    // here reordered the list every time a row was opened.
+    let mut record = record;
+    record.task.status = SessionStatus::Idle;
+    let expected = record.task.workflow;
+    if !save_record(app, record.clone(), expected).await? {
+        let Some(fresh) = load_record(app, &request.session_id).await? else {
+            return Err(not_found(&request.session_id));
+        };
+        return Ok(task_value(app, fresh.task));
+    }
+    emit(app);
+    // Opening a queued task must not jump the queue, but the scheduler may have
+    // a free slot now that the runtime is up.
+    reschedule(app);
+    Ok(task_value(app, record.task))
+}
+
+async fn diff(app: &AppHandle, request: DiffRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    let workspace = workspace_for(&record);
+    let file = request.file;
+    let view = blocking(move || {
+        workspace
+            .diff(file.as_deref())
+            .map_err(|error| error.message().to_string())
+    })
+    .await?;
+    debug_assert!(view.text.chars().count() <= tapd_workspace::MAX_DIFF_CHARS);
+    Ok(json!({ "diff": view.text, "truncated": view.truncated }))
+}
+
+// ---------------------------------------------------------------------------
+// Projects / free conversations (docs/AGENT_TASK_FLOW.md §10, §11)
+// ---------------------------------------------------------------------------
+
+/// All project groups a free conversation can be created under: configured
+/// TAPD projects plus every local project.
+pub async fn projects(app: &AppHandle) -> Result<Value, String> {
+    let config = agent_settings::config_for(app);
+    let mut projects: Vec<Value> = config
+        .projects
+        .iter()
+        .filter(|(_, project)| !project.repo_path.trim().is_empty())
+        .map(|(id, project)| {
+            json!({
+                "kind": "tapd",
+                "id": id,
+                "name": tapd_local::LocalProject::derive_project_name(&project.repo_path),
+                "repoPath": project.repo_path,
+            })
+        })
+        .collect();
+    let state = shared(app)?;
+    let store = state.local.clone();
+    let locals = blocking(move || store.projects()).await?;
+    projects.extend(locals.into_iter().map(|project| {
+        json!({
+            "kind": "local",
+            "id": project.id,
+            "name": project.name,
+            "repoPath": project.repo_path,
+        })
+    }));
+    Ok(json!({ "projects": projects }))
+}
+
+/// Allocates a session id and its chat row. A project binds the group, the
+/// default cwd and the worktree toggle's repository; a manual session stays a
+/// scratch chat.
+pub async fn new_session(app: &AppHandle, project: Option<ProjectRef>) -> Result<Value, String> {
+    let (project, repo_path) = match project {
+        Some(reference) => resolve_project(app, &reference).await?,
+        None => (None, String::new()),
+    };
+    let session_id = uuid::Uuid::new_v4().to_string();
+    if let Ok(bridge) = bridge(app) {
+        bridge.create_session(app, &session_id);
+    }
+    // The composer work bar shows the project's checked-out branch until the
+    // chat opts into a worktree. Display only: nothing switches branches.
+    let branch = if repo_path.trim().is_empty() {
+        None
+    } else {
+        let repo = repo_path.clone();
+        blocking(move || worktree::current_branch(&repo))
+            .await
+            .ok()
+            .flatten()
+    };
+    create_chat(app, &session_id, project, repo_path, branch).await?;
+    Ok(json!({ "sessionId": session_id }))
+}
+
+async fn resolve_project(
+    app: &AppHandle,
+    reference: &ProjectRef,
+) -> Result<(Option<TaskProject>, String), String> {
+    match reference.kind {
+        ProjectKind::Tapd => {
+            let config = agent_settings::config_for(app);
+            let project = config
+                .projects
+                .get(&reference.id)
+                .cloned()
+                .filter(|project| !project.repo_path.trim().is_empty())
+                .ok_or_else(|| tr("dsh.task.repo.missing").to_string())?;
+            let name = tapd_local::LocalProject::derive_project_name(&project.repo_path);
+            Ok((
+                Some(TaskProject {
+                    id: reference.id.clone(),
+                    name,
+                    kind: ProjectKind::Tapd,
+                }),
+                project.repo_path,
+            ))
+        }
+        ProjectKind::Local => {
+            let state = shared(app)?;
+            let store = state.local.clone();
+            let id = reference.id.clone();
+            let projects = blocking(move || store.projects()).await?;
+            let project = projects
+                .into_iter()
+                .find(|project| project.id == id)
+                .ok_or_else(|| tr("local.project.notfound").to_string())?;
+            Ok((
+                Some(TaskProject {
+                    id: project.id,
+                    name: project.name,
+                    kind: ProjectKind::Local,
+                }),
+                project.repo_path,
+            ))
+        }
+    }
+}
+
 /// Registers a plain chat session so the unified list holds it too. Idempotent:
 /// the row exists as soon as the UI asks for a new session.
-pub async fn create_chat(app: &AppHandle, session_id: &str) -> Result<Value, String> {
+async fn create_chat(
+    app: &AppHandle,
+    session_id: &str,
+    project: Option<TaskProject>,
+    repo_path: String,
+    branch: Option<String>,
+) -> Result<(), String> {
     let state = shared(app)?;
     let cache = state.cache.clone();
     let id = session_id.to_string();
-    let record = blocking(move || {
+    let inserted = blocking(move || {
         if task_store::load(&cache, &id)?.is_some() {
-            return Ok::<_, String>(None);
+            return Ok::<_, String>(false);
         }
         let at = now();
         let record = TaskRecord {
             task: DshTask {
                 id: id.clone(),
                 kind: TaskKind::Chat,
-                project: None,
+                project,
                 title: String::new(),
                 bug_id: None,
+                // Chats have no workflow; `running` is the neutral value the
+                // list has always used for them and the scheduler ignores it.
                 workflow: Workflow::Running,
                 status: SessionStatus::Idle,
-                repo_path: String::new(),
+                repo_path,
                 worktree_path: None,
-                branch: None,
+                branch,
                 json_path: String::new(),
                 created_at: at.clone(),
                 updated_at: at,
                 message_count: 0,
                 changes: None,
                 review: None,
-                merge: None,
+                finalize: None,
             },
             meta: TaskMeta::default(),
         };
         task_store::insert(&cache, &record)?;
-        Ok(Some(record.task))
+        Ok(true)
     })
     .await?;
-    if record.is_some() {
+    if inserted {
         emit(app);
     }
-    Ok(json!({ "sessionId": session_id }))
+    Ok(())
 }
 
-/// The persisted kind of a session, when it has a task row at all. Draft ids
-/// the UI knows but the store does not return `None`.
-pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
-    let state = shared(app).ok()?;
-    let cache = state.cache.clone();
-    let id = session_id.to_string();
-    let loaded = blocking(move || task_store::load(&cache, &id)).await.ok()??;
-    Some(loaded.task.kind)
-}
-
-/// Deletes a free conversation: its list row, its normalized state and the
-/// files only it owns. Work handed over from a bug or a local item keeps its
-/// worktree and its history, so only chats qualify.
-/// Removes one session: its row, its mode, its log and whatever directory the
-/// app created for it. The repository a task was opened from is never touched;
-/// a worktree is removed with `--force`, because the account that can delete a
-/// session is the one that owns its uncommitted changes.
-async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    let running = live_sessions(app)
-        .get(&request.session_id)
-        .is_some_and(|session| session.status == SessionStatus::Running);
-    if running {
-        return Err(tr("dsh.chat.delete.running").to_string());
+/// The cwd a chat prompt should assign: its worktree, its project repository,
+/// or its own scratch directory. `None` means the session has no task row.
+pub(crate) async fn chat_cwd(app: &AppHandle, session_id: &str) -> Option<String> {
+    let record = load_record(app, session_id).await.ok()??;
+    if record.task.kind != TaskKind::Chat {
+        return None;
     }
-    let worktree = record
+    // A chat worktree wins: the toggle moved the session there.
+    if let Some(path) = record
         .task
         .worktree_path
         .clone()
-        .filter(|path| !path.trim().is_empty());
-    let repo = record.task.repo_path.clone();
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    blocking(move || task_store::delete(&cache, &id)).await?;
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let _ = blocking(move || super::mode_store::delete(&cache, &id)).await
-        .map_err(|error| {
-            tracing::warn!(%error, session = %request.session_id, "failed to delete the session mode");
-        });
-    if let Ok(bridge) = bridge(app) {
-        bridge.forget_session(app, &request.session_id);
-    }
-
-    // The conversation file and the chat's scratch workspace exist for this
-    // session only; leaving either behind lets a later hydrate resurrect it.
-    if let Some(sessions_dir) = super::session_log::dir(app) {
-        if let Some(dir) = super::session_log::path(&sessions_dir, &request.session_id)
-            .and_then(|log| log.parent().map(|parent| parent.to_path_buf()))
-        {
-            let _ = blocking(move || {
-                std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())
-            })
-            .await;
+        .filter(|path| !path.trim().is_empty())
+    {
+        if std::path::Path::new(&path).is_dir() {
+            return Some(path);
         }
     }
-    let workspace = state
-        .paths
-        .data_dir
-        .join("dsh")
-        .join("chats")
-        .join(&request.session_id);
-    let _ = blocking(move || {
-        std::fs::remove_dir_all(&workspace).map_err(|error| error.to_string())
+    let repo = record.task.repo_path.trim().to_string();
+    if !repo.is_empty() {
+        return Some(repo);
+    }
+    let state = shared(app).ok()?;
+    let dir = state.paths.data_dir.join("dsh").join("chats").join(session_id);
+    let created = dir.clone();
+    blocking(move || {
+        std::fs::create_dir_all(&created).map_err(|error| error.to_string())?;
+        Ok::<_, String>(created.to_string_lossy().to_string())
     })
-    .await;
+    .await
+    .ok()
+}
 
-    // Best effort: a repository that moved away must not keep a dead row in the
-    // list, and the project page still lists whatever directory is left over.
-    if let Some(path) = worktree {
+/// Turns a chat's worktree on or off (docs/AGENT_TASK_FLOW.md §10).
+pub async fn chat_worktree(
+    app: &AppHandle,
+    session_id: &str,
+    enabled: bool,
+) -> Result<Value, String> {
+    let Some(record) = load_record(app, session_id).await? else {
+        return Err(not_found(session_id));
+    };
+    if record.task.kind != TaskKind::Chat {
+        return Err(tr("dsh.chat.worktree.notChat").to_string());
+    }
+    if live_running(app, session_id) {
+        return Err(tr("dsh.task.approve.busy").to_string());
+    }
+    if enabled {
+        enable_chat_worktree(app, record).await
+    } else {
+        disable_chat_worktree(app, record).await
+    }
+}
+
+async fn enable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Value, String> {
+    if let Some(path) = record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+    {
+        if std::path::Path::new(&path).is_dir() {
+            return Ok(task_value(app, record.task));
+        }
+    }
+    let repo_hint = record.task.repo_path.trim().to_string();
+    if repo_hint.is_empty() {
+        return Err(tr("dsh.chat.worktree.repo").to_string());
+    }
+    let repo = blocking(move || worktree::repo_root(&repo_hint))
+        .await
+        .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
+    let state = shared(app)?;
+    let target = state.paths.worktrees_dir.join(&record.task.id);
+    let branch = worktree::chat_branch(&record.task.id);
+    let created = {
+        let repo = repo.clone();
+        let branch = branch.clone();
+        blocking(move || worktree::create(&repo, &target, &branch))
+            .await
+            .map_err(|error| tr_args("dsh.task.worktree.failed", &[&error]))?
+    };
+    // Point the live session at the worktree before the row claims it.
+    if let Err(error) = assign_session_with_retry(app, &record.task.id, &created.path).await {
+        let repo = repo.clone();
+        let path = created.path.clone();
+        let _ = blocking(move || worktree::remove(&repo, &path)).await;
+        return Err(error);
+    }
+    let mut record = record;
+    let expected = record.task.workflow;
+    record.task.repo_path = repo;
+    record.task.worktree_path = Some(created.path);
+    record.task.branch = Some(branch);
+    record.meta.worktree = true;
+    record.meta.baseline = Some(created.baseline);
+    record.touch();
+    if !save_record(app, record.clone(), expected).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
+    emit(app);
+    Ok(task_value(app, record.task))
+}
+
+async fn disable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Value, String> {
+    let Some(path) = record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return Ok(task_value(app, record.task));
+    };
+    let repo = record.task.repo_path.trim().to_string();
+    if std::path::Path::new(&path).is_dir() {
+        let probe = path.clone();
+        let dirty = blocking(move || worktree::is_dirty(&probe))
+            .await
+            .unwrap_or(true);
+        if dirty {
+            return Err(tr("dsh.chat.worktree.dirty").to_string());
+        }
         let target = path.clone();
-        let removed = blocking(move || worktree::remove(&repo, &target)).await;
-        if let Err(error) = removed {
-            tracing::warn!(%error, %path, "failed to remove the deleted session's worktree");
+        let repo_for_remove = repo.clone();
+        blocking(move || worktree::remove(&repo_for_remove, &target))
+            .await
+            .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
+    }
+    // A branch with commits is the user's work; only an untouched branch goes.
+    if let Some(branch) = record
+        .task
+        .branch
+        .clone()
+        .filter(|branch| !branch.trim().is_empty())
+    {
+        let keep = match record.meta.baseline.clone() {
+            Some(baseline) => {
+                let repo_for_tip = repo.clone();
+                let branch_for_tip = branch.clone();
+                blocking(move || worktree::branch_tip(&repo_for_tip, &branch_for_tip))
+                    .await
+                    .map(|tip| tip != baseline)
+                    .unwrap_or(true)
+            }
+            None => true,
+        };
+        if !keep {
+            let repo_for_delete = repo.clone();
+            let _ = blocking(move || worktree::delete_branch(&repo_for_delete, &branch)).await;
         }
     }
 
+    let mut record = record;
+    let expected = record.task.workflow;
+    record.task.worktree_path = None;
+    // Back to the project's checked-out branch for the work bar; a chat with
+    // no repository has no branch to show.
+    record.task.branch = if repo.trim().is_empty() {
+        None
+    } else {
+        let repo = repo.clone();
+        blocking(move || worktree::current_branch(&repo))
+            .await
+            .ok()
+            .flatten()
+    };
+    record.meta.worktree = false;
+    record.meta.baseline = None;
+    record.touch();
+    if !save_record(app, record.clone(), expected).await? {
+        return Err(tr("dsh.task.busy").to_string());
+    }
     emit(app);
-    Ok(json!({ "sessionId": request.session_id }))
+
+    // The cwd goes back to the project repository (or the chat scratch area).
+    if let Some(cwd) = chat_cwd(app, &record.task.id).await {
+        if let Ok(bridge) = bridge(app) {
+            if let Err(error) = bridge.assign_session(&record.task.id, &cwd).await {
+                tracing::warn!(%error, session = %record.task.id, "chat cwd was not restored");
+            }
+        }
+    }
+    Ok(task_value(app, record.task))
 }
+
+// ---------------------------------------------------------------------------
+// Session directories
+// ---------------------------------------------------------------------------
 
 /// The directory one session works in, resolved without the runtime.
 ///
-/// Chats own a scratch dir under the data directory; tasks use their worktree
-/// while it exists and fall back to the repository. A session with no task row
-/// can still own a chat directory (a draft that already prompted), so that
-/// case answers only when the directory is there. The file viewer scopes a tab
-/// to this root through the `__session__:<id>` workspace id.
+/// Chats use their worktree, then their project repository, then a scratch dir
+/// under the data directory. Task rows use their worktree while it exists and
+/// fall back to the repository. A session with no task row can still own a chat
+/// directory (a draft that already prompted), so that case answers only when
+/// the directory is there. The file viewer scopes a tab to this root through
+/// the `__session__:<id>` workspace id.
 pub(crate) fn session_root(app: &AppHandle, session_id: &str) -> Option<PathBuf> {
     let state = shared(app).ok()?;
     let chat = state
@@ -604,9 +2670,6 @@ pub(crate) fn session_root(app: &AppHandle, session_id: &str) -> Option<PathBuf>
     let Some(record) = task_store::load(&state.cache, session_id).ok().flatten() else {
         return chat.is_dir().then_some(chat);
     };
-    if record.task.kind == TaskKind::Chat {
-        return Some(chat);
-    }
     if let Some(worktree) = record
         .task
         .worktree_path
@@ -620,6 +2683,12 @@ pub(crate) fn session_root(app: &AppHandle, session_id: &str) -> Option<PathBuf>
         }
     }
     let repo = record.task.repo_path.trim().to_string();
+    if record.task.kind == TaskKind::Chat {
+        if !repo.is_empty() {
+            return Some(PathBuf::from(repo));
+        }
+        return chat.is_dir().then_some(chat);
+    }
     (!repo.is_empty()).then(|| PathBuf::from(repo))
 }
 
@@ -634,21 +2703,29 @@ pub async fn session_dir(app: &AppHandle, session_id: &str) -> Result<Value, Str
     let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
         return Err(not_found(session_id));
     };
-    let path = match record.task.kind {
-        TaskKind::Chat => state
-            .paths
-            .data_dir
-            .join("dsh")
-            .join("chats")
-            .join(&record.task.id)
-            .to_string_lossy()
-            .to_string(),
-        _ => record
-            .task
-            .worktree_path
-            .clone()
-            .filter(|path| !path.trim().is_empty())
-            .unwrap_or_else(|| record.task.repo_path.clone()),
+    let path = match record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+    {
+        Some(worktree) => worktree,
+        None if record.task.kind == TaskKind::Chat => {
+            let repo = record.task.repo_path.trim().to_string();
+            if repo.is_empty() {
+                state
+                    .paths
+                    .data_dir
+                    .join("dsh")
+                    .join("chats")
+                    .join(&record.task.id)
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                repo
+            }
+        }
+        None => record.task.repo_path.clone(),
     };
     Ok(json!({
         "path": path,
@@ -767,1060 +2844,79 @@ fn repo_of(worktree: &std::path::Path) -> Option<String> {
     Some(repo.to_string_lossy().to_string())
 }
 
-/// Schedules the review of a finished turn. Idempotent: a task that already
-/// left `running` is ignored, so a replayed snapshot cannot restart the work.
-pub fn on_turn_end(
-    app: &AppHandle,
-    session_id: &str,
-    at: &str,
-    reason: Option<&str>,
-    error: Option<&str>,
-) {
-    let app = app.clone();
-    let session_id = session_id.to_string();
-    let at = at.to_string();
-    let reason = reason.map(str::to_string);
-    let error = error.map(str::to_string);
-    tauri::async_runtime::spawn(async move {
-        if let Err(problem) = finish_turn(&app, &session_id, &at, reason.as_deref(), error.as_deref()).await {
-            tracing::warn!(%problem, session = session_id, "failed to review a finished dsh turn");
-        }
-    });
-}
-
-async fn finish_turn(
-    app: &AppHandle,
-    session_id: &str,
-    at: &str,
-    reason: Option<&str>,
-    error: Option<&str>,
-) -> Result<(), String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = session_id.to_string();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Ok(());
-    };
-    if record.task.workflow != Workflow::Running {
-        return Ok(());
-    }
-    // A chat has no repository, so there is nothing to review; its workflow
-    // stays `running`. The row still records activity: the list sorts and
-    // displays chats by it long after the live session is gone.
-    if record.task.kind == TaskKind::Chat {
-        let mut record = record;
-        record.task.message_count = live_sessions(app)
-            .get(session_id)
-            .map(|session| session.message_count as u32)
-            .unwrap_or(record.task.message_count);
-        record.touch_at(at);
-        let expected = record.task.workflow;
-        let state = shared(app)?;
-        let cache = state.cache.clone();
-        let stored = record.clone();
-        if blocking(move || task_store::update_if(&cache, &stored, expected)).await? {
-            emit(app);
-        }
-        return Ok(());
-    }
-
-    // A user stop is settled by the cancel command that owns `canceled` here;
-    // reviewing an aborted turn would race that transition.
-    if reason == Some("aborted") {
-        return Ok(());
-    }
-
-    let workspace = workspace_for(&record);
-    let summary = match blocking(move || {
-        workspace
-            .summary()
-            .map_err(|error| error.message().to_string())
-    })
-    .await
-    {
-        Ok(summary) => summary,
-        Err(error) => {
-            // The task cannot be reviewed, so it must not claim to be running
-            // forever. `failed` is terminal; the turn row still carries the
-            // model's own failure reason.
-            fail_task(app, session_id, &error).await;
-            return Err(error);
-        }
-    };
-
-    // A failed turn on a clean tree did no work: reviewing it would report
-    // "done" precisely because the model never ran. `done` is terminal, which
-    // is how a task ticked "已完成" while its retry was still working. A failed
-    // turn that *did* change files still needs the review it earned.
-    if failed_turn(reason) && summary.file_count == 0 {
-        fail_task(app, session_id, error.unwrap_or("turn failed")).await;
-        return Ok(());
-    }
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = session_id.to_string();
-    let Some(mut record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Ok(());
-    };
-    if record.task.workflow != Workflow::Running {
-        // A cancel (or an earlier turn end) won while the diff was computed.
-        return Ok(());
-    }
-    let (next, changes) = review_outcome(&summary);
-    let expected = transition(&mut record, next)?;
-    record.task.changes = changes;
-    record.task.merge = None;
-    record.task.message_count = live_sessions(app)
-        .get(session_id)
-        .map(|session| session.message_count as u32)
-        .unwrap_or(record.task.message_count);
-    record.touch_at(at);
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let stored = record.clone();
-    let changed = blocking(move || task_store::update_if(&cache, &stored, expected)).await?;
-    if !changed {
-        return Ok(());
-    }
-    complete_local(app, &record).await;
-    emit(app);
-    Ok(())
-}
-
-async fn fail_task(app: &AppHandle, session_id: &str, reason: &str) {
-    tracing::warn!(session = session_id, %reason, "dsh task failed");
-    let Ok(state) = shared(app) else {
-        return;
-    };
-    let cache = state.cache.clone();
-    let id = session_id.to_string();
-    let reloaded = blocking(move || task_store::load(&cache, &id)).await;
-    let Ok(Some(mut record)) = reloaded else {
-        return;
-    };
-    let Ok(expected) = transition(&mut record, Workflow::Failed) else {
-        return;
-    };
-    record.touch();
-    let state = match shared(app) {
-        Ok(state) => state,
-        Err(_) => return,
-    };
-    let cache = state.cache.clone();
-    if let Ok(true) = blocking(move || task_store::update_if(&cache, &record, expected)).await {
-        emit(app);
-    }
-}
-
-/// Reopens a finished or failed task for the turn about to start.
-///
-/// Called only from paths that just accepted new input (a prompt, a retry).
-/// Log replay and late events never reach it, so a restored session cannot
-/// resurrect a task it already settled.
-pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = session_id.to_string();
-    let reopened = blocking(move || {
-        let Some(mut record) = task_store::load(&cache, &id)? else {
-            return Ok::<_, String>(false);
-        };
-        let Some(next) = reopen_target(record.task.workflow) else {
-            return Ok(false);
-        };
-        let expected = record.task.workflow;
-        record.task.workflow = next;
-        // Deliberately not `touch()`: the new turn's own events carry the time,
-        // and reopening must not jump the row to the top by itself.
-        task_store::update_if(&cache, &record, expected)
-    })
-    .await?;
-    if reopened {
-        emit(app);
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
-// Enqueue: bug
+// Delete
 // ---------------------------------------------------------------------------
 
-async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let config = agent_settings::config_for(app);
-    let project = config
-        .projects
-        .get(request.workspace_id.trim())
-        .cloned()
-        .filter(|project| !project.repo_path.trim().is_empty())
-        .ok_or_else(|| tr("dsh.task.repo.missing").to_string())?;
-
-    let repo_hint = project.repo_path.clone();
-    let repo_path = blocking(move || worktree::repo_root(&repo_hint))
-        .await
-        .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
-
-    let detail =
-        crate::commands::bugs::fetch_bug_detail(app, &request.workspace_id, &request.bug_id)
-            .await?;
-    let export =
-        crate::export::export_detail(app, &state.paths, &request.workspace_id, None, &detail)
-            .await
-            .map_err(|error| tr_args("dsh.task.export.failed", &[&error]))?;
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let branch = config
-        .worktree_enabled
-        .then(|| worktree::branch_name("tapd", &request.bug_id, &session_id));
-    let work_dir = prepare_work_dir(&state, &repo_path, &session_id, branch.clone()).await?;
-
-    let title = text_or(&detail.summary.title, &request.bug_id);
-    let severity = labelled(&detail.summary.severity_label, &detail.summary.severity);
-    let priority = labelled(&detail.summary.priority_label, &detail.summary.priority);
-    let workspace_name = text_or(&detail.workspace_name, &request.workspace_id);
-    let created_at = now();
-    let task = DshTask {
-        id: session_id.clone(),
-        kind: TaskKind::Bug,
-        project: Some(TaskProject {
-            id: request.workspace_id.clone(),
-            name: workspace_name.clone(),
-            kind: ProjectKind::Tapd,
-        }),
-        title: title.clone(),
-        bug_id: Some(request.bug_id.clone()),
-        workflow: Workflow::Running,
-        status: SessionStatus::Idle,
-        repo_path: repo_path.clone(),
-        worktree_path: work_dir.worktree_path.clone(),
-        branch: branch.clone(),
-        json_path: export.bug_json.clone(),
-        created_at: created_at.clone(),
-        updated_at: created_at,
-        message_count: 0,
-        changes: None,
-        review: None,
-        merge: None,
-    };
-    let record = TaskRecord {
-        task,
-        meta: TaskMeta {
-            workspace_id: Some(request.workspace_id.clone()),
-            baseline: work_dir.baseline,
-            worktree: config.worktree_enabled,
-            export_dir: Some(export.dir),
-            ..TaskMeta::default()
-        },
-    };
-
-    let vars = PromptVars {
-        task_id: session_id.clone(),
-        title,
-        json_path: export.bug_json,
-        repo_path: work_dir.path,
-        workspace_name,
-        bug_id: request.bug_id,
-        severity,
-        priority,
-        user_prompt: request.extra_prompt.unwrap_or_default(),
-        attachments: request.attachments,
-        coworker: coworker_section(app, &config),
-    };
-    let prompt = build_prompt(&config, vars, &project.rule, false);
-    launch(app, record, prompt, None).await
-}
-
-// ---------------------------------------------------------------------------
-// Enqueue: local work item
-// ---------------------------------------------------------------------------
-
-async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let store = state.local.clone();
-    let item_id = request.item_id.clone();
-    let (item, project) = blocking(move || store.item_with_project(&item_id)).await?;
-    if item.project_id != request.project_id.trim() {
-        return Err(tr("local.item.notfound").to_string());
-    }
-
-    let repo_hint = project.repo_path.clone();
-    let repo_path = blocking(move || worktree::repo_root(&repo_hint))
-        .await
-        .map_err(|_| tr("dsh.task.local.repo").to_string())?;
-
-    let config = agent_settings::config_for(app);
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let branch = config
-        .worktree_enabled
-        .then(|| worktree::branch_name("local", &item.id, &session_id));
-    let work_dir = prepare_work_dir(&state, &repo_path, &session_id, branch.clone()).await?;
-
-    let document = crate::export::local::LocalExportDocument {
-        id: item.id.clone(),
-        title: item.title.clone(),
-        description: item.description.clone(),
-        project_id: project.id.clone(),
-        project_name: project.name.clone(),
-        repo_path: repo_path.clone(),
-        project_rule: project.rule.clone(),
-        created_at: item.created_at.clone(),
-    };
-    let paths = state.paths.clone();
-    let json_path = blocking(move || {
-        crate::export::local::run_local_export(&paths, &document)
-            .map(|path| path.to_string_lossy().to_string())
-    })
-    .await?;
-
-    let created_at = now();
-    let task = DshTask {
-        id: session_id.clone(),
-        kind: TaskKind::LocalItem,
-        project: Some(TaskProject {
-            id: project.id.clone(),
-            name: project.name.clone(),
-            kind: ProjectKind::Local,
-        }),
-        title: item.title.clone(),
-        bug_id: None,
-        workflow: Workflow::Running,
-        status: SessionStatus::Idle,
-        repo_path: repo_path.clone(),
-        worktree_path: work_dir.worktree_path.clone(),
-        branch: branch.clone(),
-        json_path: json_path.clone(),
-        created_at: created_at.clone(),
-        updated_at: created_at,
-        message_count: 0,
-        changes: None,
-        review: None,
-        merge: None,
-    };
-    let record = TaskRecord {
-        task,
-        meta: TaskMeta {
-            baseline: work_dir.baseline,
-            worktree: config.worktree_enabled,
-            local_project_id: Some(project.id.clone()),
-            local_item_id: Some(item.id.clone()),
-            local_previous_status: Some(item.status.as_str().to_string()),
-            export_dir: Some(
-                std::path::Path::new(&json_path)
-                    .parent()
-                    .map(|parent| parent.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            ),
-            ..TaskMeta::default()
-        },
-    };
-
-    let vars = PromptVars {
-        task_id: session_id,
-        title: item.title,
-        json_path,
-        repo_path: work_dir.path,
-        workspace_name: project.name.clone(),
-        bug_id: String::new(),
-        severity: String::new(),
-        priority: String::new(),
-        user_prompt: request.extra_prompt.unwrap_or_default(),
-        attachments: request.attachments,
-        coworker: coworker_section(app, &config),
-    };
-    let prompt = build_prompt(&config, vars, &project.rule, true);
-    let link = LocalLink {
-        item_id: item.id,
-        previous_status: item.status,
-    };
-    launch(app, record, prompt, Some(link)).await
-}
-
-/// Where a task runs: an isolated worktree (with a baseline) or the project
-/// repository itself.
-struct WorkDir {
-    path: String,
-    baseline: Option<String>,
-    worktree_path: Option<String>,
-}
-
-async fn prepare_work_dir(
-    state: &SharedState,
-    repo_path: &str,
-    session_id: &str,
-    branch: Option<String>,
-) -> Result<WorkDir, String> {
-    match branch {
-        Some(branch) => {
-            let repo = repo_path.to_string();
-            let target = state.paths.worktrees_dir.join(session_id);
-            let created = blocking(move || worktree::create(&repo, &target, &branch))
-                .await
-                .map_err(|error| tr_args("dsh.task.worktree.failed", &[&error]))?;
-            Ok(WorkDir {
-                path: created.path.clone(),
-                baseline: Some(created.baseline),
-                worktree_path: Some(created.path),
-            })
-        }
-        None => {
-            let repo = repo_path.to_string();
-            let baseline = blocking(move || worktree::head(&repo))
-                .await
-                .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
-            Ok(WorkDir {
-                path: repo_path.to_string(),
-                baseline,
-                worktree_path: None,
-            })
-        }
-    }
-}
-
-/// Item facts for rolling a local link back when the launch fails.
-struct LocalLink {
-    item_id: String,
-    previous_status: WorkItemStatus,
-}
-
-/// Writes the row, links the local item, then starts the session. Any failure
-/// removes the row and the worktree: the list must never show a half task.
-async fn launch(
-    app: &AppHandle,
-    record: TaskRecord,
-    prompt: String,
-    local: Option<LocalLink>,
-) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = record.task.id.clone();
-    let work_dir = record.work_dir();
-
-    {
-        let cache = cache.clone();
-        let record = record.clone();
-        blocking(move || task_store::insert(&cache, &record)).await?;
-    }
-
-    if let Some(link) = local.as_ref() {
-        let store = state.local.clone();
-        let item_id = link.item_id.clone();
-        let task_id = id.clone();
-        let at = now();
-        if let Err(error) = blocking(move || store.attach_task(&item_id, &task_id, &at)).await {
-            rollback(app, &record, local.as_ref()).await;
-            return Err(error);
-        }
-    }
-
-    if let Err(error) = start_session(app, &id, &work_dir, &prompt).await {
-        rollback(app, &record, local.as_ref()).await;
-        return Err(error);
-    }
-
-    emit(app);
-    let mut task = record.task;
-    overlay(&mut task, &live_sessions(app));
-    Ok(json!({ "task": task }))
-}
-
-/// Best-effort cleanup. The row is authoritative, so its deletion goes first;
-/// the worktree and the local link are secondary and only logged on failure.
-async fn rollback(app: &AppHandle, record: &TaskRecord, local: Option<&LocalLink>) {
-    let Ok(state) = shared(app) else {
-        return;
-    };
-    let cache = state.cache.clone();
-    let id = record.task.id.clone();
-    if let Err(error) = blocking(move || task_store::delete(&cache, &id)).await {
-        tracing::error!(%error, "failed to remove a rolled-back dsh task row");
-    }
-    if record.meta.worktree {
-        if let Some(path) = record.task.worktree_path.clone() {
-            let repo = record.task.repo_path.clone();
-            if let Err(error) = blocking(move || worktree::remove(&repo, &path)).await {
-                tracing::warn!(%error, "failed to remove the rolled-back worktree");
-            }
-        }
-    }
-    if let Some(link) = local {
-        let store = state.local.clone();
-        let item_id = link.item_id.clone();
-        let task_id = record.task.id.clone();
-        let at = now();
-        // `attach_task` also moved the item to in_progress; a failed launch must
-        // put it back exactly where the user had it. `forget_task` matches on
-        // the stored task id, not the item id.
-        let previous = link.previous_status.as_str().to_string();
-        if let Err(error) = blocking(move || {
-            store.forget_task(&task_id, &at)?;
-            store
-                .update_item(&item_id, None, None, Some(previous.as_str()))
-                .map(|_| ())
-        })
-        .await
-        {
-            tracing::warn!(%error, "failed to roll back a local item link");
-        }
-    }
-}
-
-/// The session starting directory is assigned before the first prompt. The
-/// runtime boots first: the bridge only accepts control frames once its plugin
-/// has connected, and a cold start needs a moment for that socket.
-async fn start_session(
-    app: &AppHandle,
-    session_id: &str,
-    work_dir: &str,
-    prompt: &str,
-) -> Result<(), String> {
-    let runtime = runtime(app)?;
-    runtime.ensure_ready(app).await?;
-    // Create the Agent and lock in the configured model before the first turn;
-    // the worktree assignment below then moves its directory.
-    runtime.prepare_session(app, session_id, true).await;
-    assign_session_with_retry(app, session_id, work_dir).await?;
-    runtime.query(app, session_id, prompt).await?;
-    Ok(())
-}
-
-/// Waits briefly for the plugin connection instead of failing the enqueue on
-/// the first frame. After the budget the error is surfaced: running in the
-/// wrong directory is worse than not starting.
-async fn assign_session_with_retry(
-    app: &AppHandle,
-    session_id: &str,
-    work_dir: &str,
-) -> Result<(), String> {
-    let bridge = bridge(app)?;
-    let mut last_error = None;
-    for attempt in 0..30 {
-        match bridge.assign_session(session_id, work_dir).await {
-            Ok(()) => return Ok(()),
-            Err(error) => last_error = Some(error),
-        }
-        if attempt == 29 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    Err(last_error.unwrap_or_else(|| tr("dsh.bridge.unavailable").to_string()))
-}
-
-/// The roster belongs to the solo path. With team collaboration on, work is
-/// assigned on the board and the prompt carries no coworker names at all.
-fn coworker_section(app: &AppHandle, config: &AgentConfig) -> String {
-    if config.team_enabled() {
-        String::new()
-    } else {
-        coworker::prompt_section(app, &config.coworker_ids)
-    }
-}
-
-fn build_prompt(config: &AgentConfig, vars: PromptVars, rule: &str, local: bool) -> String {
-    let template = if local {
-        tr(agent_settings::LOCAL_PROMPT_KEY)
-    } else {
-        config.prompt_template.as_str()
-    };
-    let mut prompt = agent_settings::render_prompt(template, &vars);
-    let rule = rule.trim();
-    if !rule.is_empty() {
-        // The template contract has no `{{project_rule}}` slot (it was removed
-        // with the external-tool flow), so project rules are appended.
-        prompt.push_str(tr("dsh.task.prompt.rule"));
-        prompt.push_str(rule);
-    }
-    prompt
-}
-
-// ---------------------------------------------------------------------------
-// Approve / merge
-// ---------------------------------------------------------------------------
-
-async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
+/// Removes one session: its row, its mode, its log and whatever directory the
+/// app created for it. The repository a task was opened from is never touched;
+/// a worktree is removed with `--force`, because the account that can delete a
+/// session is the one that owns its uncommitted changes.
+async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
         return Err(not_found(&request.session_id));
     };
-    // Approving commits the tree, so it is only safe once the turn stopped:
-    // a live turn would keep writing after the snapshot, and the merge path
-    // would then discard those writes with the worktree. The persisted row
-    // does not carry the live status (`overlay` computes it for output), so
-    // the bridge registry is the authoritative source.
-    let live_running = live_sessions(app)
-        .get(&request.session_id)
-        .is_some_and(|session| session.status == SessionStatus::Running);
-    if live_running {
-        return Err(tr("dsh.task.approve.busy").to_string());
+    if live_running(app, &request.session_id) {
+        return Err(tr("dsh.chat.delete.running").to_string());
     }
-    if !matches!(
-        record.task.workflow,
-        Workflow::Running | Workflow::AwaitingReview
-    ) {
-        return Err(tr("dsh.task.state.invalid").to_string());
-    }
-
-    let work_dir = record.work_dir();
-    let message = commit_message(&record.task);
-    blocking(move || worktree::commit_all(&work_dir, &message))
-        .await
-        .map_err(|error| tr_args("dsh.task.commit.failed", &[&error]))?;
-
-    // The commit can take a while; a `turn/end` may have moved the workflow in
-    // the meantime, so the transition is applied to the fresh row.
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(mut record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    // The comment reports the task's product, not whatever a stale turn end
-    // recorded; the committed tree is the authoritative count.
-    let workspace = workspace_for(&record);
-    if let Ok(summary) = blocking(move || {
-        workspace
-            .summary()
-            .map_err(|error| error.message().to_string())
-    })
-    .await
-    {
-        record.task.changes = Some(TaskChanges {
-            files: summary.file_count,
-            additions: summary.additions,
-            deletions: summary.deletions,
-        });
-    }
-    record.task.merge = None;
-    let next = if record.meta.worktree {
-        Workflow::AwaitingMerge
-    } else {
-        Workflow::Done
-    };
-
-    let writeback_error = if record.meta.worktree {
-        None
-    } else {
-        // Without worktree isolation the change is already in the main
-        // repository; the TAPD write-back is what remains.
-        match writeback::write_back(
-            app,
-            &record.task,
-            record.meta.workspace_id.as_deref().unwrap_or_default(),
-            record.task.changes.as_ref(),
-        )
-        .await
-        {
-            Ok(()) => None,
-            Err(error) => Some(error),
-        }
-    };
-
-    let expected = match writeback_error {
-        Some(error) => {
-            // The task is already `awaiting_review` here; keeping the workflow
-            // and surfacing the error is the retry contract. A transition to
-            // the same state is not a legal move, and asking for one would
-            // replace the real write-back error with "invalid state".
-            record.task.merge = Some(TaskMerge {
-                error,
-                instructions: String::new(),
-            });
-            if record.task.workflow == Workflow::Running {
-                transition(&mut record, Workflow::AwaitingReview)?
-            } else {
-                record.task.workflow
-            }
-        }
-        None => {
-            record.task.merge = None;
-            transition(&mut record, next)?
-        }
-    };
-    record.touch();
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let stored = record.clone();
-    let changed = blocking(move || task_store::update_if(&cache, &stored, expected)).await?;
-    if !changed {
-        return Err(tr("dsh.task.state.invalid").to_string());
-    }
-    complete_local(app, &record).await;
-    emit(app);
-    Ok(task_value(app, record.task))
-}
-
-/// One merge at a time: two merges into the same repository would interleave
-/// their index lock and conflict resolution.
-static MERGE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-fn merge_lock() -> &'static tokio::sync::Mutex<()> {
-    MERGE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-enum MergeAttempt {
-    Merged {
-        worktree_removed: bool,
-        changes: Option<TaskChanges>,
-    },
-    Failed(String),
-}
-
-/// A worktree that still holds uncommitted work (or cannot be inspected) is
-/// kept: `remove --force` would silently discard edits made after approval.
-fn keep_worktree(path: &str) -> bool {
-    std::path::Path::new(path).is_dir() && worktree::is_dirty(path).unwrap_or(true)
-}
-
-async fn merge(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    if record.task.workflow != Workflow::AwaitingMerge {
-        return Err(tr("dsh.task.state.invalid").to_string());
-    }
-    let Ok(_guard) = merge_lock().try_lock() else {
-        return Err(tr("dsh.task.busy").to_string());
-    };
-    // `cancel` takes the same lock, but a transition can still win between the
-    // first read and the lock; re-read so a canceled task is never merged.
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    if record.task.workflow != Workflow::AwaitingMerge {
-        return Ok(task_value(app, record.task));
-    }
-    let Some(branch) = record
+    let worktree = record
         .task
-        .branch
+        .worktree_path
         .clone()
-        .filter(|branch| !branch.trim().is_empty())
-    else {
-        return Err(tr("dsh.task.state.invalid").to_string());
-    };
-
+        .filter(|path| !path.trim().is_empty());
     let repo = record.task.repo_path.clone();
-    let merge_message = format!("Merge branch '{branch}'");
-    let branch_for_merge = branch.clone();
-    let baseline = record.meta.baseline.clone();
-    let workspace = workspace_for(&record);
-    let worktree_path = record.task.worktree_path.clone();
-    let attempt = blocking(move || {
-        if worktree::is_dirty(&repo)? {
-            return Err(tr("dsh.task.merge.dirty").to_string());
-        }
-        // `merge --no-ff` exits 0 ("Already up to date") when the branch never
-        // advanced, and the ancestor proof would then pass vacuously. A task
-        // whose changes were reverted must not be declared merged.
-        if let Some(baseline) = baseline.as_deref() {
-            if worktree::branch_tip(&repo, &branch_for_merge)? == baseline {
-                return Ok(MergeAttempt::Failed(
-                    tr("dsh.task.merge.empty").to_string(),
-                ));
-            }
-        }
-        match worktree::merge_no_ff(&repo, &branch_for_merge, &merge_message) {
-            Ok(()) => {}
-            Err(error) => return Ok(MergeAttempt::Failed(error)),
-        }
-        if !worktree::is_ancestor(&repo, &branch_for_merge, "HEAD")? {
-            return Ok(MergeAttempt::Failed(
-                tr("dsh.task.merge.ancestor").to_string(),
-            ));
-        }
-        let worktree_removed = match worktree_path {
-            Some(path) => {
-                if keep_worktree(&path) {
-                    tracing::warn!(
-                        worktree = %path,
-                        "merged with uncommitted worktree changes; keeping the directory"
-                    );
-                    false
-                } else {
-                    match worktree::remove(&repo, &path) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            tracing::warn!(%error, "merged but failed to remove the worktree");
-                            false
-                        }
-                    }
-                }
-            }
-            None => false,
-        };
-        // The branch survives the worktree, so the summary still describes the
-        // change for the TAPD comment.
-        let changes = workspace.summary().ok().map(|summary| TaskChanges {
-            files: summary.file_count,
-            additions: summary.additions,
-            deletions: summary.deletions,
+
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    blocking(move || task_store::delete(&cache, &id)).await?;
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = request.session_id.clone();
+    let _ = blocking(move || super::mode_store::delete(&cache, &id)).await
+        .map_err(|error| {
+            tracing::warn!(%error, session = %request.session_id, "failed to delete the session mode");
         });
-        Ok(MergeAttempt::Merged {
-            worktree_removed,
-            changes,
-        })
-    })
-    .await
-    .map_err(|error| tr_args("dsh.task.git.failed", &[&error]))?;
-
-    let attempt = match attempt {
-        MergeAttempt::Merged {
-            worktree_removed,
-            changes,
-        } => Ok((worktree_removed, changes)),
-        MergeAttempt::Failed(error) => Err(tr_args("dsh.task.merge.failed", &[&error])),
-    };
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(mut record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    if record.task.workflow != Workflow::AwaitingMerge {
-        // Defensive: `cancel` is serialized on the merge lock, so a canceled
-        // task should not reach the physical merge; if something else moved
-        // the row, leave it untouched and let the UI see the fresh value.
-        emit(app);
-        return Ok(task_value(app, record.task));
-    }
-    let expected = record.task.workflow;
-
-    let outcome = match attempt {
-        Ok((worktree_removed, changes)) => {
-            if worktree_removed {
-                record.task.worktree_path = None;
-            }
-            if let Some(changes) = changes.clone() {
-                record.task.changes = Some(changes);
-            }
-            match writeback::write_back(
-                app,
-                &record.task,
-                record.meta.workspace_id.as_deref().unwrap_or_default(),
-                record.task.changes.as_ref(),
-            )
-            .await
-            {
-                Ok(()) => {
-                    record.task.merge = None;
-                    transition(&mut record, Workflow::Done)?
-                }
-                Err(error) => {
-                    record.task.merge = Some(TaskMerge {
-                        error,
-                        instructions: merge_instructions(&branch),
-                    });
-                    expected
-                }
-            }
-        }
-        Err(error) => {
-            record.task.merge = Some(TaskMerge {
-                error,
-                instructions: merge_instructions(&branch),
-            });
-            expected
-        }
-    };
-    record.touch();
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let stored = record.clone();
-    let changed = blocking(move || task_store::update_if(&cache, &stored, outcome)).await?;
-    if !changed {
-        return Err(tr("dsh.task.busy").to_string());
-    }
-    complete_local(app, &record).await;
-    emit(app);
-    Ok(task_value(app, record.task))
-}
-
-fn merge_instructions(branch: &str) -> String {
-    tr_args("dsh.task.merge.instructions", &[&branch])
-}
-
-/// Deterministic commit subject; no model turn participates in approvals.
-fn commit_message(task: &DshTask) -> String {
-    let title: String = task
-        .title
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let title: String = title.chars().take(120).collect();
-    match task.bug_id.as_deref().filter(|id| !id.trim().is_empty()) {
-        Some(bug_id) => format!("tapd({bug_id}): {title}"),
-        None => format!(
-            "local({}): {title}",
-            task.project
-                .as_ref()
-                .map(|project| project.id.as_str())
-                .unwrap_or("item")
-        ),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cancel / resume / diff
-// ---------------------------------------------------------------------------
-
-async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    if record.task.workflow.is_terminal() {
-        // Canceling a finished task is a no-op: terminal states never regress.
-        return Ok(task_value(app, record.task));
-    }
-
-    // Merging and canceling must not interleave: the branch merge and its
-    // write-back are one physical step, and a cancel landing mid-merge would
-    // leave a canceled task already in main.
-    let Ok(_guard) = merge_lock().try_lock() else {
-        return Err(tr("dsh.task.cancel.busy").to_string());
-    };
-
     if let Ok(bridge) = bridge(app) {
-        if let Err(error) = bridge.cancel_session(&record.task.id).await {
-            // A task restored from a previous app run has no live turn; the
-            // cancel still has to persist.
-            tracing::debug!(%error, session = %record.task.id, "no live turn to cancel");
-        }
+        bridge.forget_session(app, &request.session_id);
     }
 
-    if request.stash {
-        let work_dir = record.work_dir();
-        if !work_dir.is_empty() {
-            let id = record.task.id.clone();
-            let message = format!("tapd task {id} canceled");
-            blocking(move || worktree::stash_all(&work_dir, &message))
-                .await
-                .map_err(|error| tr_args("dsh.task.cancel.stash", &[&error]))?;
-        }
-    }
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(mut record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    let expected = transition(&mut record, Workflow::Canceled)?;
-    record.task.merge = None;
-    record.task.message_count = live_sessions(app)
-        .get(&request.session_id)
-        .map(|session| session.message_count as u32)
-        .unwrap_or(record.task.message_count);
-    record.touch();
-
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let stored = record.clone();
-    let changed = blocking(move || task_store::update_if(&cache, &stored, expected)).await?;
-    if !changed {
-        return Err(tr("dsh.task.state.invalid").to_string());
-    }
-    // Canceling a local-item task used to leave the item stuck in in_progress
-    // with a dangling agentTaskId: `attach_task` is the only thing that moves
-    // it, and `complete_local` only runs for Done. Undo the link here.
-    if record.task.kind == TaskKind::LocalItem {
-        if let Some(item_id) = record.meta.local_item_id.clone() {
-            let store = shared(app)?.local.clone();
-            let task_id = record.task.id.clone();
-            let previous = record
-                .meta
-                .local_previous_status
-                .clone()
-                .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string());
-            let at = now();
-            if let Err(error) = blocking(move || {
-                store.forget_task(&task_id, &at)?;
-                store
-                    .update_item(&item_id, None, None, Some(previous.as_str()))
-                    .map(|_| ())
+    // The conversation file and the chat's scratch workspace exist for this
+    // session only; leaving either behind lets a later hydrate resurrect it.
+    if let Some(sessions_dir) = super::session_log::dir(app) {
+        if let Some(dir) = super::session_log::path(&sessions_dir, &request.session_id)
+            .and_then(|log| log.parent().map(|parent| parent.to_path_buf()))
+        {
+            let _ = blocking(move || {
+                std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())
             })
-            .await
-            {
-                tracing::warn!(%error, "failed to revert the canceled item link");
-            }
+            .await;
         }
     }
-    emit(app);
-    Ok(task_value(app, record.task))
-}
-
-async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-
-    let runtime = runtime(app)?;
-    runtime.ensure_ready(app).await?;
-    // The shared helper also snapshots the session's model choice before the
-    // SDK resume resets it to the runtime default.
-    if let Err(error) = runtime.resume_session(app, &request.session_id).await {
-        return Err(tr_args("dsh.task.resume.failed", &[&error]));
-    }
-
-    // Re-attaching a persisted session is not activity: bumping `updated_at`
-    // here reordered the list every time a row was opened.
-    let mut record = record;
-    record.task.status = SessionStatus::Idle;
-    let expected = record.task.workflow;
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let stored = record.clone();
-    let changed = blocking(move || task_store::update_if(&cache, &stored, expected)).await?;
-    if !changed {
-        let state = shared(app)?;
-        let cache = state.cache.clone();
-        let id = request.session_id.clone();
-        let Some(fresh) = blocking(move || task_store::load(&cache, &id)).await? else {
-            return Err(not_found(&request.session_id));
-        };
-        return Ok(task_value(app, fresh.task));
-    }
-    emit(app);
-    Ok(task_value(app, record.task))
-}
-
-async fn diff(app: &AppHandle, request: DiffRequest) -> Result<Value, String> {
-    let state = shared(app)?;
-    let cache = state.cache.clone();
-    let id = request.session_id.clone();
-    let Some(record) = blocking(move || task_store::load(&cache, &id)).await? else {
-        return Err(not_found(&request.session_id));
-    };
-    let workspace = workspace_for(&record);
-    let file = request.file;
-    let view = blocking(move || {
-        workspace
-            .diff(file.as_deref())
-            .map_err(|error| error.message().to_string())
+    let workspace = state
+        .paths
+        .data_dir
+        .join("dsh")
+        .join("chats")
+        .join(&request.session_id);
+    let _ = blocking(move || {
+        std::fs::remove_dir_all(&workspace).map_err(|error| error.to_string())
     })
-    .await?;
-    debug_assert!(view.text.chars().count() <= tapd_workspace::MAX_DIFF_CHARS);
-    Ok(json!({ "diff": view.text, "truncated": view.truncated }))
+    .await;
+
+    // Best effort: a repository that moved away must not keep a dead row in the
+    // list, and the project page still lists whatever directory is left over.
+    if let Some(path) = worktree {
+        let target = path.clone();
+        let removed = blocking(move || worktree::remove(&repo, &target)).await;
+        if let Err(error) = removed {
+            tracing::warn!(%error, %path, "failed to remove the deleted session's worktree");
+        }
+    }
+
+    emit(app);
+    reschedule(app);
+    Ok(json!({ "sessionId": request.session_id }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1853,6 +2949,30 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| error.to_string())?
 }
 
+async fn load_record(app: &AppHandle, id: &str) -> Result<Option<TaskRecord>, String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let id = id.to_string();
+    blocking(move || task_store::load(&cache, &id)).await
+}
+
+async fn save_record(
+    app: &AppHandle,
+    record: TaskRecord,
+    expected: Workflow,
+) -> Result<bool, String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    blocking(move || task_store::update_if(&cache, &record, expected)).await
+}
+
+async fn insert_task(app: &AppHandle, record: &TaskRecord) -> Result<(), String> {
+    let state = shared(app)?;
+    let cache = state.cache.clone();
+    let stored = record.clone();
+    blocking(move || task_store::insert(&cache, &stored)).await
+}
+
 /// The live session registry, keyed by id. Tasks persisted from a previous app
 /// run have no row here; they are shown as `idle`, not hidden.
 fn live_sessions(app: &AppHandle) -> HashMap<String, DshSession> {
@@ -1865,6 +2985,12 @@ fn live_sessions(app: &AppHandle) -> HashMap<String, DshSession> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn live_running(app: &AppHandle, session_id: &str) -> bool {
+    live_sessions(app)
+        .get(session_id)
+        .is_some_and(|session| session.status == SessionStatus::Running)
 }
 
 fn overlay(task: &mut DshTask, live: &HashMap<String, DshSession>) {
@@ -1888,8 +3014,9 @@ fn task_value(app: &AppHandle, mut task: DshTask) -> Value {
     json!({ "task": task })
 }
 
-/// Loads the list and emits it. Runs after the write's lock is released: an
-/// event listener that calls back into `dsh_tasks` cannot deadlock.
+/// Loads the list, emits it and refreshes the plugin's phase map. Runs after
+/// the write's lock is released: an event listener that calls back into
+/// `dsh_tasks` cannot deadlock.
 fn emit(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1899,6 +3026,7 @@ fn emit(app: &AppHandle) {
             }
             Err(error) => tracing::warn!(%error, "failed to emit the dsh task list"),
         }
+        publish_phases(&app).await;
     });
 }
 
@@ -1991,7 +3119,7 @@ mod tests {
                 message_count: 0,
                 changes: None,
                 review: None,
-                merge: None,
+                finalize: None,
             },
             meta: TaskMeta::default(),
         }
@@ -2000,14 +3128,16 @@ mod tests {
     #[test]
     fn workflow_moves_forward_and_terminal_states_never_regress() {
         for (from, to) in [
+            (Workflow::Queued, Workflow::Running),
+            (Workflow::Queued, Workflow::Canceled),
+            (Workflow::Queued, Workflow::Failed),
             (Workflow::Running, Workflow::AwaitingReview),
-            (Workflow::Running, Workflow::AwaitingMerge),
             (Workflow::Running, Workflow::Done),
             (Workflow::Running, Workflow::Canceled),
-            (Workflow::AwaitingReview, Workflow::AwaitingMerge),
-            (Workflow::AwaitingReview, Workflow::Done),
-            (Workflow::AwaitingMerge, Workflow::Done),
-            (Workflow::AwaitingMerge, Workflow::Canceled),
+            (Workflow::Running, Workflow::Failed),
+            (Workflow::AwaitingReview, Workflow::Finalizing),
+            (Workflow::AwaitingReview, Workflow::Canceled),
+            (Workflow::Finalizing, Workflow::Done),
         ] {
             let mut record = record(from);
             assert_eq!(transition(&mut record, to).expect("allowed"), from);
@@ -2016,9 +3146,10 @@ mod tests {
 
         for state in [Workflow::Done, Workflow::Failed, Workflow::Canceled] {
             for next in [
+                Workflow::Queued,
                 Workflow::Running,
                 Workflow::AwaitingReview,
-                Workflow::AwaitingMerge,
+                Workflow::Finalizing,
                 Workflow::Done,
             ] {
                 let mut record = record(state);
@@ -2031,7 +3162,7 @@ mod tests {
         }
 
         // Going backwards is not an allowed edge either.
-        let mut back = record(Workflow::AwaitingMerge);
+        let mut back = record(Workflow::Finalizing);
         assert!(transition(&mut back, Workflow::AwaitingReview).is_err());
         let mut reopen = record(Workflow::AwaitingReview);
         assert!(transition(&mut reopen, Workflow::Running).is_err());
@@ -2039,13 +3170,18 @@ mod tests {
 
     #[test]
     fn only_input_reopens_a_settled_task() {
-        // A new turn revives work that had settled either way; a canceled task
-        // stays canceled, and a live one has nothing to reopen.
+        // A new turn revives work that had settled either way, and the review
+        // gate's "continue editing" path; a canceled task stays canceled.
         assert_eq!(reopen_target(Workflow::Done), Some(Workflow::Running));
         assert_eq!(reopen_target(Workflow::Failed), Some(Workflow::Running));
+        assert_eq!(
+            reopen_target(Workflow::AwaitingReview),
+            Some(Workflow::Running)
+        );
         assert_eq!(reopen_target(Workflow::Canceled), None);
         assert_eq!(reopen_target(Workflow::Running), None);
-        assert_eq!(reopen_target(Workflow::AwaitingReview), None);
+        assert_eq!(reopen_target(Workflow::Finalizing), None);
+        assert_eq!(reopen_target(Workflow::Queued), None);
     }
 
     #[test]
@@ -2057,6 +3193,73 @@ mod tests {
         assert!(!failed_turn(Some("aborted")));
         assert!(!failed_turn(Some("completed")));
         assert!(!failed_turn(None));
+    }
+
+    #[test]
+    fn the_phase_follows_the_workflow_and_the_finalize_step() {
+        let mut queued = record(Workflow::Queued);
+        assert_eq!(phase_of(&queued), "none");
+        queued.task.workflow = Workflow::Running;
+        assert_eq!(phase_of(&queued), "execute");
+        queued.task.workflow = Workflow::AwaitingReview;
+        assert_eq!(phase_of(&queued), "review");
+        queued.task.workflow = Workflow::Finalizing;
+        assert_eq!(phase_of(&queued), "none", "git steps run without tools");
+        queued.task.finalize = Some(TaskFinalize {
+            step: Some(FinalizeStep::Writeback),
+            ..TaskFinalize::default()
+        });
+        assert_eq!(phase_of(&queued), "writeback");
+        queued.task.workflow = Workflow::Done;
+        assert_eq!(phase_of(&queued), "none");
+
+        let mut chat = record(Workflow::Running);
+        chat.task.kind = TaskKind::Chat;
+        assert_eq!(phase_of(&chat), "chat");
+    }
+
+    #[test]
+    fn the_workflow_and_step_wire_names_are_stable() {
+        assert_eq!(Workflow::Queued.as_str(), "queued");
+        assert_eq!(Workflow::Finalizing.as_str(), "finalizing");
+        assert_eq!(
+            serde_json::to_string(&FinalizeStep::Writeback).unwrap(),
+            "\"writeback\""
+        );
+    }
+
+    #[test]
+    fn slots_only_count_live_running_workflow_tasks() {
+        let mut running = record(Workflow::Running);
+        running.task.id = "live".into();
+        let mut idle_running = record(Workflow::Running);
+        idle_running.task.id = "persisted".into();
+        let mut chat = record(Workflow::Running);
+        chat.task.kind = TaskKind::Chat;
+        chat.task.id = "chat".into();
+        let mut queued = record(Workflow::Queued);
+        queued.task.id = "queued".into();
+        let records = vec![running, idle_running, chat, queued];
+        let live: HashSet<String> = ["live".to_string(), "chat".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(active_slots(&records, &live), 1);
+    }
+
+    #[test]
+    fn the_queue_is_started_oldest_first_and_never_chats() {
+        let mut first = record(Workflow::Queued);
+        first.task.id = "b".into();
+        first.task.created_at = "2026-01-01T00:00:00.000Z".into();
+        let mut second = record(Workflow::Queued);
+        second.task.id = "a".into();
+        second.task.created_at = "2026-01-02T00:00:00.000Z".into();
+        let mut chat = record(Workflow::Queued);
+        chat.task.kind = TaskKind::Chat;
+        chat.task.id = "c".into();
+        chat.task.created_at = "2025-01-01T00:00:00.000Z".into();
+        let records = vec![second, chat, first];
+        assert_eq!(next_queued(&records).map(|row| row.task.id), Some("b".into()));
     }
 
     #[test]
@@ -2101,6 +3304,31 @@ mod tests {
                 })
             )
         );
+    }
+
+    #[test]
+    fn writeback_tools_require_a_bug_at_the_writeback_step() {
+        let mut record = record(Workflow::Finalizing);
+        record.meta.workspace_id = Some("ws".into());
+        record.task.finalize = Some(TaskFinalize {
+            step: Some(FinalizeStep::Merge),
+            ..TaskFinalize::default()
+        });
+        assert!(writeback_bug(&record).is_err(), "git steps expose no tools");
+
+        record.task.finalize = Some(TaskFinalize {
+            step: Some(FinalizeStep::Writeback),
+            ..TaskFinalize::default()
+        });
+        assert_eq!(
+            writeback_bug(&record).expect("writeback"),
+            ("ws".to_string(), "42".to_string())
+        );
+
+        // A local item never has a TAPD binding.
+        record.task.kind = TaskKind::LocalItem;
+        record.task.bug_id = None;
+        assert!(writeback_bug(&record).is_err());
     }
 
     struct TempRepo {

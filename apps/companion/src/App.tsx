@@ -136,7 +136,7 @@ export default function App() {
   const agentBadge =
     feed.pending.length +
     (feed.tasks ?? []).filter(
-      (task) => task.workflow === "awaiting_review" || task.workflow === "awaiting_merge",
+      (task) => task.workflow === "awaiting_review" || task.workflow === "finalizing",
     ).length;
   // Presence handshake: the desktop marks this device online while beats
   // arrive, and the settings page renders the same state locally.

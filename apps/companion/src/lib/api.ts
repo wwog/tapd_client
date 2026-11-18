@@ -346,7 +346,7 @@ export type ProjectAgentConfig = {
 export type AgentSettings = {
   /** TAPD workspace id -> configured local repository folder. */
   projects: Record<string, ProjectAgentConfig>;
-  worktreeEnabled: boolean;
+  /** How many workflow tasks may run at once; the rest queue. */
   executionUnits: number;
 };
 

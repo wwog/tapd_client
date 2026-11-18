@@ -94,7 +94,6 @@ export function AgentConfigTab({ toast, onClose }: Props) {
       .saveConfig({
         promptTemplate: next.promptTemplate,
         teamEnabled: next.teamEnabled,
-        worktreeEnabled: next.worktreeEnabled,
         executionUnits: clamp(next.executionUnits, 1, 8),
         dshModels: next.dshModels,
       })
@@ -268,44 +267,29 @@ export function AgentConfigTab({ toast, onClose }: Props) {
                   <h2 className="text-ui-base text-slate-900">
                     {t("agent.config.execution")}
                   </h2>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <div
-                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-                      title={t("agent.config.worktreeHint")}
-                    >
-                      <span className="text-ui-sm text-slate-600">
-                        {t("agent.config.worktree")}
-                      </span>
-                      <Switch
-                        checked={draft.worktreeEnabled}
-                        onChange={(value) => patchDraft({ worktreeEnabled: value })}
-                      />
-                    </div>
-                    <div
-                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-                      title={t("agent.config.unitsHint")}
-                    >
-                      <span className="text-ui-sm text-slate-600">
-                        {t("agent.config.units")}
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={8}
-                        disabled={!draft.worktreeEnabled}
-                        value={draft.worktreeEnabled ? draft.executionUnits : 1}
-                        onChange={(event) =>
-                          patchDraft({
-                            executionUnits: clamp(
-                              Number.parseInt(event.target.value, 10) || 1,
-                              1,
-                              8,
-                            ),
-                          })
-                        }
-                        className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition disabled:text-slate-400"
-                      />
-                    </div>
+                  <div
+                    className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
+                    title={t("agent.config.unitsHint")}
+                  >
+                    <span className="text-ui-sm text-slate-600">
+                      {t("agent.config.units")}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={draft.executionUnits}
+                      onChange={(event) =>
+                        patchDraft({
+                          executionUnits: clamp(
+                            Number.parseInt(event.target.value, 10) || 1,
+                            1,
+                            8,
+                          ),
+                        })
+                      }
+                      className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-ui-caption tabular-nums text-slate-700 transition"
+                    />
                   </div>
                 </section>
 

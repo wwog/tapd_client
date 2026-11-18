@@ -28,6 +28,17 @@
  *   discover-models → ask the engine which models a draft endpoint advertises
  *   plugins → read the Loader's composed plugin inventory (settings panel)
  *   tools → read the tool registry a new session inherits (settings panel)
+ *   task-phase / task-phases → mirror the host's per-root-session task phase
+ *                  (docs/AGENT_TASK_FLOW.md §5.1); a `task-phase` is answered
+ *                  with `task-phase-applied`
+ *   host-prompt → one hidden host turn on a session (`source.kind = 'host'`),
+ *                  so the transcript does not show it as a user message
+ *
+ * The task flow also runs the other way: `host` frames are requests *to* the
+ * host (`task.submit`, `task.complete`, `tapd.*`), answered on this same
+ * socket by `host-reply` and settled by the plugin-generated `p-N` request id.
+ * The host owns phase transitions and re-validates every call; this plugin
+ * only mirrors the map so conditional tool visibility is cheap.
  *
  * `models` and `discover-models` are requests: the same socket carries the
  * reply (`models-applied` / `models-discovered`) tagged with the caller's
@@ -57,6 +68,13 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
+import {
+  phaseOfEntry,
+  readPhaseEntry,
+  replacePhaseEntries,
+  setPhaseEntry,
+} from './task-phases.js'
+
 export const name = 'tapd-bridge'
 // `sessions` is required for the snapshot; the stream is a core event.
 export const inject = ['sessions', 'agents', 'workingDirectory']
@@ -67,6 +85,10 @@ const RECONNECT_MAX_MS = 4000
 const FIBER_PHASES = ['pending', 'loading', 'active', 'failed', 'unloading']
 /** Board and meter changes commit as session events; one settled frame per burst. */
 const SETTLE_MS = 300
+/** How long one plugin → host request waits before the tool call fails. */
+const HOST_CALL_TIMEOUT_MS = 30_000
+/** Reply type for `task-phase` / `task-phases`, drained by the host's REPLY_TYPES. */
+const PHASE_ACK = 'task-phase-applied'
 
 /**
  * Package name behind a Loader row's module specifier. Our own rows are
@@ -97,13 +119,6 @@ function packageNameOf(module) {
 export function apply(ctx) {
   const url = process.env.TAPD_DSH_BRIDGE_URL
   const token = process.env.TAPD_DSH_BRIDGE_TOKEN
-  if (!url || !token) return
-
-  const target = parseTarget(url)
-  if (!target) {
-    ctx.logger.warn(`${name}: TAPD_DSH_BRIDGE_URL is not a local http URL: ${url}`)
-    return
-  }
 
   let socket = null
   let reconnectTimer = null
@@ -119,6 +134,13 @@ export function apply(ctx) {
   const planModes = new Map()
   /** sessionId → pending debounce timer for that session's board/stats frame. */
   const settleTimers = new Map()
+  /** Root session id → { phase, kind }. The host owns it; this is a mirror. */
+  const taskPhases = new Map()
+  /** sessionId → host prompts queued before the session's Agent existed. */
+  const pendingPrompts = new Map()
+  /** 'p-N' → { resolve, reject, timer, method } for plugin → host requests. */
+  const hostCalls = new Map()
+  let hostCallSeq = 0
 
   const send = (message) => {
     if (!socket || socket.destroyed) return
@@ -135,6 +157,153 @@ export function apply(ctx) {
   }
 
   const messageOf = (error) => (error instanceof Error ? error.message : String(error))
+
+  /** A host reply's `error` is either a string or a structured diagnostic. */
+  const errorText = (error) => {
+    if (typeof error === 'string') return error
+    if (error && typeof error === 'object') {
+      if (typeof error.message === 'string' && error.message) return error.message
+      try {
+        return JSON.stringify(error)
+      } catch {
+        return String(error)
+      }
+    }
+    return ''
+  }
+
+  // -------------------------------------------------------------------------
+  // Task flow: phase mirror + plugin → host requests
+  // -------------------------------------------------------------------------
+
+  /** The phase mirrored for one root session, cheap enough for a tool `when`. */
+  const phaseOf = (sessionId) => phaseOfEntry(taskPhases, sessionId)
+
+  /** Records one host phase. An unknown phase is rejected, never guessed. */
+  const setPhase = (sessionId, phase, kind) => setPhaseEntry(taskPhases, sessionId, phase, kind)
+
+  const taskOf = (sessionId) => readPhaseEntry(taskPhases, sessionId)
+
+  /** Fails every waiter instead of leaving a tool call hanging on a dead socket. */
+  const rejectHostCalls = (reason) => {
+    for (const [requestId, entry] of hostCalls) {
+      hostCalls.delete(requestId)
+      clearTimeout(entry.timer)
+      try {
+        entry.reject(new Error(reason))
+      } catch {
+        // The caller already settled; nothing to propagate.
+      }
+    }
+  }
+
+  /**
+   * One plugin → host request. The host answers with
+   * `{ type: 'host-reply', requestId, ok, data | error }` on this socket.
+   * The request id carries a `p-` prefix so it cannot collide with the host's
+   * numeric ids. A method that never settles must not hold the turn forever,
+   * hence the timeout; a disconnect settles every waiter at once.
+   */
+  const callHost = (method, sessionId, params = {}, timeoutMs = HOST_CALL_TIMEOUT_MS) =>
+    new Promise((resolve, reject) => {
+      if (typeof method !== 'string' || !method) {
+        reject(new Error('host method is required'))
+        return
+      }
+      if (!socket || socket.destroyed) {
+        reject(new Error('TAPD host bridge is not connected'))
+        return
+      }
+      hostCallSeq += 1
+      const requestId = `p-${hostCallSeq}`
+      const timer = setTimeout(() => {
+        hostCalls.delete(requestId)
+        reject(new Error(`TAPD host did not answer ${method} within ${timeoutMs} ms`))
+      }, timeoutMs)
+      if (typeof timer?.unref === 'function') timer.unref()
+      hostCalls.set(requestId, { resolve, reject, timer, method })
+      send({ type: 'host', token, requestId, method, sessionId: sessionId ?? '', params })
+    })
+
+  /** Settles one `host-reply` frame. Unknown ids are late duplicates. */
+  const resolveHostReply = (frame) => {
+    const requestId = typeof frame.requestId === 'string' ? frame.requestId : ''
+    const entry = requestId ? hostCalls.get(requestId) : undefined
+    if (!entry) {
+      ctx.logger.debug(`${name}: host-reply for unknown request ${requestId || '?'}`)
+      return
+    }
+    hostCalls.delete(requestId)
+    clearTimeout(entry.timer)
+    if (frame.ok === true) {
+      entry.resolve(frame.data && typeof frame.data === 'object' ? frame.data : {})
+      return
+    }
+    entry.reject(new Error(errorText(frame.error) || `${entry.method} failed`))
+  }
+
+  /**
+   * A hidden host turn (the writeback trigger). `source.kind = 'host'` keeps it
+   * out of the user transcript while the engine still records the message.
+   * Queued until the session's Agent exists, like an assignment.
+   */
+  const deliverHostPrompt = (sessionId, text) => {
+    if (typeof sessionId !== 'string' || !sessionId) return
+    if (typeof text !== 'string' || !text) return
+    const agent = ctx.agents.get(sessionId)
+    if (!agent) {
+      const queued = pendingPrompts.get(sessionId) ?? []
+      queued.push(text)
+      pendingPrompts.set(sessionId, queued)
+      return
+    }
+    try {
+      const message = createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'host' },
+      })
+      // A rejected follow-up must not take the control channel down: the host
+      // still owns the retry (`dsh_task_retry_finalize`).
+      Promise.resolve(agent.followup(message)).catch((error) =>
+        warn(`host-prompt ${sessionId}`, error),
+      )
+    } catch (error) {
+      warn(`host-prompt ${sessionId}`, error)
+    }
+  }
+
+  const flushHostPrompts = (sessionId) => {
+    const queued = pendingPrompts.get(sessionId)
+    if (!queued) return
+    pendingPrompts.delete(sessionId)
+    for (const text of queued) deliverHostPrompt(sessionId, text)
+  }
+
+  // -------------------------------------------------------------------------
+  // Service (`tapd-tools` injects this; it must exist even without a bridge)
+  // -------------------------------------------------------------------------
+
+  // Provided before the environment guard: `tapd-tools` injects `tapdBridge`,
+  // and a standalone dsh (payload smoke test, no TAPD_DSH_BRIDGE_URL) must
+  // still compose its tool registry. Without a socket every method is inert —
+  // `notice` drops, `call` rejects — which is exactly the absent behavior.
+  ctx.provide('tapdBridge', {
+    notice({ sessionId, tool, target, risk }) {
+      send({ type: 'notice', token, sessionId: sessionId ?? '', tool, target, risk })
+    },
+    phase: phaseOf,
+    task: taskOf,
+    setPhase,
+    call: callHost,
+  })
+
+  if (!url || !token) return
+
+  const target = parseTarget(url)
+  if (!target) {
+    ctx.logger.warn(`${name}: TAPD_DSH_BRIDGE_URL is not a local http URL: ${url}`)
+    return
+  }
 
   /**
    * The `kind` of the latest committed `turn/end`, or `undefined` when the log
@@ -522,6 +691,8 @@ export function apply(ctx) {
     applyPending(agent?.session?.id, { deferTeam: true })
     // A resumed Agent lost the runtime-only grant its predecessor had.
     restoreSandboxRoot(agent)
+    // A hidden host prompt that arrived while the session was still loading.
+    if (agent?.session?.id) flushHostPrompts(agent.session.id)
   })
 
   const cancelSession = (sessionId) => {
@@ -742,6 +913,33 @@ export function apply(ctx) {
     }
   }
 
+  /** Applies one `task-phase` frame; answers whenever the host asked. */
+  const handleTaskPhase = (frame) => {
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''
+    const ok = setPhase(sessionId, frame.phase, frame.kind)
+    if (!ok) warn(`task-phase ${sessionId || '?'}`, `ignored phase ${String(frame.phase)}`)
+    if (typeof frame.requestId !== 'number' && typeof frame.requestId !== 'string') return
+    send({
+      type: PHASE_ACK,
+      token,
+      requestId: frame.requestId,
+      ok,
+      sessionId,
+      ...(ok ? {} : { error: `unknown phase ${String(frame.phase)}` }),
+    })
+  }
+
+  /**
+   * Replaces the whole mirror from a hello/reconnect snapshot. Entries the host
+   * omits are dropped: the host is authoritative after a reconnect, and a stale
+   * `execute` would resurrect tools for a finished task.
+   */
+  const replacePhases = (frame) => {
+    const count = replacePhaseEntries(taskPhases, frame.phases)
+    if (typeof frame.requestId !== 'number' && typeof frame.requestId !== 'string') return
+    send({ type: PHASE_ACK, token, requestId: frame.requestId, ok: true, count })
+  }
+
   const handleControlLine = (line) => {
     let frame
     try {
@@ -752,6 +950,25 @@ export function apply(ctx) {
       return
     }
     if (!frame || frame.token !== token) return
+    // Task-flow frames are shaped by the host; handle them before the session
+    // id guard, because `task-phases` carries no single session.
+    if (frame.type === 'host-reply') {
+      resolveHostReply(frame)
+      return
+    }
+    if (frame.type === 'task-phase') {
+      handleTaskPhase(frame)
+      return
+    }
+    if (frame.type === 'task-phases') {
+      if (Array.isArray(frame.phases)) replacePhases(frame)
+      else warn('task-phases', 'phases is not an array')
+      return
+    }
+    if (frame.type === 'host-prompt' && typeof frame.sessionId === 'string') {
+      deliverHostPrompt(frame.sessionId, frame.text)
+      return
+    }
     // The runtime-wide default has no session; handle it before the id guard.
     if (frame.type === 'default-mode' && typeof frame.mode === 'string') {
       ctx.get('tapdPolicy')?.setDefault(frame.mode)
@@ -823,11 +1040,8 @@ export function apply(ctx) {
   // -------------------------------------------------------------------------
 
   // `notice` is fire-and-forget by contract: the caller decides, this sends.
-  ctx.provide('tapdBridge', {
-    notice({ sessionId, tool, target, risk }) {
-      send({ type: 'notice', token, sessionId: sessionId ?? '', tool, target, risk })
-    },
-  })
+  // The service itself is provided above, before the inert-environment guard,
+  // because `tapd-tools` injects it (see "Service" there).
 
   // -------------------------------------------------------------------------
   // Connection
@@ -872,6 +1086,9 @@ export function apply(ctx) {
     next.on('close', () => {
       if (socket !== next) return
       socket = null
+      // The host will never reply on a dead socket; fail the waiters now rather
+      // than letting each tool call burn its timeout.
+      rejectHostCalls('TAPD host bridge disconnected')
       scheduleReconnect()
     })
   }
@@ -884,6 +1101,7 @@ export function apply(ctx) {
       reconnectTimer = null
       for (const timer of settleTimers.values()) clearTimeout(timer)
       settleTimers.clear()
+      rejectHostCalls('TAPD host bridge stopped')
       socket?.destroy()
       socket = null
     }

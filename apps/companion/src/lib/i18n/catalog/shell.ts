@@ -73,12 +73,7 @@ export const shell = {
     "Changes are written back to the desktop immediately; failures restore the previous value and show the error.",
   ],
   "mobile.settings.agentExecution": ["Agent 执行", "Agent execution"],
-  "mobile.settings.worktreeIsolation": ["Worktree 隔离", "Worktree isolation"],
-  "mobile.settings.worktreeHint": [
-    "每个任务在独立 git worktree 中运行，完成后保留提交分支。",
-    "Each task runs in its own git worktree and keeps its commit branch afterwards.",
-  ],
-  "mobile.settings.executionUnits": ["执行单元", "Execution units"],
+  "mobile.settings.executionUnits": ["并行任务数", "Parallel tasks"],
   "mobile.settings.newBugNotifications": [
     "新缺陷通知",
     "New bug notifications",

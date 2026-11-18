@@ -397,8 +397,17 @@ fn script(scenario: Scenario, request: &Value) -> Vec<Event> {
             push_question(&mut events, &available);
         }
         Scenario::Ping => {
-            events.push(Event::Text("调用 TAPD 桥接工具。".to_string()));
-            push_tool(&mut events, &available, "tapd_ping", json!({}));
+            events.push(Event::Text("调用任务提交工具。".to_string()));
+            push_tool(
+                &mut events,
+                &available,
+                "task_submit",
+                json!({
+                    "summary": "测试模型提交了一个任务",
+                    "verification": "无",
+                    "risks": "无"
+                }),
+            );
         }
         Scenario::Error => {
             events.push(Event::Text("下面这条命令会失败，用来看错误渲染。".to_string()));
@@ -858,7 +867,7 @@ fn summary(scenario: Scenario) -> String {
         Scenario::Files => "文件四连执行完了，内容都在 `tmp/test-agent/hello.txt`。",
         Scenario::Tools => "内置工具调用完了，看工具行的折叠结果即可。",
         Scenario::Error => "上面那条命令按预期失败了。",
-        Scenario::Ping => "桥接工具调用完了。",
+        Scenario::Ping => "任务提交工具调用完了。",
         _ => "这一轮结束。",
     };
     format!("第二轮（工具结果回传后）的收尾回复：没有新的工具调用。{hint}")

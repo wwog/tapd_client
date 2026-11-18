@@ -23,6 +23,7 @@ import {
   type DshErrorEvent,
   type DshFocusSessionEvent,
   type DshPermissionMode,
+  type DshProject,
   type DshQuestionEvent,
   type DshSessionEvent,
   type DshSessionRow,
@@ -45,6 +46,9 @@ export type AgentTeamView = "chat" | "board";
 
 /** The session's second view: the transcript or the trajectory ledger. */
 export type AgentTaskView = "chat" | "trajectory";
+
+/** Reviewable tasks open on the change review; the transcript stays one tab away. */
+export type AgentReviewView = "review" | "chat";
 
 export type LiveToolCall = {
   callId: string;
@@ -86,7 +90,7 @@ export type PendingQuestion = {
  *  the permission mode are written through their own entry points. */
 export type AgentConfigDraft = Pick<
   DshAgentConfig,
-  "promptTemplate" | "teamEnabled" | "worktreeEnabled" | "executionUnits" | "dshModels"
+  "promptTemplate" | "teamEnabled" | "executionUnits" | "dshModels"
 >;
 
 /** The settings dialog's groups, in nav order. */
@@ -105,6 +109,8 @@ export type AgentState = {
   selectedId: string | null;
   tasks: DshTask[] | null;
   tasksError: string | null;
+  /** Every configured project, in the order the list groups them. */
+  projects: DshProject[] | null;
   status: DshStatus | null;
   statusError: string | null;
   config: DshAgentConfig | null;
@@ -121,7 +127,6 @@ export type AgentState = {
   draftSelection: ModelSelection | null;
   /** Team collaboration for the next free chat. Chats default off even when
    *  the config default is on; a task session inherits the config instead. */
-  chatTeamDraft: boolean;
   /** Picks the transcript row does not know yet (a session without a committed
    *  message). Retired once the backend reports the route. */
   selectionOverrides: Record<string, ModelSelection | undefined>;
@@ -137,6 +142,8 @@ export type AgentState = {
   planOverrides: Record<string, boolean | undefined>;
   /** Team board per session; absent until read or pushed. */
   team: Record<string, DshTeam>;
+  /** Start-only team pick for a chat whose Agent does not exist yet. */
+  chatTeamDrafts: Record<string, boolean | undefined>;
   /** Sessions whose board was read once; `dsh://team` updates it afterwards. */
   teamLoaded: Record<string, true>;
   teamBusy: Record<string, boolean>;
@@ -145,6 +152,10 @@ export type AgentState = {
   teamViews: Record<string, AgentTeamView>;
   /** Transcript vs trajectory per session; absent means the transcript. */
   taskViews: Record<string, AgentTaskView>;
+  /** Review vs transcript on a reviewable task; absent means the review. */
+  reviewViews: Record<string, AgentReviewView>;
+  /** Bumped by「继续修改」so the composer takes focus after switching back. */
+  composerFocusAt: number;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -174,6 +185,7 @@ const initialState: AgentState = {
   selectedId: null,
   tasks: null,
   tasksError: null,
+  projects: null,
   status: null,
   statusError: null,
   config: null,
@@ -183,7 +195,6 @@ const initialState: AgentState = {
   committedAttempts: {},
   pendingPrompts: {},
   draftSelection: null,
-  chatTeamDraft: false,
   selectionOverrides: {},
   approvals: [],
   questions: [],
@@ -191,11 +202,14 @@ const initialState: AgentState = {
   sessionModes: {},
   planOverrides: {},
   team: {},
+  chatTeamDrafts: {},
   teamLoaded: {},
   teamBusy: {},
   teamErrors: {},
   teamViews: {},
   taskViews: {},
+  reviewViews: {},
+  composerFocusAt: 0,
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -418,13 +432,35 @@ function adoptTasks(tasks: DshTask[]): void {
   const before = agentStore.get();
   const selectedId = nextSelection({ ...before, tasks }, before.selectedId);
   const moved = selectedId !== null && selectedId !== before.selectedId;
+  // A task that newly entered review opens on the review tab again, even if
+  // the reader had stepped back to the transcript for the previous round.
+  const previousWorkflow = new Map(
+    (before.tasks ?? []).map((task) => [task.id, task.workflow]),
+  );
+  const freshReview = tasks
+    .filter(
+      (task) =>
+        task.workflow === "awaiting_review" &&
+        previousWorkflow.get(task.id) !== "awaiting_review",
+    )
+    .map((task) => task.id);
 
-  update((state) => ({
-    ...state,
-    tasks,
-    tasksError: null,
-    selectedId,
-  }));
+  update((state) => {
+    let reviewViews = state.reviewViews;
+    if (freshReview.some((id) => reviewViews[id] === "chat")) {
+      reviewViews = { ...reviewViews };
+      for (const id of freshReview) {
+        if (reviewViews[id] === "chat") delete reviewViews[id];
+      }
+    }
+    return {
+      ...state,
+      tasks,
+      tasksError: null,
+      selectedId,
+      reviewViews,
+    };
+  });
   persistPrefs();
 
   // A chat session's row can appear after it was selected, so the board read
@@ -475,12 +511,6 @@ function clearSelection(sessionId: string): void {
 /** Reads in flight; keeps selection and enqueue from issuing the same read. */
 const teamReads = new Set<string>();
 
-/** Team mode is offered on tasks with workflow metadata, not free chats. */
-export function agentHasTeamUi(state: AgentState, sessionId: string | null): boolean {
-  if (!sessionId) return false;
-  return (state.tasks ?? []).some((task) => task.id === sessionId && task.kind !== "chat");
-}
-
 /** The pane to show: the reader's explicit choice, else the team mode default.
  *  Task sessions open on the board; a free chat keeps its transcript unless the
  *  reader asks for the board, because chatting is the point of a chat. */
@@ -497,6 +527,20 @@ export function agentTeamView(state: AgentState, sessionId: string | null): Agen
 export function agentTaskView(state: AgentState, sessionId: string | null): AgentTaskView {
   if (!sessionId) return "chat";
   return state.taskViews[sessionId] ?? "chat";
+}
+
+/** Whether the main pane should offer the review surface at all. */
+export function taskReviewable(task: DshTask | null | undefined): boolean {
+  return task?.workflow === "awaiting_review" || task?.workflow === "finalizing";
+}
+
+/** Review surface vs transcript; a reviewable task opens on the review. */
+export function agentReviewView(
+  state: AgentState,
+  sessionId: string | null,
+): AgentReviewView {
+  if (!sessionId) return "chat";
+  return state.reviewViews[sessionId] ?? "review";
 }
 
 function applyTeam(sessionId: string, team: DshTeam): void {
@@ -849,8 +893,11 @@ async function selectSession(sessionId: string): Promise<void> {
   await loadEntries(sessionId);
 }
 
-async function allocateSession(): Promise<string> {
-  const { sessionId } = await dshApi.newSession();
+async function allocateSession(project?: {
+  kind: DshProject["kind"];
+  id: string;
+}): Promise<string> {
+  const { sessionId } = await dshTaskApi.newSession(project);
   drafts.add(sessionId);
   update((state) => ({
     ...state,
@@ -869,21 +916,20 @@ async function allocateSession(): Promise<string> {
 }
 
 /**
- * Applies the chat default once a free session exists. Free chats are
- * independent: off unless the composer bar was flipped before the first
- * message, even when the config default is on. Task sessions inherit the
- * config instead and never come through here.
+ * Free chats start with coworkers off even when the config default is on; the
+ * composer work bar can turn it on before the first message. The pick is held
+ * locally because the runtime has no Agent to apply it to until the first
+ * prompt; `sendPrompt` flushes it then.
  */
 function applyChatTeam(sessionId: string): void {
-  const state = agentStore.get();
-  const desired = state.chatTeamDraft;
-  // A config read that has not landed (or failed) must not be read as "off":
-  // the engine default is whatever the profile rendered, so the choice is
-  // written explicitly instead of guessed.
-  const inherited = state.config ? state.config.teamEnabled : null;
-  update((current) => ({ ...current, chatTeamDraft: false }));
-  if (inherited !== null && desired === inherited) return;
-  void agentActions.setTeamEnabled(sessionId, desired);
+  update((state) => ({
+    ...state,
+    chatTeamDrafts: { ...state.chatTeamDrafts, [sessionId]: false },
+    team: {
+      ...state.team,
+      [sessionId]: { sessionId, enabled: false, tasks: [] },
+    },
+  }));
 }
 
 /**
@@ -968,6 +1014,7 @@ export const agentActions = {
     await Promise.all([
       agentActions.refreshStatus(),
       agentActions.refreshTasks(),
+      agentActions.refreshProjects(),
       agentActions.refreshSessions(),
       agentActions.loadConfig(),
       // A blocking ask can arrive before this page was ever opened; seed the
@@ -1015,9 +1062,15 @@ export const agentActions = {
     void loadEntries(sessionId);
   },
 
-  newSession: async (): Promise<void> => {
+  newSession: async (project?: {
+    kind: DshProject["kind"];
+    id: string;
+  }): Promise<void> => {
     try {
-      const sessionId = await allocateSession();
+      const sessionId = await allocateSession(project);
+      // The backend records the free chat as a task row; reading the list now
+      // gives the worktree switch its project/repository facts immediately.
+      await agentActions.refreshTasks();
       await applyDraftSelection(sessionId);
     } catch (error) {
       setError(error);
@@ -1117,6 +1170,17 @@ export const agentActions = {
     }
   },
 
+  /** Configured projects; the list renders one group per project even empty. */
+  refreshProjects: async (): Promise<void> => {
+    try {
+      const { projects } = await dshTaskApi.projects();
+      update((state) => ({ ...state, projects }));
+    } catch {
+      // The list still groups by whatever the task rows carry; a failed read
+      // only loses the empty project headers.
+    }
+  },
+
   /** Selects a task returned by an enqueue and puts it at the top of the list. */
   adoptTask: (task: DshTask): void => {
     replaceTask(task);
@@ -1147,8 +1211,9 @@ export const agentActions = {
     return task;
   },
 
-  mergeTask: async (sessionId: string): Promise<DshTask> => {
-    const { task } = await dshTaskApi.merge(sessionId);
+  /** Resumes the finalize pipeline from the step that failed. */
+  retryFinalize: async (sessionId: string): Promise<DshTask> => {
+    const { task } = await dshTaskApi.retryFinalize(sessionId);
     replaceTask(task);
     return task;
   },
@@ -1157,6 +1222,33 @@ export const agentActions = {
     const { task } = await dshTaskApi.cancel(sessionId, stash);
     replaceTask(task);
     return task;
+  },
+
+  /** Opts one free chat into (or out of) its own worktree. A dirty worktree
+   *  rejects the disable; the caller surfaces that as a toast. */
+  chatWorktree: async (sessionId: string, enabled: boolean): Promise<DshTask> => {
+    const { task } = await dshTaskApi.chatWorktree(sessionId, enabled);
+    replaceTask(task);
+    return task;
+  },
+
+  /** Review surface vs transcript on a reviewable task. */
+  setReviewView: (sessionId: string, view: AgentReviewView): void => {
+    update((state) => ({
+      ...state,
+      reviewViews: { ...state.reviewViews, [sessionId]: view },
+    }));
+  },
+
+  /** Changed files of one task's worktree, for the review pane. */
+  taskChanges: (sessionId: string) => dshTaskApi.changes(sessionId),
+
+  /** One file's diff (`file` absent: the whole change set). */
+  taskDiff: (sessionId: string, file?: string) => dshTaskApi.diff(sessionId, file),
+
+  /** 「继续修改」switches back to the transcript and puts the caret in the box. */
+  focusComposer: (): void => {
+    update((state) => ({ ...state, composerFocusAt: Date.now() }));
   },
 
   /** Deletes one session: row, log, its directory and any worktree it made.
@@ -1188,6 +1280,8 @@ export const agentActions = {
       delete planOverrides[sessionId];
       const selectionOverrides = { ...state.selectionOverrides };
       delete selectionOverrides[sessionId];
+      const reviewViews = { ...state.reviewViews };
+      delete reviewViews[sessionId];
       return {
         ...state,
         tasks,
@@ -1199,6 +1293,7 @@ export const agentActions = {
         sessionModes,
         planOverrides,
         selectionOverrides,
+        reviewViews,
       };
     });
     persistPrefs();
@@ -1267,9 +1362,6 @@ export const agentActions = {
   },
 
   /** Free chats have no session until the first message; the pick waits here. */
-  setChatTeamDraft: (enabled: boolean): void => {
-    update((state) => ({ ...state, chatTeamDraft: enabled }));
-  },
 
   /**
    * Switches team mode for one session. The switch answers the click before the
@@ -1278,8 +1370,28 @@ export const agentActions = {
    * pane choice is dropped so the new default applies.
    */
   setTeamEnabled: async (sessionId: string, enabled: boolean): Promise<void> => {
-    if (agentStore.get().teamBusy[sessionId]) return;
-    const previous = agentStore.get().team[sessionId];
+    const snapshot = agentStore.get();
+    const task = snapshot.tasks?.find((item) => item.id === sessionId);
+    const prestart =
+      task?.kind === "chat" &&
+      task.messageCount === 0 &&
+      (snapshot.pendingPrompts[sessionId]?.length ?? 0) === 0 &&
+      task.status !== "running";
+    if (prestart) {
+      const previous = snapshot.team[sessionId];
+      const optimistic: DshTeam = previous
+        ? { ...previous, enabled }
+        : { sessionId, enabled, tasks: [] };
+      update((state) => ({
+        ...state,
+        chatTeamDrafts: { ...state.chatTeamDrafts, [sessionId]: enabled },
+        team: { ...state.team, [sessionId]: optimistic },
+        teamErrors: { ...state.teamErrors, [sessionId]: null },
+      }));
+      return;
+    }
+    if (snapshot.teamBusy[sessionId]) return;
+    const previous = snapshot.team[sessionId];
     const optimistic: DshTeam = previous
       ? { ...previous, enabled }
       : { sessionId, enabled, tasks: [] };
@@ -1370,6 +1482,7 @@ export const agentActions = {
       await Promise.all([
         agentActions.refreshSessions(),
         agentActions.refreshTasks(),
+        agentActions.refreshProjects(),
         agentActions.loadPending(),
       ]);
     } catch (error) {
@@ -1450,7 +1563,26 @@ export const agentActions = {
         },
         lastError: null,
       }));
+      // The first prompt is also when the runtime creates the Agent. Send the
+      // start-only team pick first so the bridge queues it and applies it on
+      // `agent/created`, before the turn reads the team board.
+      const draftTeam = agentStore.get().chatTeamDrafts[targetId];
+      if (draftTeam !== undefined) {
+        try {
+          await dshTeamApi.set(targetId, draftTeam);
+        } catch (error) {
+          // The prompt still runs; the work bar keeps the visible pick.
+          void error;
+        }
+      }
       await dshApi.prompt(targetId, trimmed);
+      if (draftTeam !== undefined) {
+        update((state) => {
+          const drafts = { ...state.chatTeamDrafts };
+          delete drafts[targetId];
+          return { ...state, chatTeamDrafts: drafts };
+        });
+      }
       return true;
     } catch (error) {
       if (sessionId) {

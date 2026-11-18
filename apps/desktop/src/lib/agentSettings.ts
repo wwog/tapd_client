@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
  * Settings shared by the built-in agent and the MCP bridge.
  *
  * Only facts that survive the runtime change live here: per-project repository
- * paths, the prompt template, worktree isolation, the enabled coworkers and the
+ * paths, the prompt template, task concurrency, the enabled coworkers and the
  * model providers rendered into the runtime profile.
  */
 export type ProjectAgentConfig = {
@@ -89,7 +89,8 @@ export type AgentConfig = {
   coworkerIds: string[];
   /** 团队协作：开启后新会话默认进入 Agent Team（任务板），提示词不再写同事名单。 */
   teamEnabled: boolean;
-  worktreeEnabled: boolean;
+  /** Workflow tasks always run in their own worktree; this caps how many may
+   *  run at the same time (1–8). */
   executionUnits: number;
   /** 自定义供应商与模型目录;启动运行时渲染进 profile。 */
   dshModels: DshModelsConfig;

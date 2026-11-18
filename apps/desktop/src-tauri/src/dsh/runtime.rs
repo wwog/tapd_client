@@ -300,7 +300,7 @@ impl RuntimeState {
             .lock()
             .expect("dsh boot team lock");
         booted.is_some_and(|booted| booted != boot_fingerprint(&config))
-            || booted_team.is_some_and(|booted| booted != config.team_enabled())
+            || booted_team.is_some_and(|booted| booted != config.team_enabled)
     }
 
     fn remember_boot_config(&self, config: &AgentConfig) {
@@ -309,7 +309,7 @@ impl RuntimeState {
         *self
             .boot_team_default
             .lock()
-            .expect("dsh boot team lock") = Some(config.team_enabled());
+            .expect("dsh boot team lock") = Some(config.team_enabled);
     }
 
     fn clear_boot_config(&self) {
@@ -343,7 +343,7 @@ impl RuntimeState {
             .boot_team_default
             .lock()
             .expect("dsh boot team lock");
-        let team_default = config.team_enabled();
+        let team_default = config.team_enabled;
         let models_changed = started
             .as_ref()
             .map(|started| catalog_json(started) != catalog_json(&config.dsh_models))
@@ -1054,7 +1054,7 @@ fn prepare_profile(
             .collect(),
         // Team collaboration is its own switch now: a new session starts on the
         // task board, and the coworker roster never enters the prompt.
-        team_default_enabled: Some(config.team_enabled()),
+        team_default_enabled: Some(config.team_enabled),
         presets,
         preset_modules,
     };
@@ -1323,6 +1323,12 @@ fn spawn_runtime(
         .env("TAPD_DSH_BRIDGE_TOKEN", &bridge.token)
         // Read by the policy plugin; a change needs a runtime restart.
         .env("TAPD_DSH_PERMISSION_MODE", permission_mode)
+        // Model-facing task prompts follow the app language. A change needs a
+        // runtime restart, like the permission mode above.
+        .env(
+            "TAPD_DSH_LOCALE",
+            if tapd_i18n::is_en() { "en" } else { "zh" },
+        )
         // Finder-launched apps inherit a minimal PATH; the runtime shells out.
         .env("PATH", shell_path::user_path())
         .stdin(std::process::Stdio::piped())
@@ -1820,7 +1826,7 @@ mod tests {
         // Prompt, per-task settings, the permission mode and the coworker
         // roster are live: changing them must not ask for a restart.
         agent.prompt_template.push_str("\nmore");
-        agent.worktree_enabled = true;
+        agent.execution_units = 4;
         agent.permission_mode = PermissionMode::Full;
         agent.coworker_ids.push("author".into());
         assert_eq!(booted, boot_fingerprint(&agent));

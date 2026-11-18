@@ -4,8 +4,15 @@ import type { Catalog } from "../types";
 
 export const agent = {
   /* -- Tab ---------------------------------------------------------------- */
-  "mobile.agent.newSession": ["新建会话", "New session"],
   "mobile.agent.creating": ["创建中…", "Creating…"],
+  "mobile.agent.newSessionInProject": [
+    "在「{project}」新建会话",
+    "New session in {project}",
+  ],
+  "mobile.agent.projectsLoadFailed": [
+    "读取项目列表失败",
+    "Couldn't load projects",
+  ],
   "mobile.agent.loadFailed": ["读取任务失败", "Couldn't load tasks"],
   "mobile.agent.newSessionFailed": ["新建会话失败", "Couldn't create a session"],
   "mobile.agent.empty": ["还没有任务", "No tasks yet"],
@@ -30,23 +37,44 @@ export const agent = {
   "mobile.agent.startFailed": ["启动运行时失败", "Couldn't start the runtime"],
 
   /* -- Workflow chips ----------------------------------------------------- */
+  "mobile.agent.workflowQueued": ["排队中", "Queued"],
   "mobile.agent.workflowRunning": ["进行中", "Running"],
-  "mobile.agent.workflowReview": ["待审核", "Awaiting review"],
-  "mobile.agent.workflowMerge": ["待合并", "Awaiting merge"],
+  "mobile.agent.workflowReview": ["待审核", "In review"],
+  "mobile.agent.workflowFinalizing": ["收尾中", "Finishing"],
   "mobile.agent.workflowDone": ["已完成", "Done"],
   "mobile.agent.workflowFailed": ["失败", "Failed"],
   "mobile.agent.workflowCanceled": ["已取消", "Canceled"],
 
+  /* -- Review & finalizing (docs/AGENT_TASK_FLOW.md §7) ------------------- */
+  "mobile.agent.reviewTitle": ["审核", "Review"],
+  "mobile.agent.reviewSummary": ["AI 摘要", "AI summary"],
+  "mobile.agent.reviewVerification": ["验证", "Verification"],
+  "mobile.agent.reviewRisks": ["风险", "Risks"],
+  "mobile.agent.reviewFiles": ["改动文件", "Changed files"],
+  "mobile.agent.reviewNoFiles": ["没有可查看的文件", "No files to show"],
+  "mobile.agent.reviewLoading": ["正在读取改动…", "Loading changes…"],
+  "mobile.agent.reviewLoadFailed": [
+    "改动列表读取失败",
+    "Could not load the changed files",
+  ],
+  "mobile.agent.reviewTruncated": ["已截断", "Truncated"],
+  "mobile.agent.fileAdded": ["新增", "Added"],
+  "mobile.agent.fileModified": ["修改", "Modified"],
+  "mobile.agent.fileDeleted": ["删除", "Deleted"],
+  "mobile.agent.fileRenamed": ["重命名", "Renamed"],
+  "mobile.agent.fileUntracked": ["未跟踪", "Untracked"],
+  "mobile.agent.finalizeTitle": ["正在收尾", "Finishing"],
+  "mobile.agent.finalizeStepCommit": ["提交", "Commit"],
+  "mobile.agent.finalizeStepMerge": ["合并", "Merge"],
+  "mobile.agent.finalizeStepCleanup": ["清理", "Cleanup"],
+  "mobile.agent.finalizeStepWriteback": ["回写", "Writeback"],
+  "mobile.agent.finalizeRetry": ["重试收尾", "Retry finishing"],
+  "mobile.agent.finalizeRetrying": ["重试中…", "Retrying…"],
+
   /* -- Task actions ------------------------------------------------------- */
-  "mobile.agent.viewDiff": ["查看改动", "View changes"],
-  "mobile.agent.approve": ["通过并提交", "Approve and commit"],
-  "mobile.agent.stopAndStash": ["停止并储藏", "Stop and stash"],
-  "mobile.agent.merge": ["合并回主仓库", "Merge into main"],
-  "mobile.agent.cancelTask": ["取消任务", "Cancel task"],
+  "mobile.agent.approve": ["通过并收尾", "Approve and finish"],
+  "mobile.agent.abandon": ["放弃", "Discard"],
   "mobile.agent.stop": ["停止", "Stop"],
-  "mobile.agent.diffTruncated": ["已截断", "Truncated"],
-  "mobile.agent.diffEmpty": ["没有可显示的改动", "No changes to show"],
-  "mobile.agent.diffFailed": ["读取改动失败", "Couldn't load the changes"],
   "mobile.agent.resumeFailed": ["恢复会话失败", "Couldn't resume the session"],
 
   /* -- Approvals ---------------------------------------------------------- */
@@ -70,10 +98,10 @@ export const agent = {
   "mobile.agent.questionFailed": ["提交回答失败", "Couldn't submit the answer"],
 
   /* -- Team board --------------------------------------------------------- */
-  "mobile.agent.teamToggle": ["团队协作", "Team mode"],
+  "mobile.agent.teamToggle": ["同事协作", "Coworkers"],
   "mobile.agent.teamToggleHint": [
-    "开启后主 Agent 会把可拆分的工作派给同事，并在任务板登记。",
-    "The lead agent hands splittable work to coworkers and registers it on the board.",
+    "会话开始时选择是否让同事一起干活；发送第一条消息后不可更改。",
+    "Choose whether coworkers join before the session starts; fixed after the first message.",
   ],
   "mobile.agent.teamToggleFailed": ["切换团队协作失败", "Couldn't switch team mode"],
   "mobile.agent.viewChat": ["会话", "Chat"],
@@ -109,6 +137,19 @@ export const agent = {
   ],
   "mobile.agent.promptFailed": ["发送失败", "Couldn't send the message"],
   "mobile.agent.stopFailed": ["停止失败", "Couldn't stop the turn"],
+  "mobile.agent.chatWorktree": ["Worktree", "Worktree"],
+  "mobile.agent.chatWorktreeHint": [
+    "会话开始时选择是否在独立 worktree 中运行；发送第一条消息后不可更改。",
+    "Choose whether this session runs in an isolated worktree before it starts; fixed after the first message.",
+  ],
+  "mobile.agent.workBarLocked": [
+    "会话已经开始，同事协作与 worktree 不可再更改",
+    "The session has started; coworkers and the worktree can no longer be changed",
+  ],
+  "mobile.agent.chatWorktreeFailed": [
+    "切换 worktree 失败",
+    "Couldn't switch the worktree",
+  ],
 
   /* -- Session mode picker (composer) ------------------------------------- */
   "mobile.agent.modeTitle": ["会话模式", "Session mode"],

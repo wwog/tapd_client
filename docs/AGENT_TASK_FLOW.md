@@ -16,8 +16,9 @@
 3. **所有有改动的任务都必须人工审核**。删除“极简单流程自动收尾”，不做自动通过。
 4. **执行阶段模型看不到任何 TAPD 工具**（连工具名都不出现在 schema/提示词里）。
    审核通过、进入收尾阶段后才通过条件工具出现，并由系统提示词说明怎么做。
-5. **自由会话默认不使用 worktree**；会话创建后，输入框上方的“新建 worktree”开关可按会话启用，
-   默认关闭。自由会话没有审核/合并/回写，worktree 只是隔离工作区。
+5. **自由会话默认不使用 worktree**；输入框内的「同事协作 / Worktree」只在会话开始前可改，
+   发送第一条消息后固定。没有项目绑定的会话不显示工作条。自由会话没有审核/合并/回写，
+   worktree 只是隔离工作区。
 6. **队列并行数保留**（`executionUnits`，1–8），并真正落地为工作流任务的并发上限；
    配置里的 `worktreeEnabled` 删除。
 7. **会话列表按项目分组**；每个分组头可新建自由会话；默认存在“未关联项目”分组。
@@ -286,17 +287,23 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 
 ---
 
-## 10. 自由会话的 worktree 开关
+## 10. 输入框工作条（同事协作 / Worktree）
 
-- 位置：输入框上方一行紧凑开关「新建 worktree」，仅 `kind=chat` 显示，默认关。
-- 启用条件：会话空闲、所属项目已配置仓库。未关联项目或未配置仓库时禁用并给出提示。
-- 启用：从项目 HEAD 创建 `worktrees/<sessionId>`，分支 `chat/<8 位 id>`；把会话 cwd 移到
-  worktree（桥 `assign` + 可写根），写回 `worktreePath` / `branch` / `meta.worktree=true`。
-- 关闭：会话空闲且 worktree 干净时移除 worktree，cwd 回到项目仓库（未关联则 scratch）；
-  脏则拒绝并提示「worktree 有未提交改动」。分支有提交时保留分支，否则删除。
+- 位置：输入框卡片内、文本区上方的一行。没有项目绑定（`project == null`）时整行不显示。
+- 左侧：项目名 + 当前分支，纯展示。**不提供项目切换，也不提供分支切换，没有「+」按钮。**
+- 右侧：
+  - 同事协作开关（chat：开始前可改；task：创建时已固定，只显示状态）。
+  - Worktree 开关（chat：开始前可改；task：始终开启，只显示状态）。
+  - 团队协作已开启时，多一个「会话 / 任务板」视图切换。
+- “开始”的判定：chat = 已发过第一条消息或回合正在运行；task = 任务创建即开始。
+  开始后两个开关禁用，title 说明「会话已经开始，不可再更改」。
+- chat 启用 worktree：从项目 HEAD 创建 `worktrees/<sessionId>`，分支 `chat/<8 位 id>`；
+  把会话 cwd 移到 worktree（桥 `assign` + 可写根），写回 `worktreePath` / `branch` /
+  `meta.worktree=true`。禁用：worktree 干净时移除，cwd 回到项目仓库（未关联则 scratch），
+  `branch` 恢复为仓库当前分支；脏则拒绝并提示。
 - 自由会话没有审核/合并/回写；用户可在会话内或未来 git 功能里处理提交/推送。
-- `session_root` 对带 worktree 的 chat 必须返回 worktree（当前实现先返回 chat scratch，需要改）。
-- `feature::prompt` 只在 chat 没有 worktree 时分配 chat scratch（当前每次 prompt 都会分配，需要改）。
+- `session_root` 对带 worktree 的 chat 必须返回 worktree；`feature::prompt` 只在 chat
+  没有 worktree 时分配 chat scratch。
 
 ---
 
@@ -309,6 +316,7 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 - 手动新建的会话永远 `kind=chat`；即使创建时选了项目，也没有 workflow。
 - 项目分组的新会话 cwd = 项目仓库；默认分组 = chat scratch。
 - `dsh_projects` 返回 `{ projects: [{ kind, id, name, repoPath }] }`，供空分组渲染。
+- 顶部不再有独立的团队协作条：它和 worktree 一起收进输入框工作条（§10）。
 
 ---
 
@@ -402,12 +410,13 @@ export type DshTask = {
 
 ## 13. 迁移
 
-1. `cache.sqlite3` 的 `dsh_tasks` 行内 JSON：`workflow` 旧值 `awaiting_merge` → `finalizing`，
-   `finalize.step = "merge"`。
-2. 旧非 Worktree 活动任务（`meta.worktree = false` 且 workflow 非终态）→ `canceled`，
-   `finalize.notice = "非 Worktree 任务流已下线，请重新发起"`。导出目录保留。
-3. 旧 `merge` 字段读入时映射到 `finalize.error/instructions`。
-4. 不需要 SQL 列迁移；如新增列再升 schema 版本。
+**不迁移旧数据。** 当前仍是小规模使用，升级时直接清空应用数据目录；代码只读当前 shape。
+
+- `cache.sqlite3` 没有升级路径：版本不一致时只创建当前表，不 drop/搬移旧表。
+- `dsh_tasks` 只反序列化当前 payload；旧 `workflow`（如 `awaiting_merge`）、旧 `merge`
+  字段、旧非 worktree 任务都不做转换，读不出来的行按不可读行跳过。
+- `agent.json` 的旧字段（`worktreeEnabled`、单供应商模型、旧 repo 映射）不再读取或迁移。
+- 旧表（`agent_tasks`、`agent_queue_state`、`chat_sessions` 等）不再创建；已有数据库由用户清空。
 
 ---
 

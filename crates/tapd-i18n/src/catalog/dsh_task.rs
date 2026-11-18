@@ -1,12 +1,33 @@
-//! Messages for the built-in agent's task workflow (prepare → review → merge).
+//! Messages for the built-in agent's task workflow
+//! (queued → running → review → finalizing → done).
 
 use crate::Message;
 
 pub static MESSAGES: &[Message] = &[
     (
+        "dsh.bridge.rejected",
+        "运行时拒绝了这次请求",
+        "The runtime rejected the request",
+    ),
+    (
         "dsh.chat.delete.running",
         "会话还在运行，先停止再删除",
         "The conversation is still running; stop it before deleting",
+    ),
+    (
+        "dsh.chat.worktree.dirty",
+        "worktree 有未提交改动，先提交或丢弃后再关闭",
+        "The worktree has uncommitted changes; commit or discard them before turning it off",
+    ),
+    (
+        "dsh.chat.worktree.notChat",
+        "只有自由会话可以切换 worktree",
+        "Only a free conversation can toggle a worktree",
+    ),
+    (
+        "dsh.chat.worktree.repo",
+        "会话所属项目还没有配置本地仓库目录",
+        "The conversation's project has no local repository configured",
     ),
     (
         "dsh.task.approve.busy",
@@ -20,8 +41,8 @@ pub static MESSAGES: &[Message] = &[
     ),
     (
         "dsh.task.cancel.busy",
-        "正在合并，等合并结束后再取消",
-        "A merge is in progress; cancel after it finishes",
+        "任务正在收尾，等收尾结束后再取消",
+        "The task is finishing; cancel after it settles",
     ),
     (
         "dsh.task.cancel.stash",
@@ -29,9 +50,24 @@ pub static MESSAGES: &[Message] = &[
         "Failed to stash the changes: {}",
     ),
     (
+        "dsh.task.comment.empty",
+        "评论内容不能为空",
+        "The comment must not be empty",
+    ),
+    (
+        "dsh.task.comment.tooLong",
+        "评论最多 8000 个字符",
+        "A comment may hold at most 8000 characters",
+    ),
+    (
         "dsh.task.commit.failed",
         "提交改动失败：{}",
         "Failed to commit the changes: {}",
+    ),
+    (
+        "dsh.task.complete.pending",
+        "收尾未完成：请先写评论并更新状态",
+        "Finishing is incomplete: add the comment and update the status first",
     ),
     (
         "dsh.task.export.failed",
@@ -39,9 +75,44 @@ pub static MESSAGES: &[Message] = &[
         "Failed to export the bug package: {}",
     ),
     (
+        "dsh.task.finalize.busy",
+        "任务正在收尾，请稍后再试",
+        "The task is already finishing; try again shortly",
+    ),
+    (
+        "dsh.task.finalize.dirty",
+        "worktree 有未提交改动，目录已保留",
+        "The worktree had uncommitted changes; its directory was kept",
+    ),
+    (
+        "dsh.task.finalize.incomplete",
+        "回写未完成：评论或状态尚未写完，可重试收尾",
+        "The write-back is incomplete: the comment or status is missing, retry finishing",
+    ),
+    (
+        "dsh.task.finalize.instructions.cleanup",
+        "关闭占用 worktree 目录的程序后重试收尾",
+        "Close anything using the worktree directory, then retry finishing",
+    ),
+    (
+        "dsh.task.finalize.instructions.commit",
+        "检查 worktree 的 git 状态后重试收尾",
+        "Check the worktree's git status, then retry finishing",
+    ),
+    (
+        "dsh.task.finalize.instructions.writeback",
+        "在收尾回合完成评论与状态后重试收尾",
+        "Finish the comment and status in the write-back turn, then retry",
+    ),
+    (
         "dsh.task.git.failed",
         "git 操作失败：{}",
         "A git operation failed: {}",
+    ),
+    (
+        "dsh.task.host.unknown",
+        "未知的宿主方法：{}",
+        "Unknown host method: {}",
     ),
     (
         "dsh.task.local.repo",
@@ -100,24 +171,24 @@ pub static MESSAGES: &[Message] = &[
         "The task record store is unavailable",
     ),
     (
+        "dsh.task.submit.summary",
+        "task_submit 需要一段改动摘要",
+        "task_submit needs a summary of the change",
+    ),
+    (
         "dsh.task.worktree.failed",
         "创建 worktree 失败：{}",
         "Failed to create the worktree: {}",
     ),
     (
-        "dsh.task.writeback.branch",
-        "\n\n分支：{0}",
-        "\n\nBranch: {0}",
-    ),
-    (
-        "dsh.task.writeback.comment",
-        "内置 Agent 已完成：{0} 个文件，+{1} / -{2}",
-        "The built-in agent finished: {0} files, +{1} / -{2}",
-    ),
-    (
         "dsh.task.writeback.failed",
         "回写 TAPD 失败：{}",
         "Failed to write back to TAPD: {}",
+    ),
+    (
+        "dsh.task.writeback.prompt",
+        "代码已由宿主提交并合并到主仓库，worktree 已清理。\n分支：{0}\n提交：{1}\n变更：{2} 个文件，+{3} / -{4}\n缺陷：{5}\n\n请只做 TAPD 收尾：先调用 tapd_get_transitions 确认合法目标；再用 tapd_add_comment 写评论（根因、改动、验证、风险、分支与提交）；然后调用 tapd_update_status 置为 resolved；最后调用 task_complete。不要 push，不要修改代码。",
+        "The host committed the work and merged it into the main repository; the worktree was cleaned up.\nBranch: {0}\nCommit: {1}\nChanges: {2} files, +{3} / -{4}\nBug: {5}\n\nOnly finish the TAPD write-back: call tapd_get_transitions to confirm the legal targets; then tapd_add_comment with the root cause, changes, verification, risks, branch and commit; then tapd_update_status to resolved; finally call task_complete. Do not push and do not modify code.",
     ),
     (
         "dsh.worktree.outside",
