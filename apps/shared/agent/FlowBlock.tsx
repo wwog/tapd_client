@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import {
   Brain,
@@ -25,6 +25,7 @@ import { duration } from "./format";
 import { ScrollingName } from "./ScrollingName";
 import { ActionKindIcon, LeafRow, ThinkingBlock } from "./TraceRows";
 import { AnswerBlock } from "./MessageParts";
+import { Collapse } from "./Collapse";
 
 const GROUP_ICON = {
   reads: FileText,
@@ -49,19 +50,29 @@ type Props = {
  * the 说明 — which never folds. A settled turn's answer is the exception: its
  * 说明 is rendered by `TurnBlock` outside the process fold, so the flow hides
  * its own copy.
+ *
+ * Memoized per flow: committed flows keep their identity across token deltas,
+ * so only the open flow (the one receiving `live`) re-renders.
  */
-export function FlowBlock({ flow, running, live, locale, hideNote = false }: Props) {
+function FlowBlockImpl({ flow, running, live, locale, hideNote = false }: Props) {
   const [open, setOpen] = useState(false);
-  const closed = isClosed(flow);
-  const step = !closed && running ? latestStep(flow, live, locale) : null;
-  const summary = step ? null : summaryLabel(flow, locale);
+  const step = useMemo(
+    () => (running && !isClosed(flow) ? latestStep(flow, live, locale) : null),
+    [flow, live, locale, running],
+  );
+  const summary = useMemo(
+    () => (step ? null : summaryLabel(flow, locale)),
+    [flow, locale, step],
+  );
   const expandable = flow.steps.length > 0;
   const expanded = expandable && open;
 
   // A flow that only thought, with a single block: the flow header already
   // says 思考, so the expansion is the block itself (no extra step row).
-  const thinkingOnly =
-    flow.steps.length > 0 && flow.steps.every((item) => item.kind === "thinking");
+  const thinkingOnly = useMemo(
+    () => flow.steps.length > 0 && flow.steps.every((item) => item.kind === "thinking"),
+    [flow.steps],
+  );
   const flatThinking = thinkingOnly && flow.steps.length === 1;
 
   return (
@@ -85,8 +96,8 @@ export function FlowBlock({ flow, running, live, locale, hideNote = false }: Pro
         />
       ) : null}
 
-      {expanded ? (
-        <div className="flex flex-col gap-1 border-l border-border pl-3">
+      <Collapse open={expanded}>
+        <div className="flex flex-col gap-2 border-l border-border pt-1.5 pl-3">
           {flatThinking ? (
             flow.steps.map((item) =>
               item.kind === "thinking" ? (
@@ -132,22 +143,24 @@ export function FlowBlock({ flow, running, live, locale, hideNote = false }: Pro
             })
           )}
         </div>
-      ) : null}
+      </Collapse>
 
       {hideNote ? null : flow.note ? (
         <AnswerBlock text={flow.note.text} locale={locale} />
       ) : flow.liveNote ? (
-        <AnswerBlock text={flow.liveNote} locale={locale} />
+        <AnswerBlock text={flow.liveNote} locale={locale} streaming />
       ) : null}
     </div>
   );
 }
 
+export const FlowBlock = memo(FlowBlockImpl);
+
 /**
  * One thinking step, in its chronological place among the flow's tool rows.
  * The row is the duration; opening it shows the reasoning text.
  */
-function ThinkingStep({
+const ThinkingStep = memo(function ThinkingStep({
   block,
   locale,
 }: {
@@ -179,26 +192,26 @@ function ThinkingStep({
             : agentLabel("think.expand", locale)
         }
         onClick={() => setOpen((value) => !value)}
-        className="-ml-1 flex min-w-0 items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-500 transition hover:bg-overlay-soft hover:text-slate-700"
+        className="group/think -ml-1 flex min-w-0 items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-500 transition-colors hover:text-slate-700"
       >
         <Brain size={12} className="shrink-0 text-slate-400" />
         <span className="shrink-0 tabular-nums">{label}</span>
         <ChevronRight
           size={12}
           className={clsx(
-            "shrink-0 text-slate-300 transition-transform",
-            open && "rotate-90",
+            "shrink-0 text-slate-300 opacity-30 transition-[opacity,transform] group-hover/think:opacity-100 group-focus-visible/think:opacity-100",
+            open && "rotate-90 opacity-100",
           )}
         />
       </button>
-      {open ? (
+      <Collapse open={open}>
         <div className="mt-1">
           <ThinkingBlock text={block.text} locale={locale} />
         </div>
-      ) : null}
+      </Collapse>
     </div>
   );
-}
+});
 
 /** The flow's folded summary line: `已查阅 n 项, 已执行 n 命令, …`. */
 function SummaryHeader({
@@ -278,7 +291,7 @@ function StepHeader({
       {step.kind === "thinking" ? (
         <ScrollingName
           text={step.target}
-          className="min-w-0 flex-1 text-slate-300"
+          className="min-w-0 flex-1 text-slate-400"
         />
       ) : (
         <span
@@ -318,7 +331,7 @@ function HeaderButton({
   children: ReactNode;
 }) {
   const className = clsx(
-    "-ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-500 transition hover:bg-overlay hover:text-slate-700",
+    "group/flow -ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700",
     full ? "w-full" : "self-start",
   );
   if (!expandable) {
@@ -338,11 +351,10 @@ function HeaderButton({
       <ChevronRight
         size={12}
         className={clsx(
-          "shrink-0 text-slate-300 transition-transform",
-          open && "rotate-90",
+          "shrink-0 text-slate-300 opacity-40 transition-[opacity,transform] group-hover/flow:opacity-100 group-focus-visible/flow:opacity-100",
+          open && "rotate-90 opacity-100",
         )}
       />
     </button>
   );
 }
-

@@ -1,4 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { AlertTriangle, Bot, ChevronRight, Loader2 } from "lucide-react";
 
@@ -11,13 +18,17 @@ import type {
 import type { AgentSubagentRow } from "./subagents";
 import { agentLabel } from "./labels";
 import { duration } from "./format";
-import { buildFlows, type AgentFlow, type FlowLive } from "./flows";
+import { buildFlows, isClosed, type AgentFlow, type FlowLive } from "./flows";
+import { Collapse } from "./Collapse";
 import { FlowBlock } from "./FlowBlock";
 import { SubagentRow } from "./SubagentRow";
 import { AnswerBlock, MessageMeta, UserBubble } from "./MessageParts";
 
 /** The live token overlay of the turn currently running. */
 export type LiveTrace = FlowLive;
+
+const EMPTY_SUBAGENTS: AgentSubagentRow[] = [];
+const EMPTY_NOTICES: AgentNotice[] = [];
 
 function entryKey(entry: AgentEntry): string {
   if (entry.kind === "tool" && entry.callId) return `tool:${entry.callId}`;
@@ -29,8 +40,13 @@ function entryKey(entry: AgentEntry): string {
  * turn is a fixed difference, so only the live line owns an interval.
  */
 function useElapsed(block: AgentTurnBlock, running: boolean): number | null {
-  const start = block.start ? Date.parse(block.start.at) : Number.NaN;
-  const end = block.end ? Date.parse(block.end.at) : Number.NaN;
+  const { start, end } = useMemo(
+    () => ({
+      start: block.start ? Date.parse(block.start.at) : Number.NaN,
+      end: block.end ? Date.parse(block.end.at) : Number.NaN,
+    }),
+    [block.start, block.end],
+  );
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -53,27 +69,7 @@ type RootItem =
 
 const ROOT_RANK = { flow: 0, subagent: 1, notice: 2 } as const;
 
-/**
- * One turn. The turn root is a plain work line — 已工作 once settled, the
- * independent 工作中 line at the bottom while running. Under it sit the root
- * items in event order: flows (steps between two 说明), sub-agent rows (their
- * own fold domains) and orphan settle notices.
- *
- * A flow's 说明 never folds, so the reading of a settled turn keeps every
- * boundary visible; only the groups inside a flow are disclosed.
- */
-export function TurnBlock({
-  block,
-  running,
-  live,
-  locale,
-  onRetry,
-  subagents,
-  renderTurns,
-  openSubagentIds,
-  onToggleSubagent,
-  orphanNotices,
-}: {
+export type TurnBlockProps = {
   block: AgentTurnBlock;
   running: boolean;
   live?: LiveTrace;
@@ -90,60 +86,120 @@ export function TurnBlock({
   onToggleSubagent?: (sessionId: string) => void;
   /** Settled notices that matched no `subagent` call (old logs, orphans). */
   orphanNotices?: AgentNotice[];
-}) {
+};
+
+/**
+ * One turn. The turn root is a plain work line — 已工作 once settled, the
+ * independent 工作中 line at the bottom while running. Under it sit the root
+ * items in event order: flows (steps between two 说明), sub-agent rows (their
+ * own fold domains) and orphan settle notices.
+ *
+ * A flow's 说明 never folds, so the reading of a settled turn keeps every
+ * boundary visible; only the groups inside a flow are disclosed.
+ *
+ * Memoized: streaming only re-renders the active turn (its `live` prop changes);
+ * every settled turn keeps the same block, rows and callbacks and bails out.
+ */
+function TurnBlockImpl({
+  block,
+  running,
+  live,
+  locale,
+  onRetry,
+  subagents,
+  renderTurns,
+  openSubagentIds,
+  onToggleSubagent,
+  orphanNotices,
+}: TurnBlockProps) {
   const [retrying, setRetrying] = useState(false);
   const [processOpen, setProcessOpen] = useState(false);
   const [internalOpen, setInternalOpen] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
 
-  const users = block.entries.filter((entry) => entry.kind === "user");
+  const users = useMemo(
+    () => block.entries.filter((entry) => entry.kind === "user"),
+    [block.entries],
+  );
   const prompt = users[users.length - 1]?.text ?? "";
   const end = block.end;
   const failure = !running && (end?.reason === "error" || end?.reason === "blocked");
   const aborted = !running && end?.reason === "aborted";
 
-  const flows = buildFlows(block, running ? live : undefined, running);
-  const children = subagents ?? [];
-  const orphans = orphanNotices ?? [];
+  const flows = useMemo(
+    () => buildFlows(block, running ? live : undefined, running),
+    [block, running, live],
+  );
+  const children = subagents ?? EMPTY_SUBAGENTS;
+  const orphans = orphanNotices ?? EMPTY_NOTICES;
 
-  const items: RootItem[] = [
-    ...flows.map((flow): RootItem => ({ kind: "flow", anchor: flow.firstSeq, flow })),
-    ...children.map(
-      (row): RootItem => ({ kind: "subagent", anchor: row.callSeq, row }),
-    ),
-    ...orphans.map(
-      (notice): RootItem => ({ kind: "notice", anchor: notice.seq, notice }),
-    ),
-  ].sort(
-    (left, right) =>
-      left.anchor - right.anchor || ROOT_RANK[left.kind] - ROOT_RANK[right.kind],
+  const items = useMemo<RootItem[]>(
+    () =>
+      [
+        ...flows.map((flow): RootItem => ({ kind: "flow", anchor: flow.firstSeq, flow })),
+        ...children.map(
+          (row): RootItem => ({ kind: "subagent", anchor: row.callSeq, row }),
+        ),
+        ...orphans.map(
+          (notice): RootItem => ({ kind: "notice", anchor: notice.seq, notice }),
+        ),
+      ].sort(
+        (left, right) =>
+          left.anchor - right.anchor || ROOT_RANK[left.kind] - ROOT_RANK[right.kind],
+      ),
+    [children, flows, orphans],
   );
 
   // The turn's last committed 说明 is the answer: it stays visible when the
   // process is folded, while its own flow keeps only the summary/groups inside.
-  const answerFlow = running
-    ? undefined
-    : [...flows].reverse().find((flow) => flow.note !== undefined);
+  const answerFlow = useMemo(
+    () =>
+      running
+        ? undefined
+        : [...flows].reverse().find((flow) => flow.note !== undefined),
+    [flows, running],
+  );
   const answer = answerFlow?.note;
-  const innerFlows = flows.filter(
-    (flow) => flow !== answerFlow || flow.steps.length > 0,
+  const innerFlows = useMemo(
+    () => flows.filter((flow) => flow !== answerFlow || flow.steps.length > 0),
+    [answerFlow, flows],
   );
   const hasInner =
     innerFlows.length > 0 || children.length > 0 || orphans.length > 0;
 
-  const openIds = openSubagentIds ?? internalOpen;
-  const toggleChild = (sessionId: string) => {
-    if (!openSubagentIds) {
-      setInternalOpen((prev) => {
-        const next = new Set(prev);
-        if (next.has(sessionId)) next.delete(sessionId);
-        else next.add(sessionId);
-        return next;
-      });
+  // Abnormal endings and turns without a final 说明 have no readable answer
+  // outside the fold; open the process once so the failure/partial output is
+  // not hidden behind 已工作. A later manual collapse still wins.
+  useEffect(() => {
+    if (!running && hasInner && (!answer || failure || aborted)) {
+      setProcessOpen(true);
     }
-    onToggleSubagent?.(sessionId);
-  };
+  }, [answer, aborted, failure, hasInner, running]);
+
+  // Only the open flow of a running turn consumes the token overlay; closed
+  // flows stay on their committed identity and never re-render per delta.
+  const openFlow = useMemo(() => {
+    if (!running) return undefined;
+    const last = flows[flows.length - 1];
+    return last && !isClosed(last) ? last : undefined;
+  }, [flows, running]);
+
+  const openIds = openSubagentIds ?? internalOpen;
+  const toggleChild = useCallback(
+    (sessionId: string) => {
+      if (!openSubagentIds) {
+        setInternalOpen((prev) => {
+          const next = new Set(prev);
+          if (next.has(sessionId)) next.delete(sessionId);
+          else next.add(sessionId);
+          return next;
+        });
+      }
+      onToggleSubagent?.(sessionId);
+    },
+    [openSubagentIds, onToggleSubagent],
+  );
 
   const retry = async () => {
     if (retrying || !onRetry) return;
@@ -167,7 +223,7 @@ export function TurnBlock({
           key={item.flow.key}
           flow={item.flow}
           running={running}
-          live={live}
+          live={item.flow === openFlow ? live : undefined}
           locale={locale}
           hideNote={hideAnswerNote && item.flow === answerFlow}
         />
@@ -181,7 +237,7 @@ export function TurnBlock({
           locale={locale}
           renderTurns={renderTurns}
           open={openIds.has(item.row.sessionId)}
-          onToggle={() => toggleChild(item.row.sessionId)}
+          onToggle={toggleChild}
         />
       );
     }
@@ -189,7 +245,7 @@ export function TurnBlock({
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       {users.map((entry) => (
         <div key={entryKey(entry)} className="flex flex-col">
           <UserBubble text={entry.text} locale={locale} />
@@ -211,9 +267,9 @@ export function TurnBlock({
                 : agentLabel("turn.expand", locale)
             }
             onClick={() => setProcessOpen((value) => !value)}
-            className="-ml-1 inline-flex min-w-0 items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-left text-ui-xs text-slate-400 transition hover:bg-overlay hover:text-slate-600"
+            className="group/fold flex w-full min-w-0 items-center gap-1.5 self-start border-b border-border pb-1.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700"
           >
-            <span className="shrink-0 tabular-nums">
+            <span className="min-w-0 truncate tabular-nums">
               {label
                 ? agentLabel("turn.worked", locale, { duration: label })
                 : agentLabel("turn.workedPlain", locale)}
@@ -221,14 +277,14 @@ export function TurnBlock({
             <ChevronRight
               size={12}
               className={clsx(
-                "shrink-0 text-slate-300 transition-transform",
-                processOpen && "rotate-90",
+                "shrink-0 text-slate-300 opacity-40 transition-[opacity,transform] group-hover/fold:opacity-100 group-focus-visible/fold:opacity-100",
+                processOpen && "rotate-90 opacity-100",
               )}
             />
           </button>
         ) : (
-          <span className="inline-flex min-w-0 items-center gap-1.5 self-start px-1 text-ui-xs text-slate-400">
-            <span className="tabular-nums">
+          <span className="inline-flex min-w-0 items-center gap-1.5 self-start text-ui-caption text-slate-400">
+            <span className="truncate tabular-nums">
               {label
                 ? agentLabel("turn.worked", locale, { duration: label })
                 : agentLabel("turn.workedPlain", locale)}
@@ -237,15 +293,17 @@ export function TurnBlock({
         )
       ) : null}
 
-      {running
-        ? items.map((item) => renderItem(item, false))
-        : hasInner && processOpen
-          ? (
-              <div className="flex flex-col gap-2 border-l border-border pl-3">
-                {items.map((item) => renderItem(item, true))}
-              </div>
-            )
-          : null}
+      {running ? (
+        items.map((item) => renderItem(item, false))
+      ) : (
+        <Collapse open={processOpen}>
+          {hasInner ? (
+            <div className="flex flex-col gap-3 pt-3">
+              {items.map((item) => renderItem(item, true))}
+            </div>
+          ) : null}
+        </Collapse>
+      )}
 
       {!running && answer ? (
         <div className="flex flex-col">
@@ -264,8 +322,8 @@ export function TurnBlock({
 
       {/* Running: the clock is independent, at the bottom, never a fold. */}
       {running ? (
-        <div className="flex items-center gap-1.5 text-ui-xs text-slate-400">
-          <Loader2 size={11} className="shrink-0 animate-spin" />
+        <div className="flex items-center gap-2 text-ui-caption text-slate-500">
+          <WorkingOrb />
           <span className="shrink-0 tabular-nums">
             {label
               ? agentLabel("turn.working", locale, { duration: label })
@@ -275,7 +333,7 @@ export function TurnBlock({
       ) : null}
 
       {failure ? (
-        <div className="flex items-start gap-2 text-ui-xs text-rose-600">
+        <div className="flex items-start gap-2 text-ui-caption text-rose-600">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="min-w-0 flex-1 select-text break-words" title={end?.error}>
             {end?.reason === "blocked"
@@ -296,9 +354,31 @@ export function TurnBlock({
           ) : null}
         </div>
       ) : aborted ? (
-        <div className="text-ui-xs text-slate-400">{agentLabel("turn.aborted", locale)}</div>
+        <div className="text-ui-caption text-slate-400">{agentLabel("turn.aborted", locale)}</div>
       ) : null}
     </div>
+  );
+}
+
+export const TurnBlock = memo(TurnBlockImpl);
+
+/**
+ * Three dots on a rotating ring. A quieter "working" signal than a spinner:
+ * the row's text carries the state, the glyph only breathes. Pure CSS so both
+ * webviews get it, and it stops under reduced motion.
+ */
+function WorkingOrb() {
+  return (
+    <span aria-hidden className="relative size-3 shrink-0">
+      <span
+        className="absolute inset-0 animate-spin motion-reduce:animate-none"
+        style={{ animationDuration: "1.8s" }}
+      >
+        <span className="absolute left-1/2 top-0 size-1 -translate-x-1/2 rounded-full bg-sky-500/80" />
+        <span className="absolute bottom-0 left-0 size-1 rounded-full bg-sky-500/45" />
+        <span className="absolute bottom-0 right-0 size-1 rounded-full bg-sky-500/25" />
+      </span>
+    </span>
   );
 }
 
@@ -306,9 +386,15 @@ export function TurnBlock({
  * A settle notice that matched no `subagent` call: one closing message row,
  * because without a call row there is no root fold to attach it to.
  */
-function NoticeRow({ notice, locale }: { notice: AgentNotice; locale: AgentLocale }) {
+const NoticeRow = memo(function NoticeRow({
+  notice,
+  locale,
+}: {
+  notice: AgentNotice;
+  locale: AgentLocale;
+}) {
   return (
-    <div className="flex min-w-0 items-start gap-1.5 py-0.5 text-ui-xs">
+    <div className="flex min-w-0 items-start gap-1.5 py-0.5 text-ui-caption">
       <Bot size={12} className="mt-0.5 shrink-0 text-slate-400" />
       <span className="shrink-0 text-slate-500">
         {agentLabel("notice.closing", locale)}:
@@ -318,4 +404,4 @@ function NoticeRow({ notice, locale }: { notice: AgentNotice; locale: AgentLocal
       </span>
     </div>
   );
-}
+});

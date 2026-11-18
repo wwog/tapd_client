@@ -90,40 +90,50 @@ function groupOf(tool: FlowLiveTool) {
   return toolGroup(tool.name, tool.args);
 }
 
+function createFlow(blockKey: string, index: number, seq: number): AgentFlow {
+  return {
+    key: `${blockKey}:flow:${index}`,
+    index,
+    firstSeq: seq,
+    thinking: [],
+    reads: [],
+    commands: [],
+    files: [],
+    liveTools: [],
+    steps: [],
+  };
+}
+
+function cloneFlow(flow: AgentFlow): AgentFlow {
+  return {
+    ...flow,
+    thinking: [...flow.thinking],
+    reads: [...flow.reads],
+    commands: [...flow.commands],
+    files: [...flow.files],
+    liveTools: [...flow.liveTools],
+    steps: [...flow.steps],
+  };
+}
+
 /**
  * Cuts one turn into flows at every assistant text (说明). Reasoning joins the
  * flow before the text, tool calls after it start the next flow — exactly the
  * seq order of the committed rows. `subagent` calls and settle notices are
  * hoisted to the turn root and never enter a flow.
  */
-export function buildFlows(
-  block: AgentTurnBlock,
-  live: FlowLive | undefined,
-  running: boolean,
-): AgentFlow[] {
+function buildCommittedFlows(block: AgentTurnBlock): AgentFlow[] {
   const flows: AgentFlow[] = [];
   let current: AgentFlow | null = null;
   let index = 0;
 
   const start = (seq: number): AgentFlow => {
-    const flow: AgentFlow = {
-      key: `${block.key}:flow:${index}`,
-      index,
-      firstSeq: seq,
-      thinking: [],
-      reads: [],
-      commands: [],
-      files: [],
-      liveTools: [],
-      steps: [],
-    };
+    const flow = createFlow(block.key, index, seq);
     index += 1;
     flows.push(flow);
     current = flow;
     return flow;
   };
-
-  const ensure = (): AgentFlow => current ?? start(LIVE_FLOW_SEQ);
 
   for (const entry of block.entries) {
     if (entry.kind === "user" || entry.kind === "turn" || entry.kind === "notice") {
@@ -134,15 +144,15 @@ export function buildFlows(
       const reasoning = entry.reasoning?.trim() ?? "";
       if (reasoning) {
         const flow = current ?? start(entry.seq);
-        const block: AgentThinking = {
+        const thinking: AgentThinking = {
           key: `think:${entry.seq}`,
           text: entry.reasoning ?? "",
           live: false,
           startedAtMs: entry.startedAtMs,
           completedAtMs: entry.completedAtMs,
         };
-        flow.thinking.push(block);
-        flow.steps.push({ kind: "thinking", key: block.key, thinking: block });
+        flow.thinking.push(thinking);
+        flow.steps.push({ kind: "thinking", key: thinking.key, thinking });
       }
       if (entry.text.trim()) {
         const flow = current ?? start(entry.seq);
@@ -173,38 +183,6 @@ export function buildFlows(
     }
   }
 
-  // Live overlay: the reasoning of the in-flight message closes with its text,
-  // and the same message's tool calls start the next flow. That is the same
-  // order the committed rows arrive in.
-  if (running && live) {
-    const liveReasoning = live.reasoning.trim();
-    if (liveReasoning) {
-      const flow = ensure();
-      const block: AgentThinking = {
-        key: "think:live",
-        text: live.reasoning,
-        live: true,
-      };
-      flow.thinking.push(block);
-      flow.steps.push({ kind: "thinking", key: block.key, thinking: block });
-    }
-    if (live.text.trim()) {
-      const flow = ensure();
-      flow.liveNote = live.text;
-      current = null;
-    }
-    for (const [offset, tool] of live.tools.entries()) {
-      if (tool.name === "subagent") continue;
-      const flow = ensure();
-      flow.liveTools.push(tool);
-      flow.steps.push({
-        kind: "live",
-        key: `live:${tool.callId || offset}`,
-        tool,
-      });
-    }
-  }
-
   return flows.filter(
     (flow) =>
       flow.thinking.length > 0 ||
@@ -215,6 +193,118 @@ export function buildFlows(
       flow.note !== undefined ||
       flow.liveNote !== undefined,
   );
+}
+
+/**
+ * Committed flows are immutable: a transcript's rows only change when a turn
+ * commits, so the whole history can be reused across token deltas. Only the
+ * open flow is cloned when the live overlay lands; every settled flow keeps
+ * its identity, which is what lets `FlowBlock` bail out.
+ */
+const committedFlowCache = new WeakMap<AgentTurnBlock, AgentFlow[]>();
+
+function committedFlows(block: AgentTurnBlock): AgentFlow[] {
+  const cached = committedFlowCache.get(block);
+  if (cached) return cached;
+  const flows = buildCommittedFlows(block);
+  committedFlowCache.set(block, flows);
+  return flows;
+}
+
+/**
+ * The live overlay: the reasoning of the in-flight message closes with its
+ * text, and the same message's tool calls start the next flow. That is the
+ * same order the committed rows arrive in. Nothing before the open flow is
+ * copied, so the work per delta stays proportional to the live step instead of
+ * the transcript.
+ */
+function applyLive(
+  block: AgentTurnBlock,
+  committed: AgentFlow[],
+  live: FlowLive,
+): AgentFlow[] {
+  const flows = committed.slice();
+  let working: AgentFlow | null = null;
+  let cloneIndex = -1;
+  let dirty = false;
+
+  const flushClone = () => {
+    if (working !== null && cloneIndex >= 0 && dirty) {
+      flows[cloneIndex] = working;
+    }
+  };
+
+  const start = (seq: number): AgentFlow => {
+    // `index` is a display/key counter, not just the array length: committed
+    // flows may have been filtered, and a live flow must never reuse a key.
+    const nextIndex = flows.reduce((max, flow) => Math.max(max, flow.index + 1), 0);
+    const flow = createFlow(block.key, nextIndex, seq);
+    flows.push(flow);
+    working = flow;
+    cloneIndex = -1;
+    dirty = true;
+    return flow;
+  };
+
+  const ensure = (): AgentFlow => {
+    if (working !== null) return working;
+    const last = flows[flows.length - 1];
+    if (last && !isClosed(last)) {
+      working = cloneFlow(last);
+      cloneIndex = flows.length - 1;
+      dirty = false;
+      return working;
+    }
+    return start(LIVE_FLOW_SEQ);
+  };
+
+  const liveReasoning = live.reasoning.trim();
+  if (liveReasoning) {
+    const flow = ensure();
+    const thinking: AgentThinking = {
+      key: "think:live",
+      text: live.reasoning,
+      live: true,
+    };
+    flow.thinking.push(thinking);
+    flow.steps.push({ kind: "thinking", key: thinking.key, thinking });
+    dirty = true;
+  }
+  if (live.text.trim()) {
+    const flow = ensure();
+    flow.liveNote = live.text;
+    dirty = true;
+    // The 说明 closes this flow; write the clone back before the next live
+    // tool starts a fresh one.
+    flushClone();
+    working = null;
+    cloneIndex = -1;
+    dirty = false;
+  }
+  for (const [offset, tool] of live.tools.entries()) {
+    if (tool.name === "subagent") continue;
+    const flow = ensure();
+    flow.liveTools.push(tool);
+    flow.steps.push({
+      kind: "live",
+      key: `live:${tool.callId || offset}`,
+      tool,
+    });
+    dirty = true;
+  }
+
+  flushClone();
+  return flows;
+}
+
+export function buildFlows(
+  block: AgentTurnBlock,
+  live: FlowLive | undefined,
+  running: boolean,
+): AgentFlow[] {
+  const committed = committedFlows(block);
+  if (!running || live === undefined) return committed;
+  return applyLive(block, committed, live);
 }
 
 /** Whether the flow is closed by a 说明 (committed or still streaming). */
@@ -335,10 +425,16 @@ export function latestStep(
     };
   }
 
-  const tools = [...flow.reads, ...flow.commands, ...flow.files].sort(
-    (left, right) => left.seq - right.seq,
-  );
-  const last = tools[tools.length - 1];
+  // `steps` already carries execution order; walking it back is cheaper than
+  // merging and sorting the three group buckets on every live frame.
+  let last: ToolEntry | undefined;
+  for (let index = flow.steps.length - 1; index >= 0; index -= 1) {
+    const step = flow.steps[index];
+    if (step?.kind === "tool") {
+      last = step.entry;
+      break;
+    }
+  }
   if (!last) return null;
   const action = describeTool(last.name, last.args, locale);
 

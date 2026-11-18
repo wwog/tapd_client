@@ -1,4 +1,5 @@
 import {
+  memo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -26,6 +27,7 @@ import {
   toolInput,
   type ToolAction,
 } from "./actions";
+import { Collapse } from "./Collapse";
 
 /**
  * One height cap for every disclosure in the trace: a long result, a long
@@ -223,8 +225,12 @@ function ResizableDetail({
  * step state dictates, and — when opened — exactly two blocks, input and
  * output. The row itself never links to the trajectory and never scrolls
  * horizontally; the input block is where the full command lives.
+ *
+ * Memoized: an open flow re-renders on each token, but a committed leaf's
+ * props stop changing, so its JSON parsing, diff counting and detail state are
+ * not repeated.
  */
-export function LeafRow({
+export const LeafRow = memo(function LeafRow({
   name,
   args,
   status,
@@ -281,13 +287,15 @@ export function LeafRow({
         type="button"
         aria-expanded={open}
         onClick={toggle}
-        className="-ml-1 flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-overlay-soft"
+        className="group/leaf-row -ml-1 flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:text-slate-700"
       >
         <ActionIcon action={action} failed={failed} />
         <span
           className={clsx(
             "shrink-0 text-ui-xs",
-            failed ? "text-rose-600" : "text-slate-500",
+            failed
+              ? "text-rose-600"
+              : "text-slate-500 transition-colors group-hover/leaf-row:text-slate-700",
           )}
         >
           {verb}
@@ -295,7 +303,9 @@ export function LeafRow({
         <span
           className={clsx(
             "min-w-0 flex-1 truncate font-mono text-ui-xs",
-            failed ? "text-rose-700" : "text-slate-600",
+            failed
+              ? "text-rose-700"
+              : "text-slate-600 transition-colors group-hover/leaf-row:text-slate-800",
           )}
         >
           {target || name}
@@ -313,13 +323,13 @@ export function LeafRow({
         <ChevronRight
           size={12}
           className={clsx(
-            "shrink-0 text-slate-300 transition-transform",
-            open && "rotate-90",
+            "shrink-0 text-slate-300 opacity-30 transition-[opacity,transform] group-hover/leaf-row:opacity-100 group-focus-visible/leaf-row:opacity-100",
+            open && "rotate-90 opacity-100",
           )}
         />
       </button>
 
-      {open ? (
+      <Collapse open={open}>
         <div className="mt-1 flex flex-col gap-1.5">
           <ResizableDetail
             label={
@@ -360,16 +370,22 @@ export function LeafRow({
             />
           )}
         </div>
-      ) : null}
+      </Collapse>
     </div>
   );
-}
+});
 
 /**
  * One thinking block inside a flow's 思考 group. Reasoning is only ever read at
  * this leaf, so the group header carries no preview.
  */
-export function ThinkingBlock({ text, locale }: { text: string; locale: AgentLocale }) {
+export const ThinkingBlock = memo(function ThinkingBlock({
+  text,
+  locale,
+}: {
+  text: string;
+  locale: AgentLocale;
+}) {
   const [height, setHeight] = useState<number>();
   return (
     <ResizableDetail
@@ -380,4 +396,4 @@ export function ThinkingBlock({ text, locale }: { text: string; locale: AgentLoc
       tone="muted"
     />
   );
-}
+});

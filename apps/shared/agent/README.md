@@ -26,6 +26,7 @@
 | `TurnBlock` | 一个轮次的壳：完成态 `已工作`（过程折叠，收起后只剩它和最后一段说明）/ 展开后的根级子 agent + 流程列表 / 运行态 `工作中` / 失败重试 |
 | `FlowBlock` | 一个流程：概要行（或运行中的最新步骤）+ 按执行顺序的步骤（思考行 / 工具叶子行）+ 说明（流程自身不折叠说明；整轮 `已工作` 收起时随过程一起隐藏） |
 | `SubagentRow` | 根级子 agent 行：description 单行、彩色 icon、展开即子会话 |
+| `Collapse` | 折叠高度动画（grid 1fr↔0fr）；收起动画结束后卸载内容，`prefers-reduced-motion` 直接切换 |
 | `TraceRows` | 叶子行（`LeafRow` / `ThinkingBlock`）与输入/输出块（可拖高） |
 | `MessageParts` | `UserBubble` / `AnswerBlock` / `MessageMeta`（气泡、说明、时间/用量/复制） |
 | `flows.ts` | 流程切分、思考时长、概要文案、最新步骤状态映射 |
@@ -72,7 +73,8 @@ export function summaryLabel(flow: AgentFlow, locale: AgentLocale): string | nul
 
 // MessageParts.tsx — 全部接收 locale: AgentLocale，不再用 app 的 t()
 export function UserBubble(props: { text: string; locale: AgentLocale });
-export function AnswerBlock(props: { text: string; locale: AgentLocale });
+/** `streaming` defers the Markdown pass while tokens append. */
+export function AnswerBlock(props: { text: string; locale: AgentLocale; streaming?: boolean });
 export function MessageMeta(props: {
   at: string; text: string; align: "left" | "right"; locale: AgentLocale;
   usage?: AgentUsage; provider?: string; model?: string;
@@ -148,6 +150,21 @@ export function TurnBlock(props: {
 - 仅思考且只有一段的流程：流程标题下直接是思考块，不再多一行 `思考 n 秒`；
   多段思考则每段一行。
 
+## 渲染性能：冻结历史，只重算 live
+
+流式 delta 每条都会让宿主重渲染。视图按下面的边界把成本锁在当前轮：
+
+- `buildFlows` 把已提交部分按 `block` 身份缓存；live 只复制最后一个未闭合流程，
+  其余流程保持引用不变（见 `flows.ts` 的 `committedFlowCache` / `applyLive`）。
+- `TurnBlock`、`FlowBlock`、`LeafRow`、`ThinkingBlock`、`SubagentRow`、`AnswerBlock`
+  都是 `memo` 组件；已结束的轮次拿到的 block、流程、行和回调引用不变，直接 bail。
+- `MessageStream` 把分组、子 agent 装配、live 过滤和滚动签名都 memo 化；子折叠与
+  子会话渲染用稳定回调（ref 读最新状态），避免每个 token 产生新函数击穿 memo。
+- 流式正文的 Markdown 走 `useDeferredValue`：store 仍然逐 token 更新，长文解析不堵
+  住当前帧；完成态立即切回真实文本。
+
+因此每条 delta 的成本 ≈ 当前流程的新步骤，而不是整条 transcript。
+
 ## SubagentRow
 
 ```ts
@@ -156,7 +173,8 @@ export function SubagentRow(props: {
   locale: AgentLocale;
   renderTurns?: (child: AgentSubagentRow) => ReactNode;
   open: boolean;
-  onToggle: () => void;
+  /** Receives the child session id, so the parent can pass one stable callback. */
+  onToggle: (sessionId: string) => void;
 });
 
 export type AgentSubagentRow = {

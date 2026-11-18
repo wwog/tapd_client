@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import clsx from "clsx";
 import { Bot, ChevronRight, Loader2 } from "lucide-react";
 
@@ -6,6 +6,7 @@ import type { AgentLocale } from "./types";
 import type { AgentSubagentRow } from "./subagents";
 import { agentLabel } from "./labels";
 import { ScrollingName } from "./ScrollingName";
+import { Collapse } from "./Collapse";
 
 /** Status text for the root row. */
 function childStatus(row: AgentSubagentRow, locale: AgentLocale): string {
@@ -40,7 +41,7 @@ const ACCENTS = [
  * The row never joins a flow's groups or summary: a sub-agent is work at the
  * turn root, not a step among reads and commands.
  */
-export function SubagentRow({
+export const SubagentRow = memo(function SubagentRow({
   row,
   locale,
   renderTurns,
@@ -52,7 +53,8 @@ export function SubagentRow({
   /** Renders the child transcript; the host recurses through the turn view. */
   renderTurns?: (child: AgentSubagentRow) => ReactNode;
   open: boolean;
-  onToggle: () => void;
+  /** Receives the child session id, so the callback stays stable per parent. */
+  onToggle: (sessionId: string) => void;
 }) {
   const label =
     row.description || row.name || agentLabel("subagent.group", locale);
@@ -65,8 +67,8 @@ export function SubagentRow({
       <button
         type="button"
         aria-expanded={open}
-        onClick={onToggle}
-        className="-ml-1 flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-xs transition hover:bg-sky-50/70"
+        onClick={() => onToggle(row.sessionId)}
+        className="group/subagent -ml-1 flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-caption transition-colors hover:bg-sky-50/60 hover:text-sky-800"
       >
         <span
           className={clsx(
@@ -87,13 +89,13 @@ export function SubagentRow({
         <ChevronRight
           size={12}
           className={clsx(
-            "shrink-0 text-sky-300 transition-transform",
-            open && "rotate-90",
+            "shrink-0 text-sky-300 opacity-40 transition-[opacity,transform] group-hover/subagent:opacity-100 group-focus-visible/subagent:opacity-100",
+            open && "rotate-90 opacity-100",
           )}
         />
       </button>
 
-      {open ? (
+      <Collapse open={open}>
         <div className="mt-1 flex max-h-[60vh] flex-col gap-2 overflow-y-auto overscroll-contain border-l border-sky-200 pl-3">
           {row.error && row.turns.length === 0 ? (
             <div className="text-ui-xs text-rose-600">{row.error}</div>
@@ -119,7 +121,7 @@ export function SubagentRow({
             </div>
           ) : null}
         </div>
-      ) : null}
+      </Collapse>
     </div>
   );
-}
+});

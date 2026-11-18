@@ -1,12 +1,21 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 
 import { Button, Spinner } from "../components/ui";
 import { t, useLocale } from "../lib/i18n";
 import { TodoCard } from "../../../shared/agent/TodoCard";
 import { TurnBlock as ChildTurnBlock } from "../../../shared/agent/TurnBlock";
-import type { AgentNotice } from "../../../shared/agent/types";
+import type { AgentNotice, AgentTurnBlock } from "../../../shared/agent/types";
 import type { AgentSubagentRow } from "../../../shared/agent/subagents";
+import type { DshEntry } from "../lib/dsh";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { UserBubble } from "./MessageParts";
@@ -15,11 +24,18 @@ import { groupTurns } from "./turns";
 import { assembleSessionSubagents, isPendingChild } from "./subagents";
 import { agentActions, agentStore, isSessionRunning } from "./store";
 
+const EMPTY_ITEMS: DshEntry[] = [];
+const EMPTY_TODOS: never[] = [];
+
 /**
  * Committed history plus the live attempt on top, grouped per turn. The page
  * remounts this per session (`key`), which also resets the scroll position.
  * `visible` hides the pane for the team board without unmounting it, so the
  * scroll position and the live overlay survive a trip to the board and back.
+ *
+ * Streaming re-renders this component per delta, but every projection below is
+ * memoized on its real input and every settled turn gets the same props, so
+ * the per-token cost is the live tail instead of the whole transcript.
  *
  * The session todo card sits above the turns (session-level state, no turn),
  * and each turn's `subagent` calls render as the shared sub-agent fold with
@@ -35,52 +51,98 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   const pending = (sessionId ? state.pendingPrompts[sessionId] : undefined) ?? [];
   const approvals = state.approvals.filter((item) => item.sessionId === sessionId);
   const questions = state.questions.filter((item) => item.sessionId === sessionId);
-  const items = history?.items ?? [];
-  const todos = session?.todos ?? [];
+  const items = history?.items ?? EMPTY_ITEMS;
+  const todos = session?.todos ?? EMPTY_TODOS;
 
-  const committedCalls = new Set(
-    items.flatMap((entry) => (entry.kind === "tool" ? [entry.callId] : [])),
+  const committedCalls = useMemo(
+    () =>
+      new Set(
+        items.flatMap((entry) =>
+          entry.kind === "tool" && entry.callId ? [entry.callId] : [],
+        ),
+      ),
+    [items],
   );
-  const liveTools = (live?.tools ?? []).filter(
-    (tool) => !tool.callId || !committedCalls.has(tool.callId),
-  );
-  const liveHasContent = Boolean(live?.text || live?.reasoning) || liveTools.length > 0;
+  const rawLiveTools = live?.tools;
   // Only in-flight calls reach the turn: the store already drops a call when
   // its row commits, and this filter also covers deltas that never carried a
   // callId. Passing the raw overlay painted every call twice.
-  const liveTrace = live
-    ? { text: live.text, reasoning: live.reasoning, tools: liveTools }
-    : undefined;
+  const liveTools = useMemo(
+    () =>
+      rawLiveTools
+        ? rawLiveTools.filter(
+            (tool) => !tool.callId || !committedCalls.has(tool.callId),
+          )
+        : [],
+    [rawLiveTools, committedCalls],
+  );
+  const liveText = live?.text ?? "";
+  const liveReasoning = live?.reasoning ?? "";
+  const hasLive = live !== undefined;
+  const liveHasContent = Boolean(liveText || liveReasoning) || liveTools.length > 0;
+  // Sub-agent assembly only cares about live `subagent` calls, but a shell
+  // tool streams its arguments per delta. Keep the previous array when those
+  // arguments did not change, so the O(transcript) assembly below is not
+  // re-run for every command character.
+  const liveSubagentToolsRef = useRef<typeof liveTools>([]);
+  const liveSubagentTools = useMemo(() => {
+    const next = liveTools.filter((tool) => tool.name === "subagent");
+    const previous = liveSubagentToolsRef.current;
+    const unchanged =
+      next.length === previous.length &&
+      next.every((tool, index) => {
+        const before = previous[index];
+        return (
+          before !== undefined &&
+          before.callId === tool.callId &&
+          before.args === tool.args
+        );
+      });
+    if (unchanged) return previous;
+    liveSubagentToolsRef.current = next;
+    return next;
+  }, [liveTools]);
+  // Rebuilt when text/reasoning or the tool list changes. The tool list keeps
+  // its reference while only text grows, so sub-agent assembly is not
+  // invalidated by every token.
+  const liveTrace = useMemo(
+    () =>
+      hasLive
+        ? { text: liveText, reasoning: liveReasoning, tools: liveTools }
+        : undefined,
+    [hasLive, liveReasoning, liveText, liveTools],
+  );
 
   // Grouping is memoized on the committed rows: the live overlay re-renders
-  // per token, and the sub-agent assembly below must not re-group child
-  // transcripts per token (the shared assembler caches per transcript
-  // identity, but re-splitting the parent stays per render).
+  // per token and must not re-split the transcript.
   const blocks = useMemo(() => groupTurns(items), [items]);
   const running = isSessionRunning(state, sessionId);
 
   // The live stream belongs to the turn whose `turn/end` has not landed yet;
   // before its `turn/start` commits, a synthetic block keeps the text visible.
-  let activeKey: string | null = null;
-  if (running) {
+  const activeKey = useMemo(() => {
+    if (!running) return null;
     const last = blocks[blocks.length - 1];
-    if (last && last.start && !last.end) {
-      activeKey = last.key;
-    } else if (liveHasContent) {
-      activeKey = "live";
-    }
-  }
-  const assembledBlocks =
-    activeKey === "live" ? [...blocks, { key: activeKey, entries: [] }] : blocks;
-
-  const shown = assembledBlocks.filter(
-    (block) =>
-      block.entries.length > 0 ||
-      block.key === activeKey ||
-      // A retry has no prompt of its own (the engine records an empty message),
-      // so a second failure would otherwise have no row to show its reason on.
-      block.end?.reason === "error" ||
-      block.end?.reason === "blocked",
+    if (last && last.start && !last.end) return last.key;
+    return liveHasContent ? "live" : null;
+  }, [blocks, liveHasContent, running]);
+  const assembledBlocks: AgentTurnBlock[] = useMemo(
+    () => (activeKey === "live" ? [...blocks, { key: activeKey, entries: [] }] : blocks),
+    [activeKey, blocks],
+  );
+  const shown = useMemo(
+    () =>
+      assembledBlocks.filter(
+        (block) =>
+          block.entries.length > 0 ||
+          block.key === activeKey ||
+          // A retry has no prompt of its own (the engine records an empty
+          // message), so a second failure would otherwise have no row to show
+          // its reason on.
+          block.end?.reason === "error" ||
+          block.end?.reason === "blocked",
+      ),
+    [activeKey, assembledBlocks],
   );
 
   // Sub-agent data per turn: calls paired with settle notices ACROSS the whole
@@ -88,16 +150,25 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   // transcripts from the child buckets, live calls as running placeholders in
   // the active block only.
   const subagentGroups = useMemo(
-    () => assembleSessionSubagents(state, assembledBlocks, liveTools, activeKey),
+    () => assembleSessionSubagents(state, assembledBlocks, liveSubagentTools, activeKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [assembledBlocks, liveTools, activeKey, state.sessions, state.entries],
+    [assembledBlocks, liveSubagentTools, activeKey, state.sessions, state.entries],
   );
 
   // Which child folds are open (controlled, so a toggle can trigger the
   // transcript fetch before the shared group renders the child).
   const [openChildren, setOpenChildren] = useState<ReadonlySet<string>>(new Set());
 
-  const toggleChild = (childSessionId: string) => {
+  // Ref cells keep the callbacks below identity-stable while they still read
+  // the latest render's data. A stable callback is what lets every settled
+  // `TurnBlock` memo-bail during streaming.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const openChildrenRef = useRef(openChildren);
+  openChildrenRef.current = openChildren;
+
+  const toggleChild = useCallback((childSessionId: string) => {
+    const opening = !openChildrenRef.current.has(childSessionId);
     setOpenChildren((prev) => {
       const next = new Set(prev);
       if (next.has(childSessionId)) next.delete(childSessionId);
@@ -107,17 +178,21 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     // Opening a child fetches its transcript once; rows that already streamed
     // are merged under the fetched history, and pending placeholders have no
     // session to read at all.
-    const opening = !openChildren.has(childSessionId);
     if (opening && !isPendingChild(childSessionId)) {
       agentActions.refreshEntries(childSessionId);
     }
-  };
+  }, []);
 
   /** One child's transcript, rendered with the same shared turn block (no
    *  trajectory deep-link: the panel shows the current session only). Nested
    *  sub-agent calls inside a child assemble the same way, so the fold reads
    *  identically at every depth. */
-  const renderChildTurns = (child: AgentSubagentRow) => {
+  const renderChildTurnsRef = useRef<(child: AgentSubagentRow) => ReactNode>(() => null);
+  const renderChildTurns = useCallback(
+    (child: AgentSubagentRow) => renderChildTurnsRef.current(child),
+    [],
+  );
+  renderChildTurnsRef.current = (child: AgentSubagentRow) => {
     if (isPendingChild(child.sessionId)) return null;
     const childBlocks = child.turns.filter(
       (block) =>
@@ -133,7 +208,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     // Same cross-turn pairing as the top level. Live calls of a nested child
     // are not tracked (children have no token-level stream); committed rows
     // assemble fine, which is all a settled child shows.
-    const nestedGroups = assembleSessionSubagents(state, childBlocks, [], null);
+    const nestedGroups = assembleSessionSubagents(stateRef.current, childBlocks, [], null);
     return (
       <div className="flex flex-col gap-3">
         {childBlocks.map((block) => {
@@ -147,7 +222,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
               subagents={nested.children}
               orphanNotices={nested.orphans}
               renderTurns={renderChildTurns}
-              openIds={openChildren}
+              openIds={openChildrenRef.current}
               onToggle={toggleChild}
             />
           );
@@ -159,30 +234,71 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
-  const signature = [
-    items.length,
-    live?.text.length ?? 0,
-    live?.reasoning.length ?? 0,
-    liveTools.length,
-    pending.length,
-    approvals.length,
-    questions.length,
-    JSON.stringify(todos),
-  ].join(":");
+  const todoKey = useMemo(
+    () => `${todos.length}:${todos.map((todo) => todo.status).join("")}`,
+    [todos],
+  );
+  const lastUserSeq = useMemo(() => {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const entry = items[index];
+      if (entry?.kind === "user") return entry.seq;
+    }
+    return -1;
+  }, [items]);
+  // A newly sent prompt always brings the reader back to the live tail, even
+  // if they had scrolled up: the reply they just asked for must be visible.
+  const lastUserSeqRef = useRef<number | null>(null);
+  const pendingLengthRef = useRef(pending.length);
 
-  useEffect(() => {
+  const signature = useMemo(
+    () =>
+      [
+        items.length,
+        lastUserSeq,
+        liveText.length,
+        liveReasoning.length,
+        liveTools.length,
+        pending.length,
+        approvals.length,
+        questions.length,
+        todoKey,
+      ].join(":"),
+    [
+      approvals.length,
+      items.length,
+      lastUserSeq,
+      liveReasoning.length,
+      liveText.length,
+      liveTools.length,
+      pending.length,
+      questions.length,
+      todoKey,
+    ],
+  );
+
+  // Layout effect: the viewport is at its new bottom before the frame paints,
+  // so streaming does not show a one-frame jump. The scroll position never
+  // overrides a reader who scrolled away, except when they send a new prompt.
+  useLayoutEffect(() => {
+    const userStarted =
+      lastUserSeqRef.current !== null && lastUserSeq !== lastUserSeqRef.current;
+    const pendingStarted = pending.length > pendingLengthRef.current;
+    lastUserSeqRef.current = lastUserSeq;
+    pendingLengthRef.current = pending.length;
+    if (userStarted || pendingStarted) stickRef.current = true;
+
     if (!visible) return;
     const element = scrollRef.current;
     if (!element || !stickRef.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [signature, visible]);
+  }, [lastUserSeq, pending.length, signature, visible]);
 
-  const onScroll = () => {
+  const onScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
     stickRef.current = distance < 48;
-  };
+  }, []);
 
   if (!sessionId) {
     return (
@@ -220,7 +336,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     >
       <div
         className={clsx(
-          "mx-auto flex w-full max-w-3xl flex-col gap-3",
+          "mx-auto flex w-full max-w-3xl flex-col gap-5",
           (quiet || loading || failed) && "min-h-full justify-center",
         )}
       >
@@ -290,7 +406,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
  * group and the caller feeds it the same store-backed data, so the fold reads
  * the same at every depth (companion parity).
  */
-function NestedTurnBlock({
+const NestedTurnBlock = memo(function NestedTurnBlock({
   block,
   running,
   locale,
@@ -322,4 +438,4 @@ function NestedTurnBlock({
       onToggleSubagent={onToggle}
     />
   );
-}
+});

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import clsx from "clsx";
 import { ChevronRight, CircleCheckBig, CircleDashed, Loader2 } from "lucide-react";
 
 import type { AgentLocale, AgentTodo } from "./types";
 import { agentLabel } from "./labels";
+import { Collapse } from "./Collapse";
 
 function TodoGlyph({ status }: { status: AgentTodo["status"] }) {
   if (status === "completed") {
@@ -21,7 +22,13 @@ function TodoGlyph({ status }: { status: AgentTodo["status"] }) {
  * every task. The list is session-level state, so it never lives inside one
  * turn block.
  */
-export function TodoCard({ todos, locale }: { todos: AgentTodo[]; locale: AgentLocale }) {
+export const TodoCard = memo(function TodoCard({
+  todos,
+  locale,
+}: {
+  todos: AgentTodo[];
+  locale: AgentLocale;
+}) {
   const [open, setOpen] = useState(false);
   const done = todos.filter((todo) => todo.status === "completed").length;
   const active = todos.find((todo) => todo.status === "in_progress");
@@ -33,7 +40,7 @@ export function TodoCard({ todos, locale }: { todos: AgentTodo[]; locale: AgentL
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-ui-caption text-slate-500 transition hover:bg-overlay"
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700"
       >
         <span className="shrink-0">{agentLabel("todo.title", locale)}</span>
         <span className="shrink-0 tabular-nums text-slate-400">
@@ -48,10 +55,13 @@ export function TodoCard({ todos, locale }: { todos: AgentTodo[]; locale: AgentL
         )}
         <ChevronRight
           size={12}
-          className={clsx("shrink-0 text-slate-300 transition-transform", open && "rotate-90")}
+          className={clsx(
+            "shrink-0 text-slate-300 opacity-40 transition-[opacity,transform]",
+            open && "rotate-90 opacity-100",
+          )}
         />
       </button>
-      {open ? (
+      <Collapse open={open}>
         <ul className="flex flex-col gap-1.5 border-t border-border px-3 py-2">
           {todos.map((todo, index) => (
             <li key={index} className="flex min-w-0 items-start gap-2 text-ui-caption">
@@ -71,7 +81,7 @@ export function TodoCard({ todos, locale }: { todos: AgentTodo[]; locale: AgentL
             </li>
           ))}
         </ul>
-      ) : null}
+      </Collapse>
     </div>
   );
-}
+});
