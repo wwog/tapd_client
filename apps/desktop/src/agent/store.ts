@@ -44,11 +44,10 @@ import { agentSettingsApi, defaultSelection } from "../lib/agentSettings";
 
 export type AgentTeamView = "chat" | "board";
 
-/** The session's second view: the transcript or the trajectory ledger. */
-export type AgentTaskView = "chat" | "trajectory";
-
-/** Reviewable tasks open on the change review; the transcript stays one tab away. */
-export type AgentReviewView = "review" | "chat";
+/** The session's panes: the task's own record, the transcript, the trajectory
+ *  ledger. A workflow task opens on its task record; a free chat has no task
+ *  pane and opens on the transcript. */
+export type AgentTaskView = "task" | "chat" | "trajectory";
 
 export type LiveToolCall = {
   callId: string;
@@ -150,10 +149,9 @@ export type AgentState = {
   teamErrors: Record<string, string | null>;
   /** Explicit transcript/board choice; absent means "derive from team mode". */
   teamViews: Record<string, AgentTeamView>;
-  /** Transcript vs trajectory per session; absent means the transcript. */
+  /** Transcript vs task record vs trajectory per session; absent means the
+   *  default (task record for workflow tasks, transcript for chats). */
   taskViews: Record<string, AgentTaskView>;
-  /** Review vs transcript on a reviewable task; absent means the review. */
-  reviewViews: Record<string, AgentReviewView>;
   /** Bumped by「继续修改」so the composer takes focus after switching back. */
   composerFocusAt: number;
   preparingSince: number | null;
@@ -208,7 +206,6 @@ const initialState: AgentState = {
   teamErrors: {},
   teamViews: {},
   taskViews: {},
-  reviewViews: {},
   composerFocusAt: 0,
   preparingSince: null,
   starting: false,
@@ -432,7 +429,7 @@ function adoptTasks(tasks: DshTask[]): void {
   const before = agentStore.get();
   const selectedId = nextSelection({ ...before, tasks }, before.selectedId);
   const moved = selectedId !== null && selectedId !== before.selectedId;
-  // A task that newly entered review opens on the review tab again, even if
+  // A task that newly entered review opens on the task record again, even if
   // the reader had stepped back to the transcript for the previous round.
   const previousWorkflow = new Map(
     (before.tasks ?? []).map((task) => [task.id, task.workflow]),
@@ -446,19 +443,17 @@ function adoptTasks(tasks: DshTask[]): void {
     .map((task) => task.id);
 
   update((state) => {
-    let reviewViews = state.reviewViews;
-    if (freshReview.some((id) => reviewViews[id] === "chat")) {
-      reviewViews = { ...reviewViews };
-      for (const id of freshReview) {
-        if (reviewViews[id] === "chat") delete reviewViews[id];
-      }
+    let taskViews = state.taskViews;
+    if (freshReview.length > 0) {
+      taskViews = { ...taskViews };
+      for (const id of freshReview) taskViews[id] = "task";
     }
     return {
       ...state,
       tasks,
       tasksError: null,
       selectedId,
-      reviewViews,
+      taskViews,
     };
   });
   persistPrefs();
@@ -523,24 +518,22 @@ export function agentTeamView(state: AgentState, sessionId: string | null): Agen
   return !chat && state.team[sessionId]?.enabled ? "board" : "chat";
 }
 
-/** The session's pane choice; the transcript unless the user opened the ledger. */
+/** The session's pane choice: a workflow task opens on its task record, a
+ *  free chat on the transcript; an explicit pick always wins. */
 export function agentTaskView(state: AgentState, sessionId: string | null): AgentTaskView {
   if (!sessionId) return "chat";
-  return state.taskViews[sessionId] ?? "chat";
+  const explicit = state.taskViews[sessionId];
+  const task = (state.tasks ?? []).find((item) => item.id === sessionId);
+  const workflowTask = task !== undefined && task.kind !== "chat";
+  if (!workflowTask) {
+    return explicit === "trajectory" ? "trajectory" : "chat";
+  }
+  return explicit ?? "task";
 }
 
 /** Whether the main pane should offer the review surface at all. */
 export function taskReviewable(task: DshTask | null | undefined): boolean {
   return task?.workflow === "awaiting_review" || task?.workflow === "finalizing";
-}
-
-/** Review surface vs transcript; a reviewable task opens on the review. */
-export function agentReviewView(
-  state: AgentState,
-  sessionId: string | null,
-): AgentReviewView {
-  if (!sessionId) return "chat";
-  return state.reviewViews[sessionId] ?? "review";
 }
 
 function applyTeam(sessionId: string, team: DshTeam): void {
@@ -1232,14 +1225,6 @@ export const agentActions = {
     return task;
   },
 
-  /** Review surface vs transcript on a reviewable task. */
-  setReviewView: (sessionId: string, view: AgentReviewView): void => {
-    update((state) => ({
-      ...state,
-      reviewViews: { ...state.reviewViews, [sessionId]: view },
-    }));
-  },
-
   /** Changed files of one task's worktree, for the review pane. */
   taskChanges: (sessionId: string) => dshTaskApi.changes(sessionId),
 
@@ -1280,8 +1265,8 @@ export const agentActions = {
       delete planOverrides[sessionId];
       const selectionOverrides = { ...state.selectionOverrides };
       delete selectionOverrides[sessionId];
-      const reviewViews = { ...state.reviewViews };
-      delete reviewViews[sessionId];
+      const taskViews = { ...state.taskViews };
+      delete taskViews[sessionId];
       return {
         ...state,
         tasks,
@@ -1293,7 +1278,7 @@ export const agentActions = {
         sessionModes,
         planOverrides,
         selectionOverrides,
-        reviewViews,
+        taskViews,
       };
     });
     persistPrefs();

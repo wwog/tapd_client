@@ -57,9 +57,44 @@ export const agent = {
   "agent.task.stop": ["停止", "Stop"],
   "agent.task.openExport": ["打开导出目录", "Open export folder"],
 
+  // Task pane: the workflow task's permanent record.
+  "agent.task.tabTask": ["任务", "Task"],
+  "agent.task.workspaceRepo": ["主仓库", "Main repository"],
+  "agent.task.directHint": [
+    "本轮直接在主仓库工作，审核与提交会包含仓库里已有的未提交改动。",
+    "This round works in the main repository; review and commit include its existing uncommitted changes.",
+  ],
+  "agent.task.approveDirectHint": [
+    "提交主仓库的改动，然后让 Agent 回写 TAPD（本轮没有合并步骤）。",
+    "Commits the main repository's changes, then has the agent write back to TAPD (no merge step this round).",
+  ],
+  "agent.task.cleanedHint": [
+    "worktree 已清理，继续会话在主仓库进行。",
+    "The worktree was cleaned up; continuing this session runs in the main repository.",
+  ],
+  "agent.task.gitStart": ["开始", "Start"],
+  "agent.task.gitCommit": ["提交", "Commit"],
+  "agent.task.gitMerge": ["合并", "Merge"],
+  "agent.task.writeback": ["TAPD 回写", "TAPD write-back"],
+  "agent.task.writebackComment": ["评论已写入", "Comment posted"],
+  "agent.task.writebackStatus": ["状态 {from} → {to}", "Status {from} → {to}"],
+  "agent.task.writebackPending": ["尚未回写", "Not written back yet"],
+  "agent.task.doneTitle": ["任务已完成", "Task complete"],
+  "agent.task.doneDirectHint": [
+    "本轮直接在主仓库完成。",
+    "This round finished in the main repository.",
+  ],
+  "agent.task.doneCleanedHint": [
+    "worktree 已清理，继续会话在主仓库进行。",
+    "The worktree was cleaned up; continuing runs in the main repository.",
+  ],
+  "agent.task.doneKeptHint": [
+    "worktree 已保留。",
+    "The worktree was kept.",
+  ],
+  "agent.task.viewTask": ["查看任务", "View task"],
+
   // Review surface (awaiting_review / finalizing).
-  "agent.review.tabReview": ["审核", "Review"],
-  "agent.review.tabChat": ["对话", "Chat"],
   "agent.review.projectDir": ["项目目录", "Project folder"],
   "agent.review.openProject": ["打开项目目录：{path}", "Open the project folder: {path}"],
   "agent.review.worktreeDir": ["Worktree", "Worktree"],
@@ -101,8 +136,8 @@ export const agent = {
   ],
   "agent.review.discard": ["放弃", "Discard"],
   "agent.review.discardHint": [
-    "先储藏 worktree 的改动，再取消任务。",
-    "Stashes the worktree changes, then cancels the task.",
+    "先储藏本轮改动，再取消任务。",
+    "Stashes this round's changes, then cancels the task.",
   ],
   "agent.review.finalize": ["收尾进度", "Finishing"],
   "agent.review.finalizeHint": [

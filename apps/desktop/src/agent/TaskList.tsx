@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { ChevronRight, FolderOpen, Plus, Settings2, Trash2 } from "lucide-react";
 
 import { api, relativeTime } from "../lib/api";
-import { t, type MessageKey } from "../lib/i18n";
+import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import type {
   DshProject,
@@ -19,24 +19,12 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContextMenu, ContextMenuItem } from "../components/ContextMenu";
 import { ScrollingName } from "../components/ScrollingName";
 import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./store";
+import { WORKFLOW } from "./workflow";
 
 /** Which project groups are folded shut, by group key. */
 const COLLAPSED_PREF = "agent.collapsed-projects.v1";
 /** The group that collects sessions without a project; always rendered last. */
 const NO_PROJECT_KEY = "none";
-
-const WORKFLOW: Record<
-  DshTaskWorkflow,
-  { label: MessageKey; tone: "neutral" | "blue" | "green" | "amber" | "red" | "cyan" }
-> = {
-  queued: { label: "agent.task.workflowQueued", tone: "neutral" },
-  running: { label: "agent.task.workflowRunning", tone: "blue" },
-  awaiting_review: { label: "agent.task.workflowAwaitingReview", tone: "amber" },
-  finalizing: { label: "agent.task.workflowFinalizing", tone: "cyan" },
-  done: { label: "agent.task.workflowDone", tone: "green" },
-  failed: { label: "agent.task.workflowFailed", tone: "red" },
-  canceled: { label: "agent.task.workflowCanceled", tone: "neutral" },
-};
 
 type TaskGroup = {
   key: string;

@@ -237,6 +237,9 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     // Creates a new Agent before the prompt (and re-applies the route) so the
     // very first step uses the session's chosen model.
     state.prepare_session(app, session_id, !restored).await;
+    // A task restored from a previous run may still point at a worktree the
+    // finishing chain removed; the prompt must land in the repository.
+    super::tasks::ensure_session_cwd(app, session_id).await;
     // The phase frame and the prompt use different channels; await the plugin's
     // ack so the first step already sees the right tools and prompt section.
     super::tasks::sync_phase(app, session_id).await?;
@@ -269,6 +272,9 @@ pub async fn retry_turn(app: &AppHandle, session_id: &str) -> Result<Value, Stri
         state.resume_session(app, session_id).await?;
     }
     state.prepare_session(app, session_id, !restored).await;
+    // Same cwd guarantee as `prompt`: a retried round must not inherit a
+    // worktree that no longer exists.
+    super::tasks::ensure_session_cwd(app, session_id).await;
     super::tasks::sync_phase(app, session_id).await?;
     bridge.retry_session(session_id)?;
     Ok(json!({ "sessionId": session_id, "ok": true }))

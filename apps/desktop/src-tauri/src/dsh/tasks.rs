@@ -212,6 +212,30 @@ pub struct TaskFinalize {
     pub notice: Option<String>,
 }
 
+/// The three revisions a finished round reports. `start` is the round's own
+/// baseline (`meta.start`), not necessarily the task's first worktree.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge: Option<String>,
+}
+
+/// What the finishing chain wrote back to TAPD, for the done card.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWriteback {
+    pub comment: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_to: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DshTask {
@@ -242,11 +266,20 @@ pub struct DshTask {
 #[serde(rename_all = "camelCase", default)]
 pub(super) struct TaskMeta {
     pub workspace_id: Option<String>,
-    /// Commit the task started from; the diff and review baseline.
+    /// Commit the task started from; the diff baseline. A continued round
+    /// moves this to the previous round's commit so the review only shows the
+    /// new work.
     pub baseline: Option<String>,
+    /// The round's own starting revision, for display. Kept across baseline
+    /// moves; old rows fall back to `baseline`.
+    pub start: Option<String>,
     /// Whether the session works in an isolated worktree (chats toggle this;
-    /// workflow tasks always set it).
+    /// workflow tasks always set it at enqueue).
     pub worktree: bool,
+    /// This round works directly in the repository: the finished task's
+    /// worktree was removed, so continuing runs in the main checkout and the
+    /// finishing chain skips the merge step.
+    pub direct: bool,
     /// Team collaboration chosen when the task was created. `None` keeps the
     /// runtime default; a task's choice is fixed for its whole life.
     pub team: Option<bool>,
@@ -261,6 +294,8 @@ pub(super) struct TaskMeta {
     pub pending_prompt: Option<String>,
     /// Commit the finishing chain created in the worktree.
     pub commit: Option<String>,
+    /// Merge commit the finishing chain created in the main repository.
+    pub merge: Option<String>,
     /// The branch was already merged; a retry does not merge it twice.
     pub merged: bool,
     /// The write-back comment was posted, so `tapd_add_comment` is idempotent.
@@ -309,14 +344,29 @@ impl TaskRecord {
             None => self.task.repo_path.clone(),
         }
     }
+
+    /// Whether this round runs directly in the repository: a workflow task
+    /// whose worktree was already merged and removed.
+    fn works_direct(&self) -> bool {
+        self.meta.worktree
+            && !self
+                .task
+                .worktree_path
+                .as_deref()
+                .is_some_and(|path| !path.trim().is_empty() && std::path::Path::new(path).is_dir())
+    }
 }
 
 fn workspace_for(record: &TaskRecord) -> TaskWorkspace {
+    // A direct round lives in the repository itself: its baseline is the HEAD
+    // captured at reopen, so the working tree is the right diff target.
     // After the finishing chain removes a clean worktree, the branch is the
     // precise target: the repository's live tree may since have gained commits
     // that have nothing to do with this task.
     let cleaned = record.meta.worktree && record.task.worktree_path.is_none();
-    let work_dir = if cleaned {
+    let work_dir = if record.meta.direct {
+        record.task.repo_path.clone()
+    } else if cleaned {
         String::new()
     } else {
         record.work_dir()
@@ -591,17 +641,21 @@ async fn tasks_payload(app: &AppHandle) -> Result<Value, String> {
     let cache = state.cache.clone();
     let records = blocking(move || task_store::load_all(&cache)).await?;
     let live = live_sessions(app);
-    let mut tasks: Vec<DshTask> = records
+    // Overlaid times can differ from the stored column, so sort after the
+    // overlay: newest activity first, which is also the order the UI paints.
+    let mut tasks: Vec<(String, Value)> = records
         .into_iter()
-        .map(|mut record| {
-            overlay(&mut record.task, &live);
-            record.task
+        .map(|record| {
+            let mut task = record.task.clone();
+            overlay(&mut task, &live);
+            let updated = task.updated_at.clone();
+            (updated, json!(task_view(&record, &task)))
         })
         .collect();
-    // Overlaid times can differ from the stored column, so order here too:
-    // newest activity first, which is also the order the UI paints.
-    tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    Ok(json!({ "tasks": tasks }))
+    tasks.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(json!({
+        "tasks": tasks.into_iter().map(|(_, task)| task).collect::<Vec<_>>(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,17 +1214,37 @@ pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), S
     let expected = record.task.workflow;
     let left_review = expected == Workflow::AwaitingReview;
     record.task.workflow = next;
-    // A fresh turn reviews afresh: nothing pending from the previous round.
-    record.task.review = None;
-    record.task.changes = None;
-    record.task.finalize = None;
-    record.meta.comment_posted = false;
-    record.meta.status_updated = false;
-    record.meta.status_from = None;
-    record.meta.status_to = None;
-    // A new round gives the model its hidden turns again; only a retry inside
-    // one round counts attempts.
-    record.meta.writeback_attempts = 0;
+
+    // A task whose worktree was merged and removed continues in the main
+    // checkout. The round starts at the repository's current HEAD, commits
+    // directly there, and has no merge step.
+    let direct = record.works_direct();
+    let repo = record.task.repo_path.trim().to_string();
+    let (head, branch) = if direct {
+        let head = if repo.is_empty() {
+            None
+        } else {
+            let repo_hint = repo.clone();
+            blocking(move || worktree::head(&repo_hint))
+                .await
+                .ok()
+                .flatten()
+        };
+        let branch = if repo.is_empty() {
+            None
+        } else {
+            let repo_hint = repo.clone();
+            blocking(move || worktree::current_branch(&repo_hint))
+                .await
+                .ok()
+                .flatten()
+        };
+        (head, branch)
+    } else {
+        (None, None)
+    };
+    start_round(&mut record, direct, head, branch);
+
     let saved = save_record(app, record, expected).await?;
     if saved {
         emit(app);
@@ -1179,6 +1253,80 @@ pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// Opens a new round on the task row: picks its starting revision, clears the
+/// previous round's result flags, and appends the `reopened` entry.
+///
+/// Kept synchronous and separate from [`reopen_for_input`]'s git lookups so the
+/// revision rules are unit tested.
+fn start_round(
+    record: &mut TaskRecord,
+    direct: bool,
+    head: Option<String>,
+    branch: Option<String>,
+) {
+    let previous_commit = record.meta.commit.clone();
+    if direct {
+        // A direct round starts at the repository's current HEAD and has no
+        // task branch of its own; the branch is shown for orientation only.
+        if let Some(head) = head {
+            record.meta.baseline = Some(head.clone());
+            record.meta.start = Some(head);
+        }
+        record.task.branch = branch;
+    } else if let Some(commit) = previous_commit {
+        // The next review only shows the new round's work.
+        record.meta.baseline = Some(commit.clone());
+        record.meta.start = Some(commit);
+    } else if record.meta.start.is_none() {
+        record.meta.start = record.meta.baseline.clone();
+    }
+
+    record.meta.direct = direct;
+    // A fresh turn reviews afresh: nothing pending from the previous round.
+    record.task.review = None;
+    record.task.changes = None;
+    record.task.finalize = None;
+    record.meta.commit = None;
+    record.meta.merge = None;
+    record.meta.merged = false;
+    record.meta.comment_posted = false;
+    record.meta.status_updated = false;
+    record.meta.status_from = None;
+    record.meta.status_to = None;
+    // A new round gives the model its hidden turns again; only a retry inside
+    // one round counts attempts.
+    record.meta.writeback_attempts = 0;
+}
+
+/// Points a live session at the directory its task row says it works in. A
+/// worktree the finishing chain removed falls back to the repository, so a
+/// restored session cannot keep a deleted cwd.
+///
+/// Best effort: the turn that triggered this call is more valuable than a
+/// control frame, and every later prompt repeats the assignment.
+pub async fn ensure_session_cwd(app: &AppHandle, session_id: &str) {
+    let Ok(Some(record)) = load_record(app, session_id).await else {
+        return;
+    };
+    // Free chats resolve their own cwd (worktree / repository / scratch);
+    // `feature::prompt` already assigns that one.
+    if !record.task.kind.is_task() {
+        return;
+    }
+    let mut target = record.work_dir();
+    if target.trim().is_empty() || !std::path::Path::new(&target).is_dir() {
+        target = record.task.repo_path.trim().to_string();
+    }
+    if target.trim().is_empty() {
+        return;
+    }
+    if let Ok(bridge) = bridge(app) {
+        if let Err(error) = bridge.assign_session(session_id, &target).await {
+            tracing::warn!(%error, session = session_id, "task cwd was not assigned");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1277,7 +1425,8 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
         task,
         meta: TaskMeta {
             workspace_id: Some(request.workspace_id),
-            baseline: Some(work_dir.baseline),
+            baseline: Some(work_dir.baseline.clone()),
+            start: Some(work_dir.baseline),
             worktree: true,
             team: request.team,
             export_dir: Some(export.dir),
@@ -1370,7 +1519,8 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
     let record = TaskRecord {
         task,
         meta: TaskMeta {
-            baseline: Some(work_dir.baseline),
+            baseline: Some(work_dir.baseline.clone()),
+            start: Some(work_dir.baseline),
             worktree: true,
             team: request.team,
             local_project_id: Some(project.id.clone()),
@@ -1444,6 +1594,14 @@ async fn launch(
             rollback(app, &record, local.as_ref()).await;
             return Err(error);
         }
+        if let Some(project_id) = record.meta.local_project_id.as_deref() {
+            crate::local::emit_items_changed(
+                app,
+                Some(project_id),
+                Some(link.item_id.as_str()),
+                Some(WorkItemStatus::InProgress.as_str()),
+            );
+        }
     }
 
     emit(app);
@@ -1454,7 +1612,7 @@ async fn launch(
         return Err(not_found(&task_id));
     };
     overlay(&mut fresh.task, &live_sessions(app));
-    Ok(json!({ "task": fresh.task }))
+    Ok(json!({ "task": task_view(&fresh, &fresh.task) }))
 }
 
 /// Best-effort cleanup for a task that never reached the store.
@@ -1486,6 +1644,14 @@ async fn rollback(app: &AppHandle, record: &TaskRecord, local: Option<&LocalLink
         .await
         {
             tracing::warn!(%error, "failed to roll back a local item link");
+        }
+        if let Some(project_id) = record.meta.local_project_id.as_deref() {
+            crate::local::emit_items_changed(
+                app,
+                Some(project_id),
+                Some(link.item_id.as_str()),
+                Some(link.previous_status.as_str()),
+            );
         }
     }
 }
@@ -1757,7 +1923,7 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
         return Err(not_found(&request.session_id));
     };
     if record.task.workflow != Workflow::AwaitingReview {
-        return Ok(task_value(app, record.task));
+        return Ok(task_value(app, &record));
     }
     let mut record = record;
     let expected = transition(&mut record, Workflow::Finalizing)?;
@@ -1772,7 +1938,12 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
     emit(app);
     crate::notification::review::settle(app, &request.session_id);
     let task = run_finalize(app, &request.session_id).await?;
-    Ok(task_value(app, task))
+    // The chain writes meta (commit/merge); reload so the reply and
+    // the following event carry the same view.
+    let Some(record) = load_record(app, &task.id).await? else {
+        return Err(not_found(&task.id));
+    };
+    Ok(task_value(app, &record))
 }
 
 /// Retries the finishing chain from `finalize.step`. Each step is idempotent:
@@ -1795,7 +1966,7 @@ async fn retry_finalize(app: &AppHandle, request: SessionRequest) -> Result<Valu
         return Err(not_found(&request.session_id));
     };
     if record.task.workflow != Workflow::Finalizing {
-        return Ok(task_value(app, record.task));
+        return Ok(task_value(app, &record));
     }
     // The retry starts a clean attempt; the failed step itself stays recorded.
     if let Some(finalize) = record.task.finalize.as_mut() {
@@ -1808,7 +1979,10 @@ async fn retry_finalize(app: &AppHandle, request: SessionRequest) -> Result<Valu
     }
     emit(app);
     let task = run_finalize(app, &request.session_id).await?;
-    Ok(task_value(app, task))
+    let Some(record) = load_record(app, &task.id).await? else {
+        return Err(not_found(&task.id));
+    };
+    Ok(task_value(app, &record))
 }
 
 /// Runs (or resumes) the commit → merge → cleanup → writeback chain. A failed
@@ -1868,6 +2042,14 @@ async fn run_finalize(app: &AppHandle, session_id: &str) -> Result<DshTask, Stri
                 }
             }
             FinalizeStep::Merge => {
+                // A direct round already committed in the repository; there is
+                // no task branch to merge and no worktree to clean up.
+                if record.meta.direct {
+                    if !advance_finalize(app, record, FinalizeStep::Writeback, None).await? {
+                        return Err(tr("dsh.task.busy").to_string());
+                    }
+                    continue;
+                }
                 let Some(branch) = record
                     .task
                     .branch
@@ -1883,6 +2065,7 @@ async fn run_finalize(app: &AppHandle, session_id: &str) -> Result<DshTask, Stri
                     )
                     .await;
                 };
+                let mut merge_commit = None;
                 if !record.meta.merged && !branch_merged(&record, &branch).await {
                     let repo = record.task.repo_path.clone();
                     let branch_for_merge = branch.clone();
@@ -1901,26 +2084,32 @@ async fn run_finalize(app: &AppHandle, session_id: &str) -> Result<DshTask, Stri
                                 return Err(tr("dsh.task.merge.empty").to_string());
                             }
                         }
-                        worktree::merge_no_ff(&repo, &branch_for_merge, &message)?;
+                        let merged = worktree::merge_no_ff(&repo, &branch_for_merge, &message)?;
                         if !worktree::is_ancestor(&repo, &branch_for_merge, "HEAD")? {
                             return Err(tr("dsh.task.merge.ancestor").to_string());
                         }
-                        Ok(())
+                        Ok(merged)
                     })
                     .await;
-                    if let Err(error) = attempt {
-                        let failure = tr_args("dsh.task.merge.failed", &[&error]);
-                        return fail_finalize(
-                            app,
-                            record,
-                            FinalizeStep::Merge,
-                            failure,
-                            merge_instructions(&branch),
-                        )
-                        .await;
+                    match attempt {
+                        Ok(merged) => merge_commit = Some(merged),
+                        Err(error) => {
+                            let failure = tr_args("dsh.task.merge.failed", &[&error]);
+                            return fail_finalize(
+                                app,
+                                record,
+                                FinalizeStep::Merge,
+                                failure,
+                                merge_instructions(&branch),
+                            )
+                            .await;
+                        }
                     }
                 }
                 let mut record = record;
+                if let Some(merged) = merge_commit {
+                    record.meta.merge = Some(merged);
+                }
                 record.meta.merged = true;
                 if !advance_finalize(app, record, FinalizeStep::Cleanup, None).await? {
                     return Err(tr("dsh.task.busy").to_string());
@@ -1948,7 +2137,22 @@ async fn run_finalize(app: &AppHandle, session_id: &str) -> Result<DshTask, Stri
                             let repo = record.task.repo_path.clone();
                             let target = path.clone();
                             match blocking(move || worktree::remove(&repo, &target)).await {
-                                Ok(()) => record.task.worktree_path = None,
+                                Ok(()) => {
+                                    record.task.worktree_path = None;
+                                    // The write-back turn runs next; it must not
+                                    // inherit a directory that no longer exists.
+                                    let repo = record.task.repo_path.clone();
+                                    if let Err(error) =
+                                        assign_session_with_retry(app, &record.task.id, &repo)
+                                            .await
+                                    {
+                                        tracing::warn!(
+                                            %error,
+                                            session = %record.task.id,
+                                            "task cwd was not returned to the repository"
+                                        );
+                                    }
+                                }
                                 Err(error) => {
                                     let failure = tr_args("dsh.task.git.failed", &[&error]);
                                     return fail_finalize(
@@ -2017,10 +2221,13 @@ async fn begin_writeback(app: &AppHandle, record: TaskRecord) -> Result<DshTask,
         )
         .await;
     }
+    let workspace_state = writeback::workspace_state(&record.task, record.meta.direct);
     let text = writeback::prompt(
         &record.task,
         record.task.changes.as_ref(),
         record.meta.commit.as_deref(),
+        record.meta.merge.as_deref(),
+        &workspace_state,
     );
     // Count the hidden turn before it is sent and persist it: a crash during
     // the turn must still remember that the model had this attempt.
@@ -2574,7 +2781,7 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
     };
     if record.task.workflow.is_terminal() {
         // Canceling a finished task is a no-op: terminal states never regress.
-        return Ok(task_value(app, record.task));
+        return Ok(task_value(app, &record));
     }
     // `finalizing` changes are already in the main repository; there is nothing
     // left to abandon. The contract forbids canceling it.
@@ -2632,14 +2839,15 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
     // with a dangling agentTaskId: `attach_task` is the only thing that moves
     // it, and `complete_local` only runs for Done. Undo the link here.
     if record.task.kind == TaskKind::LocalItem {
+        let restored = record
+            .meta
+            .local_previous_status
+            .clone()
+            .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string());
         if let Some(item_id) = record.meta.local_item_id.clone() {
             let store = shared(app)?.local.clone();
             let task_id = record.task.id.clone();
-            let previous = record
-                .meta
-                .local_previous_status
-                .clone()
-                .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string());
+            let previous = restored.clone();
             let at = now();
             if let Err(error) = blocking(move || {
                 store.forget_task(&task_id, &at)?;
@@ -2652,13 +2860,21 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
                 tracing::warn!(%error, "failed to revert the canceled item link");
             }
         }
+        if let Some(project_id) = record.meta.local_project_id.as_deref() {
+            crate::local::emit_items_changed(
+                app,
+                Some(project_id),
+                record.meta.local_item_id.as_deref(),
+                Some(&restored),
+            );
+        }
     }
     push_phase(app, &record);
     emit(app);
     crate::notification::review::settle(app, &record.task.id);
     // A canceled running task frees its slot.
     reschedule(app);
-    Ok(task_value(app, record.task))
+    Ok(task_value(app, &record))
 }
 
 async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, String> {
@@ -2672,7 +2888,7 @@ async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, Strin
         let Some(fresh) = load_record(app, &request.session_id).await? else {
             return Err(not_found(&request.session_id));
         };
-        return Ok(task_value(app, fresh.task));
+        return Ok(task_value(app, &fresh));
     }
 
     let runtime = runtime(app)?;
@@ -2682,6 +2898,9 @@ async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, Strin
     if let Err(error) = runtime.resume_session(app, &request.session_id).await {
         return Err(tr_args("dsh.task.resume.failed", &[&error]));
     }
+    // The stored session cwd may be a worktree the finishing chain removed;
+    // re-point it before the user's next turn.
+    ensure_session_cwd(app, &request.session_id).await;
 
     // Re-attaching a persisted session is not activity: bumping `updated_at`
     // here reordered the list every time a row was opened.
@@ -2692,13 +2911,13 @@ async fn resume(app: &AppHandle, request: SessionRequest) -> Result<Value, Strin
         let Some(fresh) = load_record(app, &request.session_id).await? else {
             return Err(not_found(&request.session_id));
         };
-        return Ok(task_value(app, fresh.task));
+        return Ok(task_value(app, &fresh));
     }
     emit(app);
     // Opening a queued task must not jump the queue, but the scheduler may have
     // a free slot now that the runtime is up.
     reschedule(app);
-    Ok(task_value(app, record.task))
+    Ok(task_value(app, &record))
 }
 
 async fn diff(app: &AppHandle, request: DiffRequest) -> Result<Value, String> {
@@ -2971,7 +3190,7 @@ async fn enable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Val
         .filter(|path| !path.trim().is_empty())
     {
         if std::path::Path::new(&path).is_dir() {
-            return Ok(task_value(app, record.task));
+            return Ok(task_value(app, &record));
         }
     }
     let repo_hint = record.task.repo_path.trim().to_string();
@@ -3010,7 +3229,7 @@ async fn enable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Val
         return Err(tr("dsh.task.busy").to_string());
     }
     emit(app);
-    Ok(task_value(app, record.task))
+    Ok(task_value(app, &record))
 }
 
 async fn disable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Value, String> {
@@ -3020,7 +3239,7 @@ async fn disable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Va
         .clone()
         .filter(|path| !path.trim().is_empty())
     else {
-        return Ok(task_value(app, record.task));
+        return Ok(task_value(app, &record));
     };
     let repo = record.task.repo_path.trim().to_string();
     if std::path::Path::new(&path).is_dir() {
@@ -3091,7 +3310,7 @@ async fn disable_chat_worktree(app: &AppHandle, record: TaskRecord) -> Result<Va
             }
         }
     }
-    Ok(task_value(app, record.task))
+    Ok(task_value(app, &record))
 }
 
 // ---------------------------------------------------------------------------
@@ -3312,6 +3531,25 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         .clone()
         .filter(|path| !path.trim().is_empty());
     let repo = record.task.repo_path.clone();
+    // A deleted local-item task must not leave its item stuck in progress with
+    // a dangling task id. A finished task keeps the item done; anything else
+    // returns to the status it had before the handover.
+    let local_link = (record.task.kind == TaskKind::LocalItem)
+        .then(|| {
+            record
+                .meta
+                .local_project_id
+                .clone()
+                .zip(record.meta.local_item_id.clone())
+        })
+        .flatten();
+    let restore_status = (record.task.workflow != Workflow::Done).then(|| {
+        record
+            .meta
+            .local_previous_status
+            .clone()
+            .unwrap_or_else(|| WorkItemStatus::InProgress.as_str().to_string())
+    });
 
     let state = shared(app)?;
     let cache = state.cache.clone();
@@ -3359,6 +3597,37 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         if let Err(error) = removed {
             tracing::warn!(%error, %path, "failed to remove the deleted session's worktree");
         }
+    }
+
+    if let Some((project_id, item_id)) = local_link {
+        let store = state.local.clone();
+        let task_id = request.session_id.clone();
+        let item_for_store = item_id.clone();
+        let restored = restore_status.clone();
+        let at = now();
+        if let Err(error) = blocking(move || {
+            store.forget_task(&task_id, &at)?;
+            if let Some(status) = restored {
+                store
+                    .update_item(&item_for_store, None, None, Some(status.as_str()))
+                    .map(|_| ())?;
+            }
+            Ok::<_, String>(())
+        })
+        .await
+        {
+            // The item may have been deleted before its task; that is the one
+            // expected miss here, not a reason to warn.
+            if error != tr("local.item.notfound") {
+                tracing::warn!(%error, "failed to release the deleted task's local item");
+            }
+        }
+        crate::local::emit_items_changed(
+            app,
+            Some(&project_id),
+            Some(&item_id),
+            restore_status.as_deref(),
+        );
     }
 
     crate::notification::review::settle(app, &request.session_id);
@@ -3455,11 +3724,41 @@ fn overlay(task: &mut DshTask, live: &HashMap<String, DshSession>) {
     }
 }
 
+/// The frontend contract: the task row plus the facts that are derived from
+/// the internal meta and must not be persisted twice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskView<'a> {
+    #[serde(flatten)]
+    task: &'a DshTask,
+    git: TaskGit,
+    writeback: TaskWriteback,
+    direct: bool,
+}
+
+fn task_view<'a>(record: &'a TaskRecord, task: &'a DshTask) -> TaskView<'a> {
+    TaskView {
+        task,
+        git: TaskGit {
+            start: record.meta.start.clone().or_else(|| record.meta.baseline.clone()),
+            commit: record.meta.commit.clone(),
+            merge: record.meta.merge.clone(),
+        },
+        writeback: TaskWriteback {
+            comment: record.meta.comment_posted,
+            status_from: record.meta.status_from.clone(),
+            status_to: record.meta.status_to.clone(),
+        },
+        direct: record.meta.direct,
+    }
+}
+
 /// One command response. Applies the same live overlay as the list so a
 /// returned task is not a stale copy of what `dsh://tasks` is about to emit.
-fn task_value(app: &AppHandle, mut task: DshTask) -> Value {
+fn task_value(app: &AppHandle, record: &TaskRecord) -> Value {
+    let mut task = record.task.clone();
     overlay(&mut task, &live_sessions(app));
-    json!({ "task": task })
+    json!({ "task": task_view(record, &task) })
 }
 
 /// Loads the list, emits it and refreshes the plugin's phase map. Runs after
@@ -3497,6 +3796,7 @@ async fn complete_local(app: &AppHandle, record: &TaskRecord) {
     let store = state.local.clone();
     let task_id = record.task.id.clone();
     let logged_item = item_id.clone();
+    let project_for_event = project_id.clone();
     let at = now();
     if let Err(error) = blocking(move || {
         store
@@ -3506,6 +3806,13 @@ async fn complete_local(app: &AppHandle, record: &TaskRecord) {
     .await
     {
         tracing::warn!(%error, item = %logged_item, "failed to complete the local work item");
+    } else {
+        crate::local::emit_items_changed(
+            app,
+            Some(&project_for_event),
+            Some(&logged_item),
+            Some(WorkItemStatus::Done.as_str()),
+        );
     }
 }
 
@@ -3646,6 +3953,105 @@ mod tests {
         assert_eq!(reopen_target(Workflow::Running), None);
         assert_eq!(reopen_target(Workflow::Finalizing), None);
         assert_eq!(reopen_target(Workflow::Queued), None);
+    }
+
+    #[test]
+    fn a_task_view_carries_git_writeback_and_direct() {
+        let mut record = record(Workflow::Done);
+        record.meta.baseline = Some("base".to_string());
+        record.meta.start = Some("start".to_string());
+        record.meta.commit = Some("commit".to_string());
+        record.meta.merge = Some("merge".to_string());
+        record.meta.comment_posted = true;
+        record.meta.status_from = Some("in_progress".to_string());
+        record.meta.status_to = Some("resolved".to_string());
+        record.meta.direct = true;
+
+        let task = record.task.clone();
+        let view = serde_json::to_value(task_view(&record, &task)).expect("view");
+        assert_eq!(view["git"]["start"], "start");
+        assert_eq!(view["git"]["commit"], "commit");
+        assert_eq!(view["git"]["merge"], "merge");
+        assert_eq!(view["writeback"]["comment"], true);
+        assert_eq!(view["writeback"]["statusFrom"], "in_progress");
+        assert_eq!(view["writeback"]["statusTo"], "resolved");
+        assert_eq!(view["direct"], true);
+
+        // A row written before `start` existed still shows a starting point.
+        record.meta.start = None;
+        let view = serde_json::to_value(task_view(&record, &task)).expect("view");
+        assert_eq!(view["git"]["start"], "base");
+    }
+
+    #[test]
+    fn a_task_without_its_worktree_works_directly_in_the_repository() {
+        let mut record = record(Workflow::Done);
+        record.meta.worktree = true;
+        record.task.worktree_path = Some("/definitely/not/here".to_string());
+        assert!(record.works_direct());
+
+        record.task.worktree_path = None;
+        assert!(record.works_direct());
+
+        // A worktree that still exists (for example kept because it was dirty)
+        // keeps the isolated round.
+        record.task.worktree_path = Some(
+            std::env::temp_dir()
+                .to_string_lossy()
+                .to_string(),
+        );
+        assert!(!record.works_direct());
+
+        record.meta.worktree = false;
+        assert!(!record.works_direct());
+    }
+
+    #[test]
+    fn a_new_round_clears_the_previous_result_and_starts_at_the_right_revision() {
+        let mut direct = record(Workflow::Done);
+        direct.meta.worktree = true;
+        direct.meta.baseline = Some("base".to_string());
+        direct.meta.commit = Some("old".to_string());
+        direct.meta.merge = Some("merge".to_string());
+        direct.meta.merged = true;
+        direct.meta.comment_posted = true;
+        direct.meta.status_from = Some("in_progress".to_string());
+        direct.meta.status_to = Some("resolved".to_string());
+        direct.meta.writeback_attempts = 2;
+        direct.task.review = Some(TaskReview {
+            summary: "s".to_string(),
+            verification: None,
+            risks: None,
+            files: Vec::new(),
+        });
+
+        start_round(
+            &mut direct,
+            true,
+            Some("head".to_string()),
+            Some("main".to_string()),
+        );
+        assert!(direct.meta.direct);
+        assert_eq!(direct.meta.baseline.as_deref(), Some("head"));
+        assert_eq!(direct.meta.start.as_deref(), Some("head"));
+        assert_eq!(direct.task.branch.as_deref(), Some("main"));
+        assert!(direct.meta.commit.is_none());
+        assert!(direct.meta.merge.is_none());
+        assert!(!direct.meta.merged);
+        assert!(!direct.meta.comment_posted);
+        assert_eq!(direct.meta.writeback_attempts, 0);
+        assert!(direct.task.review.is_none());
+
+        // A kept worktree continues in isolation, starting at the previous
+        // round's commit so the review only shows the new work.
+        let mut isolated = record(Workflow::Done);
+        isolated.meta.worktree = true;
+        isolated.meta.baseline = Some("base".to_string());
+        isolated.meta.commit = Some("commit".to_string());
+        start_round(&mut isolated, false, None, None);
+        assert!(!isolated.meta.direct);
+        assert_eq!(isolated.meta.baseline.as_deref(), Some("commit"));
+        assert_eq!(isolated.meta.start.as_deref(), Some("commit"));
     }
 
     #[test]

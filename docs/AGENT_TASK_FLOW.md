@@ -11,8 +11,9 @@
 ## 1. 决策（2026-11-18）
 
 1. **所有 bug / local 工作流任务都在独立 worktree 中运行**。删除非 Worktree 工作流分支。
-2. **不 push 远端**。审核通过 = 提交 → 合并主仓库 → 删除 worktree；后续推送由用户用自由会话
-   或未来的 git 功能完成。
+2. **不 push 远端**。审核通过 = 提交 → 合并主仓库 → 删除 worktree，并把会话 cwd 立即交回
+   主仓库；之后继续此会话进入「直接轮次」（不建 worktree、没有合并步骤，提交直接落在
+   主仓库）。后续推送由用户用自由会话或未来的 git 功能完成。
 3. **所有有改动的任务都必须人工审核**。删除“极简单流程自动收尾”，不做自动通过。
 4. **执行阶段模型看不到任何 TAPD 工具**（连工具名都不出现在 schema/提示词里）。
    审核通过、进入收尾阶段后才通过条件工具出现，并由系统提示词说明怎么做。
@@ -79,6 +80,11 @@ Done/Failed/Canceled -> 终态（用户发新消息时由 reopen_for_input 重�
 - `turn/end` 兜底：AI 没调用 `task_submit` 但有改动 → `AwaitingReview`；无改动 → `Done`。
   已经进入 `AwaitingReview` 时只刷新 `changes`，不重复迁移。
 - 用户从 `AwaitingReview` 发消息 → `Running`（沿用 `reopen_for_input`），清空本轮待审核状态。
+- **直接轮次**：已完成任务的 worktree 在收尾时已经删除，继续发消息时 `reopen_for_input`
+  把本轮标记为 `direct`：baseline/start 取主仓库当前 HEAD，cwd 回到主仓库，收尾时跳过
+  merge，提交直接落在主仓库。worktree 仍在（例如脏目录被保留、或任务失败）时继续沿用
+  隔离轮次，baseline 改为上一轮提交，审核只显示本轮改动。
+  两种轮次都会清空 `commit` / `merge` / `merged` / 回写标记。
 - `Finalizing` 内的失败停在 `Finalizing`，用 `finalize_step` 标记失败步骤，`dsh_task_retry_finalize`
   从该步骤重试。`Finalizing` 不允许取消（改动已合并）。
 - 子 agent 会话不参与状态机；phase 只按任务根会话设置。
@@ -230,22 +236,29 @@ ctx.tools.register(definition, { when: ({ agent }) => phaseOf(agent.session.id) 
 
 ---
 
-## 7. 审核界面
+## 7. 任务界面
 
 ### 桌面
 
-`AgentWorkspace` 在 `awaiting_review | finalizing` 时把主区切为 `ReviewView`，保留
-「审核 / 对话」切换：
+工作流任务的顶部固定是「任务 / 对话 / 轨迹」三个切换；任务入队后默认停在「任务」，
+新提交的审核也把会话切回这里。chat 只有「对话 / 轨迹」。
 
-- 头部：项目名、仓库路径、branch/worktree、变更统计。
-- AI 摘要：`task.review`（summary / verification / risks）。
-- 文件列表：`dsh_task_changes` 返回的相对路径、状态、+/−。
-  - 「应用内查看」：`dsh_task_diff { sessionId, file }` 展开逐文件 diff。
-  - 「IDE 打开」：`open_file(绝对路径, kind=file)`，沿用 `open_with` 选择器；
-    项目目录用 `open_directory`。
-- 底部：`通过并收尾` / `继续修改` / `放弃`。
-- `finalizing`：步骤条「提交 → 合并 → 清理 → 回写」，失败显示 `finalize.error` 与重试。
-- `done`：提交 hash、分支、评论/状态结果、「在 TAPD 打开」。
+「任务」页的内容：
+
+- 任务信息：项目、bug id、branch、worktree/仓库路径（可打开）、变更统计、状态。
+  worktree 不存在且本轮是直接轮次时提示「本轮在主仓库工作」；收尾清理后提示
+  「worktree 已清理，继续会话在主仓库进行」。
+- Hash：开始 / 提交 / 合并，短 hash 可点击复制；直接轮次没有合并。
+- 审核内容：AI 摘要只在 `task.review` 存在时显示（turn-end 兜底的审核没有摘要）；
+  改动文件列表按 `task.changes` 存在显示。文件列表来自 `dsh_task_changes`，
+  「应用内查看」展开逐文件 diff，「IDE 打开」沿用 `open_with`。
+- `awaiting_review` 底部：`通过并收尾` / `继续修改` / `放弃`。
+- `finalizing`：步骤条「提交 → 合并 → 清理 → 回写」（直接轮次隐藏「合并」），
+  失败显示 `finalize.error` 与重试。
+- `done`：回写结果（评论/状态）；失败/取消任务提供「打开导出目录」。
+
+「对话」页在整轮结束后追加一张任务完成卡：完成标记、branch、变更统计、三个 hash、
+TAPD 回写结果，以及「查看任务」。卡片只在任务真正完成且产生过提交/合并时出现。
 
 ### 移动端
 
@@ -260,9 +273,12 @@ ctx.tools.register(definition, { when: ({ agent }) => phaseOf(agent.session.id) 
 
 `dsh_task_approve`（仅 `awaiting_review`，且无活跃回合）：
 
-1. `commit`：worktree 内 `git add -A` + 确定性 message（worktree 隔离，不会混入无关改动）。
-2. `merge`：主仓库 `git merge --no-ff`；冲突 abort 并停在 `finalizing`。
-3. `cleanup`：worktree 干净则 `git worktree remove`；脏则保留并记 `notice`。
+1. `commit`：worktree 内 `git add -A` + 确定性 message（worktree 隔离，不会混入无关改动）；
+   记录提交 hash。
+2. `merge`：主仓库 `git merge --no-ff`，记录 merge commit；冲突 abort 并停在 `finalizing`。
+   直接轮次跳过这一步（提交已经在主仓库）。
+3. `cleanup`：worktree 干净则 `git worktree remove`，随后把会话 cwd 立即交回主仓库；
+   脏则保留并记 `notice`（会话留在 worktree）。直接轮次没有 worktree，也跳过这一步。
 4. `writeback`：phase=writeback（推 `task-phase` 并等 ack）→ 发 `source.kind=host` 的触发消息。
 5. `task_complete` 成功或回写回合结束时评论+状态都已完成 → `Done`；否则停在 `finalizing`，
    `finalize.error` 说明未完成项，可重试。
@@ -365,6 +381,18 @@ export type DshTaskFile = {
   binary: boolean;
 };
 
+export type DshTaskGit = {
+  start?: string;          // 本轮起点（worktree baseline 或直接轮次的仓库 HEAD）
+  commit?: string;         // 收尾产生的提交
+  merge?: string;          // 收尾产生的 merge commit；直接轮次没有
+};
+
+export type DshTaskWriteback = {
+  comment: boolean;
+  statusFrom?: string;
+  statusTo?: string;
+};
+
 export type DshTask = {
   id: string;
   kind: "chat" | "bug" | "local_item";
@@ -383,10 +411,14 @@ export type DshTask = {
   changes?: { files: number; additions: number; deletions: number } | null;
   review?: DshTaskReview | null;
   finalize?: DshTaskFinalize | null;
+  git: DshTaskGit;
+  writeback: DshTaskWriteback;
+  direct: boolean;         // 本轮在主仓库直接工作，收尾跳过 merge
 };
 ```
 
-`merge` 字段删除，由 `finalize` 取代。
+`git` / `writeback` / `direct` 由宿主在返回任务时从内部 `TaskMeta`
+派生，不重复落库；旧行读出来是空对象 / `false`。
 
 ### 12.2 命令
 

@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight,
   Check,
@@ -21,12 +22,15 @@ import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { t } from "../lib/i18n";
 import {
   localApi,
+  LOCAL_ITEMS_EVENT,
+  type LocalItemsEvent,
   type LocalProject,
   type WorkItem,
   type WorkItemStatus,
 } from "../lib/local";
 import type { ToastFn } from "../lib/feature";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { LocalItemDialog } from "./LocalItemDialog";
 import { ScrollingName } from "./ScrollingName";
 import { Segmented } from "./Segmented";
@@ -54,6 +58,10 @@ export function LocalItemsPage({ project, toast }: Props) {
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  /** Row context menu: the item and the click position. */
+  const [menu, setMenu] = useState<{ item: WorkItem; x: number; y: number } | null>(
+    null,
+  );
 
   // The toast callback is not a dependency of `load`: App may hand a new
   // identity each render, which would restart the fetch on every render.
@@ -89,6 +97,45 @@ export function LocalItemsPage({ project, toast }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The task flow changes an item's status in the database (attach → in
+  // progress, done → finished, cancel/delete → restored) and emits this event.
+  // A quiet reload keeps the rows on screen; if the changed item is in the
+  // visible tab, follow it into its new tab like the row actions do.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<LocalItemsEvent>(LOCAL_ITEMS_EVENT, (event) => {
+      const data = event.payload ?? {};
+      if (data.projectId && data.projectId !== project.id) return;
+      const current = data.itemId
+        ? itemsRef.current.find((item) => item.id === data.itemId)
+        : undefined;
+      const follow =
+        current && current.status === tabRef.current && data.status
+          ? data.status
+          : null;
+      void load(true).then(() => {
+        if (!disposed && follow) setTab(follow);
+      });
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // Without the event bridge the page still loads on mount/project
+        // switch; a missed refresh must not break the list.
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [load, project.id]);
 
   const pending = items.filter((item) => item.status === "pending");
   const inProgress = items.filter((item) => item.status === "in_progress");
@@ -222,8 +269,7 @@ export function LocalItemsPage({ project, toast }: Props) {
                 busy={actionBusy === item.id}
                 onSetStatus={(status) => void setStatus(item, status)}
                 onHandOver={() => setHandOver(item)}
-                onEdit={() => setDialog({ item })}
-                onDelete={() => setDeleteTarget(item)}
+                onContextMenu={(x, y) => setMenu({ item, x, y })}
               />
             ))}
           </ul>
@@ -250,6 +296,38 @@ export function LocalItemsPage({ project, toast }: Props) {
         />
       ) : null}
 
+      {menu ? (
+        <ContextMenu
+          key={`${menu.item.id}-${menu.x}-${menu.y}`}
+          x={menu.x}
+          y={menu.y}
+          label={t("local.items.menu")}
+          onClose={() => setMenu(null)}
+        >
+          {(requestClose) => (
+            <>
+              <ContextMenuItem
+                icon={<Pencil size={14} />}
+                label={t("local.items.edit")}
+                onClick={() => {
+                  setDialog({ item: menu.item });
+                  requestClose();
+                }}
+              />
+              <ContextMenuItem
+                icon={<Trash2 size={14} />}
+                label={t("local.items.delete")}
+                tone="danger"
+                onClick={() => {
+                  setDeleteTarget(menu.item);
+                  requestClose();
+                }}
+              />
+            </>
+          )}
+        </ContextMenu>
+      ) : null}
+
       {handOver ? (
         <EnqueueSheet
           target={{
@@ -270,14 +348,19 @@ function ItemRow(props: {
   busy: boolean;
   onSetStatus: (status: WorkItemStatus) => void;
   onHandOver: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  onContextMenu: (x: number, y: number) => void;
 }) {
-  const { item, busy, onSetStatus, onHandOver, onEdit, onDelete } = props;
+  const { item, busy, onSetStatus, onHandOver, onContextMenu } = props;
 
   return (
     <li>
-      <article className="flex items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300">
+      <article
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu(event.clientX, event.clientY);
+        }}
+        className="flex items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300"
+      >
         <div className="min-w-0 flex-1">
           <ScrollingName
             text={item.title}
@@ -291,7 +374,7 @@ function ItemRow(props: {
           ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           {item.status === "pending" ? (
             <RowAction
               label={t("local.items.moveToProgress")}
@@ -329,25 +412,18 @@ function ItemRow(props: {
           ) : null}
 
           {item.status !== "done" ? (
-            <RowAction
-              label={t("local.items.toAgent")}
-              icon={<Sparkles size={13} />}
+            <button
+              type="button"
+              title={t("local.items.toAgentHint")}
+              aria-label={t("local.items.toAgent")}
               disabled={busy}
               onClick={onHandOver}
-            />
+              className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Sparkles size={12} />
+              {t("local.items.toAgent")}
+            </button>
           ) : null}
-
-          <RowAction
-            label={t("local.items.edit")}
-            icon={<Pencil size={13} />}
-            onClick={onEdit}
-          />
-          <RowAction
-            label={t("local.items.delete")}
-            icon={<Trash2 size={13} />}
-            tone="danger"
-            onClick={onDelete}
-          />
         </div>
       </article>
     </li>

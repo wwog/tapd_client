@@ -18,6 +18,7 @@ import type { AgentSubagentRow } from "../../../shared/agent/subagents";
 import type { DshEntry } from "../lib/dsh";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { TaskDoneCard } from "./TaskDoneCard";
 import { UserBubble } from "./MessageParts";
 import { PromptNavigator } from "./PromptNavigator";
 import { buildPromptItems, type PromptNavItem } from "./promptNav";
@@ -117,6 +118,20 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   const blocks = useMemo(() => groupTurns(items), [items]);
   const promptItems = useMemo(() => buildPromptItems(blocks, locale), [blocks, locale]);
   const running = isSessionRunning(state, sessionId);
+
+  // The finished round's receipt, appended after the last turn: only a task
+  // that actually produced a commit or a merge has something to receipt.
+  const task = sessionId
+    ? (state.tasks?.find((item) => item.id === sessionId) ?? null)
+    : null;
+  const receipt =
+    task &&
+    task.kind !== "chat" &&
+    task.workflow === "done" &&
+    !running &&
+    (task.git.commit || task.git.merge)
+      ? task
+      : null;
 
   // The live stream belongs to the turn whose `turn/end` has not landed yet;
   // before its `turn/start` commits, a synthetic block keeps the text visible.
@@ -249,6 +264,10 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   const lastUserSeqRef = useRef<number | null>(null);
   const pendingLengthRef = useRef(pending.length);
 
+  const receiptKey = receipt
+    ? `${receipt.updatedAt}:${receipt.git.merge ?? receipt.git.commit ?? ""}`
+    : "";
+
   const signature = useMemo(
     () =>
       [
@@ -260,6 +279,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         pending.length,
         approvals.length,
         questions.length,
+        receiptKey,
       ].join(":"),
     [
       approvals.length,
@@ -270,6 +290,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       liveTools.length,
       pending.length,
       questions.length,
+      receiptKey,
     ],
   );
 
@@ -343,7 +364,8 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     pending.length > 0 ||
     liveHasContent ||
     approvals.length > 0 ||
-    questions.length > 0;
+    questions.length > 0 ||
+    receipt !== null;
 
   const loading = history ? !history.loaded && items.length === 0 : true;
   const failed = Boolean(history?.error) && items.length === 0;
@@ -429,6 +451,8 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
           {questions.map((question) => (
             <QuestionCard key={question.rpcId} pending={question} />
           ))}
+
+          {receipt ? <TaskDoneCard key={`done:${receipt.id}`} task={receipt} /> : null}
         </div>
       </div>
 

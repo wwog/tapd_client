@@ -40,7 +40,12 @@ export const local = {
   "local.items.done": ["已完成", "Done"],
   "local.items.create": ["新增事项", "New item"],
   "local.items.edit": ["编辑事项", "Edit item"],
+  "local.items.menu": ["事项操作", "Item actions"],
   "local.items.toAgent": ["交给 Agent", "Hand to Agent"],
+  "local.items.toAgentHint": [
+    "交给内置 Agent 处理这个事项",
+    "Hand this item to the built-in agent",
+  ],
   "local.items.moveToProgress": ["移入处理中", "Move to in progress"],
   "local.items.moveToPending": ["移回待处理", "Move back to pending"],
   "local.items.markDone": ["标记完成", "Mark done"],

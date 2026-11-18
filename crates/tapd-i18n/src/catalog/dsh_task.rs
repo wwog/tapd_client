@@ -186,6 +186,11 @@ pub static MESSAGES: &[Message] = &[
         "Failed to write back to TAPD: {}",
     ),
     (
+        "dsh.task.writeback.directRepo",
+        "本轮直接在主仓库工作，改动已提交到主仓库。",
+        "This round worked directly in the main repository; its changes were committed there.",
+    ),
+    (
         "dsh.task.writeback.hostComment",
         "AI 收尾未完成，由宿主补写回写。\n摘要：{0}\n验证：{1}\n风险：{2}\n分支：{3}\n提交：{4}\n变更：{5} 个文件，+{6} / -{7}\n缺陷：{8}",
         "The AI write-back was incomplete, so the host completed it.\nSummary: {0}\nVerification: {1}\nRisks: {2}\nBranch: {3}\nCommit: {4}\nChanges: {5} files, +{6} / -{7}\nBug: {8}",
@@ -197,8 +202,18 @@ pub static MESSAGES: &[Message] = &[
     ),
     (
         "dsh.task.writeback.prompt",
-        "代码已由宿主提交并合并到主仓库，worktree 已清理。\n分支：{0}\n提交：{1}\n变更：{2} 个文件，+{3} / -{4}\n缺陷：{5}\n\n请只做 TAPD 收尾：先调用 tapd_get_transitions 确认合法目标；再用 tapd_add_comment 写评论（根因、改动、验证、风险、分支与提交）；然后调用 tapd_update_status 置为 resolved；最后调用 task_complete。不要 push，不要修改代码。",
-        "The host committed the work and merged it into the main repository; the worktree was cleaned up.\nBranch: {0}\nCommit: {1}\nChanges: {2} files, +{3} / -{4}\nBug: {5}\n\nOnly finish the TAPD write-back: call tapd_get_transitions to confirm the legal targets; then tapd_add_comment with the root cause, changes, verification, risks, branch and commit; then tapd_update_status to resolved; finally call task_complete. Do not push and do not modify code.",
+        "代码已由宿主提交到主仓库，不再改动代码。\n分支：{0}\n提交：{1}\n合并：{2}\n{3}\n变更：{4} 个文件，+{5} / -{6}\n缺陷：{7}\n\n请只做 TAPD 收尾：先调用 tapd_get_transitions 确认合法目标；再用 tapd_add_comment 写评论（根因、改动、验证、风险、分支与提交）；然后调用 tapd_update_status 置为 resolved；最后调用 task_complete。不要 push，不要再改代码；回复只报告评论与状态结果。",
+        "The host committed the work to the main repository; do not change code again.\nBranch: {0}\nCommit: {1}\nMerge: {2}\n{3}\nChanges: {4} files, +{5} / -{6}\nBug: {7}\n\nOnly finish the TAPD write-back: call tapd_get_transitions to confirm the legal targets; then tapd_add_comment with the root cause, changes, verification, risks, branch and commit; then tapd_update_status to resolved; finally call task_complete. Do not push and do not change code again; reply only with the comment and status result.",
+    ),
+    (
+        "dsh.task.writeback.worktreeKept",
+        "worktree 保留在 {0}（仍有未提交改动）。",
+        "The worktree was kept at {0} (it still has uncommitted changes).",
+    ),
+    (
+        "dsh.task.writeback.worktreeRemoved",
+        "worktree 已清理，会话已回到主仓库。",
+        "The worktree was cleaned up and the session is back in the main repository.",
     ),
     (
         "dsh.worktree.outside",

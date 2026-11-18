@@ -22,6 +22,7 @@ import { SessionUsageBar } from "./usage/SessionUsageBar";
 import {
   agentActions,
   agentStore,
+  agentTaskView,
   agentTeamView,
   isSessionRunning,
   taskReviewable,
@@ -125,9 +126,12 @@ export function Composer() {
   const send = async () => {
     if (block !== null || sending || !text.trim()) return;
     const draftKey = sessionId;
-    // From the review tab a message means "keep editing": show the transcript
-    // first, so the reply lands where the reader can follow it.
-    if (reviewing && task) agentActions.setReviewView(task.id, "chat");
+    // From the task pane (or the review section) a message means "keep
+    // editing": show the transcript first, so the reply lands where the reader
+    // can follow it.
+    if (task && (reviewing || agentTaskView(state, task.id) === "task")) {
+      agentActions.setTaskView(task.id, "chat");
+    }
     setSending(true);
     const accepted = await agentActions.sendPrompt(text);
     if (accepted) {

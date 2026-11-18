@@ -52,7 +52,7 @@ export function Button(
   );
 }
 
-type BadgeTone = "neutral" | "blue" | "green" | "amber" | "red" | "cyan";
+export type BadgeTone = "neutral" | "blue" | "green" | "amber" | "red" | "cyan";
 
 const BADGE_TONES: Record<BadgeTone, string> = {
   neutral: "bg-slate-100 text-slate-600",

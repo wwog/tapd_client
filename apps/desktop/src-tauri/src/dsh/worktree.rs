@@ -164,12 +164,13 @@ pub fn commit_all(dir: &str, message: &str) -> Result<Option<String>, String> {
     head(dir)
 }
 
-/// Merges `branch` into the main repository without fast-forwarding.
+/// Merges `branch` into the main repository without fast-forwarding and
+/// returns the merge commit that resulted.
 ///
 /// A failure while *our* merge is in progress aborts it, so the user's
 /// repository is left exactly as it was found. A merge that predates this call
 /// is never aborted: that would discard the user's own conflicted state.
-pub fn merge_no_ff(repo_path: &str, branch: &str, message: &str) -> Result<(), String> {
+pub fn merge_no_ff(repo_path: &str, branch: &str, message: &str) -> Result<String, String> {
     let merge_head = git(
         repo_path,
         &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
@@ -182,7 +183,9 @@ pub fn merge_no_ff(repo_path: &str, branch: &str, message: &str) -> Result<(), S
         return Err("the repository already has a merge in progress".to_string());
     }
     match git(repo_path, &["merge", "--no-ff", "-m", message, branch], &[]) {
-        Ok(_) => Ok(()),
+        Ok(_) => head(repo_path)?.ok_or_else(|| {
+            format!("the merge in {repo_path} produced no HEAD commit")
+        }),
         Err(error) => {
             // Conflict markers and a half-applied index must not survive.
             let _ = git(repo_path, &["merge", "--abort"], &[]);
@@ -373,7 +376,12 @@ mod tests {
         );
 
         assert!(!is_ancestor(&repo, &branch, "HEAD").expect("ancestor check"));
-        merge_no_ff(&repo, &branch, "merge task").expect("merge");
+        let merged = merge_no_ff(&repo, &branch, "merge task").expect("merge");
+        assert_eq!(
+            Some(merged),
+            head(&repo).expect("head"),
+            "the merge commit is the new HEAD"
+        );
         assert!(is_ancestor(&repo, &branch, "HEAD").expect("ancestor check"));
         assert!(Path::new(&repo).join("app.txt").is_file());
 

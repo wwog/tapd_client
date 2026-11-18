@@ -54,6 +54,16 @@ export type WorkItemPatch = {
   status?: WorkItemStatus;
 };
 
+/** Tauri event emitted when a task changes an item's status or task link. */
+export const LOCAL_ITEMS_EVENT = "local://items";
+
+export type LocalItemsEvent = {
+  /** Missing means every open project page should refresh. */
+  projectId?: string | null;
+  itemId?: string;
+  status?: WorkItemStatus;
+};
+
 export const localApi = {
   listProjects: () =>
     featureCommand<{ projects: LocalProject[] }>("local_projects_list"),
