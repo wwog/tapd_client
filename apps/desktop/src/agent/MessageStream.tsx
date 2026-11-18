@@ -6,7 +6,7 @@ import { t, useLocale } from "../lib/i18n";
 import { TodoCard } from "../../../shared/agent/TodoCard";
 import { TurnBlock as ChildTurnBlock } from "../../../shared/agent/TurnBlock";
 import type { AgentNotice } from "../../../shared/agent/types";
-import type { AgentSubagentChild } from "../../../shared/agent/SubagentGroup";
+import type { AgentSubagentRow } from "../../../shared/agent/subagents";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { UserBubble } from "./MessageParts";
@@ -117,7 +117,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
    *  trajectory deep-link: the panel shows the current session only). Nested
    *  sub-agent calls inside a child assemble the same way, so the fold reads
    *  identically at every depth. */
-  const renderChildTurns = (child: AgentSubagentChild) => {
+  const renderChildTurns = (child: AgentSubagentRow) => {
     if (isPendingChild(child.sessionId)) return null;
     const childBlocks = child.turns.filter(
       (block) =>
@@ -304,9 +304,9 @@ function NestedTurnBlock({
   running: boolean;
   locale: ReturnType<typeof useLocale>;
   /** Store-backed nested assembly for this child turn. */
-  subagents?: AgentSubagentChild[];
+  subagents?: AgentSubagentRow[];
   orphanNotices?: AgentNotice[];
-  renderTurns: (child: AgentSubagentChild) => ReactNode;
+  renderTurns: (child: AgentSubagentRow) => ReactNode;
   openIds: ReadonlySet<string>;
   onToggle: (sessionId: string) => void;
 }) {

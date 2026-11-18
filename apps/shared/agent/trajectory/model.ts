@@ -14,15 +14,6 @@ export type TrajKind = "user" | "assistant" | "tool" | "notice";
 /** One in-flight call of the live attempt; the host's stream shape fits as-is. */
 export type LiveToolCall = { callId?: string; name: string; args: string };
 
-/**
- * Stable ledger id for one committed entry. The transcript uses it to open a
- * tool call in the trajectory, so it must stay in step with [`flatten`].
- */
-export function recordIdOf(entry: AgentEntry): string {
-  if (entry.kind === "tool") return `tool:${entry.callId || entry.seq}`;
-  return `${entry.kind}:${entry.seq}`;
-}
-
 export type TrajState = "complete" | "running" | "error";
 
 /** One ledger row. Tool rows keep the call's seq; the result updates in place. */

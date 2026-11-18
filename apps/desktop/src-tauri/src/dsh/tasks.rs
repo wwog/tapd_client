@@ -28,6 +28,7 @@
 //! for every committed entry.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use dsh_host::transcript::{DshEntry, DshSession, SessionStatus, TurnState};
@@ -585,9 +586,47 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
     Ok(json!({ "sessionId": request.session_id }))
 }
 
-/// The directory one session works in. Chats own a scratch dir; tasks report
-/// their worktree (or the repository they run in). Used by "在 Finder 中打开"
-/// on the session list, which must not guess these paths on its own.
+/// The directory one session works in, resolved without the runtime.
+///
+/// Chats own a scratch dir under the data directory; tasks use their worktree
+/// while it exists and fall back to the repository. A session with no task row
+/// can still own a chat directory (a draft that already prompted), so that
+/// case answers only when the directory is there. The file viewer scopes a tab
+/// to this root through the `__session__:<id>` workspace id.
+pub(crate) fn session_root(app: &AppHandle, session_id: &str) -> Option<PathBuf> {
+    let state = shared(app).ok()?;
+    let chat = state
+        .paths
+        .data_dir
+        .join("dsh")
+        .join("chats")
+        .join(session_id);
+    let Some(record) = task_store::load(&state.cache, session_id).ok().flatten() else {
+        return chat.is_dir().then_some(chat);
+    };
+    if record.task.kind == TaskKind::Chat {
+        return Some(chat);
+    }
+    if let Some(worktree) = record
+        .task
+        .worktree_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+    {
+        // A worktree the user already removed must not shadow the repository.
+        if worktree.is_dir() {
+            return Some(worktree);
+        }
+    }
+    let repo = record.task.repo_path.trim().to_string();
+    (!repo.is_empty()).then(|| PathBuf::from(repo))
+}
+
+/// The directory one session works in. Used by "在 Finder 中打开" on the
+/// session list, which must not guess these paths on its own. Unlike
+/// [`session_root`] this reports the configured worktree even when it is
+/// already gone, so the UI can say the directory is missing.
 pub async fn session_dir(app: &AppHandle, session_id: &str) -> Result<Value, String> {
     let state = shared(app)?;
     let cache = state.cache.clone();

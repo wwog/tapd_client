@@ -6,6 +6,7 @@
 export {
   TRACE_MAX_HEIGHT,
   ActionIcon,
-  ActionRow,
-  ReasoningRow,
+  ActionKindIcon,
+  LeafRow,
+  ThinkingBlock,
 } from "../../../shared/agent/TraceRows";

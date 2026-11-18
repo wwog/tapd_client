@@ -499,6 +499,25 @@ export const dshWorktreeApi = {
   remove: (path: string) => feature<{ path: string }>("dsh_worktree_remove", { path }),
 };
 
+/** What a path written in a reply turned out to be on disk. */
+export type DshFileTarget = {
+  /** Project id, `__session__:<id>` or `__root__`. */
+  workspaceId: string;
+  /** Relative to that workspace's root, `/`-separated. */
+  path: string;
+  label: string;
+  kind: "file" | "dir" | "missing";
+};
+
+/**
+ * Desktop-only: maps a path from an assistant reply onto the workspace root it
+ * lives under, so the workbench can open a file tab in the right scope.
+ */
+export const dshFileApi = {
+  target: (sessionId: string, path: string) =>
+    invoke<DshFileTarget>("dsh_file_target", { sessionId, path }),
+};
+
 /** Root-Fiber phase of one composed plugin entry; null when it has no fiber. */
 export type DshPluginPhase =
   | "pending"

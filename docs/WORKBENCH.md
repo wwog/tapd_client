@@ -148,6 +148,7 @@ type LayoutPrefs = {
 Rust `src-tauri/src/fs.rs`：
 
 - 根 = `agent.json` 的 `projects[workspaceId].repoPath`；未配置直接报错。
+- 两个特殊根：`__root__` = 文件系统根（只读浏览，`fs.rs` 自带凭据黑名单），`__session__:<sessionId>` = 该 Agent 会话的工作目录（自由会话的 `<data>/dsh/chats/<id>`、任务的 worktree，回退到仓库）。Agent 回复里的本地路径由 `dsh::files::resolve` 映射到项目根 / 会话根 / `__root__` 之一，桌面据此在副组打开文件标签；会话根同样走 `resolve_in_root` 的包含检查。
 - 所有入参只接受**相对路径**；`resolve_in_root` 拒绝绝对路径、`..`、NUL、非 UTF-8，canonicalize 后按组件比较，拒绝符号链接逃逸；规范化后的路径再按组件（忽略大小写）拒绝 `.git`，大小写变体与 `docs -> .git` 这类符号链接别名同样挡住。
 - `fs_list`（一层，dirs-first，5000 条截断）、`fs_read`（文本 2 MiB 截断；`text/markdown/image/audio/video/binary/tooLarge`）、`fs_stat`。读取返回秒级 `mtime`（展示）与毫秒级 `mtimeMs`（冲突令牌）。
 - 二进制预览走本机流式路由 `GET /file?token&ws&path`（Range）；移动端 `GET /companion/api/file/raw?t&ws&path` 复用同一实现。

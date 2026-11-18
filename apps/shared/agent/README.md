@@ -1,8 +1,8 @@
 # shared/agent — 桌面与移动端共用的 agent 聊天视图
 
 桌面（`apps/desktop`）与伴侣端（`apps/companion`）渲染同一套会话视图：
-轮次折叠块、todo 卡片、子 agent 折叠组、轨迹。组件在这里，两端的差异只留
-在数据获取（桌面事件推送、移动端轮询）和注入的回调上。
+以「流程」为单位的对话、todo 卡片、根级子 agent、轨迹。组件在这里，两端的
+差异只留在数据获取（桌面事件推送、移动端轮询）和注入的回调上。
 
 ## 契约
 
@@ -11,6 +11,8 @@
   `lib/dsh.ts` 与本文件保持同形（结构类型，直接赋值兼容）。
 - **文案**：`labels.ts` 自带 `[zh, en]` 成对目录（`agentLabel(key, locale, vars)`）。
   两端共用的文案只加在这里；单端文案留在各自 app 的 i18n 目录。
+- **流程**：`flows.ts` 是唯一的投影：按说明（assistant text）切分流程，
+  步骤状态（pending / waiting / running / ok / error）也在这里映射成文案。
 - **轮次**：`groupTurns`（`turns.ts`）是唯一的轮次切分实现；
   desktop 的 `src/agent/turns.ts` 只是 re-export。
 - **宿主能力**：`host.tsx` 的 `AgentHostProvider` 注入 app 特有的能力
@@ -21,15 +23,17 @@
 | 文件 | 职责 |
 | --- | --- |
 | `TodoCard` | 会话级 todo 列表卡片（`todo/write`），流顶部一张，不属于任何轮次 |
-| `SubagentGroup` | 一个轮次里的子 agent 折叠组；子会话轮次由宿主经 `renderTurns` 注入渲染 |
-| `TurnBlock` | 一个轮次的折叠块（思考/说明/查阅/子 agent/执行/修改 分组 + 失败重试） |
-| `MessageParts` | `UserBubble` / `AnswerBlock` / `MessageMeta`（气泡、回答、时间/用量/复制） |
-| `TraceRows` | 轨迹行（`ActionRow` / `ReasoningRow` / `ActionIcon`） |
-| `actions.ts` | `describeTool` / `runningVerb` / `reasoningPreview` 纯函数 |
-| `subagents.ts` | 一个轮次的子 agent 数据纯组装（call↔notice 顺序配对、name 提取、`pending:` 占位、orphans）；宿主经 `ChildSessionInfo` 查询回调解自己的 store，两端配对结果完全一致 |
+| `TurnBlock` | 一个轮次的壳：完成态 `已工作`（过程折叠，收起后只剩它和最后一段说明）/ 展开后的根级子 agent + 流程列表 / 运行态 `工作中` / 失败重试 |
+| `FlowBlock` | 一个流程：概要行（或运行中的最新步骤）+ 按执行顺序的步骤（思考行 / 工具叶子行）+ 说明（流程自身不折叠说明；整轮 `已工作` 收起时随过程一起隐藏） |
+| `SubagentRow` | 根级子 agent 行：description 单行、彩色 icon、展开即子会话 |
+| `TraceRows` | 叶子行（`LeafRow` / `ThinkingBlock`）与输入/输出块（可拖高） |
+| `MessageParts` | `UserBubble` / `AnswerBlock` / `MessageMeta`（气泡、说明、时间/用量/复制） |
+| `flows.ts` | 流程切分、思考时长、概要文案、最新步骤状态映射 |
+| `actions.ts` | `describeTool` / `toolGroup` / `runningVerb` / `pendingVerb` / `waitingDetail` / `toolInput` |
+| `subagents.ts` | 子 agent 根行纯组装（call↔notice 顺序配对、description、`pending:` 占位、orphans）；宿主经 `ChildSessionInfo` 查询回调解自己的 store，两端配对结果完全一致 |
 | `format.ts` | `duration(ms, locale)` / `clock(at)` |
 | `clipboard.ts` | `copyText`（纯 DOM，两端的 WebView 都可用） |
-| `ScrollingName` | 悬停滑动的单行文本 |
+| `ScrollingName` | 悬停滑动的单行文本（仅思考预览/标签；工具行用省略号） |
 | `trajectory/` | 轨迹面板（时间轴 + 台账 + 检查器 + JSON 树） |
 | `turns.ts` | `groupTurns` 轮次切分 |
 | `types.ts` | 结构契约 |
@@ -39,8 +43,32 @@
 ```ts
 // actions.ts
 export function describeTool(name: string, argsJson: string, locale: AgentLocale): ToolAction;
+export function toolGroup(name: string, argsJson: string): "reads" | "commands" | "files";
 export function runningVerb(kind: ToolAction["kind"], locale: AgentLocale): string;
+export function pendingVerb(name: string, kind: ToolAction["kind"], locale: AgentLocale): string;
+export function failedVerb(kind: ToolAction["kind"], locale: AgentLocale): string;
+export function isWaitingTool(name: string, argsJson: string): boolean;
+export function waitingDetail(name: string, argsJson: string, locale: AgentLocale): { verb: string; target: string } | null;
+export function toolInput(name: string, argsJson: string): { text: string; meta?: string; diff?: boolean };
 export function reasoningPreview(text: string): string;
+
+// flows.ts
+export type AgentFlow = {
+  key: string; index: number; firstSeq: number;
+  thinking: AgentThinking[];
+  reads: ToolEntry[]; commands: ToolEntry[]; files: ToolEntry[];
+  liveTools: FlowLiveTool[];
+  /** 按执行顺序交错的思考/工具步骤（展开层直接渲染这个数组） */
+  steps: AgentFlowStep[];
+  note?: AssistantEntry; liveNote?: string;
+};
+export type AgentFlowStep =
+  | { kind: "thinking"; key: string; thinking: AgentThinking }
+  | { kind: "tool"; key: string; entry: ToolEntry }
+  | { kind: "live"; key: string; tool: FlowLiveTool };
+export function buildFlows(block: AgentTurnBlock, live: FlowLive | undefined, running: boolean): AgentFlow[];
+export function latestStep(flow: AgentFlow, live: FlowLive | undefined, locale: AgentLocale): LatestStep | null;
+export function summaryLabel(flow: AgentFlow, locale: AgentLocale): string | null;
 
 // MessageParts.tsx — 全部接收 locale: AgentLocale，不再用 app 的 t()
 export function UserBubble(props: { text: string; locale: AgentLocale });
@@ -52,31 +80,26 @@ export function MessageMeta(props: {
 
 // TraceRows.tsx — 同样只吃 locale
 export function ActionIcon(props: { action: ToolAction; failed?: boolean });
-export function ActionRow(props: {
+export function LeafRow(props: {
   name: string; args: string;
   status: "running" | "ok" | "error";
-  result?: unknown; locale: AgentLocale; onOpenTrace?: () => void;
+  result?: unknown; locale: AgentLocale;
 });
-export function ReasoningRow(props: { text: string; locale: AgentLocale; live?: boolean });
+export function ThinkingBlock(props: { text: string; locale: AgentLocale });
 
 // TurnBlock.tsx — 递归渲染子会话轮次也用它
-export type LiveTrace = {
-  text: string; reasoning: string;
-  tools: Array<{ callId?: string; name: string; args: string }>;
-};
+export type LiveTrace = { text: string; reasoning: string; tools: Array<{ callId?: string; name: string; args: string }> };
 export function TurnBlock(props: {
   block: AgentTurnBlock;
   running: boolean;
   live?: LiveTrace;
   locale: AgentLocale;
-  /** 桌面：跳轨迹；移动端可 undefined */
-  onOpenTrace?: (entry: AgentEntry) => void;
   /** 失败重试由宿主注入（桌面 = agentActions.retryTurn）；不传则不显示按钮 */
   onRetry?: () => void;
-  /** 本轮的子 agent 数据，由宿主组装（见 SubagentGroup 的 AgentSubagentChild） */
-  subagents?: AgentSubagentChild[];
+  /** 本轮的根级子 agent 行，由宿主组装（见 AgentSubagentRow） */
+  subagents?: AgentSubagentRow[];
   /** 一个子会话轮次的渲染（宿主用本组件递归实现） */
-  renderTurns?: (child: AgentSubagentChild) => ReactNode;
+  renderTurns?: (child: AgentSubagentRow) => ReactNode;
   /** 受控子折叠；不传用组件内部 state */
   openSubagentIds?: ReadonlySet<string>;
   /** 子折叠开合回调：宿主在此懒加载子会话 transcript */
@@ -86,29 +109,75 @@ export function TurnBlock(props: {
 });
 ```
 
-宿主可以在 `block.entries` 里把 name=="subagent" 的工具行与 notice 行过滤掉，
-只传 `subagents` —— TurnBlock 仍会渲染子 agent 折叠组；不过滤也行（组件内部
-把这两类行路由进 agents 组，配对成功的 notice 只作为 `settled` 数据消费）。
+`block.entries` 里保留 `subagent` 工具行与 `notice` 行也行：`buildFlows` 会把
+`subagent` 排除出流程，根行由 `subagents` 提供、notice 由 `orphanNotices` 兜底。
+配对成功的 notice 只作为子 agent 行的 `settled` 数据消费。
 
-## SubagentGroup
+## 完成态的 `已工作` 折叠
+
+整轮结束后，`已工作 N` 是过程折叠项，默认收起：
+
+```
+已工作 11 分 17 秒 ▸
+最后一次说明（md，始终可见）
+```
+
+展开后，根序列（子 agent 行、流程概要、中间说明）出现在 `已工作` 下方一条
+左边框里；最后一次说明仍在折叠外、位于过程之后。最后一次说明所属的流程
+会通过 `FlowBlock.hideNote` 隐藏自己的副本，避免重复。
+
+运行态没有 `已工作` 折叠：已关闭流程、当前流程的最新步骤、流式说明都直接
+可见，`工作中 N` 在轮块底部独立显示。
+
+## 流程展开：按执行顺序
+
+展开**不按类型分组**（思考/查阅/执行/修改分组会丢执行顺序），而是 `flow.steps`
+的平铺列表：
+
+```
+已执行 4 命令 ▾
+  已执行 Test connectivity to finance sites ▸
+  已执行 Show current date and time ▸
+  思考 16 秒 ▸
+  已执行 Fetch today's quotes ▸
+```
+
+- 思考行：`思考 n 秒`，展开是思考正文；没有计时时只显示「思考」。
+- 工具行：叶子行（verb + `description ?? 目标`），展开是输入/输出块。
+- 流程概要仍按类型聚合计数（`已查阅 n 项，已执行 n 命令，已修改 n 文件`）。
+- 仅思考且只有一段的流程：流程标题下直接是思考块，不再多一行 `思考 n 秒`；
+  多段思考则每段一行。
+
+## SubagentRow
 
 ```ts
-export function SubagentGroup(props: {
-  subagents: AgentSubagentChild[];
+export function SubagentRow(props: {
+  row: AgentSubagentRow;
   locale: AgentLocale;
-  renderTurns: (child: AgentSubagentChild) => ReactNode;
-  /** 受控子折叠；缺省非受控（内部 state） */
-  openIds?: ReadonlySet<string>;
-  /** 子折叠开合回调（受控/非受控都会触发） */
-  onToggleChild?: (sessionId: string) => void;
+  renderTurns?: (child: AgentSubagentRow) => ReactNode;
+  open: boolean;
+  onToggle: () => void;
 });
-export type AgentSubagentChild = {
-  name: string; preset?: string; sessionId: string;
-  running: boolean; turns: AgentTurnBlock[];
-  loading?: boolean; error?: string;
+
+export type AgentSubagentRow = {
+  name: string;
+  /** args.description — the row's single-line title. */
+  description: string;
+  preset?: string;
+  sessionId: string;
+  callId?: string;
+  /** Root ordering anchor: call seq, or a tail anchor for a live call. */
+  callSeq: number;
+  running: boolean;
+  turns: AgentTurnBlock[];
+  loading?: boolean;
+  error?: string;
   settled?: { at: string; summary: string; stopReason?: string; text: string };
 };
 ```
+
+子 agent 行属于轮次根序列，不进入任何流程的概要或分组；展开是子会话
+transcript，递归同一套 `TurnBlock`。
 
 ## trajectory/TrajectoryView.tsx（定稿签名）
 
@@ -139,13 +208,12 @@ export function TrajectoryView(props: TrajectoryViewProps);
 `Timeline`、`Inspector`（`variant?: "panel" | "sheet"`；`width`/`onWidthChange`
 可选，仅 panel 的拖宽需要）、`JsonTree`；
 `model.ts` / `projection.ts` 是纯函数（产出文案的函数带尾参 `locale`）。
-`recordIdOf(entry)` 支持 tool 与 notice（`tool:<callId|seq>` / `notice:<seq>`）。
 
 ## 宿主 re-export
 
 desktop 的 `src/agent/` 对应文件全部是 re-export 或薄包装（注入 locale、
-`agentActions.focusTrajectory` / `retryTurn`、store 的 trajectoryFocus）；
-`src/agent/turns.ts` re-export `groupTurns`。旧 import 点不变。
+`agentActions.retryTurn`、store 的 trajectoryFocus）；`src/agent/turns.ts`
+re-export `groupTurns`。旧 import 点不变。
 
 ## 所有权与改动规则
 

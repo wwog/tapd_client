@@ -13,6 +13,7 @@ import type {
   WorkspaceContext,
 } from "../../lib/api";
 import type { ToastFn } from "../../lib/feature";
+import type { FileTabTarget } from "../../lib/fs";
 import type { LocalProject } from "../../lib/local";
 import type { BugScope } from "../../components/bugListPrefs";
 
@@ -53,6 +54,8 @@ export type PageHostServices = {
   onEditLocalProject: (project: LocalProject) => void;
   onDeleteLocalProject: (project: LocalProject) => void;
   onOpenMedia: (url: string, mode: OpenMediaMode, kind?: string, target?: string) => void;
+  /** Opens a local path from an agent reply in a new file-viewer tab. */
+  onOpenFile: (target: FileTabTarget) => void;
   /** Opens the project settings page from a page that needs a repository. */
   onOpenProjects: () => void;
   loadContext: () => Promise<void> | void;

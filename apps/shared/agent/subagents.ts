@@ -23,10 +23,40 @@
  * transcript, loading flag) arrive through the `childInfo` lookup.
  */
 import { groupTurns } from "./turns";
-import type { AgentSubagentChild } from "./SubagentGroup";
-import type { AgentEntry, AgentNotice } from "./types";
+import { LIVE_SUBAGENT_SEQ } from "./flows";
+import type { AgentEntry, AgentNotice, AgentTurnBlock } from "./types";
 
 type SubagentCall = Extract<AgentEntry, { kind: "tool" }>;
+
+/**
+ * One root-level sub-agent row. A row is its own fold domain: expanding it
+ * renders the child session's transcript with the same turn view. It never
+ * joins a flow's groups or summary line.
+ */
+export type AgentSubagentRow = {
+  /** Model-facing child name: `agent-1`, or `reviewer/checker` when nested. */
+  name: string;
+  /** The call's own description, the row's single-line title. */
+  description: string;
+  /** Agent preset the child ran under, when known. */
+  preset?: string;
+  /** The child's own session id — the fold's data source. */
+  sessionId: string;
+  /** The `subagent` call id, when the runtime carried one. */
+  callId?: string;
+  /** Root ordering anchor: the call's seq, or a tail anchor for live calls. */
+  callSeq: number;
+  /** True while the child's session is still running a turn. */
+  running: boolean;
+  /** Child transcript grouped with the shared `groupTurns`; empty until loaded. */
+  turns: AgentTurnBlock[];
+  /** True while the host is fetching the child transcript for the first time. */
+  loading?: boolean;
+  /** The fetch failed; the row shows this instead of retrying silently. */
+  error?: string;
+  /** The settled notice, once the runtime has delivered one. */
+  settled?: { at: string; summary: string; stopReason?: string; text: string };
+};
 
 /** Placeholder id for a child whose session id is not known yet. */
 const PENDING_PREFIX = "pending:";
@@ -73,6 +103,19 @@ function resultName(result: unknown): string {
   return result.match(/started subagent (\S+)/)?.[1] ?? "";
 }
 
+/** The call's own one-line description, the root row's title. */
+function argsDescription(args: string): string {
+  try {
+    const parsed = JSON.parse(args) as { description?: unknown };
+    if (typeof parsed.description === "string") {
+      return parsed.description.split("\n")[0]?.trim() ?? "";
+    }
+  } catch {
+    // Arguments may be partial while the call is still streaming.
+  }
+  return "";
+}
+
 /**
  * Per-child-session facts the host resolves for the assembler. Everything is
  * plain data so both ends can build it from their own store shapes: desktop
@@ -93,7 +136,7 @@ export type ChildSessionInfo = {
 };
 
 export type TurnSubagents = {
-  children: AgentSubagentChild[];
+  children: AgentSubagentRow[];
   /** Settled notices that matched no `subagent` call (old logs, orphans). */
   orphans: AgentNotice[];
 };
@@ -151,7 +194,7 @@ export function assembleSessionSubagents(
 
   const groups = new Map<string, TurnSubagents>();
   for (const block of blocks) {
-    const children: AgentSubagentChild[] = [];
+    const children: AgentSubagentRow[] = [];
     for (const call of callsByBlock.get(block.key) ?? []) {
       const notice = noticeOfCall.get(call);
       const sessionId = notice
@@ -163,8 +206,11 @@ export function assembleSessionSubagents(
         argsName(call.args) || resultName(call.result) || (pending ? "" : (info?.title ?? ""));
       children.push({
         name,
+        description: argsDescription(call.args),
         preset: info?.preset,
         sessionId,
+        callId: call.callId,
+        callSeq: call.seq,
         running: pending ? true : (info?.running === true),
         turns: pending ? [] : groupedTurns(info?.entries),
         loading: info?.loading ?? false,
@@ -187,7 +233,10 @@ export function assembleSessionSubagents(
         if (tool.name !== "subagent") continue;
         children.push({
           name: argsName(tool.args),
+          description: argsDescription(tool.args),
           sessionId: `${PENDING_PREFIX}${tool.callId || `live-${offset}`}`,
+          callId: tool.callId,
+          callSeq: LIVE_SUBAGENT_SEQ + offset,
           running: true,
           turns: [],
         });

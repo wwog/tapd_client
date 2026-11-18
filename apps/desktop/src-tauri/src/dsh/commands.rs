@@ -104,6 +104,20 @@ pub async fn dsh_pending(app: AppHandle) -> Result<Value, String> {
     super::feature::pending(&app)
 }
 
+/// Maps a path written in an agent reply onto a workbench file target.
+///
+/// `sessionId` supplies the base for relative paths; the result names the
+/// workspace id (project, `__session__:<id>` or `__root__`) and the path
+/// relative to it, so the desktop can open a file tab in the right scope.
+#[tauri::command]
+pub async fn dsh_file_target(
+    app: AppHandle,
+    session_id: String,
+    path: String,
+) -> Result<super::files::FileTarget, String> {
+    super::files::resolve(&app, &session_id, &path)
+}
+
 /// Allocates a session id and its registry row. The runtime creates the real
 /// session on the first prompt.
 #[tauri::command]

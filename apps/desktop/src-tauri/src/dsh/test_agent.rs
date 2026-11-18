@@ -33,7 +33,7 @@
 //! no matter how many turns it takes.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::{
@@ -63,6 +63,11 @@ const CHUNK_CHARS: usize = 6;
 /// Local API port, learned when the server binds. The provider entry needs it
 /// before settings are loaded (the profile is rendered from those settings).
 static PORT: AtomicU16 = AtomicU16::new(0);
+
+/// Monotonic call id suffix. Real providers never reuse a call id, and the
+/// client store keys tool rows by it; a scripted reply must not collide with
+/// the previous step's ids either.
+static CALL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Records the port the fake endpoint is reachable on.
 pub fn set_port(port: u16) {
@@ -189,9 +194,10 @@ fn sse_chunks(events: &[Event]) -> Vec<String> {
             }
             Event::Tool { name, args } => {
                 finish = "tool_calls";
+                let call_seq = CALL_SEQ.fetch_add(1, Ordering::Relaxed);
                 let call = json!([{
                     "index": tool_index,
-                    "id": format!("call_test_{tool_index}"),
+                    "id": format!("call_test_{call_seq}_{tool_index}"),
                     "type": "function",
                     "function": {
                         "name": name,

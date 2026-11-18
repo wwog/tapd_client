@@ -17,6 +17,15 @@ export const agent = {
   ],
   "agent.session.reveal": ["在 Finder 中打开", "Reveal in Finder"],
   "agent.session.revealFailed": ["打不开这个目录：{error}", "Cannot open that folder: {error}"],
+
+  // Local files in answers: links, inline code and images open a viewer tab.
+  "agent.file.open": ["在文件查看器中打开", "Open in the file viewer"],
+  "agent.file.missing": ["找不到这个文件：{path}", "That file was not found: {path}"],
+  "agent.file.openFailed": ["打不开这个文件：{error}", "Cannot open that file: {error}"],
+  "agent.file.isDir": ["这是一个文件夹", "That path is a folder"],
+  "agent.file.sessionRoot": ["会话文件", "Session files"],
+  "agent.file.rootRoot": ["本机文件", "Files on this Mac"],
+
   "agent.task.noProject": ["未关联项目", "No project"],
   "agent.task.untitled": ["新会话", "New session"],
   "agent.task.empty": ["还没有任务", "No tasks yet"],

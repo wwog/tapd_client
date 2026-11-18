@@ -1,8 +1,11 @@
+import { useMemo } from "react";
+
 import { Segmented } from "../components/Segmented";
 import { Markdown } from "../components/Markdown";
 import { t } from "../lib/i18n";
 import { api } from "../lib/api";
-import { AgentHostProvider } from "../../../shared/agent/host";
+import type { FileTabTarget } from "../lib/fs";
+import { AgentHostProvider, type AgentHost } from "../../../shared/agent/host";
 import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
@@ -11,6 +14,7 @@ import { TaskActions } from "./TaskActions";
 import { TaskList } from "./TaskList";
 import { TeamBar } from "./TeamBar";
 import { TeamBoard } from "./TeamBoard";
+import { openAgentPath, resolveAgentImage } from "./localOpen";
 import { MessageUsageChip } from "./usage/MessageUsageChip";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
 import {
@@ -22,25 +26,51 @@ import {
   isSessionRunning,
 } from "./store";
 
+type Props = {
+  toast: (kind: "ok" | "error", text: string) => void;
+  /** Opens a local path from the transcript in a workbench file tab. */
+  onOpenFile: (target: FileTabTarget) => void;
+};
+
+/** Usage chip under one answer; the shared view hides it without a host. */
+function renderUsage(
+  usage: Parameters<typeof MessageUsageChip>[0]["usage"],
+  provider?: string,
+  model?: string,
+) {
+  return <MessageUsageChip usage={usage} provider={provider} model={model} />;
+}
+
 /**
  * The host capabilities the shared agent view may use: rich Markdown for
  * answers, the usage chip under messages, image bytes for `read_image`
- * results. One instance for the whole page — the shared components fall back
- * to plain text / hidden chip / no preview without it.
+ * results. Rebuilt when the session changes because Markdown links resolve
+ * relative paths against that session's working directory.
  */
-const agentHost = {
-  renderMarkdown: (source: string) => <Markdown source={source} />,
-  renderUsage: (
-    usage: Parameters<typeof MessageUsageChip>[0]["usage"],
-    provider?: string,
-    model?: string,
-  ) => <MessageUsageChip usage={usage} provider={provider} model={model} />,
-  loadImage: (path: string) => api.imageDataUrl(path),
-};
-
-type Props = {
-  toast: (kind: "ok" | "error", text: string) => void;
-};
+function useAgentHost(
+  sessionId: string | null,
+  io: {
+    toast: (kind: "ok" | "error", text: string) => void;
+    onOpenFile: (target: FileTabTarget) => void;
+  },
+): AgentHost {
+  const { toast, onOpenFile } = io;
+  return useMemo(() => {
+    const links = sessionId
+      ? {
+          open: (path: string) => {
+            void openAgentPath(sessionId, path, { toast, openFile: onOpenFile });
+          },
+          image: (path: string) => resolveAgentImage(sessionId, path),
+        }
+      : undefined;
+    return {
+      renderMarkdown: (source: string) => <Markdown source={source} links={links} />,
+      renderUsage,
+      loadImage: (path: string) => api.imageDataUrl(path),
+    };
+  }, [sessionId, toast, onOpenFile]);
+}
 
 /**
  * Task list + stream. The page has no header of its own: the window tab already
@@ -53,8 +83,9 @@ type Props = {
  * The transcript stays mounted (hidden) so a round trip keeps its scroll
  * position; the ledger keeps its own folds, selection and search.
  */
-export function AgentWorkspace({ toast }: Props) {
+export function AgentWorkspace({ toast, onOpenFile }: Props) {
   const state = agentStore.use();
+  const host = useAgentHost(state.selectedId, { toast, onOpenFile });
   const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
   const view = agentTaskView(state, state.selectedId);
   // Team mode is per session, and only workflow tasks get the header switch.
@@ -64,7 +95,7 @@ export function AgentWorkspace({ toast }: Props) {
   const board = view === "chat" && agentTeamView(state, state.selectedId) === "board";
 
   return (
-    <AgentHostProvider value={agentHost}>
+    <AgentHostProvider value={host}>
       <div className="flex h-full min-h-0 flex-col">
         {/* One step up from the app scale (styles.css `.agent-type`): the session
             is read as prose, and the config dialog stays outside it. */}
@@ -143,7 +174,6 @@ function TrajectoryPane({ sessionId }: { sessionId: string }) {
 
   return (
     <TrajectoryView
-      sessionId={sessionId}
       entries={items}
       live={liveTrace}
       loading={history ? !history.loaded && items.length === 0 : true}

@@ -16,7 +16,7 @@ import { useMemo } from "react";
 
 import { groupTurns } from "../../../../shared/agent/turns";
 import { isPendingChild } from "../../../../shared/agent/subagents";
-import type { AgentSubagentChild } from "../../../../shared/agent/SubagentGroup";
+import type { AgentSubagentRow } from "../../../../shared/agent/subagents";
 import type { AgentLocale } from "../../../../shared/agent/types";
 
 import type { DshEntry, DshSession } from "../../lib/dsh";
@@ -95,27 +95,24 @@ export function TurnStack({
       block.end?.reason === "blocked",
   );
 
-  const renderChildTurns = (child: AgentSubagentChild) => {
+  const renderChildTurns = (child: AgentSubagentRow) => {
     if (depth >= MAX_DEPTH || isPendingChild(child.sessionId)) return null;
+    // The root sub-agent row owns the height cap and its own scroll; nesting
+    // another scroller here would trap the touch scroll twice.
     return (
-      // The shared fold has no height cap of its own; a long child transcript
-      // must scroll inside the fold on a phone instead of stretching the page.
-      // Purely host-side styling.
-      <div className="flex max-h-[60vh] flex-col overflow-y-auto overscroll-contain">
-        <TurnStack
-          entries={childEntries(child.sessionId) ?? []}
-          running={child.running}
-          locale={locale}
-          sessionId={child.sessionId}
-          sessions={sessions}
-          childEntries={childEntries}
-          childLoading={childLoading}
-          childError={childError}
-          openSubagentIds={openSubagentIds}
-          onToggleSubagent={onToggleSubagent}
-          depth={depth + 1}
-        />
-      </div>
+      <TurnStack
+        entries={childEntries(child.sessionId) ?? []}
+        running={child.running}
+        locale={locale}
+        sessionId={child.sessionId}
+        sessions={sessions}
+        childEntries={childEntries}
+        childLoading={childLoading}
+        childError={childError}
+        openSubagentIds={openSubagentIds}
+        onToggleSubagent={onToggleSubagent}
+        depth={depth + 1}
+      />
     );
   };
 

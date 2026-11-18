@@ -43,6 +43,8 @@ pub static MESSAGES: &[Message] = &[
     ("dsh.model.unconfigured", "还没有配置模型 API，请先在「Agent → 配置」填写 API 地址与模型", "No model API is configured yet; fill in the API address and model under Agent → Settings"),
     ("dsh.node.missing", "找不到 node。内置 Agent 需要系统安装 Node.js 24.9 或更新版本（不随 App 打包）", "node was not found. The built-in agent needs Node.js 24.9 or newer installed on the system (it is not bundled)"),
     ("dsh.node.tooOld", "{}。内置 Agent 需要 Node.js 24.9 或更新版本", "{}. The built-in agent needs Node.js 24.9 or newer"),
+    ("dsh.file.invalid", "这个路径无效", "That path is not valid"),
+    ("dsh.file.noSession", "找不到这个会话的工作目录", "That session has no working directory"),
     ("dsh.runtime.exited", "内置 Agent 运行时已退出", "The built-in agent runtime has exited"),
     ("dsh.runtime.interrupted", "内置 Agent 运行时中断了请求", "The built-in agent runtime interrupted the request"),
     ("dsh.runtime.notStarted", "内置 Agent 运行时未启动", "The built-in agent runtime is not running"),

@@ -8,10 +8,15 @@ export type ToolAction = {
   verb: string;
   /** The one thing the row is about: description, file name, pattern, URL. */
   target: string;
+  /** The model's own one-line summary of the call, when the tool carries one. */
+  description?: string;
   /** Line additions/deletions, for write and edit. */
   added?: number;
   removed?: number;
 };
+
+/** Which folded group a call belongs to. */
+export type ToolGroup = "reads" | "commands" | "files";
 
 /** Line count of a text block; empty text contributes nothing. */
 function lineCount(text: unknown): number {
@@ -71,17 +76,21 @@ function parseArgs(raw: string): Record<string, unknown> {
 export function describeTool(name: string, argsJson: string, locale: AgentLocale): ToolAction {
   const args = parseArgs(argsJson);
   const file = baseName(args.file_path ?? args.path);
+  // The model's one-line account of the call: bash requires it, subagent and
+  // team_task_create carry it, file tools do not.
+  const description = firstLine(args.description) || undefined;
 
   switch (name) {
     case "bash":
     case "pwsh": {
       // The command itself, not the model's summary: "what actually ran" is the
-      // question this row answers. It stays one line and slides on hover.
+      // question this row answers. It stays one line and truncates.
       const command = firstLine(args.command);
       return {
         kind: "bash",
         verb: agentLabel("action.ran", locale),
-        target: command || firstLine(args.description) || name,
+        target: command || description || name,
+        description,
       };
     }
     case "read":
@@ -126,9 +135,39 @@ export function describeTool(name: string, argsJson: string, locale: AgentLocale
         verb: agentLabel("action.fetched", locale),
         target: firstLine(args.url) || name,
       };
+    case "job_output":
+      // A job read is still execution work, but its target is the job, not a
+      // shell command.
+      return {
+        kind: "bash",
+        verb: agentLabel("action.fetched", locale),
+        target: firstLine(args.job_id) || name,
+      };
+    case "subagent":
+      return {
+        kind: "other",
+        verb: agentLabel("action.called", locale),
+        target: firstLine(args.name) || name,
+        description,
+      };
     default:
-      return { kind: "other", verb: agentLabel("action.called", locale), target: name };
+      return {
+        kind: "other",
+        verb: agentLabel("action.called", locale),
+        target: name,
+        description,
+      };
   }
+}
+
+/** The folded group a call belongs to; `subagent` never reaches this. */
+export function toolGroup(name: string, argsJson: string): ToolGroup {
+  const kind = describeTool(name, argsJson, "zh").kind;
+  if (kind === "read" || kind === "image" || kind === "search" || kind === "web") {
+    return "reads";
+  }
+  if (kind === "write" || kind === "edit") return "files";
+  return "commands";
 }
 
 /**
@@ -154,6 +193,158 @@ export function runningVerb(kind: ToolAction["kind"], locale: AgentLocale): stri
       return agentLabel("action.runningFetched", locale);
     case "other":
       return agentLabel("action.runningCalled", locale);
+  }
+}
+
+/** The verb for a call whose call is still being generated (live overlay). */
+export function pendingVerb(
+  name: string,
+  kind: ToolAction["kind"],
+  locale: AgentLocale,
+): string {
+  if (name === "ask_user_question") return agentLabel("step.preparingAsk", locale);
+  if (name === "job_output" || name === "wait_agent") {
+    return agentLabel("step.preparingWait", locale);
+  }
+  switch (kind) {
+    case "read":
+    case "image":
+      return agentLabel("step.preparingRead", locale);
+    case "search":
+    case "web":
+      return agentLabel("step.preparingSearch", locale);
+    case "write":
+    case "edit":
+      return agentLabel("step.preparingEdit", locale);
+    case "other":
+      return agentLabel("step.preparingCall", locale);
+    case "bash":
+      return agentLabel("step.preparing", locale);
+  }
+}
+
+/** The verb for a failed call: execution, read, search and edit fail apart. */
+export function failedVerb(kind: ToolAction["kind"], locale: AgentLocale): string {
+  switch (kind) {
+    case "read":
+    case "image":
+      return agentLabel("step.failedRead", locale);
+    case "search":
+    case "web":
+      return agentLabel("step.failedSearch", locale);
+    case "write":
+    case "edit":
+      return agentLabel("step.failedEdit", locale);
+    case "other":
+      return agentLabel("step.failedCall", locale);
+    case "bash":
+      return agentLabel("step.failed", locale);
+  }
+}
+
+/**
+ * Whether a running call is really blocked on an external event. These are the
+ * steps whose state reads as "waiting", not "running".
+ */
+export function isWaitingTool(name: string, argsJson: string): boolean {
+  if (name === "ask_user_question" || name === "wait_agent") return true;
+  if (name === "job_output") return parseArgs(argsJson).wait === true;
+  return false;
+}
+
+/** The waiting verb and the thing being waited on, for the latest-step line. */
+export function waitingDetail(
+  name: string,
+  argsJson: string,
+  locale: AgentLocale,
+): { verb: string; target: string } | null {
+  const args = parseArgs(argsJson);
+  if (name === "ask_user_question") {
+    const questions = Array.isArray(args.questions) ? args.questions : [];
+    const first = questions[0] as Record<string, unknown> | undefined;
+    return {
+      verb: agentLabel("step.waitingAnswer", locale),
+      target: firstLine(first?.header) || firstLine(first?.question),
+    };
+  }
+  if (name === "job_output") {
+    return {
+      verb: agentLabel("step.waitingJob", locale),
+      target: firstLine(args.job_id),
+    };
+  }
+  if (name === "wait_agent") {
+    return {
+      verb: agentLabel("step.waitingAgent", locale),
+      target:
+        firstLine(args.name) || firstLine(args.agent_id) || firstLine(args.id),
+    };
+  }
+  return null;
+}
+
+/** One expanded tool call's input block. `meta` is a secondary line. */
+export type ToolInput = { text: string; meta?: string; diff?: boolean };
+
+/**
+ * What a call sent: the raw command for shell tools, the path/pattern for file
+ * tools, a synthesized old/new block for `edit`, and pretty args otherwise.
+ */
+export function toolInput(name: string, argsJson: string): ToolInput {
+  const args = parseArgs(argsJson);
+  switch (name) {
+    case "bash":
+    case "pwsh": {
+      const workdir = firstLine(args.workdir);
+      return {
+        text: typeof args.command === "string" ? args.command : argsJson,
+        meta: workdir ? `cwd: ${workdir}` : undefined,
+      };
+    }
+    case "read":
+    case "read_image": {
+      const extras: string[] = [];
+      if (args.offset != null) extras.push(`offset: ${String(args.offset)}`);
+      if (args.limit != null) extras.push(`limit: ${String(args.limit)}`);
+      return {
+        text: String(args.file_path ?? args.path ?? ""),
+        meta: extras.length > 0 ? extras.join(" · ") : undefined,
+      };
+    }
+    case "glob":
+    case "grep": {
+      const path = firstLine(args.path) || firstLine(args.file_path);
+      return {
+        text: firstLine(args.pattern) || argsJson,
+        meta: path ? `path: ${path}` : undefined,
+      };
+    }
+    case "web_fetch":
+      return { text: firstLine(args.url) || argsJson };
+    case "web_search": {
+      const queries = Array.isArray(args.queries) ? args.queries : [];
+      return { text: queries.map((query) => String(query)).join("\n") || argsJson };
+    }
+    case "write": {
+      const path = String(args.file_path ?? args.path ?? "");
+      const content = typeof args.content === "string" ? args.content : "";
+      return { text: path ? `${path}\n\n${content}` : content || argsJson };
+    }
+    case "edit": {
+      const path = String(args.file_path ?? args.path ?? "");
+      const before = typeof args.old_string === "string" ? args.old_string : "";
+      const after = typeof args.new_string === "string" ? args.new_string : "";
+      const lines = [
+        ...(path ? [`--- ${path}`] : []),
+        "--- old",
+        ...before.split("\n").map((line) => `-${line}`),
+        "+++ new",
+        ...after.split("\n").map((line) => `+${line}`),
+      ];
+      return { text: lines.join("\n"), diff: true };
+    }
+    default:
+      return { text: argsJson ? JSON.stringify(args, null, 2) : "" };
   }
 }
 

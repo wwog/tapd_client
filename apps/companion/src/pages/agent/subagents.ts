@@ -13,7 +13,7 @@ import {
   type SubagentBlock,
   type TurnSubagents,
 } from "../../../../shared/agent/subagents";
-import type { AgentSubagentChild } from "../../../../shared/agent/SubagentGroup";
+import type { AgentSubagentRow } from "../../../../shared/agent/subagents";
 import type { DshEntry, DshSession } from "../../lib/dsh";
 
 export { isPendingChild };
@@ -64,7 +64,7 @@ export function assembleSubagentGroups(args: {
   const enriched = new Map<string, TurnSubagents>();
   for (const [key, group] of groups) {
     const children = group.children.map(
-      (child): AgentSubagentChild =>
+      (child): AgentSubagentRow =>
         isPendingChild(child.sessionId)
           ? child
           : { ...child, error: childError(child.sessionId) ?? undefined },

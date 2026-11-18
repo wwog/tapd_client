@@ -5,6 +5,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
 import { t } from "./lib/i18n";
+import {
+  ROOT_WORKSPACE_ID,
+  SESSION_WORKSPACE_PREFIX,
+  type FileTabTarget,
+} from "./lib/fs";
 import type { LocalProject } from "./lib/local";
 import {
   markCompanionOnline,
@@ -612,6 +617,23 @@ export default function App() {
     [showToast],
   );
 
+  /** Local paths in agent replies open as a new tab in the right-hand dock. */
+  const openFileTab = useCallback((target: FileTabTarget) => {
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.open({
+      resource: {
+        type: "file",
+        workspaceId: target.workspaceId,
+        path: target.path,
+      },
+      preview: false,
+      target: "secondary",
+      ...(target.label ? { label: target.label } : {}),
+    });
+  }, []);
+
   const openMedia = useCallback(
     async (url: string, mode: OpenMediaMode, kind?: string, target?: string) => {
       try {
@@ -770,6 +792,7 @@ export default function App() {
     onEditLocalProject: (project) => setLocalProjectDialog({ project }),
     onDeleteLocalProject: (project) => setLocalProjectDelete(project),
     onOpenMedia: openMedia,
+    onOpenFile: openFileTab,
     onOpenProjects: () => layoutRef.current.openPage("projects"),
     loadContext,
     refreshBase,
@@ -794,8 +817,13 @@ export default function App() {
     copy,
     openFile,
     workspaceName: (targetWorkspaceId: string) =>
-      context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
-      targetWorkspaceId,
+      targetWorkspaceId.startsWith(SESSION_WORKSPACE_PREFIX)
+        ? t("agent.file.sessionRoot")
+        : targetWorkspaceId === ROOT_WORKSPACE_ID
+          ? t("agent.file.rootRoot")
+          : context?.workspaces.find((item) => item.id === targetWorkspaceId)?.name ??
+            local.projects.find((item) => item.id === targetWorkspaceId)?.name ??
+            targetWorkspaceId,
     currentWorkspaceId: workspaceId,
     bug: {
       detail: detailPane.detail,

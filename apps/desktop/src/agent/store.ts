@@ -145,8 +145,6 @@ export type AgentState = {
   teamViews: Record<string, AgentTeamView>;
   /** Transcript vs trajectory per session; absent means the transcript. */
   taskViews: Record<string, AgentTaskView>;
-  /** A transcript row asking the trajectory to open on one record. */
-  trajectoryFocus: { sessionId: string; recordId: string; nonce: number } | null;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -198,7 +196,6 @@ const initialState: AgentState = {
   teamErrors: {},
   teamViews: {},
   taskViews: {},
-  trajectoryFocus: null,
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -1261,19 +1258,6 @@ export const agentActions = {
     update((state) => ({
       ...state,
       taskViews: { ...state.taskViews, [sessionId]: view },
-    }));
-  },
-
-  /** Opens the trajectory on one record; a transcript tool row calls this. */
-  focusTrajectory: (sessionId: string, recordId: string): void => {
-    update((state) => ({
-      ...state,
-      taskViews: { ...state.taskViews, [sessionId]: "trajectory" },
-      trajectoryFocus: {
-        sessionId,
-        recordId,
-        nonce: (state.trajectoryFocus?.nonce ?? 0) + 1,
-      },
     }));
   },
 

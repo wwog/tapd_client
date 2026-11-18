@@ -139,7 +139,7 @@ export function PagePanel({ panel }: PanelProps) {
       return <CoworkerPage toast={host.toast} />;
 
     case "agent":
-      return <AgentPage toast={host.toast} />;
+      return <AgentPage toast={host.toast} onOpenFile={host.onOpenFile} />;
 
     case "mcp":
       return (

@@ -1,7 +1,11 @@
-import { useState } from "react";
+import {
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import {
-  Brain,
   ChevronRight,
   FileText,
   Globe,
@@ -15,26 +19,33 @@ import {
 import type { AgentLocale } from "./types";
 import { agentLabel } from "./labels";
 import { useAgentHost } from "./host";
-import { ScrollingName } from "./ScrollingName";
-import { describeTool, reasoningPreview, type ToolAction } from "./actions";
+import {
+  describeTool,
+  failedVerb,
+  runningVerb,
+  toolInput,
+  type ToolAction,
+} from "./actions";
 
 /**
  * One height cap for every disclosure in the trace: a long result, a long
  * reasoning block and an image preview all scroll inside the same box, so the
- * timeline keeps one rhythm instead of three.
+ * timeline keeps one rhythm instead of three. A leaf block can be dragged
+ * taller for the current mount; there is no reset gesture.
  */
 export const TRACE_MAX_HEIGHT = "max-h-64";
+const MIN_BLOCK_HEIGHT = 64;
 
 /**
  * Timeline icon for one action. Errors win over the tool's own glyph so a
- * failed row reads at a glance; the running state is carried by the turn's
- * spinner, not by every row.
+ * failed row reads at a glance; the running state is carried by the row's verb,
+ * not by every icon.
  */
-export function ActionIcon({
-  action,
+export function ActionKindIcon({
+  kind,
   failed = false,
 }: {
-  action: ToolAction;
+  kind: ToolAction["kind"];
   failed?: boolean;
 }) {
   const Icon = {
@@ -46,7 +57,7 @@ export function ActionIcon({
     web: Globe,
     image: ImageIcon,
     other: Wrench,
-  }[action.kind];
+  }[kind];
 
   return (
     <Icon
@@ -54,6 +65,16 @@ export function ActionIcon({
       className={clsx("shrink-0", failed ? "text-rose-500" : "text-slate-400")}
     />
   );
+}
+
+export function ActionIcon({
+  action,
+  failed = false,
+}: {
+  action: ToolAction;
+  failed?: boolean;
+}) {
+  return <ActionKindIcon kind={action.kind} failed={failed} />;
 }
 
 /** Tool results arrive as a string or as the JSON value the host received. */
@@ -81,35 +102,160 @@ function imagePath(args: string, result: string | undefined): string {
   return result?.match(/<path>([^<]+)<\/path>/)?.[1]?.trim() ?? "";
 }
 
+/** Diff lines: additions green, removals red, the two headers muted. */
+function DiffText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split("\n").map((line, index) => {
+        const header = line.startsWith("---") || line.startsWith("+++");
+        const removed = !header && line.startsWith("-");
+        const added = !header && line.startsWith("+");
+        return (
+          <span
+            key={`${index}-${line.slice(0, 8)}`}
+            className={clsx(
+              "block",
+              header && "text-slate-400",
+              removed && "text-rose-600",
+              added && "text-emerald-600",
+            )}
+          >
+            {line || " "}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 /**
- * One tool call as a timeline row: verb, the command or target, line delta and
- * outcome on a single line. The row itself opens the call in the trajectory;
- * the result is its own disclosure below, so a long output never pushes the
- * timeline apart.
+ * One scroll box with a bottom drag strip. The height starts at the shared
+ * cap; dragging the strip changes this block only (no double-click reset, no
+ * persistence across a remount).
  */
-export function ActionRow({
+function ResizableDetail({
+  label,
+  text,
+  diff = false,
+  children,
+  height,
+  onHeight,
+  locale,
+  tone = "normal",
+}: {
+  label?: string;
+  text?: string;
+  diff?: boolean;
+  children?: ReactNode;
+  height?: number;
+  onHeight?: (height: number) => void;
+  locale: AgentLocale;
+  tone?: "normal" | "error" | "muted";
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ y: number; height: number } | null>(null);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const box = boxRef.current;
+    if (!box) return;
+    dragRef.current = { y: event.clientY, height: box.offsetHeight };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || !onHeight) return;
+    const max = Math.max(MIN_BLOCK_HEIGHT, Math.round(window.innerHeight * 0.6));
+    const next = Math.min(
+      Math.max(drag.height + event.clientY - drag.y, MIN_BLOCK_HEIGHT),
+      max,
+    );
+    onHeight(next);
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  return (
+    <div className="group/leaf flex min-w-0 flex-col">
+      {label ? (
+        <div className="mb-0.5 truncate text-ui-xs text-slate-400">{label}</div>
+      ) : null}
+      <div
+        ref={boxRef}
+        style={height !== undefined ? { height: `${height}px` } : undefined}
+        className={clsx(
+          "select-text overflow-auto whitespace-pre-wrap break-all rounded-lg border px-2.5 py-2 text-ui-xs leading-5",
+          height === undefined && TRACE_MAX_HEIGHT,
+          !children && "font-mono",
+          tone === "error"
+            ? "border-rose-200 bg-rose-50/40 text-rose-700"
+            : tone === "muted"
+              ? "border-border bg-surface text-slate-500"
+              : "border-border bg-surface text-slate-600",
+        )}
+      >
+        {children ?? (diff ? <DiffText text={text ?? ""} /> : text)}
+      </div>
+      {onHeight ? (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          title={agentLabel("leaf.resize", locale)}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          className="mx-auto mt-0.5 h-1.5 w-10 shrink-0 touch-none cursor-ns-resize rounded-full bg-slate-200 opacity-0 transition group-hover/leaf:opacity-100 [@media(hover:none)]:opacity-60"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One committed (or still running) tool call: a single line with the verb the
+ * step state dictates, and — when opened — exactly two blocks, input and
+ * output. The row itself never links to the trajectory and never scrolls
+ * horizontally; the input block is where the full command lives.
+ */
+export function LeafRow({
   name,
   args,
   status,
   result,
   locale,
-  onOpenTrace,
 }: {
   name: string;
   args: string;
   status: "running" | "ok" | "error";
   result?: unknown;
   locale: AgentLocale;
-  /** Opens this call in the trajectory panel. */
-  onOpenTrace?: () => void;
 }) {
   const host = useAgentHost();
   const action = describeTool(name, args, locale);
   const raw = resultText(result);
   const failed = status === "error";
+  const running = status === "running";
   const image = action.kind === "image" ? imagePath(args, raw) : "";
+  const input = toolInput(name, args);
   const [open, setOpen] = useState(failed);
+  const [heights, setHeights] = useState<{ input?: number; output?: number }>({});
   const [preview, setPreview] = useState<{ src?: string; error?: string } | null>(null);
+
+  const verb = running
+    ? runningVerb(action.kind, locale)
+    : failed
+      ? failedVerb(action.kind, locale)
+      : action.verb;
+  // The latest activity reads as the raw command; once folded into a flow the
+  // model's own description is the shorter, stable line.
+  const target = running ? action.target : action.description || action.target;
 
   // The bytes are read on first open, not per render: a transcript can hold
   // dozens of image rows and each one is a file read.
@@ -124,155 +270,114 @@ export function ActionRow({
     }
   };
 
-  const detail = image || raw;
-
-  return (
-    <div className="min-w-0">
-      <div className="flex min-w-0 items-center gap-2 py-0.5">
-        {onOpenTrace ? (
-          <button
-            type="button"
-            title={agentLabel("action.openTrace", locale)}
-            onClick={onOpenTrace}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left transition hover:bg-overlay-soft"
-          >
-            <ActionIcon action={action} failed={failed} />
-            <span className="shrink-0 text-ui-xs text-slate-500">{action.verb}</span>
-            <ScrollingName
-              text={action.target}
-              className={clsx(
-                "min-w-0 flex-1 font-mono text-ui-xs",
-                failed ? "text-rose-700" : "text-slate-600",
-              )}
-            />
-            {action.added ? (
-              <span className="shrink-0 tabular-nums text-ui-xs text-emerald-600">
-                +{action.added}
-              </span>
-            ) : null}
-            {action.removed ? (
-              <span className="shrink-0 tabular-nums text-ui-xs text-rose-500">
-                -{action.removed}
-              </span>
-            ) : null}
-            {failed ? (
-              <span className="shrink-0 text-ui-xs text-rose-600">
-                {agentLabel("action.failed", locale)}
-              </span>
-            ) : null}
-          </button>
-        ) : (
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <ActionIcon action={action} failed={failed} />
-            <span className="shrink-0 text-ui-xs text-slate-500">{action.verb}</span>
-            <ScrollingName
-              text={action.target}
-              className={clsx(
-                "min-w-0 flex-1 font-mono text-ui-xs",
-                failed ? "text-rose-700" : "text-slate-600",
-              )}
-            />
-            {failed ? (
-              <span className="shrink-0 text-ui-xs text-rose-600">
-                {agentLabel("action.failed", locale)}
-              </span>
-            ) : null}
-          </div>
-        )}
-        {detail ? (
-          <button
-            type="button"
-            aria-expanded={open}
-            title={agentLabel("action.result", locale)}
-            onClick={toggle}
-            className="shrink-0 rounded p-0.5 text-slate-300 transition hover:bg-overlay-soft hover:text-slate-500"
-          >
-            <ChevronRight
-              size={12}
-              className={clsx("transition-transform", open && "rotate-90")}
-            />
-          </button>
-        ) : null}
-      </div>
-
-      {open && detail ? (
-        image ? (
-          <div
-            className={clsx(
-              "mt-1 overflow-auto rounded-lg border border-border bg-surface p-1.5",
-              TRACE_MAX_HEIGHT,
-            )}
-          >
-            {preview?.src ? (
-              <img
-                src={preview.src}
-                alt={action.target}
-                className="max-w-full rounded"
-              />
-            ) : (
-              <span className="block px-1 py-0.5 text-ui-xs text-slate-400">
-                {preview?.error ?? agentLabel("action.loading", locale)}
-              </span>
-            )}
-          </div>
-        ) : (
-          <pre
-            className={clsx(
-              "mt-1 select-text overflow-auto whitespace-pre-wrap break-all rounded-lg border px-2.5 py-2 font-mono text-ui-xs leading-5",
-              TRACE_MAX_HEIGHT,
-              failed
-                ? "border-rose-200 bg-rose-50/40 text-rose-700"
-                : "border-border bg-surface text-slate-600",
-            )}
-          >
-            {raw}
-          </pre>
-        )
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * Reasoning inside the trace: folded by default, and while tokens are still
- * arriving the folded row itself is the live line — `思考中` plus the newest
- * sentence sliding through a single row. Opening it shows the whole text in the
- * same capped, scrolling box every other disclosure uses.
- */
-export function ReasoningRow({ text, locale, live = false }: { text: string; locale: AgentLocale; live?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const preview = reasoningPreview(text);
+  const outputLabel = agentLabel("leaf.output", locale);
+  const outputText = raw ?? (running
+    ? agentLabel("leaf.waitingOutput", locale)
+    : agentLabel("leaf.noOutput", locale));
 
   return (
     <div className="min-w-0">
       <button
         type="button"
         aria-expanded={open}
-        title={open ? agentLabel("turn.collapse", locale) : agentLabel("action.reasoning", locale)}
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full min-w-0 items-center gap-2 rounded-md py-0.5 text-left text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+        onClick={toggle}
+        className="-ml-1 flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-overlay-soft"
       >
-        <Brain size={12} className="shrink-0" />
-        <span className="shrink-0">{agentLabel("action.reasoning", locale)}</span>
-        {live ? (
-          <span className="shrink-0 text-slate-300">{agentLabel("action.thinking", locale)}</span>
-        ) : null}
-        <ScrollingName text={preview} className="min-w-0 flex-1 text-ui-xs text-slate-300" />
-        <ChevronRight
-          size={12}
-          className={clsx("shrink-0 text-slate-300 transition-transform", open && "rotate-90")}
-        />
-      </button>
-      {open ? (
-        <div
+        <ActionIcon action={action} failed={failed} />
+        <span
           className={clsx(
-            "mt-1 select-text overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-xs leading-5 text-slate-500",
-            TRACE_MAX_HEIGHT,
+            "shrink-0 text-ui-xs",
+            failed ? "text-rose-600" : "text-slate-500",
           )}
         >
-          {text}
+          {verb}
+        </span>
+        <span
+          className={clsx(
+            "min-w-0 flex-1 truncate font-mono text-ui-xs",
+            failed ? "text-rose-700" : "text-slate-600",
+          )}
+        >
+          {target || name}
+        </span>
+        {action.added ? (
+          <span className="shrink-0 tabular-nums text-ui-xs text-emerald-600">
+            +{action.added}
+          </span>
+        ) : null}
+        {action.removed ? (
+          <span className="shrink-0 tabular-nums text-ui-xs text-rose-500">
+            -{action.removed}
+          </span>
+        ) : null}
+        <ChevronRight
+          size={12}
+          className={clsx(
+            "shrink-0 text-slate-300 transition-transform",
+            open && "rotate-90",
+          )}
+        />
+      </button>
+
+      {open ? (
+        <div className="mt-1 flex flex-col gap-1.5">
+          <ResizableDetail
+            label={
+              input.meta
+                ? `${agentLabel("leaf.input", locale)} · ${input.meta}`
+                : agentLabel("leaf.input", locale)
+            }
+            text={input.text}
+            diff={input.diff}
+            height={heights.input}
+            onHeight={(next) => setHeights((prev) => ({ ...prev, input: next }))}
+            locale={locale}
+          />
+          {image ? (
+            <ResizableDetail
+              label={outputLabel}
+              height={heights.output}
+              onHeight={(next) => setHeights((prev) => ({ ...prev, output: next }))}
+              locale={locale}
+              tone={failed ? "error" : "normal"}
+            >
+              {preview?.src ? (
+                <img src={preview.src} alt={action.target} className="max-w-full rounded" />
+              ) : (
+                <span className="block px-1 py-0.5 font-mono text-ui-xs text-slate-400">
+                  {preview?.error ?? agentLabel("action.loading", locale)}
+                </span>
+              )}
+            </ResizableDetail>
+          ) : (
+            <ResizableDetail
+              label={outputLabel}
+              text={outputText}
+              height={heights.output}
+              onHeight={(next) => setHeights((prev) => ({ ...prev, output: next }))}
+              locale={locale}
+              tone={failed ? "error" : "normal"}
+            />
+          )}
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One thinking block inside a flow's 思考 group. Reasoning is only ever read at
+ * this leaf, so the group header carries no preview.
+ */
+export function ThinkingBlock({ text, locale }: { text: string; locale: AgentLocale }) {
+  const [height, setHeight] = useState<number>();
+  return (
+    <ResizableDetail
+      text={text}
+      height={height}
+      onHeight={setHeight}
+      locale={locale}
+      tone="muted"
+    />
   );
 }
