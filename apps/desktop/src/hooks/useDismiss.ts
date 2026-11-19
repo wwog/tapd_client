@@ -7,6 +7,8 @@ export type DismissOptions = {
   resize?: boolean;
   /** Close when the window loses focus. */
   blur?: boolean;
+  /** Element that toggles the layer: pressing it is not an outside click. */
+  ignore?: RefObject<HTMLElement | null>;
 };
 
 /**
@@ -32,7 +34,7 @@ export function useDismiss(
   close: () => void,
   options: DismissOptions = {},
 ): void {
-  const { scroll = false, resize = false, blur = false } = options;
+  const { scroll = false, resize = false, blur = false, ignore } = options;
   const closeRef = useRef(close);
   closeRef.current = close;
 
@@ -42,7 +44,9 @@ export function useDismiss(
     openLayers += 1;
     const dismiss = () => closeRef.current();
     const onMouseDown = (event: MouseEvent) => {
-      if (ref.current?.contains(event.target as Node)) return;
+      const target = event.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (ignore?.current?.contains(target)) return;
       dismiss();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -63,5 +67,5 @@ export function useDismiss(
       if (resize) window.removeEventListener("resize", dismiss);
       if (blur) window.removeEventListener("blur", dismiss);
     };
-  }, [open, ref, scroll, resize, blur]);
+  }, [open, ref, ignore, scroll, resize, blur]);
 }

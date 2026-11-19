@@ -16,7 +16,7 @@ import {
   type Comment,
 } from "../lib/api";
 import { copyText } from "../lib/clipboard";
-import { absoluteTime, bugRef, bugTitle, ownerNames, relativeTime } from "../lib/format";
+import { absoluteTime, bugRef, plainTitle, ownerNames, relativeTime } from "../lib/format";
 import { t } from "../lib/i18n";
 import {
   bugDetailKey,
@@ -308,7 +308,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       {!loading && detail ? (
         <div className="pb-6">
           <h1 className="px-4 pt-3 text-ui-base leading-6 text-slate-900">
-            {bugTitle(detail.title)}
+            {plainTitle(detail.title)}
           </h1>
 
           <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">

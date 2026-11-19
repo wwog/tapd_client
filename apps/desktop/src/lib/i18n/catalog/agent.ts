@@ -43,6 +43,13 @@ export const agent = {
   "agent.task.workflowCanceled": ["已取消", "Canceled"],
   "agent.task.live": ["运行中", "Running"],
   "agent.task.needsInput": ["{count} 项待处理", "{count} waiting for you"],
+  "agent.task.collapseList": ["收起会话列表", "Collapse conversation list"],
+  "agent.task.expandList": ["展开会话列表", "Expand conversation list"],
+  "agent.task.expandListNarrow": [
+    "窗口太窄，暂时展开会话列表",
+    "Window is narrow — show the list anyway",
+  ],
+  "agent.task.resizeList": ["调整会话列表宽度", "Resize conversation list"],
 
   // Task hover card (list row): facts plus the live session directory.
   "agent.card.freeChat": ["自由会话", "Free chat"],
@@ -214,7 +221,7 @@ export const agent = {
     "Could not switch the worktree: {error}",
   ],
 
-  // Enqueue sheet (bug footer, bug row, local item row).
+  // Enqueue popover (bug footer, bug row, local item row).
   "agent.enqueue.bugHint": ["导出缺陷并交给 Agent 修复", "Export the bug and let the agent fix it"],
   "agent.enqueue.placeholder": [
     "补充说明（可选）",

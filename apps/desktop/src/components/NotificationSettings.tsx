@@ -11,7 +11,7 @@ import {
 
 import type { SettingsSectionProps } from "../lib/feature";
 import { t } from "../lib/i18n";
-// import { bugTitle } from "../lib/bug"; // 调试通知
+// import { plainTitle } from "../lib/title"; // 调试通知
 import {
   // AI_TONE_LABELS, // 调试通知
   DEFAULT_NOTIFICATION_SETTINGS,
@@ -317,8 +317,8 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
                     key={item.id}
                     className="flex items-center gap-2 text-ui-xs text-slate-500"
                   >
-                    <span className="min-w-0 flex-1 truncate" title={bugTitle(item.title)}>
-                      {bugTitle(item.title)}
+                    <span className="min-w-0 flex-1 truncate" title={plainTitle(item.title)}>
+                      {plainTitle(item.title)}
                     </span>
                     <span className="shrink-0 text-slate-400">{aiResultLabel(item)}</span>
                   </div>

@@ -9,7 +9,7 @@ import {
   type Workspace,
   type WorkspaceMember,
 } from "../lib/api";
-import { bugTitle, ownerNames, relativeTime } from "../lib/format";
+import { plainTitle, ownerNames, relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { loadMembers, subscribeMembers } from "../lib/members";
 import {
@@ -542,7 +542,7 @@ export function BugsPage() {
                 className="min-w-0 flex-1 px-4 py-3 text-left transition active:bg-overlay-soft"
               >
                 <span className="line-clamp-2 block text-ui-caption text-slate-900">
-                  {bugTitle(bug.title)}
+                  {plainTitle(bug.title)}
                 </span>
                 <span className="mt-1.5 flex items-center gap-2 text-ui-xs text-slate-500">
                   <Badge tone={STATUS_TONES[bug.status] ?? "neutral"}>
@@ -730,7 +730,7 @@ export function BugsPage() {
       {/* -- 行操作 sheet：查看详情 / 用 Agent 修复 ------------------------ */}
       <BottomSheet
         open={actionBug !== null}
-        title={actionBug ? bugTitle(actionBug.title) : t("common.actions")}
+        title={actionBug ? plainTitle(actionBug.title) : t("common.actions")}
         onClose={() => setActionBug(null)}
       >
         {actionBug ? (

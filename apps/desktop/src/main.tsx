@@ -4,9 +4,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { initAppearance } from "./lib/appearance";
 import { subscribeLocale } from "./lib/i18n";
+import { startServiceFailures } from "./lib/services";
 import { preloadShellBootstrap } from "./lib/shellBootstrap";
 import { revealIslandWhenPainted, revealWhenPainted } from "./lib/startup";
 import { loadUiPrefs } from "./lib/uiPrefs";
+import { ServiceFailureModal } from "./components/ServiceFailureModal";
 import { IslandWindow } from "./windows/IslandWindow";
 import "./styles.css";
 
@@ -25,10 +27,15 @@ if (isOverlay) document.documentElement.dataset.overlay = "true";
 
 /** Main window shell: reveals the native window once this tree is painted. */
 function MainWindow() {
-  useEffect(() => revealWhenPainted(), []);
+  useEffect(() => {
+    revealWhenPainted();
+    // A service that failed before this window painted still has to surface.
+    startServiceFailures();
+  }, []);
   return (
     <React.StrictMode>
       <App />
+      <ServiceFailureModal />
     </React.StrictMode>
   );
 }

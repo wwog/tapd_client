@@ -53,6 +53,7 @@ import {
   type ModelSelection,
 } from "../lib/dsh";
 import { fileHash } from "../lib/files";
+import { plainTitle } from "../lib/format";
 import { resolveLocaleMode, t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { usePrefs } from "../lib/prefs";
@@ -1715,7 +1716,7 @@ export function AgentSessionPage(props: { id: string }) {
     void send();
   };
 
-  const title = task?.title || t("mobile.agent.untitledSession");
+  const title = plainTitle(task?.title) || t("mobile.agent.untitledSession");
   const agentLocale: AgentLocale = resolveLocaleMode(prefs.locale);
   const todos = sessionRow?.todos ?? [];
   const sessionRunning = (sessionRow?.status ?? task?.status ?? "idle") === "running";

@@ -13,12 +13,11 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Sparkles,
   Trash2,
   Undo2,
 } from "lucide-react";
 
-import { EnqueueSheet } from "../agent/EnqueueSheet";
+import { EnqueueControl } from "../agent/EnqueuePopover";
 import { t } from "../lib/i18n";
 import {
   localApi,
@@ -53,8 +52,6 @@ export function LocalItemsPage({ project, toast }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkItemStatus>("pending");
   const [dialog, setDialog] = useState<{ item: WorkItem | null } | null>(null);
-  /** Item whose enqueue sheet is open; one sheet serves every row. */
-  const [handOver, setHandOver] = useState<WorkItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
@@ -266,9 +263,9 @@ export function LocalItemsPage({ project, toast }: Props) {
               <ItemRow
                 key={item.id}
                 item={item}
+                projectId={project.id}
                 busy={actionBusy === item.id}
                 onSetStatus={(status) => void setStatus(item, status)}
-                onHandOver={() => setHandOver(item)}
                 onContextMenu={(x, y) => setMenu({ item, x, y })}
               />
             ))}
@@ -327,30 +324,18 @@ export function LocalItemsPage({ project, toast }: Props) {
           )}
         </ContextMenu>
       ) : null}
-
-      {handOver ? (
-        <EnqueueSheet
-          target={{
-            kind: "local",
-            projectId: project.id,
-            itemId: handOver.id,
-            title: handOver.title,
-          }}
-          onClose={() => setHandOver(null)}
-        />
-      ) : null}
     </div>
   );
 }
 
 function ItemRow(props: {
   item: WorkItem;
+  projectId: string;
   busy: boolean;
   onSetStatus: (status: WorkItemStatus) => void;
-  onHandOver: () => void;
   onContextMenu: (x: number, y: number) => void;
 }) {
-  const { item, busy, onSetStatus, onHandOver, onContextMenu } = props;
+  const { item, projectId, busy, onSetStatus, onContextMenu } = props;
 
   return (
     <li data-component="ItemRow">
@@ -412,17 +397,15 @@ function ItemRow(props: {
           ) : null}
 
           {item.status !== "done" ? (
-            <button
-              type="button"
-              title={t("local.items.toAgentHint")}
-              aria-label={t("local.items.toAgent")}
+            <EnqueueControl
+              target={{
+                kind: "local",
+                projectId,
+                itemId: item.id,
+                title: item.title,
+              }}
               disabled={busy}
-              onClick={onHandOver}
-              className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Sparkles size={12} />
-              {t("local.items.toAgent")}
-            </button>
+            />
           ) : null}
         </div>
       </article>

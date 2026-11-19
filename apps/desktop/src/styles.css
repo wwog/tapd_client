@@ -478,22 +478,6 @@ select:focus,
   }
 }
 
-/* Bottom sheet used for the Agent compose mode. */
-@keyframes agent-sheet-up {
-  from {
-    opacity: 0;
-    transform: translateY(28px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.agent-sheet-up {
-  animation: agent-sheet-up 240ms cubic-bezier(0.22, 0.9, 0.24, 1);
-}
-
 /* 浮层进出场：右键菜单与弹窗共用同一条节奏。
    只动 transform / opacity；退出动画结束后由 `useLayerClose` 卸载节点
    （时长与 hooks/useLayerClose.ts 的 LAYER_OUT_MS 保持一致）。 */
@@ -589,19 +573,36 @@ select:focus,
   pointer-events: none;
 }
 
-@keyframes modal-sheet-out {
+/* Cursor-anchored hand-over card: grows out of the click point, exits the
+   same way. `--pop-shift` points back at the anchor (set inline). */
+@keyframes enqueue-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--pop-shift, 4px)) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enqueue-pop-out {
   from {
     opacity: 1;
     transform: none;
   }
   to {
     opacity: 0;
-    transform: translateY(24px);
+    transform: translateY(var(--pop-shift, 4px)) scale(0.98);
   }
 }
 
-.modal-sheet-out {
-  animation: modal-sheet-out 110ms ease-in;
+.enqueue-pop {
+  animation: enqueue-pop-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.enqueue-pop-out {
+  animation: enqueue-pop-out 110ms ease-in forwards;
   pointer-events: none;
 }
 
@@ -612,7 +613,8 @@ select:focus,
   .modal-panel-out,
   .modal-overlay,
   .modal-overlay-out,
-  .modal-sheet-out {
+  .enqueue-pop,
+  .enqueue-pop-out {
     animation: none;
   }
 }

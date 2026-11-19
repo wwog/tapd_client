@@ -1,4 +1,5 @@
 import { Profiler, useMemo } from "react";
+import { PanelLeftOpen } from "lucide-react";
 
 import { openMediaPreview } from "../components/MediaPreviewHost";
 import { Segmented } from "../components/Segmented";
@@ -17,6 +18,8 @@ import { RuntimeNotice } from "./RuntimeNotice";
 import { TaskList } from "./TaskList";
 import { TaskPanel } from "./TaskPanel";
 import { TeamBoard } from "./TeamBoard";
+import { useTaskListLayout } from "./useTaskListLayout";
+import { Sash } from "../workbench/components/Sash";
 import { openAgentPath, resolveAgentImage } from "./localOpen";
 import { AGENT_COLUMN } from "./layout";
 import { installAgentPerf, recordAgentCommit } from "./perf";
@@ -141,6 +144,9 @@ export function AgentWorkspace({
 }: Props) {
   const state = agentStore.use();
   const locale = useLocale();
+  // Width, drag, collapse and the narrow-pane auto-collapse of the session
+  // column. The decision reads this pane, not the window.
+  const list = useTaskListLayout();
   const host = useAgentHost(state.selectedId, {
     toast,
     onOpenFile,
@@ -176,12 +182,47 @@ export function AgentWorkspace({
 
   return (
     <AgentHostProvider value={host}>
-      <div className="flex h-full min-h-0 flex-col">
+      <div ref={list.paneRef} className="flex h-full min-h-0 flex-col">
         {/* One step up from the app scale (styles.css `.agent-type`): the session
             is read as prose, and the config dialog stays outside it. */}
-        <div className="agent-type flex min-h-0 flex-1">
-          <TaskList />
-          <div className="flex min-w-0 flex-1 flex-col">
+        <div className="agent-type relative flex min-h-0 flex-1">
+          <TaskList layout={list} />
+          {/* The project list's handle, on the session column: hover paints the
+              divider line, dragging sets the width, a double click restores the
+              default. A folded column has no edge to grab. */}
+          {list.width > 0 ? (
+            <Sash
+              axis="x"
+              label={t("agent.task.resizeList")}
+              className="z-20"
+              style={{ left: list.width - 5, top: 0, width: 8, height: "100%" }}
+              onDragStart={() => {
+                list.beginResize();
+                return { move: list.resize, end: list.endResize };
+              }}
+              onReset={list.resetWidth}
+            />
+          ) : null}
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            {/* The list's way back: a tiny chip in the transcript's gutter, so
+                a folded column never hides the only control that reopens it. */}
+            {list.hidden ? (
+              <button
+                type="button"
+                aria-label={t("agent.task.expandList")}
+                title={
+                  list.autoCollapse
+                    ? list.peek
+                      ? t("agent.task.collapseList")
+                      : t("agent.task.expandListNarrow")
+                    : t("agent.task.expandList")
+                }
+                onClick={list.toggle}
+                className="absolute left-1 top-1.5 z-20 grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
+              >
+                <PanelLeftOpen size={14} />
+              </button>
+            ) : null}
             {state.selectedId ? (
               <div className="relative shrink-0 px-6 py-2">
                 <div className={`${AGENT_COLUMN} flex items-center justify-center`}>

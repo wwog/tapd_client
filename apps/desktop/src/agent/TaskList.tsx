@@ -5,6 +5,7 @@ import {
   Folder,
   FolderOpen,
   Loader2,
+  PanelLeftClose,
   Plus,
   Settings2,
   Trash2,
@@ -34,6 +35,7 @@ import {
   taskLiveStatus,
 } from "./store";
 import { TaskHoverCard } from "./TaskHoverCard";
+import type { TaskListLayout } from "./useTaskListLayout";
 import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
 
 /** Which project groups are folded shut, by group key. */
@@ -94,8 +96,8 @@ function groupTasks(
   return ordered;
 }
 
-/** Fixed-width task column: every project group, then the unassigned chats. */
-export function TaskList() {
+/** Session column: every project group, then the unassigned chats. */
+export function TaskList({ layout }: { layout: TaskListLayout }) {
   const state = agentStore.use();
   const [deleting, setDeleting] = useState<DshTask | null>(null);
   const [menu, setMenu] = useState<{
@@ -147,7 +149,18 @@ export function TaskList() {
   return (
     <aside
       data-component="TaskList"
-      className="flex h-full min-h-0 w-[248px] shrink-0 flex-col border-r border-border"
+      className={clsx(
+        "flex h-full min-h-0 shrink-0 flex-col overflow-hidden",
+        // Auto-collapse is instant: animating it would reflow the transcript
+        // twice. A resize drag must not fight the pointer either.
+        !layout.resizing &&
+          !layout.autoCollapse &&
+          "transition-[width] duration-200 ease-out",
+        layout.width > 0 && "border-r border-border",
+      )}
+      style={{ width: layout.width }}
+      // A folded column keeps its scroll position but must not take focus.
+      inert={layout.width === 0}
     >
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 pt-2">
         {tasks === null ? (
@@ -257,14 +270,23 @@ export function TaskList() {
       </div>
       {/* Settings are page-wide, not per session: the column footer is their
           one entry point, so the conversation keeps the whole pane. */}
-      <div className="shrink-0 border-t border-border p-2">
+      <div className="flex shrink-0 items-center gap-1 border-t border-border p-2">
         <button
           type="button"
           onClick={() => agentActions.openConfig()}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ui-caption text-slate-600 transition hover:bg-overlay-soft hover:text-slate-800"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ui-caption text-slate-600 transition hover:bg-overlay-soft hover:text-slate-800"
         >
           <Settings2 size={13} className="shrink-0 text-slate-400" />
           {t("agent.tab.config")}
+        </button>
+        <button
+          type="button"
+          aria-label={t("agent.task.collapseList")}
+          title={t("agent.task.collapseList")}
+          onClick={layout.toggle}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
+        >
+          <PanelLeftClose size={14} />
         </button>
       </div>
       {menu ? (

@@ -23,6 +23,7 @@ mod open_with;
 mod pty_util;
 mod reset;
 mod server;
+mod service_guard;
 mod session;
 mod shell_path;
 mod state;
@@ -160,6 +161,9 @@ pub fn run() {
             update::update_open_manual,
             window_state::ui_ready,
             island_window::island_ready,
+            service_guard::service_failures,
+            service_guard::service_retry,
+            service_guard::service_restart_app,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -168,6 +172,9 @@ pub fn run() {
             // Normalized transcript + plugin socket; owned here so commands and
             // the runtime share one registry.
             app.manage(std::sync::Arc::new(dsh::bridge::BridgeState::default()));
+            // Failures the startup guards gave up on; the main window shows one
+            // modal with a retry action.
+            app.manage(std::sync::Arc::new(service_guard::GuardState::default()));
 
             let server_state = state.clone();
             let server_handle = handle.clone();
@@ -180,7 +187,8 @@ pub fn run() {
             // The built-in agent is a service, not a session: one child process
             // serves every conversation, starts with the app and dies with it.
             // Nothing in the UI asks the user to start it; a missing model or
-            // payload is reported where it can be fixed.
+            // payload is reported where it can be fixed. Transient failures
+            // (spawn, handshake, profile write) are retried by the guard.
             let agent_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 // Debug builds inject the fake provider while loading settings,
@@ -193,12 +201,30 @@ pub fn run() {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                match dsh::feature::start(&agent_handle).await {
-                    Ok(status) => {
-                        tracing::info!(phase = ?status.phase, "built-in agent runtime started")
+                let app = agent_handle.clone();
+                service_guard::run(agent_handle, service_guard::Service::Agent, move || {
+                    let app = app.clone();
+                    async move {
+                        match dsh::feature::start(&app).await {
+                            Ok(_) => Ok(()),
+                            Err(message) => {
+                                // Configuration states would fail the same way
+                                // on every attempt; the runtime notice already
+                                // offers the matching fix.
+                                let code = dsh::feature::status(&app)
+                                    .ok()
+                                    .and_then(|status| status.error_code);
+                                Err(match code.as_deref() {
+                                    Some("node_missing" | "model_missing" | "payload_missing") => {
+                                        service_guard::StartError::terminal(message)
+                                    }
+                                    _ => service_guard::StartError::transient(message),
+                                })
+                            }
+                        }
                     }
-                    Err(error) => tracing::warn!(%error, "built-in agent runtime did not start"),
-                }
+                })
+                .await;
             });
 
             // Companion LAN server, opt-in: only boots when the user enabled it.
@@ -206,9 +232,22 @@ pub fn run() {
                 let companion_state = setup_state.clone();
                 let companion_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(error) = companion::start(companion_handle, companion_state).await {
-                        tracing::error!(%error, "companion server failed to start");
-                    }
+                    let app = companion_handle.clone();
+                    let state = companion_state.clone();
+                    service_guard::run(
+                        companion_handle,
+                        service_guard::Service::Companion,
+                        move || {
+                            let app = app.clone();
+                            let state = state.clone();
+                            async move {
+                                companion::start(app, state)
+                                    .await
+                                    .map_err(service_guard::StartError::transient)
+                            }
+                        },
+                    )
+                    .await;
                 });
             }
 

@@ -315,7 +315,7 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 - 位置：输入框卡片内、文本区上方的一行。没有项目绑定（`project == null`）时整行不显示。
 - 左侧：项目名 + 当前分支，纯展示。**不提供项目切换，也不提供分支切换，没有「+」按钮。**
 - 右侧：
-  - 同事协作开关（chat：开始前可改；task：在缺陷/事项的 EnqueueSheet 里创建时选择，
+  - 同事协作开关（chat：开始前可改；task：在缺陷/事项的 EnqueuePopover 里创建时选择，
     工作条只显示状态）。
   - Worktree 开关（chat：开始前可改；task：始终开启，只显示状态）。
   - 团队协作已开启时，多一个「会话 / 任务板」视图切换。
@@ -341,6 +341,9 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 - 项目分组的新会话 cwd = 项目仓库；默认分组 = chat scratch。
 - `dsh_projects` 返回 `{ projects: [{ kind, id, name, repoPath }] }`，供空分组渲染。
 - 顶部不再有独立的团队协作条：它和 worktree 一起收进输入框工作条（§10）。
+- 列宽可拖（共享 `Sash`，200–360，双击复位），可收起；窄窗口（Agent 面板宽度
+  < 列宽 + 720）自动收起，只在对话左上留一个展开控件。宽度与收起状态存
+  `agent.tasklist.v1`。
 
 ---
 

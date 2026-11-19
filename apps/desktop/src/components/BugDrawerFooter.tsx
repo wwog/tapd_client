@@ -1,10 +1,9 @@
-import { useState } from "react";
-import { Download, Sparkles, UserPlus } from "lucide-react";
+import { Download, UserPlus } from "lucide-react";
 
 import type { BugDetail, ExportResult } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { t } from "../lib/i18n";
-import { EnqueueSheet } from "../agent/EnqueueSheet";
+import { EnqueueControl } from "../agent/EnqueuePopover";
 import { Button } from "./ui";
 
 type Props = {
@@ -33,7 +32,6 @@ export function BugDrawerFooter(props: Props) {
     onClaim,
     onExport,
   } = props;
-  const [enqueueOpen, setEnqueueOpen] = useState(false);
 
   return (
     <div data-component="BugDrawerFooter" className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
@@ -92,15 +90,15 @@ export function BugDrawerFooter(props: Props) {
             {t("bugs.claim")}
           </Button>
         ) : (
-          <Button
-            size="sm"
+          <EnqueueControl
+            target={{
+              kind: "bug",
+              workspaceId: detail.workspaceId,
+              bugId: detail.id,
+              title: detail.title,
+            }}
             variant="primary"
-            icon={<Sparkles size={13} />}
-            title={t("agent.enqueue.bugHint")}
-            onClick={() => setEnqueueOpen(true)}
-          >
-            {t("bugs.fixWithAgent")}
-          </Button>
+          />
         )}
         <Button
           size="sm"
@@ -112,18 +110,6 @@ export function BugDrawerFooter(props: Props) {
           {exporting ? t("bugs.exporting") : t("bugs.export")}
         </Button>
       </div>
-
-      {enqueueOpen ? (
-        <EnqueueSheet
-          target={{
-            kind: "bug",
-            workspaceId: detail.workspaceId,
-            bugId: detail.id,
-            title: detail.title,
-          }}
-          onClose={() => setEnqueueOpen(false)}
-        />
-      ) : null}
     </div>
   );
 }

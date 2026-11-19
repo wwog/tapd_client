@@ -43,6 +43,9 @@ pub fn status(app: &AppHandle) -> Result<DshStatus, String> {
 pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
     let status = runtime(app)?.ensure_ready(app).await?;
     after_runtime_up(app).await;
+    // Any start path clears a startup failure the guard recorded, so the
+    // failure modal cannot outlive the runtime it was about.
+    crate::service_guard::mark_up(app, crate::service_guard::Service::Agent);
     Ok(status)
 }
 
@@ -52,6 +55,7 @@ pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
 pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
     let status = runtime(app)?.restart(app).await?;
     after_runtime_up(app).await;
+    crate::service_guard::mark_up(app, crate::service_guard::Service::Agent);
     Ok(status)
 }
 

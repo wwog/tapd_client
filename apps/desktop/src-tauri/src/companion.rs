@@ -186,6 +186,7 @@ struct CompanionCtx {
 /// Already running is a no-op: enabling twice must not bind a second port.
 pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
     if state.companion.lock().expect("companion lock").task.is_some() {
+        crate::service_guard::mark_up(&app, crate::service_guard::Service::Companion);
         return Ok(());
     }
 
@@ -203,6 +204,8 @@ pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
     let mut runtime = state.companion.lock().expect("companion lock");
     if runtime.task.is_some() {
         // A concurrent start won the race; drop our listener and keep theirs.
+        drop(runtime);
+        crate::service_guard::mark_up(&app, crate::service_guard::Service::Companion);
         return Ok(());
     }
     let handle = tauri::async_runtime::spawn({
@@ -216,7 +219,11 @@ pub async fn start(app: AppHandle, state: SharedState) -> Result<(), String> {
     });
     runtime.task = Some(handle);
     runtime.port = Some(port);
+    // Drop the lock before announcing: the failure panel may query the
+    // companion status from the same emit turn.
+    drop(runtime);
     tracing::info!(port, "companion server listening");
+    crate::service_guard::mark_up(&app, crate::service_guard::Service::Companion);
     Ok(())
 }
 

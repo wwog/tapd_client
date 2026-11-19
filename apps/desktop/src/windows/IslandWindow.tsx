@@ -572,9 +572,9 @@ function AiCard(props: {
 
       <h2
         className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
-        title={item.title}
+        title={plainTitle(item.title)}
       >
-        {item.title}
+        {plainTitle(item.title)}
       </h2>
 
       <AiBlocks blocks={payload.blocks} />
