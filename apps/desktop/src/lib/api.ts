@@ -609,5 +609,8 @@ export const relativeTime = (iso: string): string => {
   if (delta < 86_400_000) {
     return t("bugs.hoursAgo", { n: Math.round(delta / 3_600_000) });
   }
+  if (delta < 30 * 86_400_000) {
+    return t("bugs.daysAgo", { n: Math.round(delta / 86_400_000) });
+  }
   return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };

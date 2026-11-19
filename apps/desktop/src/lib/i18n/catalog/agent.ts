@@ -44,6 +44,24 @@ export const agent = {
   "agent.task.live": ["运行中", "Running"],
   "agent.task.needsInput": ["{count} 项待处理", "{count} waiting for you"],
 
+  // Task hover card (list row): facts plus the live session directory.
+  "agent.card.freeChat": ["自由会话", "Free chat"],
+  "agent.card.idle": ["空闲", "Idle"],
+  "agent.card.failed": ["已失败", "Failed"],
+  "agent.card.branch": ["分支", "Branch"],
+  "agent.card.model": ["模型", "Model"],
+  "agent.card.changes": ["变更", "Changes"],
+  "agent.card.pending": ["待处理", "Waiting"],
+  "agent.card.messages": ["消息", "Messages"],
+  "agent.card.created": ["创建", "Created"],
+  "agent.card.updated": ["更新", "Updated"],
+  "agent.card.dir": ["目录", "Directory"],
+  "agent.card.copyPath": ["复制路径", "Copy path"],
+  "agent.card.copied": ["已复制", "Copied"],
+  "agent.card.emptyDir": ["空目录", "Empty folder"],
+  "agent.card.dirError": ["目录读取失败", "Could not list folder"],
+  "agent.card.listTruncated": ["仅显示前 {n} 项", "First {n} shown"],
+
   // Task actions.
   "agent.task.fix": ["修复", "Fix"],
   "agent.task.changes": ["{files} 个文件", "{files} files"],

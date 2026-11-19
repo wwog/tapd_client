@@ -15,3 +15,17 @@ export const WORKFLOW: Record<
   failed: { label: "agent.task.workflowFailed", tone: "red" },
   canceled: { label: "agent.task.workflowCanceled", tone: "neutral" },
 };
+
+/**
+ * Icon tint for the single-line list mark; the hue of each tone mirrors
+ * `BADGE_TONES` (`components/ui.tsx`) minus its background.
+ */
+export const WORKFLOW_MARK: Record<DshTaskWorkflow, string> = {
+  queued: "text-slate-300",
+  running: "text-sky-600",
+  awaiting_review: "text-amber-600",
+  finalizing: "text-cyan-600",
+  done: "text-emerald-600",
+  failed: "text-rose-600",
+  canceled: "text-slate-300",
+};

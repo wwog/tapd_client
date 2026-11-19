@@ -1,6 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { ChevronRight, FolderOpen, Plus, Settings2, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  Folder,
+  FolderOpen,
+  Loader2,
+  Plus,
+  Settings2,
+  Trash2,
+  Workflow,
+} from "lucide-react";
 
 import { api, relativeTime } from "../lib/api";
 import { t } from "../lib/i18n";
@@ -14,12 +23,13 @@ import type {
 } from "../lib/dsh";
 import { dshTaskApi } from "../lib/dsh";
 import { readPref, writePref } from "../lib/uiPrefs";
-import { Badge, Button, Spinner } from "../components/ui";
+import { Button, Spinner } from "../components/ui";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContextMenu, ContextMenuItem } from "../components/ContextMenu";
 import { ScrollingName } from "../components/ScrollingName";
 import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./store";
-import { WORKFLOW } from "./workflow";
+import { TaskHoverCard } from "./TaskHoverCard";
+import { WORKFLOW, WORKFLOW_MARK } from "./workflow";
 
 /** Which project groups are folded shut, by group key. */
 const COLLAPSED_PREF = "agent.collapsed-projects.v1";
@@ -169,6 +179,7 @@ export function TaskList() {
                       size={11}
                       className={clsx("shrink-0 transition-transform", !folded && "rotate-90")}
                     />
+                    <Folder size={12} className="shrink-0" />
                     <ScrollingName text={group.name} className="min-w-0 flex-1" />
                     <span className="shrink-0 tabular-nums text-ui-2xs text-slate-300">
                       {group.tasks.length}
@@ -190,7 +201,9 @@ export function TaskList() {
                   </button>
                 </div>
                 {rows.length > 0 ? (
-                  <div className="flex flex-col gap-0.5">
+                  // Indented under the header's name with a hairline guide,
+                  // so the group → session hierarchy reads without borders.
+                  <div className="ml-[15px] flex flex-col gap-0.5 border-l border-border pl-2">
                     {rows.map((task) => (
                       <TaskRow
                         key={task.id}
@@ -199,6 +212,8 @@ export function TaskList() {
                         status={taskLiveStatus(state, task)}
                         updatedAt={taskActivityAt(state, task)}
                         pending={pending.get(task.id) ?? 0}
+                        model={state.sessions[task.id]?.usage.model || undefined}
+                        onDelete={setDeleting}
                         onMenu={(target, x, y) => setMenu({ task: target, x, y })}
                       />
                     ))}
@@ -275,6 +290,8 @@ function TaskRow({
   status,
   updatedAt,
   pending,
+  model,
+  onDelete,
   onMenu,
 }: {
   task: DshTask;
@@ -282,6 +299,8 @@ function TaskRow({
   status: DshSessionStatus;
   updatedAt: string;
   pending: number;
+  model?: string;
+  onDelete: (task: DshTask) => void;
   onMenu: (task: DshTask, x: number, y: number) => void;
 }) {
   // A row written by a build that still used `awaiting_merge` must not blank
@@ -289,9 +308,45 @@ function TaskRow({
   const workflow =
     (WORKFLOW as Record<string, (typeof WORKFLOW)[DshTaskWorkflow]>)[task.workflow] ??
     WORKFLOW.finalizing;
+  const mark =
+    (WORKFLOW_MARK as Record<string, string>)[task.workflow] ?? "text-slate-300";
+
+  // The hover card opens after a short dwell and closes after a short grace
+  // period, so the pointer can travel onto the card through the gap.
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const enterTimer = useRef<number | undefined>(undefined);
+  const leaveTimer = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      window.clearTimeout(enterTimer.current);
+      window.clearTimeout(leaveTimer.current);
+    },
+    [],
+  );
+  const openHover = () => {
+    window.clearTimeout(leaveTimer.current);
+    window.clearTimeout(enterTimer.current);
+    enterTimer.current = window.setTimeout(() => {
+      const rect = rowRef.current?.getBoundingClientRect();
+      if (rect) setAnchor(rect);
+      setHoverOpen(true);
+    }, 250);
+  };
+  const closeHover = () => {
+    window.clearTimeout(enterTimer.current);
+    leaveTimer.current = window.setTimeout(() => setHoverOpen(false), 120);
+  };
+  const cancelClose = () => window.clearTimeout(leaveTimer.current);
 
   return (
-    <div className="group relative">
+    <div
+      ref={rowRef}
+      className="group relative"
+      onMouseEnter={openHover}
+      onMouseLeave={closeHover}
+    >
       <button
         type="button"
         aria-current={selected}
@@ -301,44 +356,67 @@ function TaskRow({
           onMenu(task, event.clientX, event.clientY);
         }}
         className={clsx(
-          "w-full rounded-lg border px-2.5 py-1.5 text-left transition",
+          "flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left transition",
           selected
             ? "border-sky-200 bg-sky-50"
             : "border-transparent hover:bg-slate-50",
         )}
       >
+        {/* Front slot: blocked on a person wins over running, because the
+            spinner would mean the opposite of what is happening. */}
+        {pending > 0 ? (
+          <span
+            className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 px-1 text-ui-2xs tabular-nums text-amber-700"
+            title={t("agent.task.needsInput", { count: pending })}
+          >
+            {pending}
+          </span>
+        ) : status === "running" ? (
+          <span className="shrink-0" title={t("agent.task.live")}>
+            <Loader2 size={12} className="animate-spin text-slate-400" />
+          </span>
+        ) : null}
+        {/* Only workflow tasks carry a mark, right of the spinner slot: the
+            icon's color is the deliverable state. Chats are just a chat. */}
+        {task.kind !== "chat" ? (
+          <span className="shrink-0" title={t(workflow.label)}>
+            <Workflow size={11} className={mark} />
+          </span>
+        ) : null}
         <ScrollingName
           text={task.title || t("agent.task.untitled")}
-          className="text-ui-caption text-slate-800"
+          className="min-w-0 flex-1 text-ui-caption text-slate-800"
         />
-        <div className="mt-1 flex items-center gap-1.5">
-          {/* A chat has no deliverable workflow; its live dot is the state. */}
-          {task.kind === "chat" ? null : (
-            <Badge tone={workflow.tone}>{t(workflow.label)}</Badge>
-          )}
-          {status === "running" ? (
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
-              title={t("agent.task.live")}
-            />
-          ) : null}
-          {/* Blocked on a person, not working: a separate mark, because the
-              running dot would mean the opposite of what is happening. */}
-          {pending > 0 ? (
-            <span
-              className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 px-1 text-ui-2xs tabular-nums text-amber-700"
-              title={t("agent.task.needsInput", { count: pending })}
-            >
-              {pending}
-            </span>
-          ) : null}
-          {updatedAt ? (
-            <span className="ml-auto min-w-0 truncate text-ui-xs text-slate-400">
-              {relativeTime(updatedAt)}
-            </span>
-          ) : null}
-        </div>
+        {updatedAt ? (
+          <span className="shrink-0 text-ui-2xs tabular-nums text-slate-400 transition group-hover:opacity-0">
+            {relativeTime(updatedAt)}
+          </span>
+        ) : null}
       </button>
+      {/* Row-end delete mirrors the screenshot's trailing action; the time
+          yields its spot while hovering. */}
+      <button
+        type="button"
+        title={t("agent.session.delete")}
+        aria-label={t("agent.session.delete")}
+        onClick={() => onDelete(task)}
+        className="absolute right-1.5 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-slate-400 opacity-0 transition hover:bg-overlay-soft hover:text-rose-600 focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <Trash2 size={12} />
+      </button>
+      {hoverOpen && anchor ? (
+        <TaskHoverCard
+          task={task}
+          status={status}
+          pending={pending}
+          model={model}
+          updatedAt={updatedAt}
+          anchor={anchor}
+          onClose={() => setHoverOpen(false)}
+          onEnter={cancelClose}
+          onLeave={closeHover}
+        />
+      ) : null}
     </div>
   );
 }

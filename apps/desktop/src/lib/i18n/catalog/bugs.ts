@@ -215,6 +215,7 @@ export const bugs = {
   "bugs.secondsAgo": ["{n} 秒前", "{n}s ago"],
   "bugs.minutesAgo": ["{n} 分钟前", "{n}m ago"],
   "bugs.hoursAgo": ["{n} 小时前", "{n}h ago"],
+  "bugs.daysAgo": ["{n} 天前", "{n}d ago"],
 
   // ------------------------------------------------------------- directory
   "bugs.membersFailed": ["处理人列表加载失败：{error}", "Failed to load owners: {error}"],
