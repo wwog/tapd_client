@@ -190,7 +190,27 @@ export const agent = {
   "mobile.agent.usageTokens": ["{tokens} tokens", "{tokens} tokens"],
   "mobile.agent.usageContext": ["上下文 {percent}%", "Context {percent}%"],
 
-  /* -- Conversation / trajectory panes ------------------------------------ */
+  /* -- Task / conversation / trajectory panes ----------------------------- */
+  "mobile.agent.paneTask": ["任务", "Task"],
   "mobile.agent.paneChat": ["对话", "Chat"],
   "mobile.agent.paneTrajectory": ["轨迹", "Trajectory"],
+
+  /* -- Task pane ---------------------------------------------------------- */
+  "mobile.agent.taskBranch": ["分支", "Branch"],
+  "mobile.agent.taskWorkingDir": ["工作目录", "Working dir"],
+  "mobile.agent.taskDirect": ["主仓库直接运行", "Runs in the main checkout"],
+  "mobile.agent.taskBug": ["缺陷", "Bug"],
+  "mobile.agent.taskChanges": ["{files} 个文件", "{files} files"],
+  "mobile.agent.taskRevisions": ["修订", "Revisions"],
+  "mobile.agent.taskGitStart": ["开始", "Start"],
+  "mobile.agent.taskGitCommit": ["提交", "Commit"],
+  "mobile.agent.taskGitMerge": ["合并", "Merge"],
+  "mobile.agent.taskWriteback": ["TAPD 回写", "TAPD write-back"],
+  "mobile.agent.taskWritebackComment": ["评论已写入", "Comment written"],
+  "mobile.agent.taskWritebackStatus": [
+    "状态 {from} → {to}",
+    "Status {from} → {to}",
+  ],
+  "mobile.agent.doneTitle": ["任务已完成", "Task finished"],
+  "mobile.agent.viewTask": ["查看任务", "View task"],
 } as const satisfies Catalog;

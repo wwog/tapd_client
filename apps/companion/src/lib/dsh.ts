@@ -177,6 +177,27 @@ export type DshTask = {
   changes?: DshTaskChanges | null;
   review?: DshTaskReview | null;
   finalize?: DshTaskFinalize | null;
+  /** The round's start / commit / merge revisions, for the task pane. */
+  git: DshTaskGit;
+  /** TAPD write-back result of the finished round. */
+  writeback: DshTaskWriteback;
+  /** This round works directly in the repository (no worktree, no merge). */
+  direct: boolean;
+};
+
+export type DshTaskGit = {
+  /** The round's starting revision (worktree baseline or repo HEAD). */
+  start?: string;
+  /** The commit the finishing chain created. */
+  commit?: string;
+  /** The merge commit, absent for direct rounds. */
+  merge?: string;
+};
+
+export type DshTaskWriteback = {
+  comment: boolean;
+  statusFrom?: string;
+  statusTo?: string;
 };
 
 export function isTerminalWorkflow(workflow: DshWorkflow): boolean {

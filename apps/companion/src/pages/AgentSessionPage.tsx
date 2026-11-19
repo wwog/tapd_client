@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ArrowUp,
+  CheckCircle2,
   ChevronLeft,
   FolderGit2,
   GitBranch,
@@ -662,12 +663,20 @@ function WorkPill(props: {
   );
 }
 
-/** Conversation/trajectory choice, mirrored from the desktop pane bar. */
+/** The three panes the desktop pane bar offers; `task` only for workflows. */
+type SessionPane = "task" | "chat" | "trajectory";
+
+/** Pane choice, mirrored from the desktop pane bar. */
 function PaneSwitch(props: {
-  value: "chat" | "trajectory";
-  onChange: (value: "chat" | "trajectory") => void;
+  value: SessionPane;
+  onChange: (value: SessionPane) => void;
+  /** Workflow tasks get the task pane; a free chat has no task to show. */
+  showTask: boolean;
 }) {
-  const options: ReadonlyArray<{ value: "chat" | "trajectory"; label: MessageKey }> = [
+  const options: ReadonlyArray<{ value: SessionPane; label: MessageKey }> = [
+    ...(props.showTask
+      ? [{ value: "task", label: "mobile.agent.paneTask" } as const]
+      : []),
     { value: "chat", label: "mobile.agent.paneChat" },
     { value: "trajectory", label: "mobile.agent.paneTrajectory" },
   ];
@@ -813,6 +822,191 @@ type ChildTranscript = {
   error: string | null;
 };
 
+/** The revisions the finishing chain created, as label/value rows. */
+function taskHashes(task: DshTask): { label: string; value: string }[] {
+  return [
+    { label: t("mobile.agent.taskGitStart"), value: task.git.start },
+    { label: t("mobile.agent.taskGitCommit"), value: task.git.commit },
+    { label: t("mobile.agent.taskGitMerge"), value: task.git.merge },
+  ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+}
+
+/** One label/value line; long values wrap and stay selectable. */
+function TaskFact(props: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="w-14 shrink-0 text-ui-2xs text-slate-400">{props.label}</span>
+      <span
+        className={`min-w-0 flex-1 select-text break-all text-ui-xs text-slate-700 ${
+          props.mono ? "font-mono" : ""
+        }`}
+      >
+        {props.value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The task pane: the facts of this round (state, branch, working directory,
+ * revisions, write-back, review summary). Actions stay in the composer gate, so
+ * there is one place to approve, retry or abandon.
+ */
+function TaskPane(props: { task: DshTask }) {
+  const { task } = props;
+  const changes = task.changes;
+  const hashes = taskHashes(task);
+  const writeback = task.writeback;
+  const wroteStatus = Boolean(writeback.statusFrom || writeback.statusTo);
+  const review = task.review;
+  const workDir = task.direct
+    ? t("mobile.agent.taskDirect")
+    : task.worktreePath || task.repoPath || "";
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3">
+      <section className="rounded-xl border border-border bg-surface p-3">
+        <div className="flex items-center gap-2">
+          <WorkflowChip workflow={task.workflow} />
+          {changes ? (
+            <span className="ml-auto shrink-0 text-ui-xs text-slate-500">
+              {t("mobile.agent.taskChanges", { files: changes.files })}
+              <span className="ml-1 text-emerald-700">+{changes.additions}</span>
+              <span className="ml-1 text-rose-600">−{changes.deletions}</span>
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-2 space-y-1.5">
+          {task.branch ? (
+            <TaskFact label={t("mobile.agent.taskBranch")} value={task.branch} mono />
+          ) : null}
+          {workDir ? (
+            <TaskFact label={t("mobile.agent.taskWorkingDir")} value={workDir} mono />
+          ) : null}
+          {task.bugId ? (
+            <TaskFact label={t("mobile.agent.taskBug")} value={task.bugId} mono />
+          ) : null}
+        </div>
+      </section>
+
+      {hashes.length > 0 ? (
+        <section className="rounded-xl border border-border bg-surface p-3">
+          <h2 className="text-ui-caption text-slate-900">
+            {t("mobile.agent.taskRevisions")}
+          </h2>
+          <div className="mt-2 space-y-1.5">
+            {hashes.map((row) => (
+              <TaskFact key={row.label} label={row.label} value={row.value} mono />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {task.kind === "bug" && (writeback.comment || wroteStatus) ? (
+        <section className="rounded-xl border border-border bg-surface p-3">
+          <h2 className="text-ui-caption text-slate-900">{t("mobile.agent.taskWriteback")}</h2>
+          <div className="mt-2 space-y-1">
+            {writeback.comment ? (
+              <p className="text-ui-xs text-emerald-700">
+                {t("mobile.agent.taskWritebackComment")}
+              </p>
+            ) : null}
+            {wroteStatus ? (
+              <p className="text-ui-xs text-slate-600">
+                {t("mobile.agent.taskWritebackStatus", {
+                  from: writeback.statusFrom ?? "-",
+                  to: writeback.statusTo ?? "-",
+                })}
+              </p>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {review && (review.summary || review.verification || review.risks) ? (
+        <section className="rounded-xl border border-border bg-surface p-3">
+          <h2 className="text-ui-caption text-slate-900">{t("mobile.agent.reviewTitle")}</h2>
+          <div className="mt-2 space-y-1">
+            {review.summary ? (
+              <ReviewField label={t("mobile.agent.reviewSummary")} text={review.summary} />
+            ) : null}
+            {review.verification ? (
+              <ReviewField
+                label={t("mobile.agent.reviewVerification")}
+                text={review.verification}
+              />
+            ) : null}
+            {review.risks ? (
+              <ReviewField label={t("mobile.agent.reviewRisks")} text={review.risks} />
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The end-of-transcript receipt of a finished task: the revisions, the change
+ * count and the TAPD result the user can trust, with a way into the task pane.
+ * Deliberately a task-level card, not a turn.
+ */
+function TaskDoneCard(props: { task: DshTask; onViewTask: () => void }) {
+  const { task } = props;
+  const hashes = taskHashes(task);
+  const writeback = task.writeback;
+  const wroteStatus = Boolean(writeback.statusFrom || writeback.statusTo);
+
+  return (
+    <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <CheckCircle2 size={14} className="shrink-0 text-emerald-600" />
+        <span className="text-ui-caption text-slate-800">{t("mobile.agent.doneTitle")}</span>
+        {task.changes ? (
+          <span className="ml-auto shrink-0 text-ui-xs text-slate-500">
+            {t("mobile.agent.taskChanges", { files: task.changes.files })}
+            <span className="ml-1 text-emerald-700">+{task.changes.additions}</span>
+            <span className="ml-1 text-rose-600">−{task.changes.deletions}</span>
+          </span>
+        ) : null}
+      </div>
+
+      {hashes.length > 0 ? (
+        <div className="mt-1.5 space-y-1">
+          {hashes.map((row) => (
+            <div key={row.label} className="flex items-start gap-2">
+              <span className="w-14 shrink-0 text-ui-2xs text-slate-400">{row.label}</span>
+              <span className="min-w-0 flex-1 select-text break-all font-mono text-ui-2xs text-slate-500">
+                {row.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {task.kind === "bug" && (writeback.comment || wroteStatus) ? (
+        <p className="mt-1 text-ui-2xs text-slate-500">
+          {writeback.comment ? `${t("mobile.agent.taskWritebackComment")} · ` : null}
+          {wroteStatus
+            ? t("mobile.agent.taskWritebackStatus", {
+                from: writeback.statusFrom ?? "-",
+                to: writeback.statusTo ?? "-",
+              })
+            : null}
+        </p>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={props.onViewTask}
+        className="mt-1.5 text-ui-2xs text-sky-700 transition active:opacity-60"
+      >
+        {t("mobile.agent.viewTask")}
+      </button>
+    </section>
+  );
+}
+
 /**
  * One task: header (title + workflow chip), workflow actions, the turn-grouped
  * transcript with its sub-agent folds, answerable approvals/questions and the
@@ -870,7 +1064,7 @@ export function AgentSessionPage(props: { id: string }) {
   /** `dsh_sessions` rows: session todos, child identity and running flags. */
   const [sessions, setSessions] = useState<DshSession[] | null>(null);
   /** Explicit pane; the conversation is the default. */
-  const [pane, setPane] = useState<"chat" | "trajectory">("chat");
+  const [pane, setPane] = useState<SessionPane>("chat");
 
   /** Child transcripts, keyed by session id; grown only through open folds. */
   const [childState, setChildState] = useState<Record<string, ChildTranscript>>({});
@@ -903,6 +1097,8 @@ export function AgentSessionPage(props: { id: string }) {
   const [openChildren, setOpenChildren] = useState<ReadonlySet<string>>(new Set());
   const resumeTried = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  /** The transcript's own scroll box, above the composer. */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   /** Poll cursor: the highest seq the incremental reads have reached. */
   const lastSeq = useRef(0);
@@ -1475,12 +1671,38 @@ export function AgentSessionPage(props: { id: string }) {
     if (!element) return;
     const latest = sorted[sorted.length - 1].seq;
     const firstLoad = followSeq.current === 0;
-    const nearBottom = element.getBoundingClientRect().top <= window.innerHeight + 64;
+    // The transcript has its own scroll box, so "at the bottom" is measured
+    // against that box — not the window, which also holds the composer.
+    const scroller = scrollRef.current;
+    const nearBottom =
+      !scroller ||
+      element.getBoundingClientRect().top <=
+        scroller.getBoundingClientRect().bottom + 64;
     if (firstLoad || (latest > followSeq.current && nearBottom)) {
-      element.scrollIntoView({ block: "end" });
+      // Scroll the box itself, then once more after the frame settles: the
+      // first pass runs before late layout (wrapped markdown, cards), which
+      // used to leave the last ~20px below the fold.
+      const pin = () => {
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        else element.scrollIntoView({ block: "end" });
+      };
+      pin();
+      requestAnimationFrame(pin);
     }
     followSeq.current = latest;
   }, [sorted]);
+
+  // Panes are different documents: the task pane opens at its top instead of
+  // inheriting the transcript's scroll position. Reset twice — the browser's
+  // scroll anchoring otherwise pulls the new shorter pane back down.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller || pane === "chat") return;
+    scroller.scrollTop = 0;
+    requestAnimationFrame(() => {
+      scroller.scrollTop = 0;
+    });
+  }, [pane]);
 
   const onComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Desktop keyboards send on Enter; the send button covers phones.
@@ -1522,12 +1744,12 @@ export function AgentSessionPage(props: { id: string }) {
   return (
     <AgentHostProvider value={agentHostCapabilities}>
     {/* One column filling the viewport: the header stays put, the transcript
-        area grows and the composer always sits on the tab bar — not floating
-        under short content. */}
-    <div className="flex min-h-full flex-col">
-      {/* Header, pane switch and the team toggle share one sticky block; the
-          review gate lives at the top of the scrolling message area. */}
-      <div className="sticky top-0 z-20 bg-canvas">
+        is its own scroller and the composer is the last flex child — the same
+        shape as the desktop, so the composer never floats over the rows. */}
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Header, pane switch and the team toggle share one block; the review
+          gate lives at the top of the scrolling message area. */}
+      <div className="shrink-0 bg-canvas">
         <header className="flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
           <button
             type="button"
@@ -1545,7 +1767,11 @@ export function AgentSessionPage(props: { id: string }) {
 
         {/* The 对话/轨迹 pane switch mirrors the desktop session pane bar. */}
         <div className="flex justify-center border-b border-border bg-canvas px-2 py-1.5">
-          <PaneSwitch value={pane} onChange={setPane} />
+          <PaneSwitch
+            value={pane}
+            onChange={setPane}
+            showTask={Boolean(task && task.kind !== "chat")}
+          />
         </div>
 
       </div>
@@ -1556,7 +1782,10 @@ export function AgentSessionPage(props: { id: string }) {
         </p>
       ) : null}
 
-      <div className="min-h-0 flex-1">
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
+      >
       {/* The review gate sits at the top of the message area, so the summary
           and file list are the first thing a running task returns to. */}
       {reviewing && task ? (
@@ -1601,11 +1830,16 @@ export function AgentSessionPage(props: { id: string }) {
         </p>
       ) : null}
 
-      {entries === null && !entriesError && pane !== "trajectory" ? (
+      {entries === null &&
+      !entriesError &&
+      pane !== "trajectory" &&
+      pane !== "task" ? (
         <TranscriptSkeleton />
       ) : null}
 
-      {pane === "trajectory" ? (
+      {pane === "task" && task ? (
+        <TaskPane task={task} />
+      ) : pane === "trajectory" ? (
         <>
           {/* A blocking ask wins over any pane: the turn waits until it is
               answered, so the cards must not need a pane switch. */}
@@ -1647,6 +1881,10 @@ export function AgentSessionPage(props: { id: string }) {
               />
             ) : null}
 
+            {task && task.kind !== "chat" && task.workflow === "done" ? (
+              <TaskDoneCard task={task} onViewTask={() => setPane("task")} />
+            ) : null}
+
             {sorted && sorted.length === 0 && todos.length === 0 ? (
               <div className="grid place-items-center px-6 py-16 text-center">
                 <p
@@ -1663,12 +1901,15 @@ export function AgentSessionPage(props: { id: string }) {
         </>
       )}
 
+        {/* Scroll anchor: the tail of the transcript, above the composer. */}
+        <div ref={bottomRef} aria-hidden="true" />
       </div>
 
       {/* The composer: one bordered card — editor on top, operable controls on
-          its bottom row — pinned above the tab bar. While the session runs the
-          primary button is the stop state of send, not a separate control. */}
-      <div className="sticky bottom-14 z-20 border-t border-border bg-canvas px-3 pb-2 pt-2">
+          its bottom row — the last flex child, directly above the tab bar.
+          While the session runs the primary button is the stop state of send,
+          not a separate control. */}
+      <div className="shrink-0 border-t border-border bg-canvas px-3 pb-2 pt-2">
         {/* The workflow gate: approve/discard while in review, retry while the
             host is finishing. It stays above the composer so a long file list
             never hides the primary action. */}
@@ -1884,8 +2125,6 @@ export function AgentSessionPage(props: { id: string }) {
           onClose={() => setModelSheetOpen(false)}
         />
       ) : null}
-
-      <div ref={bottomRef} aria-hidden="true" />
     </div>
     </AgentHostProvider>
   );

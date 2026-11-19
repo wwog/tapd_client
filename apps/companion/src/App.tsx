@@ -190,6 +190,9 @@ export default function App() {
 
   // Terminal sessions take the whole screen: the key bar replaces the tab bar.
   const fullBleed = route.name === "terminal-session";
+  // The session page scrolls its transcript on its own, so `main` must not
+  // scroll too: two nested scrollers made the composer float over the rows.
+  const ownScroll = route.name === "agent-session";
 
   return (
     <div className="flex h-full flex-col">
@@ -200,7 +203,9 @@ export default function App() {
         className={
           fullBleed
             ? "min-h-0 flex-1 overflow-hidden"
-            : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
+            : ownScroll
+              ? "min-h-0 flex-1 overflow-hidden pb-14"
+              : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
         }
       >
         {route.name === "pair" ? <PairPage /> : null}
