@@ -13,8 +13,8 @@ export const AGENT_COLUMN = "mx-auto w-full max-w-[clamp(46rem,68%,64rem)]";
 /**
  * Session column sizing. The list yields to the conversation instead of
  * squeezing it: it is narrow by nature (titles truncate) while the transcript
- * is the page. `CHAT_MIN_WIDTH` is the space the stream keeps before the list
- * folds itself away on a small window.
+ * is the page. `TASKLIST_CHAT_MIN_WIDTH` is the space the stream keeps before
+ * the list folds itself away on a small window.
  */
 export const TASKLIST_MIN_WIDTH = 200;
 export const TASKLIST_MAX_WIDTH = 360;

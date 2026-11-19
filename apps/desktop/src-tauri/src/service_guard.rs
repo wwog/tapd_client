@@ -290,7 +290,16 @@ pub async fn service_retry(app: AppHandle, service: Service) -> Result<(), Strin
 /// "restart" button).
 #[tauri::command]
 pub fn service_restart_app(app: AppHandle) -> Result<(), String> {
-    app.restart();
+    // A sync command runs on the main thread, where `restart` deliberately
+    // skips `RunEvent::Exit` — the event that stops the agent runtime, the
+    // terminal shells and the companion tunnel. Restart from a worker thread
+    // so the exit cleanup runs before the process is replaced (same shape as
+    // `clear_app_data`).
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        app.restart();
+    });
+    Ok(())
 }
 
 /// Whether the user still wants the companion served this run.

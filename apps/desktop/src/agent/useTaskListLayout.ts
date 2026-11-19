@@ -88,7 +88,9 @@ export function useTaskListLayout(): TaskListLayout {
   // the way (a zero measurement is a hidden tab, not a narrow one).
   const autoCollapse =
     paneWidth > 0 && paneWidth < width + TASKLIST_CHAT_MIN_WIDTH;
-  const hidden = peek ? false : collapsed || autoCollapse;
+  // A drag keeps the column on screen even on a narrow pane: the handle lives
+  // on that edge, and a list that vanished under the pointer would abort it.
+  const hidden = resizing ? false : peek ? false : collapsed || autoCollapse;
 
   // Drop the temporary reveal once the pane is wide enough again.
   useEffect(() => {
@@ -118,7 +120,8 @@ export function useTaskListLayout(): TaskListLayout {
 
   const beginResize = useCallback(() => {
     setResizing(true);
-    setPeek(false);
+    // The peek (a temporary reveal on a narrow pane) is left alone: the drag
+    // starts on the visible edge and the column stays there afterwards.
     if (collapsedRef.current) {
       setCollapsed(false);
       persist({ collapsed: false });

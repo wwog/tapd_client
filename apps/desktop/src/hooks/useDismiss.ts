@@ -12,16 +12,11 @@ export type DismissOptions = {
 };
 
 /**
- * Dismissable layers (menus, popovers) currently open. A page-level Escape
- * handler reads this first: the same key must close the front layer only, and
- * the page's own listener is registered before the menu's, so it cannot learn
- * that answer from the event.
+ * Dismissable layers (menus, popovers) currently open, in mount order. Only
+ * the front one answers Escape or an outside click, so a picker opened from
+ * inside a popover closes alone.
  */
 let openLayers = 0;
-
-export function hasOpenDismissLayer(): boolean {
-  return openLayers > 0;
-}
 
 /**
  * Closes a popover on outside `mousedown` and Escape, with optional dismissal
@@ -42,20 +37,35 @@ export function useDismiss(
     if (!open) return;
 
     openLayers += 1;
+    // Layers stack: a picker opened from inside a popover is a later layer.
+    // Only the front one answers dismissal, otherwise a click inside the inner
+    // card reads as "outside" for the outer one and both close at once.
+    const depth = openLayers;
+    const nested = () => openLayers > depth;
     const dismiss = () => closeRef.current();
+    const dismissIfFront = () => {
+      if (!nested()) dismiss();
+    };
     const onMouseDown = (event: MouseEvent) => {
+      if (nested()) return;
       const target = event.target as Node;
       if (ref.current?.contains(target)) return;
       if (ignore?.current?.contains(target)) return;
       dismiss();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss();
+      if (event.key === "Escape") dismissIfFront();
+    };
+    // Scrolling inside the layer (its own list, or a textarea following the
+    // caret) is not "the page moved away"; only an outside scroll dismisses.
+    const onScroll = (event: Event) => {
+      if (ref.current?.contains(event.target as Node)) return;
+      dismissIfFront();
     };
 
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("keydown", onKeyDown);
-    if (scroll) window.addEventListener("scroll", dismiss, true);
+    if (scroll) window.addEventListener("scroll", onScroll, true);
     if (resize) window.addEventListener("resize", dismiss);
     if (blur) window.addEventListener("blur", dismiss);
 
@@ -63,7 +73,7 @@ export function useDismiss(
       openLayers -= 1;
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("keydown", onKeyDown);
-      if (scroll) window.removeEventListener("scroll", dismiss, true);
+      if (scroll) window.removeEventListener("scroll", onScroll, true);
       if (resize) window.removeEventListener("resize", dismiss);
       if (blur) window.removeEventListener("blur", dismiss);
     };

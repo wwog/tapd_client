@@ -212,9 +212,7 @@ export function AgentWorkspace({
                 aria-label={t("agent.task.expandList")}
                 title={
                   list.autoCollapse
-                    ? list.peek
-                      ? t("agent.task.collapseList")
-                      : t("agent.task.expandListNarrow")
+                    ? t("agent.task.expandListNarrow")
                     : t("agent.task.expandList")
                 }
                 onClick={list.toggle}
@@ -273,10 +271,18 @@ export function AgentWorkspace({
               {/* The input (and its status line) belongs to the conversation:
                   the task record and the ledger are read-only ledgers, so they
                   get the full height instead. While the host commits and
-                  merges input is closed too: the task pane owns retry. */}
-              {paneView !== "chat" || selected?.workflow === "finalizing" ? null : (
+                  merges input is closed too: the task pane owns retry.
+                  Hidden rather than unmounted: the composer owns the draft, and
+                  switching to 任务/轨迹 must not throw away typed text. */}
+              <div
+                className={
+                  paneView === "chat" && selected?.workflow !== "finalizing"
+                    ? undefined
+                    : "hidden"
+                }
+              >
                 <Composer />
-              )}
+              </div>
             </div>
           </div>
         </div>

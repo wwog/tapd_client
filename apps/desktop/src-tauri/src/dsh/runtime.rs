@@ -770,8 +770,17 @@ impl RuntimeState {
             .await
         {
             Ok(value) => {
-                let result: InitializeResult = serde_json::from_value(value)
-                    .map_err(|error| self.fail(app, "initialize_failed", error.to_string()))?;
+                // A child that answered initialize with something unexpected is
+                // unusable: stop it here as the timeout path does, otherwise
+                // the next `ensure_ready` finds a live child and reports this
+                // failed state as a running runtime.
+                let result: InitializeResult = match serde_json::from_value(value) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let _ = self.stop(app).await;
+                        return Err(self.fail(app, "initialize_failed", error.to_string()));
+                    }
+                };
                 tracing::info!(server = %result.server_info.name, "built-in agent runtime ready");
             }
             Err(error) => {

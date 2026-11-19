@@ -241,6 +241,12 @@ pub fn run() {
                             let app = app.clone();
                             let state = state.clone();
                             async move {
+                                // The user may have turned the companion off
+                                // while these retries were running; starting it
+                                // anyway would serve LAN traffic they refused.
+                                if !state.config_snapshot().companion.enabled {
+                                    return Ok(());
+                                }
                                 companion::start(app, state)
                                     .await
                                     .map_err(service_guard::StartError::transient)

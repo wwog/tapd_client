@@ -7,7 +7,7 @@ export const misc = {
   "service.failed.title": ["后台服务启动失败", "Background service failed to start"],
   "service.failed.agent": ["内置 Agent 运行时", "Agent runtime"],
   "service.failed.companion": ["伴侣服务", "Companion service"],
-  "service.failed.attempts": ["已自动重试 {attempts} 次", "Tried {attempts} times"],
+  "service.failed.attempts": ["已自动尝试 {attempts} 次", "Tried {attempts} times"],
   "service.failed.logs": ["查看日志", "View logs"],
   "service.failed.retry": ["重新启动", "Restart"],
   "service.failed.restartApp": ["重启应用", "Restart app"],

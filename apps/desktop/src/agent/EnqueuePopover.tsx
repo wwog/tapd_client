@@ -191,7 +191,7 @@ export function EnqueueControl({ target, variant = "icon", disabled = false }: P
             title={open ? label : t("agent.enqueue.bugHint")}
             aria-haspopup="dialog"
             aria-expanded={open}
-            disabled={disabled}
+            disabled={disabled || submitting}
             onClick={press}
           >
             {label}
@@ -331,6 +331,9 @@ function EnqueuePanel(props: PanelProps) {
       role="dialog"
       aria-label={heading}
       style={style}
+      // The card is portalled but stays in the row's React tree: without this,
+      // a right-click in the note would open the row's context menu behind it.
+      onContextMenu={(event) => event.stopPropagation()}
       className={clsx(
         "enqueue-pop fixed z-[68] rounded-xl border border-border bg-surface p-3",
         closing && "enqueue-pop-out",

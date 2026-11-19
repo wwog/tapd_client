@@ -8,7 +8,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, relativeTime } from "../lib/api";
+import { api } from "../lib/api";
 import type { DshFinalizeStep, DshTask } from "../lib/dsh";
 import type { FileTabTarget } from "../lib/fs";
 import { t, type MessageKey } from "../lib/i18n";
@@ -23,7 +23,6 @@ import {
   agentActions,
   agentStore,
   isSessionRunning,
-  taskActivityAt,
   taskReviewable,
 } from "./store";
 import { WORKFLOW, taskHashes } from "./workflow";
@@ -243,7 +242,7 @@ export function TaskPanel({
         {review ? (
           <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
             <h2 className="text-ui-sm text-slate-900">{t("agent.review.summary")}</h2>
-            <p className="mt-1.5 select-text whitespace-pre-wrap wrap-break-wordword text-ui-caption leading-6 text-slate-700">
+            <p className="mt-1.5 select-text whitespace-pre-wrap wrap-break-word text-ui-caption leading-6 text-slate-700">
               {review.summary}
             </p>
             {review.verification ? (

@@ -28,9 +28,10 @@ if (isOverlay) document.documentElement.dataset.overlay = "true";
 /** Main window shell: reveals the native window once this tree is painted. */
 function MainWindow() {
   useEffect(() => {
-    revealWhenPainted();
+    const cancelReveal = revealWhenPainted();
     // A service that failed before this window painted still has to surface.
     startServiceFailures();
+    return cancelReveal;
   }, []);
   return (
     <React.StrictMode>
