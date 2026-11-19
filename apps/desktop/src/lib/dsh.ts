@@ -445,6 +445,10 @@ export type DshTask = {
   writeback: DshTaskWriteback;
   /** This round works directly in the repository (no worktree, no merge). */
   direct: boolean;
+  /** Model route chosen at hand-over; the engine's usage wins once running. */
+  model?: string;
+  /** The last turn stopped before the round settled (stop or app exit). */
+  interrupted?: boolean;
 };
 
 // ---------------------------------------------------------------------------

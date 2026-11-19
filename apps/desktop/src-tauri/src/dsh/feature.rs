@@ -64,7 +64,8 @@ pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
 ///
 /// App restart semantics: queued tasks are rescheduled against the live
 /// sessions the new runtime has. A row persisted as running without a live
-/// session does not hold a slot and waits for the user to open it.
+/// session does not hold a slot; it is marked interrupted and waits for the user
+/// to continue it.
 async fn after_runtime_up(app: &AppHandle) {
     if let Err(error) = super::tasks::schedule(app).await {
         tracing::warn!(%error, "queued dsh tasks were not scheduled");
@@ -73,6 +74,9 @@ async fn after_runtime_up(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         super::tasks::recover_finalizing(&handle).await;
+        // Rows whose turn died with the previous process: the workflow stays
+        // running, but the list must not paint them as working.
+        super::tasks::recover_interrupted(&handle).await;
     });
 }
 

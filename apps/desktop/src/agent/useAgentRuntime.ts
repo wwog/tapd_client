@@ -24,7 +24,7 @@ import { agentActions, agentEvents } from "./store";
  */
 let listening = false;
 
-function subscribeAgentEvents(): void {
+export function subscribeAgentEvents(): void {
   if (listening) return;
   listening = true;
 
@@ -56,5 +56,21 @@ export function useAgentRuntime(): void {
   useEffect(() => {
     subscribeAgentEvents();
     void agentActions.bootstrap();
+  }, []);
+}
+
+/**
+ * Lightweight feed for surfaces that are not the Agent page (bug list queue
+ * tab, global workflow queue): the same event channels plus the task list and
+ * session rows. It never touches the selected conversation, so opening the app
+ * on another page does not load a transcript.
+ */
+export function useTaskFeedRuntime(): void {
+  useEffect(() => {
+    subscribeAgentEvents();
+    void agentActions.refreshStatus();
+    void agentActions.refreshTaskRows();
+    void agentActions.refreshSessions();
+    void agentActions.loadConfig();
   }, []);
 }

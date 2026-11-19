@@ -18,6 +18,14 @@ import {
 } from "../lib/api";
 import { cacheApi, type Cached } from "../lib/cache";
 import { localeTag, t, useLocale } from "../lib/i18n";
+import {
+  bugTaskKey,
+  queueOrder,
+  queuedBugEntries,
+  useTaskFeed,
+  workspaceEntries,
+  type TaskFeedEntry,
+} from "../agent/taskFeed";
 import { SkeletonRows } from "./Skeleton";
 import { Button, EmptyState } from "./ui";
 import { BugListPager } from "./BugListPager";
@@ -58,10 +66,12 @@ type Props = {
   onOpenWeb?: (url: string) => void;
   /** Copy arbitrary text from the row context menu. */
   onCopy?: (text: string) => void;
-  /** Launch with a prompt/resources from the compose sheet. */
-  /** Jump to an already queued/running task instead of enqueuing again. */
   /** Claim a bug owned by someone else, which unlocks its actions. */
   onClaim?: (bug: BugSummary) => Promise<void>;
+  /** Jump to an already queued/running task instead of enqueuing again. */
+  onOpenAgentTask?: (sessionId: string) => void;
+  /** Take a queued/running task out of the workflow queue. */
+  onCancelAgentTask?: (sessionId: string) => Promise<void>;
   refreshToken: number;
 };
 
@@ -78,8 +88,70 @@ function BugListViewImpl(props: Props) {
     onOpenWeb,
     onCopy,
     onClaim,
+    onOpenAgentTask,
+    onCancelAgentTask,
     refreshToken,
   } = props;
+
+  // Workflow tasks of this project, from the app-wide feed. The queue tab and
+  // the per-row status line both read the same snapshot.
+  const feed = useTaskFeed();
+  const projectEntries = useMemo(
+    () => workspaceEntries(feed, workspace?.id),
+    [feed, workspace?.id],
+  );
+  /** Bugs the queue owns: running (incl. interrupted) and waiting. */
+  const queueEntries = useMemo(() => {
+    return queuedBugEntries(projectEntries).sort((left, right) => {
+      const rank = (entry: TaskFeedEntry) =>
+        entry.task.workflow === "running" ? 0 : 1;
+      return (
+        rank(left) - rank(right) || queueOrder(left.task, right.task)
+      );
+    });
+  }, [projectEntries]);
+  /** One task per bug for the row status line / action cell. */
+  const agentTasks = useMemo(() => {
+    /** The most active task wins when a bug was handed over twice. */
+    const rank = (entry: TaskFeedEntry) =>
+      entry.task.workflow === "running"
+        ? 0
+        : entry.task.workflow === "queued"
+          ? 1
+          : entry.task.workflow === "awaiting_review"
+            ? 2
+            : 3;
+    const map = new Map<string, TaskFeedEntry>();
+    for (const entry of projectEntries) {
+      const bugId = entry.task.bugId;
+      if (!bugId || !entry.task.project) continue;
+      const key = bugTaskKey(entry.task.project.id, bugId);
+      const current = map.get(key);
+      if (
+        !current ||
+        rank(entry) < rank(current) ||
+        (rank(entry) === rank(current) &&
+          current.task.updatedAt < entry.task.updatedAt)
+      ) {
+        map.set(key, entry);
+      }
+    }
+    return map;
+  }, [projectEntries]);
+  /** Queue ids in display order, deduplicated (one bug can own two tasks). */
+  const queueIds = useMemo(() => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const entry of queueEntries) {
+      const bugId = entry.task.bugId;
+      if (!bugId || seen.has(bugId)) continue;
+      seen.add(bugId);
+      ids.push(bugId);
+    }
+    return ids;
+  }, [queueEntries]);
+  const queueKey = queueIds.join("\u0000");
+  const showQueue = queueIds.length > 0;
 
   const [initialFilters] = useState(loadFilters);
   const [statusFilter, setStatusFilter] = useState<string[]>(
@@ -118,6 +190,15 @@ function BugListViewImpl(props: Props) {
   /** Right-click menu anchored at the pointer, on the row's bug. */
   const [rowMenu, setRowMenu] = useState<(BugRowMenu & { seq: number }) | null>(null);
   const menuSeqRef = useRef(0);
+  /**
+   * 队列中 rows. TAPD has no "has an agent" filter, so the set is exactly the
+   * bugs named by the workflow feed; summaries are fetched one id at a time.
+   */
+  const [queueBugs, setQueueBugs] = useState<BugSummary[]>([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const queueBugsRef = useRef(new Map<string, BugSummary>());
+  const queueRequestRef = useRef(0);
 
   useEffect(() => {
     saveColumns(columns);
@@ -263,11 +344,102 @@ function BugListViewImpl(props: Props) {
     }
   }, [workspace, scope, me, statusFilter, priority, severity, ownerFilter, creatorFilter, debouncedKeyword, sort, pageNo]);
 
+  /**
+   * 队列中 rows: the feed names the bugs, so only summaries are read — cache
+   * first, then one request per id the session has not seen.
+   */
+  const loadQueue = useCallback(
+    async (force = false) => {
+      if (!workspace) return;
+      const ids = queueKey ? queueKey.split("\u0000") : [];
+      const known = queueBugsRef.current;
+      for (const id of Array.from(known.keys())) {
+        if (!ids.includes(id)) known.delete(id);
+      }
+      if (ids.length === 0) {
+        queueRequestRef.current += 1;
+        setQueueBugs([]);
+        setQueueError(null);
+        setQueueLoading(false);
+        return;
+      }
+
+      const missing = ids.filter((id) => !known.has(id));
+      const targets = force ? ids : missing;
+      const requestId = ++queueRequestRef.current;
+      const paint = () => {
+        const bugs = ids.flatMap((id) => {
+          const bug = known.get(id);
+          return bug ? [bug] : [];
+        });
+        setQueueBugs(bugs);
+        return bugs.length;
+      };
+
+      if (targets.length === 0) {
+        paint();
+        setQueueError(null);
+        setQueueLoading(false);
+        return;
+      }
+
+      setQueueLoading(true);
+      let painted = 0;
+      if (!force && missing.length > 0) {
+        try {
+          const cached = await Promise.all(
+            missing.map((id) =>
+              cacheApi.bugDetail(workspace.id, id).catch(() => null),
+            ),
+          );
+          if (requestId !== queueRequestRef.current) return;
+          for (const item of cached) {
+            if (item?.data) known.set(item.data.id, item.data);
+          }
+          painted = paint();
+          if (painted > 0) setQueueLoading(false);
+        } catch {
+          // Cache misses are not page failures; the summary calls decide.
+        }
+      }
+
+      try {
+        const settled = await Promise.allSettled(
+          targets.map((id) => api.bugSummary(workspace.id, id)),
+        );
+        if (requestId !== queueRequestRef.current) return;
+        settled.forEach((result, index) => {
+          if (result.status === "fulfilled") {
+            known.set(targets[index], result.value);
+          }
+        });
+        const count = paint();
+        setQueueError(count === 0 ? t("bugs.queueLoadFailedHint") : null);
+      } catch (cause) {
+        if (requestId !== queueRequestRef.current) return;
+        if (painted === 0) {
+          setQueueError(String(cause));
+          setQueueBugs([]);
+        }
+      } finally {
+        if (requestId === queueRequestRef.current) {
+          setQueueLoading(false);
+          lastLoadedAtRef.current = Date.now();
+        }
+      }
+    },
+    [workspace, queueKey],
+  );
+
   const load = useCallback(
     async (silent = false) => {
+      if (scope === "queue") {
+        await loadQueue(true);
+        return;
+      }
       await loadList(silent);
     },
-    [loadList],
+    [scope, loadList, loadQueue],
   );
 
   const loadRef = useRef(load);
@@ -275,8 +447,23 @@ function BugListViewImpl(props: Props) {
 
   // Server views reload on query changes.
   useEffect(() => {
+    if (scope === "queue") return;
     void loadList();
-  }, [loadList, reloadTick, refreshToken]);
+  }, [scope, loadList, reloadTick, refreshToken]);
+
+  // 队列中 is a local view over the feed: entering it fetches only the bugs
+  // the session has not seen, and a changed id set refetches just those.
+  useEffect(() => {
+    if (scope !== "queue") return;
+    void loadQueue(false);
+  }, [scope, loadQueue, reloadTick, refreshToken]);
+
+  // Activity vanished (task finished or was canceled): the tab is gone, so the
+  // view must not stay on an empty queue.
+  useEffect(() => {
+    if (scope !== "queue" || !feed.loaded || showQueue) return;
+    onScopeChange("mine");
+  }, [scope, feed.loaded, showQueue, onScopeChange]);
 
   // Auto-refresh the visible list. Hidden windows pause; becoming visible
   // again catches up immediately when the snapshot is older than one interval.
@@ -307,14 +494,58 @@ function BugListViewImpl(props: Props) {
   /** Workspace directory plus anyone already on screen, so options are never empty. */
   const peopleOptions = useMemo(() => {
     const values = new Set(memberNicks);
-    for (const bug of page?.bugs ?? []) {
+    for (const bug of [...(page?.bugs ?? []), ...queueBugs]) {
       if (bug.owner) values.add(bug.owner);
       if (bug.creator) values.add(bug.creator);
     }
     return Array.from(values)
       .sort((a, b) => a.localeCompare(b, localeTag()))
       .map((nick) => ({ value: nick, label: nick }));
-  }, [memberNicks, page?.bugs]);
+  }, [memberNicks, page?.bugs, queueBugs]);
+
+  /** 队列中 applies the same keyword/filters/sort locally, in queue order. */
+  const queuePage = useMemo(
+    () =>
+      buildQueuePage(queueBugs, {
+        statusFilter,
+        priority,
+        severity,
+        ownerFilter,
+        creatorFilter,
+        keyword: debouncedKeyword,
+        sort,
+      }),
+    [
+      queueBugs,
+      statusFilter,
+      priority,
+      severity,
+      ownerFilter,
+      creatorFilter,
+      debouncedKeyword,
+      sort,
+    ],
+  );
+
+  /** Queue-owned bugs leave the normal scopes; review/merging rows stay. */
+  const queueIdSet = useMemo(() => new Set(queueIds), [queueIds]);
+  const visiblePage = useMemo(() => {
+    if (!page) return null;
+    if (queueIdSet.size === 0) return page;
+    const bugs = page.bugs.filter((bug) => !queueIdSet.has(bug.id));
+    return bugs.length === page.bugs.length ? page : { ...page, bugs };
+  }, [page, queueIdSet]);
+  const hiddenByQueue = Boolean(
+    page && visiblePage && page.bugs.length > 0 && visiblePage.bugs.length === 0,
+  );
+
+  const activePage = scope === "queue" ? queuePage : visiblePage;
+  const activeLoading = scope === "queue" ? queueLoading : loading;
+  const activeError = scope === "queue" ? queueError : error;
+  const activeSnapshotAt = scope === "queue" ? null : snapshotAt;
+  /** First visit: summaries are still arriving and the page is not real yet. */
+  const queueInitialLoading =
+    scope === "queue" && queueLoading && queueBugs.length === 0;
 
   /** Cycle 升序 → 降序 → 取消（回到 TAPD 默认排序）. */
   const toggleSort = (name: "created" | "status") => {
@@ -370,20 +601,19 @@ function BugListViewImpl(props: Props) {
         onKeywordChange={(value) => {
           setKeyword(value);
         }}
-        activeFilterCount={activeFilterCount}
-        hasResults={Boolean(page && page.bugs.length > 0)}
-        onClearFilters={clearFilters}
+        showQueue={showQueue}
+        queueCount={queueIds.length}
         columns={columns}
         onColumnsChange={setColumns}
         hideOwner={hideOwner}
       />
 
-      {page && snapshotAt !== null && !loading && !error ? (
+      {activePage && activeSnapshotAt !== null && !activeLoading && !activeError ? (
         <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50/80 px-5 py-1.5 text-ui-sm text-amber-700">
           <WifiOff size={12} className="shrink-0" />
           <span className="truncate">
             {t("bugs.offlineSnapshot", {
-              time: formatSnapshotTime(snapshotAt),
+              time: formatSnapshotTime(activeSnapshotAt),
             })}
           </span>
           <button
@@ -398,10 +628,12 @@ function BugListViewImpl(props: Props) {
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {error ? (
+        {activeError ? (
           <div className="m-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
-            <div className="font-normal">{t("bugs.loadFailed")}</div>
-            <div className="mt-1 break-all">{error}</div>
+            <div className="font-normal">
+              {scope === "queue" ? t("bugs.queueLoadFailed") : t("bugs.loadFailed")}
+            </div>
+            <div className="mt-1 break-all">{activeError}</div>
             <div className="mt-3">
               <Button size="sm" onClick={() => setReloadTick((tick) => tick + 1)}>
                 {t("common.retry")}
@@ -410,7 +642,8 @@ function BugListViewImpl(props: Props) {
           </div>
         ) : null}
 
-        {!error && !page && loading ? (
+        {!activeError &&
+        ((!activePage && activeLoading) || queueInitialLoading) ? (
           <SkeletonRows
             className="pt-1"
             rows={9}
@@ -419,17 +652,40 @@ function BugListViewImpl(props: Props) {
           />
         ) : null}
 
-        {!error && page && page.bugs.length === 0 ? (
+        {!activeError &&
+        !queueInitialLoading &&
+        activePage &&
+        activePage.bugs.length === 0 ? (
           <EmptyState
             icon={<Bug size={22} />}
-            title={scope === "mine" ? t("bugs.emptyMine") : t("bugs.emptyAll")}
+            title={
+              hiddenByQueue
+                ? t("bugs.emptyQueueHidden")
+                : scope === "queue"
+                  ? activeFilterCount > 0
+                    ? t("bugs.emptyAll")
+                    : t("bugs.emptyQueue")
+                  : scope === "mine"
+                    ? t("bugs.emptyMine")
+                    : t("bugs.emptyAll")
+            }
             description={
-              activeFilterCount > 0
-                ? t("bugs.emptyHintFiltersAll")
-                : t("bugs.emptyProject")
+              hiddenByQueue
+                ? t("bugs.emptyQueueHiddenHint")
+                : scope === "queue"
+                  ? activeFilterCount > 0
+                    ? t("bugs.emptyHintFiltersAll")
+                    : t("bugs.emptyQueueHint")
+                  : activeFilterCount > 0
+                    ? t("bugs.emptyHintFiltersAll")
+                    : t("bugs.emptyProject")
             }
             action={
-              activeFilterCount > 0 ? (
+              hiddenByQueue ? (
+                <Button size="sm" onClick={() => onScopeChange("queue")}>
+                  {t("bugs.scopeQueue")}
+                </Button>
+              ) : activeFilterCount > 0 ? (
                 <Button size="sm" onClick={clearFilters}>
                   {t("bugs.clearFilters")}
                 </Button>
@@ -438,10 +694,10 @@ function BugListViewImpl(props: Props) {
           />
         ) : null}
 
-        {!error && page && page.bugs.length > 0 ? (
+        {!activeError && activePage && activePage.bugs.length > 0 ? (
           <BugTable
-            page={page}
-            loading={loading}
+            page={activePage}
+            loading={activeLoading}
             me={me}
             activeBugId={activeBugId}
             columns={columns}
@@ -454,6 +710,8 @@ function BugListViewImpl(props: Props) {
             ownerFilter={ownerFilter}
             creatorFilter={creatorFilter}
             peopleOptions={peopleOptions}
+            onClearFilters={clearFilters}
+            clearableFilters={activeFilterCount > 0}
             onToggleSort={toggleSort}
             onStatusChange={(values) => {
               setPageNo(1);
@@ -478,17 +736,22 @@ function BugListViewImpl(props: Props) {
             onOpenBug={onOpenBug}
             onRowContextMenu={openRowMenu}
             onClaim={claim}
+            agentTasks={agentTasks}
+            onOpenAgentTask={onOpenAgentTask}
+            onCancelAgentTask={onCancelAgentTask}
           />
         ) : null}
       </div>
 
-      <BugListPager
-        page={page}
-        pageNo={pageNo}
-        loading={loading}
-        onRefresh={() => setReloadTick((tick) => tick + 1)}
-        onPageChange={setPageNo}
-      />
+      {scope === "queue" ? null : (
+        <BugListPager
+          page={visiblePage}
+          pageNo={pageNo}
+          loading={loading}
+          onRefresh={() => setReloadTick((tick) => tick + 1)}
+          onPageChange={setPageNo}
+        />
+      )}
 
       {rowMenu ? (
         <BugRowContextMenu
@@ -511,6 +774,67 @@ function BugListViewImpl(props: Props) {
  * `useCallback` handlers and the workspace object from the loaded context.
  */
 export const BugListView = memo(BugListViewImpl);
+
+/**
+ * 队列中 has no server query: the rows are exactly the bugs named by the
+ * workflow feed. Filters, keyword and sort therefore apply locally, and the
+ * default order stays queue order (running first, then waiting by position).
+ */
+function buildQueuePage(
+  source: BugSummary[],
+  filters: {
+    statusFilter: string[];
+    priority: string;
+    severity: string;
+    ownerFilter: string[];
+    creatorFilter: string;
+    keyword: string;
+    sort: BugSort | null;
+  },
+): BugListPage {
+  const statusMap: Record<string, string> = {};
+  for (const bug of source) statusMap[bug.status] = bug.statusLabel;
+  const needle = filters.keyword.toLowerCase();
+  // Mirrors the server-side filter: digits are an id lookup (full or short id,
+  // optional `#`), everything else matches the title.
+  const keywordId = /^#?\d+$/.test(filters.keyword)
+    ? filters.keyword.replace(/^#/, "")
+    : null;
+  const bugs = source.filter(
+    (bug) =>
+      (filters.statusFilter.length === 0 ||
+        filters.statusFilter.includes(bug.status)) &&
+      (!filters.priority || bug.priority === filters.priority) &&
+      (!filters.severity || bug.severity === filters.severity) &&
+      (filters.ownerFilter.length === 0 ||
+        filters.ownerFilter.includes(bug.owner)) &&
+      (!filters.creatorFilter || bug.creator === filters.creatorFilter) &&
+      (!needle ||
+        (keywordId
+          ? bug.id === keywordId || bug.shortId === keywordId
+          : bug.title.toLowerCase().includes(needle))),
+  );
+  if (filters.sort) {
+    const direction = filters.sort.order === "asc" ? 1 : -1;
+    bugs.sort(
+      (a, b) =>
+        (filters.sort!.name === "created"
+          ? a.created.localeCompare(b.created)
+          : (a.statusLabel || a.status).localeCompare(
+              b.statusLabel || b.status,
+              localeTag(),
+            )) * direction,
+    );
+  }
+  return {
+    page: 1,
+    perpage: Math.max(50, bugs.length),
+    total: bugs.length,
+    statusMap,
+    statusOrder: Array.from(new Set(source.map((bug) => bug.status))),
+    bugs,
+  };
+}
 
 /** "上次同步" label: time only for today, date + time for older snapshots. */
 function formatSnapshotTime(fetchedAt: number): string {

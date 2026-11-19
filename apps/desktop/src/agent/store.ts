@@ -1213,6 +1213,20 @@ export const agentActions = {
     }
   },
 
+  /**
+   * Task rows only, for surfaces outside the Agent page (bug list queue tab,
+   * global queue). It does not repair the selection or load a transcript, so a
+   * background feed cannot pull the reader into a conversation.
+   */
+  refreshTaskRows: async (): Promise<void> => {
+    try {
+      const { tasks } = await dshTaskApi.list();
+      update((state) => ({ ...state, tasks, tasksError: null }));
+    } catch (error) {
+      update((state) => ({ ...state, tasksError: String(error) }));
+    }
+  },
+
   /** Configured projects; the list renders one group per project even empty. */
   refreshProjects: async (): Promise<void> => {
     try {
@@ -1364,6 +1378,55 @@ export const agentActions = {
       await dshApi.retryTurn(sessionId);
     } catch (error) {
       setError(error);
+    }
+  },
+
+  /**
+   * Resumes an interrupted workflow task by sending one continuation prompt.
+   * dsh's own retry shape only fires after a failed turn, and a stopped/crashed
+   * round has no such end, so a normal prompt is the reliable way back in.
+   *
+   * The row flips to working locally before the backend event lands; a rejected
+   * prompt reloads the stored list so the 已中断 state comes back.
+   */
+  continueTask: async (sessionId: string, prompt: string): Promise<void> => {
+    const text = prompt.trim();
+    if (!text) return;
+    update((state) => ({
+      ...state,
+      live: { ...state.live, [sessionId]: undefined },
+      committedAttempts: { ...state.committedAttempts, [sessionId]: undefined },
+      pendingPrompts: {
+        ...state.pendingPrompts,
+        [sessionId]: [...(state.pendingPrompts[sessionId] ?? []), text],
+      },
+      tasks:
+        state.tasks?.map((task) =>
+          task.id === sessionId
+            ? {
+                ...task,
+                interrupted: false,
+                status: "running",
+                // Keep the age fallback from re-flagging it while the turn
+                // starts and the live session row lands.
+                updatedAt: new Date().toISOString(),
+              }
+            : task,
+        ) ?? null,
+      lastError: null,
+    }));
+    try {
+      await dshApi.prompt(sessionId, text);
+    } catch (error) {
+      update((state) => {
+        const queue = state.pendingPrompts[sessionId] ?? [];
+        const index = queue.indexOf(text);
+        const pendingPrompts = { ...state.pendingPrompts };
+        if (index >= 0) pendingPrompts[sessionId] = queue.filter((_, i) => i !== index);
+        return { ...state, pendingPrompts };
+      });
+      void agentActions.refreshTaskRows();
+      throw error;
     }
   },
 

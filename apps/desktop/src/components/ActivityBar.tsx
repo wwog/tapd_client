@@ -4,6 +4,7 @@ import {
   Bot,
   Bug,
   FolderGit2,
+  ListTodo,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -16,6 +17,7 @@ import { t, type MessageKey } from "../lib/i18n";
 
 export type View =
   | "bugs"
+  | "queue"
   | "local"
   | "agent"
   | "projects"
@@ -26,6 +28,7 @@ export type View =
 
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
+  queue: "rail-bug-jump",
   agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
   coworker: "rail-users-wave",
@@ -40,6 +43,9 @@ const RAIL_ANIM: Record<string, string> = {
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
+  // Global workflow queue, next to the bug list. Unlike the per-project 队列中
+  // tab it spans every project and is where an interrupted task is continued.
+  { id: "queue", label: "app.nav.queue", icon: <ListTodo size={15} /> },
   // 事项 has no rail entry: local projects open their own tab from the project
   // column (and the projects page), like TAPD projects do.
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },

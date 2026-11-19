@@ -13,6 +13,7 @@ export type GroupRole = "primary" | "secondary" | "bottom";
 /** Full-page views reachable from the activity bar. */
 export type PageView =
   | "bugs"
+  | "queue"
   | "local"
   | "agent"
   | "projects"

@@ -10,6 +10,7 @@ import {
   Check,
   Columns3,
   GripVertical,
+  ListTodo,
   Search,
   Users,
   UserRound,
@@ -44,12 +45,11 @@ type Props = {
   scope: BugScope;
   me: string | null;
   onScopeChange: (scope: BugScope) => void;
+  /** 队列中 exists only while the project owns running/waiting tasks. */
+  showQueue: boolean;
+  queueCount: number;
   keyword: string;
   onKeywordChange: (value: string) => void;
-  activeFilterCount: number;
-  /** The empty state owns the clear-filters action; the header only adds it above results. */
-  hasResults: boolean;
-  onClearFilters: () => void;
   columns: ColumnPref[];
   onColumnsChange: Dispatch<SetStateAction<ColumnPref[]>>;
   hideOwner: boolean;
@@ -61,11 +61,10 @@ export function BugTableToolbar(props: Props) {
     scope,
     me,
     onScopeChange,
+    showQueue,
+    queueCount,
     keyword,
     onKeywordChange,
-    activeFilterCount,
-    hasResults,
-    onClearFilters,
     columns,
     onColumnsChange,
     hideOwner,
@@ -220,6 +219,16 @@ export function BugTableToolbar(props: Props) {
   const scopeOptions: SegmentedOption<BugScope>[] = [
     { value: "mine", label: t("bugs.scopeMine"), icon: <UserRound size={12} /> },
     { value: "all", label: t("common.all"), icon: <Users size={12} /> },
+    ...(showQueue
+      ? [
+          {
+            value: "queue" as const,
+            label: t("bugs.scopeQueue"),
+            icon: <ListTodo size={12} />,
+            count: queueCount,
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -241,15 +250,6 @@ export function BugTableToolbar(props: Props) {
           </span>
         ) : null}
 
-        {activeFilterCount > 0 && hasResults ? (
-          <button
-            type="button"
-            onClick={onClearFilters}
-            className="text-ui-sm text-slate-400 transition hover:text-slate-700"
-          >
-            {t("bugs.clearFilters")}
-          </button>
-        ) : null}
       </div>
 
       <div className="ml-auto flex min-w-0 items-center gap-2">

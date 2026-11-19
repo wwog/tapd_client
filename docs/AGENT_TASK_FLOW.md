@@ -305,7 +305,10 @@ writeback 重新触发回合）。没有 `dsh_task_merge`。
 - 释放槽位：真正的 `turn/end` 时触发调度（`finish_turn` 在 awaiting_review、finalizing、
   done/failed/canceled 各分支都会 reschedule），不是 `task_submit` 一调用就释放。
 - 应用重启后，`Queued` 任务按当前 live 会话数重新调度；持久化 `Running` 但无 live 会话的任务
-  不算槽位，等用户打开/恢复。
+  不算槽位，并被标记为 `interrupted`（界面显示「已中断」，任务页 / 全局工作流队列提供「继续」）。
+  继续会发送一条普通的续跑提示（dsh 原生 retry 只接受 failed/blocked 的回合），回合开始时清除标记。
+- 手动停止一轮（Composer 的停止）不再让任务永远停在 `running`：`turn/end` 的 `aborted` 会把行标记为
+  `interrupted`，状态机仍是 `running`，方便继续；真正取消任务走 `dsh_task_cancel`。
 - 自由会话（含 chat worktree）不占工作流队列。
 
 ---

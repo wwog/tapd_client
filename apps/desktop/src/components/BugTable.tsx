@@ -1,10 +1,12 @@
-import { type MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
   ArrowUpNarrowWide,
+  Bot,
   Loader2,
   UserPlus,
+  X,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -16,6 +18,8 @@ import { bugRef, isMyBug } from "../lib/bug";
 import { plainTitle } from "../lib/title";
 import { t } from "../lib/i18n";
 import { EnqueueControl } from "../agent/EnqueuePopover";
+import { bugTaskKey, type TaskFeedEntry } from "../agent/taskFeed";
+import { AgentActivityLine } from "./AgentActivityLine";
 import { ScrollingName } from "./ScrollingName";
 import { TableFilter } from "./TableFilter";
 import { Badge, PRIORITY_TONES, SEVERITY_TONES, STATUS_TONES } from "./ui";
@@ -65,6 +69,9 @@ type Props = {
   ownerFilter: string[];
   creatorFilter: string;
   peopleOptions: Array<{ value: string; label: string }>;
+  /** Clears every filter from the open filter menu. */
+  onClearFilters: () => void;
+  clearableFilters: boolean;
   onToggleSort: (name: SortKey) => void;
   onStatusChange: (values: string[]) => void;
   onPriorityChange: (value: string) => void;
@@ -77,6 +84,12 @@ type Props = {
     bug: BugSummary,
   ) => void;
   onClaim: (bug: BugSummary) => void;
+  /** Workflow tasks keyed by `workspace::bug`; the row paints their status. */
+  agentTasks?: Map<string, TaskFeedEntry>;
+  /** Opens an existing task instead of enqueuing the bug again. */
+  onOpenAgentTask?: (sessionId: string) => void;
+  /** Cancels a queued/running task from the row. */
+  onCancelAgentTask?: (sessionId: string) => Promise<void>;
 };
 
 /** The bug table, its filter/sort headers and the row context menu. */
@@ -96,6 +109,8 @@ export function BugTable(props: Props) {
     ownerFilter,
     creatorFilter,
     peopleOptions,
+    onClearFilters,
+    clearableFilters,
     onToggleSort,
     onStatusChange,
     onPriorityChange,
@@ -105,7 +120,20 @@ export function BugTable(props: Props) {
     onOpenBug,
     onRowContextMenu,
     onClaim,
+    agentTasks,
+    onOpenAgentTask,
+    onCancelAgentTask,
   } = props;
+  const [cancelingTaskId, setCancelingTaskId] = useState<string | null>(null);
+  const cancelTask = async (sessionId: string) => {
+    if (!onCancelAgentTask || cancelingTaskId) return;
+    setCancelingTaskId(sessionId);
+    try {
+      await onCancelAgentTask(sessionId);
+    } finally {
+      setCancelingTaskId(null);
+    }
+  };
   const visibleColumns = columns.filter(
     (column) => column.visible && !(hideOwner && column.key === "owner"),
   );
@@ -124,11 +152,18 @@ export function BugTable(props: Props) {
     label: t(label),
   }));
 
+  /** Every filter menu carries the global clear action in its footer. */
+  const clearProps = {
+    onClear: onClearFilters,
+    clearable: clearableFilters,
+  };
+
   const renderColumnHeader = (key: ColumnKey) => {
     switch (key) {
       case "status":
         return (
           <TableFilter
+            {...clearProps}
             label={t("common.status")}
             className="px-3 py-2.5"
             options={statusOptions}
@@ -143,6 +178,7 @@ export function BugTable(props: Props) {
       case "priority":
         return (
           <TableFilter
+            {...clearProps}
             label={t("common.priority")}
             className="px-3 py-2.5"
             options={priorityOptions}
@@ -154,6 +190,7 @@ export function BugTable(props: Props) {
       case "severity":
         return (
           <TableFilter
+            {...clearProps}
             label={t("common.severity")}
             className="px-3 py-2.5"
             options={severityOptions}
@@ -165,6 +202,7 @@ export function BugTable(props: Props) {
       case "owner":
         return (
           <TableFilter
+            {...clearProps}
             label={t("common.owner")}
             className="px-3 py-2.5"
             options={peopleOptions}
@@ -175,6 +213,7 @@ export function BugTable(props: Props) {
       case "creator":
         return (
           <TableFilter
+            {...clearProps}
             label={t("common.creator")}
             className="px-3 py-2.5"
             options={peopleOptions}
@@ -263,6 +302,12 @@ export function BugTable(props: Props) {
         >
           {page.bugs.map((bug) => {
             const active = activeBugId === bug.id;
+            const agent = agentTasks?.get(
+              bugTaskKey(bug.workspaceId, bug.id),
+            );
+            const canCancel =
+              agent?.task.workflow === "queued" ||
+              agent?.task.workflow === "running";
             return (
             <tr
               key={bug.id}
@@ -301,6 +346,7 @@ export function BugTable(props: Props) {
                   ) : null}
                   {bug.iterationName ? <span className="truncate">{bug.iterationName}</span> : null}
                 </div>
+                {agent ? <AgentActivityLine entry={agent} /> : null}
               </td>
               {visibleColumns.map((column) => (
                 <BugColumnCell key={column.key} column={column.key} bug={bug} />
@@ -314,7 +360,48 @@ export function BugTable(props: Props) {
                 )}
                 onClick={(event) => event.stopPropagation()}
               >
-                {!isMyBug(bug.owner, me) ? (
+                {agent ? (
+                  // The bug already owns a task: jump to it or take it out of
+                  // the queue. Re-enqueuing here would create a second task.
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      title={t("bugs.viewAgentTask")}
+                      aria-label={t("bugs.viewAgentTask")}
+                      onClick={() => onOpenAgentTask?.(agent.task.id)}
+                      className="grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                    >
+                      <Bot size={13} />
+                    </button>
+                    {canCancel ? (
+                      <button
+                        type="button"
+                        disabled={cancelingTaskId !== null}
+                        title={
+                          agent.task.workflow === "queued"
+                            ? t("bugs.removeFromQueue")
+                            : agent.interrupted
+                              ? t("bugs.cancelAgentTask")
+                              : t("bugs.interruptAgentTask")
+                        }
+                        aria-label={t("bugs.cancelAgentTask")}
+                        onClick={() => void cancelTask(agent.task.id)}
+                        className={clsx(
+                          "grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition",
+                          cancelingTaskId !== null
+                            ? "cursor-not-allowed opacity-60"
+                            : "hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700",
+                        )}
+                      >
+                        {cancelingTaskId === agent.task.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <X size={13} />
+                        )}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : !isMyBug(bug.owner, me) ? (
                   <div className="flex items-center justify-center">
                     <button
                       type="button"

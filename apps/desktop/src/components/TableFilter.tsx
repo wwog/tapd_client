@@ -33,6 +33,10 @@ type Props = {
   /** Optional sort control, rendered before the filter toggle. */
   sort?: TableSortProps;
   className?: string;
+  /** Clears every filter (the old toolbar action, now inside the menu). */
+  onClear?: () => void;
+  /** Some filter is applied, so clearing is meaningful. */
+  clearable?: boolean;
 };
 
 /**
@@ -52,6 +56,8 @@ export function TableFilter(props: Props) {
     onChange,
     sort,
     className,
+    onClear,
+    clearable = false,
   } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -257,23 +263,40 @@ export function TableFilter(props: Props) {
                   ) : null}
                 </div>
 
-                {multiple ? (
-                  <div className="flex items-center justify-end border-t border-slate-100 px-2 py-1.5">
+                <div
+                  className={clsx(
+                    "flex items-center gap-2 border-t border-slate-100 px-2 py-1.5",
+                    clearable && onClear ? "justify-between" : "justify-end",
+                  )}
+                >
+                  {clearable && onClear ? (
                     <button
                       type="button"
                       onClick={() => {
+                        onClear();
+                        close();
+                      }}
+                      className="text-ui-xs text-slate-500 transition hover:text-slate-800"
+                    >
+                      {t("bugs.clearFilters")}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (multiple) {
                         const changed =
                           draft.length !== selected.length ||
                           draft.some((value) => !selected.includes(value));
                         if (changed) onChange(draft);
-                        close();
-                      }}
-                      className="text-ui-xs text-sky-600 transition hover:text-sky-700"
-                    >
-                      {t("common.done")}
-                    </button>
-                  </div>
-                ) : null}
+                      }
+                      close();
+                    }}
+                    className="text-ui-xs text-sky-600 transition hover:text-sky-700"
+                  >
+                    {t("common.done")}
+                  </button>
+                </div>
               </div>
             </>,
             document.body,

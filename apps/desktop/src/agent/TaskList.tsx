@@ -36,7 +36,8 @@ import {
 } from "./store";
 import { TaskHoverCard } from "./TaskHoverCard";
 import type { TaskListLayout } from "./useTaskListLayout";
-import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
+import { taskInterrupted } from "./taskFeed";
+import { isWorkflowTask, taskWorkflowMark, taskWorkflowView } from "./workflow";
 
 /** Which project groups are folded shut, by group key. */
 const COLLAPSED_PREF = "agent.collapsed-projects.v1";
@@ -250,6 +251,7 @@ export function TaskList({ layout }: { layout: TaskListLayout }) {
                         task={task}
                         selected={task.id === state.selectedId}
                         status={taskLiveStatus(state, task)}
+                        interrupted={taskInterrupted(state, task)}
                         updatedAt={taskActivityAt(state, task)}
                         pending={pending.get(task.id) ?? 0}
                         model={
@@ -341,6 +343,7 @@ function TaskRow({
   task,
   selected,
   status,
+  interrupted,
   updatedAt,
   pending,
   model,
@@ -350,14 +353,15 @@ function TaskRow({
   task: DshTask;
   selected: boolean;
   status: DshSessionStatus;
+  interrupted: boolean;
   updatedAt: string;
   pending: number;
   model?: string;
   onDelete: (task: DshTask) => void;
   onMenu: (task: DshTask, x: number, y: number) => void;
 }) {
-  const workflow = WORKFLOW[task.workflow];
-  const mark = WORKFLOW_MARK[task.workflow];
+  const workflow = taskWorkflowView(task, interrupted);
+  const mark = taskWorkflowMark(task, interrupted);
 
   // The hover card opens after a short dwell and closes after a short grace
   // period, so the pointer can travel onto the card through the gap.
@@ -442,9 +446,11 @@ function TaskRow({
         />
         {updatedAt ? (
           <span className="ml-1.5 shrink-0 text-ui-2xs tabular-nums text-slate-400 transition group-hover:opacity-0">
-            {status === "running" && pending === 0
-              ? t("agent.task.working")
-              : relativeTime(updatedAt)}
+            {interrupted
+              ? t("agent.task.workflowInterrupted")
+              : status === "running" && pending === 0
+                ? t("agent.task.working")
+                : relativeTime(updatedAt)}
           </span>
         ) : null}
       </button>
@@ -463,6 +469,7 @@ function TaskRow({
         <TaskHoverCard
           task={task}
           status={status}
+          interrupted={interrupted}
           pending={pending}
           model={model}
           updatedAt={updatedAt}

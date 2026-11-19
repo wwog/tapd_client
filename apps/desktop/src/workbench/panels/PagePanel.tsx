@@ -9,6 +9,7 @@ import { CoworkerPage } from "../../components/CoworkerPage";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
 import { McpPage } from "../../components/McpPage";
 import { ProjectSettings } from "../../components/ProjectSettings";
+import { QueuePage } from "../../components/QueuePage";
 import { SettingsPage } from "../../components/SettingsPage";
 import { SkeletonRows } from "../../components/Skeleton";
 import { Button } from "../../components/ui";
@@ -58,6 +59,13 @@ export function PagePanel({ panel }: PanelProps) {
       );
     }
 
+    case "queue":
+      return (
+        <div data-component="PagePanel" className="flex h-full min-h-0 flex-col">
+          <QueuePage onOpenTask={host.onOpenAgentTask} />
+        </div>
+      );
+
     case "bugs": {
       // A project tab renders its own workspace; a global page (first launch,
       // before the selection is known) follows the active workspace.
@@ -98,6 +106,8 @@ export function PagePanel({ panel }: PanelProps) {
               onOpenWeb={host.onOpenWeb}
               onCopy={host.onCopy}
               onClaim={host.onClaim}
+              onOpenAgentTask={host.onOpenAgentTask}
+              onCancelAgentTask={host.onCancelAgentTask}
               refreshToken={host.refreshToken}
             />
           ) : (

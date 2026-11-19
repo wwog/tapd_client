@@ -196,6 +196,48 @@ export const bugs = {
     "{kind} · Embedded in description/comments",
   ],
 
+  // ------------------------------------------------------- workflow queue
+  "bugs.scopeQueue": ["队列中", "In queue"],
+  "bugs.queueLoadFailed": ["队列任务加载失败", "Failed to load queued bugs"],
+  "bugs.queueLoadFailedHint": [
+    "队列里的缺陷读取不到，可能已被删除。",
+    "The queued bugs could not be read; they may have been deleted.",
+  ],
+  "bugs.emptyQueue": ["队列是空的", "The queue is empty"],
+  "bugs.emptyQueueHint": [
+    "把缺陷交给 Agent 后会出现在这里。",
+    "Bugs handed to the Agent show up here.",
+  ],
+  "bugs.emptyQueueHidden": [
+    "本页缺陷都在队列中",
+    "Every bug on this page is in the queue",
+  ],
+  "bugs.emptyQueueHiddenHint": [
+    "切到「队列中」查看处理进度。",
+    'Open "In queue" to see their progress.',
+  ],
+  "bugs.agentFallbackName": ["Agent", "Agent"],
+  "bugs.agentRunning": ["{model} 处理中", "{model} working"],
+  "bugs.agentQueued": ["{model} 排队中", "{model} queued"],
+  "bugs.agentQueuedPosition": [
+    "{model} 排队中 #{position}",
+    "{model} queued #{position}",
+  ],
+  "bugs.agentInterrupted": ["{model} 已中断", "{model} interrupted"],
+  "bugs.agentAwaitingReview": ["{model} 待审核", "{model} awaiting review"],
+  "bugs.agentFinalizing": ["{model} 收尾中", "{model} finishing"],
+  "bugs.agentElapsed": [
+    "{time} 创建 · 已用 {elapsed}",
+    "Started {time} · {elapsed} elapsed",
+  ],
+  "bugs.agentElapsedHours": ["{hours} 小时 {minutes} 分", "{hours}h {minutes}m"],
+  "bugs.agentElapsedMinutes": ["{minutes} 分 {seconds} 秒", "{minutes}m {seconds}s"],
+  "bugs.agentElapsedSeconds": ["{seconds} 秒", "{seconds}s"],
+  "bugs.viewAgentTask": ["查看 Agent 任务", "View agent task"],
+  "bugs.removeFromQueue": ["移出队列", "Remove from queue"],
+  "bugs.interruptAgentTask": ["中断当前 Agent 任务", "Interrupt the agent task"],
+  "bugs.cancelAgentTask": ["取消 Agent 任务", "Cancel agent task"],
+
   // ------------------------------------------------------------ transition
   "bugs.transitionTo": ["流转到「{label}」", 'Transition to "{label}"'],
   "bugs.transitionFormHint": [

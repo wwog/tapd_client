@@ -41,6 +41,39 @@ export const agent = {
   "agent.task.workflowDone": ["已完成", "Done"],
   "agent.task.workflowFailed": ["失败", "Failed"],
   "agent.task.workflowCanceled": ["已取消", "Canceled"],
+  // Derived state: the row keeps `running` so continuing resumes the round.
+  "agent.task.workflowInterrupted": ["已中断", "Interrupted"],
+  "agent.task.continue": ["继续", "Continue"],
+  "agent.task.continueHint": [
+    "从上次中断的位置继续",
+    "Continue where the task stopped",
+  ],
+  "agent.task.continuePrompt": [
+    "继续完成当前任务，从上次中断的地方接着做。",
+    "Continue the current task from where it was interrupted.",
+  ],
+  "agent.task.interruptedHint": [
+    "任务在上次运行中中断；继续会从现有上下文接着执行。",
+    "The task stopped in the previous run; continuing resumes from the existing context.",
+  ],
+  // ------------------------------------------------------- workflow queue
+  "agent.queue.execution": [
+    "执行中 {running} / {total}",
+    "{running} of {total} running",
+  ],
+  "agent.queue.waiting": ["队列中 {count}", "{count} waiting"],
+  "agent.queue.running": ["执行中", "Running"],
+  "agent.queue.interrupted": ["已中断", "Interrupted"],
+  "agent.queue.queued": ["队列中", "Queued"],
+  "agent.queue.empty": ["队列是空的", "The queue is empty"],
+  "agent.queue.emptyHint": [
+    "在缺陷或事项上把任务交给 Agent 后会出现在这里。",
+    "Tasks handed to the Agent from bugs or items show up here.",
+  ],
+  "agent.queue.loading": ["正在读取工作流队列", "Loading the workflow queue"],
+  "agent.queue.cancel": ["取消任务", "Cancel task"],
+  "agent.queue.open": ["打开任务", "Open task"],
+
   "agent.task.live": ["运行中", "Running"],
   // Stand-in for the row time while the session works: the live timestamp
   // restarts on every event, so a ticking "1 秒前" would only be noise.

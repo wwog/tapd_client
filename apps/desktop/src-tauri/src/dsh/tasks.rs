@@ -294,6 +294,10 @@ pub(super) struct TaskMeta {
     pub local_previous_status: Option<String>,
     /// Prompt waiting for an execution slot. Cleared once the session starts.
     pub pending_prompt: Option<String>,
+    /// The last turn stopped (user stop or app exit) before the task settled.
+    /// The row keeps its `running` workflow so continuing resumes the same
+    /// round, but every surface paints 已中断 and offers 继续.
+    pub interrupted: bool,
     /// Commit the finishing chain created in the worktree.
     pub commit: Option<String>,
     /// Merge commit the finishing chain created in the main repository.
@@ -692,6 +696,12 @@ pub fn observe(app: &AppHandle, session_id: &str, entry: &DshEntry) {
             error,
             ..
         } => on_turn_end(app, session_id, at, reason.as_deref(), error.as_deref()),
+        // Any new turn (prompt, retry, continue) means the interruption is
+        // over: the row must stop painting 已中断 once work resumes.
+        DshEntry::Turn {
+            state: TurnState::Start,
+            ..
+        } => clear_interrupted(app, session_id),
         // A chat starts untitled; the first human line names it in the list.
         DshEntry::User { text, .. } => retitle_chat(app, session_id, text, at),
         _ => {}
@@ -746,6 +756,27 @@ fn first_line(text: &str) -> Option<String> {
 pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
     let record = load_record(app, session_id).await.ok()??;
     Some(record.task.kind)
+}
+
+/// The round resumed: clear the interrupted marker the stop left behind.
+/// Called from the turn-start signal, so a prompt, retry and continue all
+/// settle it the same way.
+fn clear_interrupted(app: &AppHandle, session_id: &str) {
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Ok(Some(mut record)) = load_record(&app, &session_id).await else {
+            return;
+        };
+        if !record.meta.interrupted {
+            return;
+        }
+        record.meta.interrupted = false;
+        let expected = record.task.workflow;
+        if save_record(&app, record, expected).await.unwrap_or(false) {
+            emit(&app);
+        }
+    });
 }
 
 /// Schedules the review of a finished turn. Idempotent: a task that already
@@ -823,9 +854,24 @@ async fn finish_turn(
         return Ok(());
     }
 
-    // A user stop is settled by the cancel command that owns `canceled` here;
-    // reviewing an aborted turn would race that transition.
+    // A user stop is not a review: the round is unfinished, so keep `running`
+    // and mark it interrupted. Every surface then paints 已中断 and offers 继续
+    // instead of claiming the task is still working. A newer turn that already
+    // started (stop pressed, then a prompt) owns the session, so leave the row
+    // alone in that case.
     if reason == Some("aborted") {
+        let mut record = record;
+        if !record.meta.interrupted && !live_running(app, session_id) {
+            record.meta.interrupted = true;
+            record.touch_at(at);
+            let expected = record.task.workflow;
+            if save_record(app, record, expected).await? {
+                emit(app);
+            }
+        }
+        // The stopped turn no longer holds an execution slot; waiting tasks
+        // must not sit idle until some other event happens to reschedule.
+        reschedule(app);
         return Ok(());
     }
 
@@ -955,6 +1001,48 @@ pub async fn recover_finalizing(app: &AppHandle) {
         {
             let _ = settle_writeback(app, record, &now()).await;
         }
+    }
+}
+
+/// Startup recovery for a `running` row whose turn died with the process. The
+/// workflow stays `running` (continuing resumes the same round), but the row is
+/// marked interrupted so no surface claims the task is still working.
+///
+/// Fresh rows are skipped: a task the scheduler just started may not have a
+/// live session for a moment, and it would otherwise be painted as stopped.
+pub async fn recover_interrupted(app: &AppHandle) {
+    let Ok(state) = shared(app) else {
+        return;
+    };
+    let cache = state.cache.clone();
+    let Ok(records) = blocking(move || task_store::load_all(&cache)).await else {
+        return;
+    };
+    let live = live_sessions(app);
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(15))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut changed = false;
+    for mut record in records {
+        if !record.task.kind.is_task()
+            || record.task.workflow != Workflow::Running
+            || record.meta.interrupted
+            || record.task.updated_at >= cutoff
+            || live
+                .get(&record.task.id)
+                .is_some_and(|session| session.status == SessionStatus::Running)
+        {
+            continue;
+        }
+        record.meta.interrupted = true;
+        if save_record(app, record, Workflow::Running)
+            .await
+            .unwrap_or(false)
+        {
+            changed = true;
+        }
+    }
+    if changed {
+        emit(app);
     }
 }
 
@@ -1303,6 +1391,7 @@ fn start_round(
     }
 
     record.meta.direct = direct;
+    record.meta.interrupted = false;
     // A fresh turn reviews afresh: nothing pending from the previous round.
     record.task.review = None;
     record.task.changes = None;
@@ -3805,6 +3894,13 @@ struct TaskView<'a> {
     git: TaskGit,
     writeback: TaskWriteback,
     direct: bool,
+    /// The model route the task was handed over with; `None` keeps the
+    /// configured default. The list paints it before a turn has run, when the
+    /// session usage has no model yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// The last turn never settled: stopped by the user or lost with the app.
+    interrupted: bool,
 }
 
 fn task_view<'a>(record: &'a TaskRecord, task: &'a DshTask) -> TaskView<'a> {
@@ -3821,6 +3917,8 @@ fn task_view<'a>(record: &'a TaskRecord, task: &'a DshTask) -> TaskView<'a> {
             status_to: record.meta.status_to.clone(),
         },
         direct: record.meta.direct,
+        model: record.meta.model.as_ref().map(|model| model.model.clone()),
+        interrupted: record.meta.interrupted,
     }
 }
 

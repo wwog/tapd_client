@@ -22,6 +22,8 @@ import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
+import { agentActions } from "./agent/store";
+import { useTaskFeedRuntime } from "./agent/useAgentRuntime";
 import { AgentOpenButton } from "./components/AgentOpenButton";
 import { CompanionDialog } from "./components/CompanionDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -92,6 +94,9 @@ function layoutContentMinWidth(layout: WorkbenchLayoutApi): number {
 
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
+  // The workflow feed is global: the bug list paints queued tasks and the
+  // activity bar's queue page works without the Agent page ever being opened.
+  useTaskFeedRuntime();
   const layoutApi = useWorkbenchLayout();
   /** Latest layout API for stable callbacks defined before the domain hooks. */
   const layoutRef = useRef(layoutApi);
@@ -586,6 +591,24 @@ export default function App() {
     [detailPane.openDetail],
   );
 
+  /** Jumps from a bug row or the workflow queue to that task's Agent page. */
+  const openAgentTask = useCallback((sessionId: string) => {
+    agentActions.selectSession(sessionId);
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.openPage("agent");
+  }, []);
+
+  /** Cancels one queued/running task; the row reports a failure as a toast. */
+  const cancelAgentTask = useCallback(async (sessionId: string) => {
+    try {
+      await agentActions.cancelTask(sessionId);
+    } catch (error) {
+      showToast("error", String(error));
+    }
+  }, []);
+
   const deleteLocalProject = async () => {
     if (!localProjectDelete || localProjectDeleting) return;
     setLocalProjectDeleting(true);
@@ -785,6 +808,8 @@ export default function App() {
     toast: showToast,
     onOpenBug: openBug,
     onOpenBugById: openBugById,
+    onOpenAgentTask: openAgentTask,
+    onCancelAgentTask: cancelAgentTask,
     onOpenWeb: openPath,
     onOpenPath: openPath,
     onCopy: copy,

@@ -42,6 +42,10 @@ export type PageHostServices = {
   toast: ToastFn;
   onOpenBug: (bug: BugSummary) => void;
   onOpenBugById: (workspaceId: string, bugId: string) => void;
+  /** Selects a workflow task and opens the Agent page on it. */
+  onOpenAgentTask: (sessionId: string) => void;
+  /** Cancels a queued/running task (the row reports failures as a toast). */
+  onCancelAgentTask: (sessionId: string) => Promise<void>;
   /** Opens a URL outside the app (TAPD links, media). */
   onOpenWeb: (url: string) => void;
   /** Reveals a local path in the OS. */

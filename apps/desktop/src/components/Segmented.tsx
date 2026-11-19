@@ -109,7 +109,7 @@ export function Segmented<T extends string>({
             {typeof option.count === "number" ? (
               <span
                 className={clsx(
-                  "inline-block min-w-[6ch] text-center tabular-nums",
+                  "inline-block min-w-[2ch] text-center tabular-nums",
                   active ? "text-slate-500" : "text-slate-400",
                 )}
               >

@@ -4,6 +4,7 @@ import {
   Check,
   FolderOpen,
   GitBranch,
+  Play,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -25,7 +26,8 @@ import {
   isSessionRunning,
   taskReviewable,
 } from "./store";
-import { WORKFLOW, taskHashes } from "./workflow";
+import { taskInterrupted } from "./taskFeed";
+import { taskHashes, taskWorkflowView } from "./workflow";
 
 const STEP_ORDER: DshFinalizeStep[] = ["commit", "merge", "cleanup", "writeback"];
 
@@ -69,6 +71,7 @@ export function TaskPanel({
   }, [task.id]);
 
   const running = isSessionRunning(state, task.id);
+  const interrupted = taskInterrupted(state, task);
   const finalizing = task.workflow === "finalizing";
   const done = task.workflow === "done";
   const review = task.review ?? null;
@@ -76,7 +79,7 @@ export function TaskPanel({
   const changes = task.changes ?? null;
   const worktreePath = task.worktreePath ?? "";
   const repoPath = task.repoPath ?? "";
-  const workflow = WORKFLOW[task.workflow];
+  const workflow = taskWorkflowView(task, interrupted);
 
   const steps = task.direct
     ? STEP_ORDER.filter((step) => step !== "merge" && step !== "cleanup")
@@ -235,6 +238,11 @@ export function TaskPanel({
               {notice}
             </div>
           ) : null}
+          {interrupted ? (
+            <div className="mt-1.5 text-ui-xs leading-5 text-amber-700">
+              {t("agent.task.interruptedHint")}
+            </div>
+          ) : null}
         </section>
 
         {/* The AI summary is optional (a turn-end review has none), but the
@@ -356,6 +364,26 @@ export function TaskPanel({
         ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
+          {interrupted ? (
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<Play size={13} />}
+              loading={busy === "continue"}
+              disabled={busy !== null}
+              title={t("agent.task.continueHint")}
+              onClick={() =>
+                void run("continue", () =>
+                  agentActions.continueTask(
+                    task.id,
+                    t("agent.task.continuePrompt"),
+                  ),
+                )
+              }
+            >
+              {t("agent.task.continue")}
+            </Button>
+          ) : null}
           {taskReviewable(task) && !finalizing ? (
             <>
               <Button

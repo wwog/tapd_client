@@ -22,7 +22,7 @@ import {
 import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 import { usePanelServices } from "../workbench/panels/context";
-import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
+import { isWorkflowTask, taskWorkflowMark, taskWorkflowView } from "./workflow";
 
 /** Fixed card width; the row anchor only decides the side. */
 const WIDTH = 320;
@@ -34,6 +34,8 @@ const EST_HEIGHT = 260;
 type Props = {
   task: DshTask;
   status: DshSessionStatus;
+  /** The round stopped before it settled; the card paints 已中断. */
+  interrupted: boolean;
   pending: number;
   /** Last reply's model, when the session has reported one. */
   model?: string;
@@ -56,6 +58,7 @@ const clampTop = (top: number): number =>
 export function TaskHoverCard({
   task,
   status,
+  interrupted,
   pending,
   model,
   updatedAt,
@@ -67,8 +70,8 @@ export function TaskHoverCard({
   const cardRef = useRef<HTMLDivElement>(null);
   useDismiss(true, cardRef, onClose, { scroll: true, resize: true });
 
-  const workflow = WORKFLOW[task.workflow];
-  const mark = WORKFLOW_MARK[task.workflow];
+  const workflow = taskWorkflowView(task, interrupted);
+  const mark = taskWorkflowMark(task, interrupted);
   const statusText =
     isWorkflowTask(task)
       ? t(workflow.label)

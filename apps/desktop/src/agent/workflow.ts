@@ -30,6 +30,32 @@ export const WORKFLOW_MARK: Record<DshTaskWorkflow, string> = {
   canceled: "text-slate-300",
 };
 
+/**
+ * The stopped-turn state. It is not a stored workflow value: the row keeps
+ * `running` so 继续 resumes the same round, and every surface paints this
+ * derived chip instead.
+ */
+export const INTERRUPTED: { label: MessageKey; tone: BadgeTone } = {
+  label: "agent.task.workflowInterrupted",
+  tone: "amber",
+};
+
+/** Chip for a task row, with the interrupted overlay applied. */
+export function taskWorkflowView(
+  task: DshTask,
+  interrupted: boolean,
+): { label: MessageKey; tone: BadgeTone } {
+  return interrupted ? INTERRUPTED : WORKFLOW[task.workflow];
+}
+
+/** Icon tint for the single-line list mark, with the same overlay. */
+export function taskWorkflowMark(
+  task: DshTask,
+  interrupted: boolean,
+): string {
+  return interrupted ? "text-amber-600" : WORKFLOW_MARK[task.workflow];
+}
+
 /** A workflow task (bug or local item) rather than a free chat. */
 export const isWorkflowTask = (task?: { kind: string } | null): boolean =>
   !!task && task.kind !== "chat";
