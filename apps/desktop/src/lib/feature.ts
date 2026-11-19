@@ -29,6 +29,7 @@ export type FeatureCommandName =
   | "notification_ignore"
   | "notification_island_answer_focus"
   | "notification_island_expand"
+  | "notification_island_measure"
   | "notification_island_peek"
   | "notification_island_visible"
   | "notification_open_bug"

@@ -240,6 +240,57 @@ export function IslandWindow() {
     });
   }, [idle, resident, updateActive]);
 
+  // The cards measure themselves: their real height follows the UI font size,
+  // which the Rust side's per-card estimate cannot know. Without this the title
+  // was clipped mid-line and the action row covered the metadata row.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const reportedHeight = useRef(0);
+  useEffect(() => {
+    if (!layout.expanded) {
+      reportedHeight.current = 0;
+      return;
+    }
+    const list = listRef.current;
+    if (!list || items.length === 0) return;
+
+    const measure = () => {
+      const style = getComputedStyle(list);
+      const gap = parseFloat(style.rowGap) || 0;
+      let height = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const cards = Array.from(list.children) as HTMLElement[];
+      cards.forEach((card, index) => {
+        if (index > 0) height += gap;
+        // A card whose body scrolls reports the clipped body height in its own
+        // scrollHeight, so swap in what the scroller actually needs.
+        const scroller = card.querySelector<HTMLElement>("[data-island-scroll]");
+        const border = card.offsetHeight - card.clientHeight;
+        let cardHeight = scroller
+          ? card.scrollHeight - scroller.clientHeight + scroller.scrollHeight
+          : card.scrollHeight;
+        // Rows that stretch into the free space of a short card squashed
+        // themselves instead: their overflow never reaches the card's
+        // scrollHeight, so add what they are missing.
+        card.querySelectorAll<HTMLElement>("[data-island-shortfall]").forEach((region) => {
+          cardHeight += Math.max(0, region.scrollHeight - region.clientHeight);
+        });
+        height += cardHeight + border;
+      });
+      // Ceil: a fractional card height rounds down into a 1px overlap.
+      const next = Math.ceil(height);
+      if (next <= 0 || Math.abs(next - reportedHeight.current) < 1) return;
+      reportedHeight.current = next;
+      void notificationApi
+        .setIslandContentHeight(next, cards.length)
+        .catch(() => undefined);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    Array.from(list.children).forEach((card) => observer.observe(card));
+    return () => observer.disconnect();
+  }, [items, layout.expanded]);
+
   // Rust owns the window size, so each peek change round-trips once.
   const peekSynced = useRef(false);
   useEffect(() => {
@@ -324,7 +375,11 @@ export function IslandWindow() {
   }
 
   return (
-    <div data-component="IslandWindow" className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
+    <div
+      ref={listRef}
+      data-component="IslandWindow"
+      className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5"
+    >
       {items.length === 0 ? (
         <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line">
           {t("app.island.empty")}
@@ -370,7 +425,7 @@ export function IslandWindow() {
                 )}
               </button>
 
-              <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
+              <div className="flex shrink-0 items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
                 <span className="truncate font-normal text-island-ink">
                   {item.workspaceName}
                 </span>
@@ -380,30 +435,40 @@ export function IslandWindow() {
                 </span>
               </div>
 
-              <h2
-                className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
-                title={plainTitle(item.title)}
-              >
-                {plainTitle(item.title)}
-              </h2>
+              {/* Header and actions stay put; only this block scrolls when the
+                  window is capped by the monitor (or the error row appears). */}
+              <div data-island-scroll className="mt-1 min-h-0 overflow-y-auto">
+                <h2
+                  className="line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
+                  title={plainTitle(item.title)}
+                >
+                  {plainTitle(item.title)}
+                </h2>
 
-              <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-island-muted">
-                {item.severity ? (
-                  <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
-                    {item.severity}
+                <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-island-muted">
+                  {item.severity ? (
+                    <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
+                      {item.severity}
+                    </span>
+                  ) : null}
+                  {item.priority ? (
+                    <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
+                      {t("app.island.priority", { priority: item.priority })}
+                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-right">
+                    {t("app.island.creator", { creator: item.creator || "—" })}
                   </span>
+                </div>
+
+                {error ? (
+                  <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
+                    {error}
+                  </p>
                 ) : null}
-                {item.priority ? (
-                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-                    {t("app.island.priority", { priority: item.priority })}
-                  </span>
-                ) : null}
-                <span className="min-w-0 flex-1 truncate text-right">
-                  {t("app.island.creator", { creator: item.creator || "—" })}
-                </span>
               </div>
 
-              <div className="mt-auto flex items-center gap-1.5 pt-2">
+              <div className="mt-auto flex shrink-0 items-center gap-1.5 pt-2">
                 {/* 384px card, three buttons: equal width keeps them on one row. */}
                 <button
                   type="button"
@@ -445,12 +510,6 @@ export function IslandWindow() {
                   <span className="truncate">{t("app.island.viewBug")}</span>
                 </button>
               </div>
-
-              {error ? (
-                <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
-                  {error}
-                </p>
-              ) : null}
             </article>
           );
         })}
@@ -551,7 +610,7 @@ function AiCard(props: {
         {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <X size={13} />}
       </button>
 
-      <div className="flex items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
+      <div className="flex shrink-0 items-center gap-1.5 pr-7 text-ui-xs text-island-muted">
         <span className={clsx("grid h-4 w-4 shrink-0 place-items-center rounded-full", meta.iconBg)}>
           <Icon
             size={11}
@@ -570,19 +629,30 @@ function AiCard(props: {
         </span>
       </div>
 
-      <h2
-        className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
-        title={plainTitle(item.title)}
-      >
-        {plainTitle(item.title)}
-      </h2>
+      {/* Same split as a bug card: header and actions pinned, the body
+          scrolls only when the monitor caps the window. */}
+      <div data-island-scroll className="mt-1 min-h-0 overflow-y-auto">
+        <h2
+          className="line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
+          title={plainTitle(item.title)}
+        >
+          {plainTitle(item.title)}
+        </h2>
 
-      <AiBlocks blocks={payload.blocks} />
+        <AiBlocks blocks={payload.blocks} />
+
+        {error ? (
+          <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
+            {error}
+          </p>
+        ) : null}
+      </div>
 
       <div
+        data-island-shortfall
         className={clsx(
           "mt-auto flex pt-2",
-          stacked ? "min-h-0 flex-1 flex-col gap-1" : "items-center gap-1.5",
+          stacked ? "min-h-0 flex-1 flex-col gap-1" : "shrink-0 items-center gap-1.5",
         )}
       >
         {payload.actions.length === 0 ? (
@@ -624,12 +694,6 @@ function AiCard(props: {
           />
         ) : null}
       </div>
-
-      {error ? (
-        <p className="mt-1.5 line-clamp-2 text-ui-xs leading-4 text-rose-700" title={error}>
-          {error}
-        </p>
-      ) : null}
     </article>
   );
 }

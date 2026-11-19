@@ -200,6 +200,13 @@ export const notificationApi = {
     featureCommand<{ ok: boolean; visible: boolean }>("notification_island_visible", {
       visible,
     }),
+  /** Reports the height the expanded cards need (CSS px) so the window fits
+   *  them; the Rust side's per-card estimate ignores the UI font size. */
+  setIslandContentHeight: (height: number, count: number) =>
+    featureCommand<{ ok: boolean; applied?: boolean }>("notification_island_measure", {
+      height,
+      count,
+    }),
   /** Grows the collapsed capsule into the Agent summary card while hovered. */
   setPeek: (active: boolean) =>
     featureCommand<{ ok: boolean; active: boolean }>("notification_island_peek", { active }),

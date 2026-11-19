@@ -4,14 +4,19 @@
 pub(super) const PILL_WIDTH: f64 = 210.0;
 pub(super) const PILL_HEIGHT: f64 = 34.0;
 const CARD_WIDTH: f64 = 384.0;
-/// Room for a two-line title, the metadata row and the two action buttons.
-const CARD_BASE_HEIGHT: f64 = 160.0;
+/// Room for a two-line title, the metadata row and the action row at the
+/// default 14px UI scale. Only the first frame uses it: the cards then report
+/// their measured height, because the real height follows the font setting.
+const CARD_BASE_HEIGHT: f64 = 168.0;
 const CARD_ROW_HEIGHT: f64 = 148.0;
 /// Agent question options are listed one per row (label over its description),
 /// with the answer field as the last row. One row replaces the shared action
 /// row counted in `CARD_BASE_HEIGHT`.
 const CARD_STACKED_ROW_HEIGHT: f64 = 48.0;
 const CARD_ACTION_ROW_HEIGHT: f64 = 30.0;
+/// Floor for a UI-measured card, so a measurement taken mid-layout cannot
+/// collapse the window to a sliver.
+const CARD_MIN_HEIGHT: f64 = 120.0;
 pub(super) const ISLAND_TOP_MARGIN: f64 = 6.0;
 /// Hover peek: the collapsed capsule widens a little and grows a summary card
 /// underneath, without moving the pill (it stays centred on the anchor).
@@ -25,10 +30,20 @@ pub(super) const UPDATE_WIDTH: f64 = PILL_WIDTH * 3.0;
 pub(super) const UPDATE_HEIGHT: f64 = PILL_HEIGHT * 3.0;
 
 /// `stacked_rows` is the tallest stacked block (options + answer field) across
-/// the cards; zero keeps the plain card size.
-pub(super) fn island_size(expanded: bool, count: usize, stacked_rows: usize) -> (f64, f64) {
+/// the cards; zero keeps the plain card size. `measured` is the height the UI
+/// measured for the very same card set (CSS px): the estimates above are only a
+/// starting frame, because the card's real height follows the user's font size.
+pub(super) fn island_size(
+    expanded: bool,
+    count: usize,
+    stacked_rows: usize,
+    measured: Option<f64>,
+) -> (f64, f64) {
     if !expanded {
         return (PILL_WIDTH, PILL_HEIGHT);
+    }
+    if let Some(height) = measured {
+        return (CARD_WIDTH, height.max(CARD_MIN_HEIGHT));
     }
     let rows = count.clamp(1, 5) as f64;
     let options = stacked_rows.min(5) as f64;
@@ -127,16 +142,25 @@ mod tests {
 
     #[test]
     fn stacked_rows_grow_a_single_card() {
-        assert_eq!(island_size(false, 3, 3).0, PILL_WIDTH);
-        let plain = island_size(true, 1, 0);
-        let one = island_size(true, 1, 1);
-        let two = island_size(true, 1, 2);
-        let three = island_size(true, 1, 3);
+        assert_eq!(island_size(false, 3, 3, None).0, PILL_WIDTH);
+        let plain = island_size(true, 1, 0, None);
+        let one = island_size(true, 1, 1, None);
+        let two = island_size(true, 1, 2, None);
+        let three = island_size(true, 1, 3, None);
         assert!(one.1 > plain.1);
         assert!(two.1 > one.1);
         assert!(three.1 > two.1);
         // Extra cards still stack on top of the option height.
-        assert_eq!(island_size(true, 2, 3).1, three.1 + CARD_ROW_HEIGHT);
+        assert_eq!(island_size(true, 2, 3, None).1, three.1 + CARD_ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_measured_height_replaces_the_estimate() {
+        // The UI measured the cards; whatever the estimates said, use it.
+        assert_eq!(island_size(true, 2, 0, Some(212.0)), (CARD_WIDTH, 212.0));
+        // Never collapse below the floor, and never in the collapsed layout.
+        assert_eq!(island_size(true, 1, 0, Some(10.0)).1, CARD_MIN_HEIGHT);
+        assert_eq!(island_size(false, 1, 0, Some(212.0)).1, PILL_HEIGHT);
     }
 
     #[test]

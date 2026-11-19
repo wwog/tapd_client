@@ -91,6 +91,28 @@ pub async fn command(
             );
             Ok(json!({ "ok": true, "expanded": expanded, "count": count }))
         }
+        "notification_island_measure" => {
+            // The cards measure themselves: a fixed height per card clipped the
+            // title and drew the action row over the metadata row as soon as the
+            // UI font size was not the default.
+            let height = payload
+                .get("height")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let count = payload.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if !crate::island_window::set_measured_height(count, height) {
+                return Ok(json!({ "ok": true, "applied": false }));
+            }
+            let Some(service) = service().ok() else {
+                return Ok(json!({ "ok": true, "applied": false }));
+            };
+            let (items, quiet) = service.pending_payload();
+            let (expanded, count, stacked_rows) = super::island_layout_state(&items, quiet);
+            // Animate: this usually lands while the cards are still growing out
+            // of the capsule, and a hard jump there reads as a flicker.
+            crate::island_window::apply_island(app, state, expanded, count, stacked_rows, true);
+            Ok(json!({ "ok": true, "applied": true }))
+        }
         "notification_island_answer_focus" => {
             // The capsule never becomes the key window; while its answer field
             // is focused it has to, or typing would go to the other app.

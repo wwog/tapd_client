@@ -44,6 +44,10 @@ static MOVE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// While an update owns the capsule, ordinary notification layouts must not
 /// resize it back to pill/card size.
 static UPDATE_MODE: AtomicBool = AtomicBool::new(false);
+/// Height (CSS px) the expanded cards measured for themselves, paired with the
+/// card count it belongs to: a stale measurement from a previous card set must
+/// not size the new one.
+static MEASURED_HEIGHT: Mutex<Option<(usize, f64)>> = Mutex::new(None);
 /// Whether the collapsed capsule should be on screen. The frontend hides it
 /// while everything is idle so there is no standing "standby" pill; cards,
 /// agent work, updates and errors keep it visible through their own layouts.
@@ -107,6 +111,41 @@ pub fn set_update_mode(active: bool) {
 
 pub fn update_mode() -> bool {
     UPDATE_MODE.load(Ordering::SeqCst)
+}
+
+/// Stores the height the UI measured for `count` expanded cards.
+///
+/// The card's CSS height follows the user's font size, so a fixed estimate
+/// either clipped the title or pushed the action row over the metadata row.
+/// Returns whether this changed anything the window cares about.
+pub fn set_measured_height(count: usize, height: f64) -> bool {
+    if count == 0 || !height.is_finite() || height <= 0.0 {
+        return false;
+    }
+    let mut measured = MEASURED_HEIGHT.lock().expect("island measured height lock");
+    let same = measured
+        .map(|(known_count, known_height)| {
+            known_count == count && (known_height - height).abs() < 0.5
+        })
+        .unwrap_or(false);
+    if same {
+        return false;
+    }
+    *measured = Some((count, height));
+    true
+}
+
+/// Measurement for exactly this card set, if the UI has reported one.
+fn measured_height(count: usize) -> Option<f64> {
+    MEASURED_HEIGHT
+        .lock()
+        .expect("island measured height lock")
+        .filter(|(known_count, _)| *known_count == count)
+        .map(|(_, height)| height)
+}
+
+fn clear_measured_height() {
+    *MEASURED_HEIGHT.lock().expect("island measured height lock") = None;
 }
 
 /// Records whether the pointer is hovering the capsule. Call
@@ -294,7 +333,7 @@ fn island_rect(
     state: &SharedState,
     width: f64,
     height: f64,
-) -> Option<(i32, i32, u32, u32)> {
+) -> Option<(i32, i32, u32, u32, f64)> {
     let saved = state.config_snapshot().island_anchor;
     // A saved anchor from a monitor that is no longer attached is ignored.
     let anchor = saved.filter(|anchor| monitor_at(app, *anchor).is_some());
@@ -303,6 +342,11 @@ fn island_rect(
         .or_else(|| monitor_for(app))?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
+    // A measured card can outgrow the monitor (large font, several cards). The
+    // card scrolls inside whatever is left, so the window itself stops at the
+    // work area instead of pushing its own footer off screen.
+    let max_height = (area.size.height as f64 / scale - 2.0 * ISLAND_TOP_MARGIN).max(PILL_HEIGHT);
+    let height = height.clamp(PILL_HEIGHT, max_height);
     let w = (width * scale).round().max(1.0) as u32;
     let h = (height * scale).round().max(1.0) as u32;
 
@@ -321,7 +365,7 @@ fn island_rect(
         (ISLAND_TOP_MARGIN * scale).round() as i32,
     );
 
-    Some((x, y, w, h))
+    Some((x, y, w, h, height))
 }
 
 /// Places the island at the top centre of the screen. `animated` interpolates
@@ -350,11 +394,13 @@ pub(crate) fn apply_island(
         // The answer field is gone with the cards: the capsule goes back to
         // never taking the keyboard.
         reset_answer_focus();
+        // The next expansion measures its own cards again.
+        clear_measured_height();
     }
     let (width, height) = if !expanded && PEEK.load(Ordering::SeqCst) {
         (PEEK_WIDTH, PEEK_HEIGHT)
     } else {
-        island_size(expanded, count, stacked_rows)
+        island_size(expanded, count, stacked_rows, measured_height(count))
     };
     apply_island_sized(app, state, width, height, expanded, count, animated);
 }
@@ -368,7 +414,7 @@ fn apply_island_sized(
     count: usize,
     animated: bool,
 ) {
-    let Some((x, y, w, h)) = island_rect(app, state, width, height) else {
+    let Some((x, y, w, h, height)) = island_rect(app, state, width, height) else {
         return;
     };
     let Ok(window) = ensure_window(app, state) else {
