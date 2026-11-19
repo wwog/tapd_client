@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -4177,7 +4177,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-client"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "axum",
  "base64 0.21.7",
@@ -4217,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-core"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -4227,11 +4227,11 @@ dependencies = [
 
 [[package]]
 name = "tapd-i18n"
-version = "1.6.1"
+version = "1.6.5"
 
 [[package]]
 name = "tapd-local"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -4239,7 +4239,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-mcp"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "reqwest",
  "serde",
@@ -4253,7 +4253,7 @@ dependencies = [
 
 [[package]]
 name = "tapd-workspace"
-version = "1.6.1"
+version = "1.6.5"
 dependencies = [
  "serde",
  "tapd-i18n",
