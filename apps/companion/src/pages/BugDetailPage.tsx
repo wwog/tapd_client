@@ -289,14 +289,14 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
     }
   };
 
-  /** 转移处理人：owner 字段写纯昵称（TAPD inline_update 的要求），成功后
-   *  失效详情/列表缓存并收起 sheet。 */
+  /** 转移处理人：写 `current_owner` 字段（后端白名单只认 current_owner/de，
+   *  值必须是纯昵称），成功后失效详情/列表缓存并收起 sheet。 */
   const transferTo = async (member: WorkspaceMember) => {
     if (!workspaceId || !detail || transferBusyNick) return;
     setTransferBusyNick(member.nick);
     setTransferError(null);
     try {
-      await api.bugUpdateField(workspaceId, detail.id, "owner", member.nick);
+      await api.bugUpdateField(workspaceId, detail.id, "current_owner", member.nick);
       afterWrite();
       setTransferOpen(false);
     } catch (err) {
