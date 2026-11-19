@@ -297,12 +297,14 @@ export type BugDetail = BugSummary & {
   changes: ChangeHistory;
 };
 
-/** `GET /companion/api/state` — read-only desktop connection info. */
+/** `GET /companion/api/state` — read-only desktop connection info. The
+ *  server sends exactly these keys; workspace lists come from the dedicated
+ *  `/companion/api/workspaces` endpoint and `mediaToken` rides the heartbeat
+ *  (session.ts), so neither is declared here. */
 export type CompanionState = {
   loggedIn: boolean;
   version: string;
   me: string | null;
-  workspaces: Workspace[];
 };
 
 /** One paired device, from the manager-only devices endpoint. */

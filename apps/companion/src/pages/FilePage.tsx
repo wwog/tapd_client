@@ -338,7 +338,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
             type="button"
             aria-label={t("mobile.nav.back")}
             onClick={back}
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+            className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
           >
             <ChevronLeft size={18} />
           </button>
@@ -359,7 +359,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
               aria-label={t("mobile.files.edit")}
               title={t("mobile.files.edit")}
               onClick={startEdit}
-              className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+              className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
             >
               <Pencil size={16} />
             </button>
@@ -371,7 +371,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
                 aria-label={t("mobile.files.cancel")}
                 title={t("mobile.files.cancel")}
                 onClick={cancelEdit}
-                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+                className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
               >
                 <X size={16} />
               </button>
@@ -381,7 +381,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
                 title={saving ? t("mobile.files.saving") : t("mobile.files.save")}
                 disabled={saving || !dirty}
                 onClick={() => void save()}
-                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-sky-600 transition active:bg-sky-50 disabled:opacity-40"
+                className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-sky-600 transition active:bg-sky-50 disabled:opacity-40"
               >
                 {saving ? (
                   <LoaderCircle size={16} className="animate-spin" />
@@ -396,7 +396,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
             aria-label={copied ? t("common.copied") : t("mobile.files.copyPath")}
             title={copied ? t("common.copied") : t("mobile.files.copyPath")}
             onClick={() => void copyPath()}
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
+            className="inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-slate-500 transition active:bg-overlay-soft"
           >
             {copied ? <Check size={16} /> : <Copy size={16} />}
           </button>

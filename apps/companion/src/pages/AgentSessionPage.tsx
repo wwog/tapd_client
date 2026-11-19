@@ -46,6 +46,7 @@ import {
   type DshPendingRequest,
   type DshPermissionMode,
   type DshSession,
+  type DshStatus,
   type DshTask,
   type DshTaskFile,
   type DshTaskFileStatus,
@@ -60,7 +61,7 @@ import { resolveLocaleMode, t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { usePrefs } from "../lib/prefs";
 import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
-import { WorkflowChip } from "./AgentPage";
+import { isInterrupted, PHASE_LABELS, WorkflowChip } from "./AgentPage";
 import { ModeChip, ModeSheet, ModelChip, ModelSheet, type ModeValue } from "./agent/pickers";
 import { TurnStack } from "./agent/TurnStack";
 import { TrajectoryView } from "./agent/trajectory";
@@ -195,6 +196,14 @@ function ReviewPanel(props: {
   const [diffs, setDiffs] = useState<
     Record<string, { loading?: boolean; text?: string; truncated?: boolean; error?: string }>
   >({});
+
+  // Approve moves the diff target (worktree → branch / cleaned repo), so a
+  // workflow change invalidates the expanded state and the cached bodies —
+  // otherwise the panel keeps serving the pre-approval diff.
+  useEffect(() => {
+    setExpanded(null);
+    setDiffs({});
+  }, [props.task.workflow]);
 
   const toggleDiff = (file: DshTaskFile) => {
     if (expanded === file.path) {
@@ -385,7 +394,7 @@ function ReviewPanel(props: {
       ) : null}
 
       {finalizing && finalize?.error ? (
-        <p className="select-text px-4 pt-2 text-ui-xs leading-5 text-rose-600">
+        <p className="select-text px-4 py-1.5 text-ui-xs leading-5 text-rose-600">
           {finalize.error}
         </p>
       ) : null}
@@ -395,7 +404,7 @@ function ReviewPanel(props: {
         </pre>
       ) : null}
       {finalizing && finalize?.notice ? (
-        <p className="px-4 pt-2 text-ui-2xs leading-5 text-amber-700">{finalize.notice}</p>
+        <p className="px-4 py-1.5 text-ui-2xs leading-5 text-amber-700">{finalize.notice}</p>
       ) : null}
 
     </section>
@@ -976,7 +985,7 @@ function TaskPane(props: { task: DshTask }) {
     <div data-component="TaskPane" className="flex flex-col gap-3 px-4 py-3">
       <section className="rounded-xl border border-border bg-surface p-3">
         <div className="flex items-center gap-2">
-          <WorkflowChip workflow={task.workflow} interrupted={task.interrupted} />
+          <WorkflowChip workflow={task.workflow} interrupted={isInterrupted(task)} />
           {changes ? (
             <span className="ml-auto shrink-0 text-ui-xs text-slate-500">
               {t("mobile.agent.taskChanges", { files: changes.files })}
@@ -1176,6 +1185,9 @@ export function AgentSessionPage(props: { id: string }) {
   const [selectionOverride, setSelectionOverride] = useState<ModelSelection | null>(null);
   /** This session's permission mode; `null` inherits the runtime default. */
   const [modeState, setModeState] = useState<DshPermissionMode | null>(null);
+  /** Runtime phase gate: the composer refuses to send into a dead runtime. */
+  const [runtime, setRuntime] = useState<DshStatus | null>(null);
+  const [startingRuntime, setStartingRuntime] = useState(false);
   /** The runtime-wide default a session without its own choice inherits. */
   const [defaultMode, setDefaultMode] = useState<DshPermissionMode>("auto");
   /** Local plan flag; `null` follows the engine's `plan/mode` event state. */
@@ -1261,6 +1273,16 @@ export function AgentSessionPage(props: { id: string }) {
           if (fresh.length > 0) {
             setEntries((current) => [...(current ?? []), ...fresh]);
           }
+        } else if (from !== undefined) {
+          // An incremental poll came back `known: false` (desktop restart).
+          // Keep the already-shown rows instead of flashing an empty
+          // transcript: re-arm the resume effect and let the full read after
+          // the re-attach replace this list in one shot.
+          lastSeq.current = 0;
+          resumeTried.current = false;
+          setEntriesKnown(false);
+          setEntriesError(null);
+          return;
         } else {
           // `known: false` means the desktop restarted before the bridge saw
           // this session; the transcript is simply empty, not a failure.
@@ -1295,6 +1317,14 @@ export function AgentSessionPage(props: { id: string }) {
     } finally {
       sessionsInFlight.current = false;
     }
+    // The composer refuses to send while the runtime is down; the phase is
+    // cheap and rides the same cadence. Failures keep the last good phase.
+    void dshApi.status().then(
+      (status) => {
+        if (alive.current) setRuntime(status);
+      },
+      () => {},
+    );
   }, []);
 
   /** The review screen's changed-file list; one read per workflow phase. */
@@ -1700,6 +1730,22 @@ export function AgentSessionPage(props: { id: string }) {
     }
   };
 
+  /** One explicit runtime start; the send gate clears on the next read. */
+  const startRuntime = async () => {
+    if (startingRuntime) return;
+    setStartingRuntime(true);
+    try {
+      await dshApi.start();
+      setRuntime(await dshApi.status());
+    } catch (err) {
+      if (alive.current) {
+        setComposerError({ text: asApiError(err).message, label: "mobile.agent.startFailed" });
+      }
+    } finally {
+      if (alive.current) setStartingRuntime(false);
+    }
+  };
+
   /**
    * Failed-turn retry (the shared turn block's 重试 button). The engine re-runs
    * the turn from its own log — no prompt is sent again. Failures are swallowed
@@ -1852,6 +1898,24 @@ export function AgentSessionPage(props: { id: string }) {
   };
 
   const title = plainTitle(task?.title) || t("mobile.agent.untitledSession");
+  /** The task was deleted from the list while this page sat in the back
+   *  stack: one line and a way back, not a pile of load failures. */
+  if (feed.tasks !== null && task === null) {
+    return (
+      <div data-component="AgentSessionPage" className="grid h-full place-items-center p-6">
+        <div className="text-center">
+          <p className="text-ui-base text-slate-400">{t("mobile.agent.sessionGone")}</p>
+          <button
+            type="button"
+            onClick={() => navigate("#/agent")}
+            className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
+          >
+            {t("mobile.nav.back")}
+          </button>
+        </div>
+      </div>
+    );
+  }
   const agentLocale: AgentLocale = resolveLocaleMode(prefs.locale);
   const todos = sessionRow?.todos ?? [];
   const sessionRunning = (sessionRow?.status ?? task?.status ?? "idle") === "running";
@@ -1902,7 +1966,9 @@ export function AgentSessionPage(props: { id: string }) {
           <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-900" title={title}>
             {title}
           </span>
-          {task && task.kind !== "chat" ? <WorkflowChip workflow={task.workflow} /> : null}
+          {task && task.kind !== "chat" ? (
+            <WorkflowChip workflow={task.workflow} interrupted={isInterrupted(task)} />
+          ) : null}
         </header>
 
         {/* The 对话/轨迹 pane switch mirrors the desktop session pane bar. */}
@@ -1978,7 +2044,10 @@ export function AgentSessionPage(props: { id: string }) {
       ) : null}
 
       {pane === "task" && task ? (
-        <TaskPane task={task} />
+        <>
+          {pendingCards}
+          <TaskPane task={task} />
+        </>
       ) : pane === "trajectory" ? (
         <>
           {/* A blocking ask wins over any pane: the turn waits until it is
@@ -2022,7 +2091,11 @@ export function AgentSessionPage(props: { id: string }) {
               />
             ) : null}
 
-            {task && task.kind !== "chat" && task.workflow === "done" ? (
+            {task &&
+            task.kind !== "chat" &&
+            task.workflow === "done" &&
+            !sessionRunning &&
+            (task.git.commit || task.git.merge) ? (
               <TaskDoneCard task={task} onViewTask={() => setPane("task")} />
             ) : null}
 
@@ -2096,6 +2169,27 @@ export function AgentSessionPage(props: { id: string }) {
                 {taskError}
               </p>
             ) : null}
+          </div>
+        ) : null}
+        {runtime && runtime.phase !== "ready" ? (
+          <div className="mb-1 flex min-h-9 items-center gap-2 px-1">
+            <p
+              className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500"
+              title={runtime.error}
+            >
+              {t(PHASE_LABELS[runtime.phase])}
+            </p>
+            <button
+              type="button"
+              disabled={startingRuntime}
+              onClick={() => void startRuntime()}
+              className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+            >
+              {startingRuntime ? (
+                <LoaderCircle size={12} className="animate-spin" />
+              ) : null}
+              {t("mobile.agent.start")}
+            </button>
           </div>
         ) : null}
         {task?.workflow === "done" && task.finalize?.notice ? (
@@ -2206,7 +2300,13 @@ export function AgentSessionPage(props: { id: string }) {
                 type="button"
                 aria-label={sessionRunning ? t("mobile.agent.stop") : t("common.send")}
                 aria-pressed={sessionRunning}
-                disabled={sessionRunning ? stopping : sending || draft.trim().length === 0}
+                disabled={
+                  sessionRunning
+                    ? stopping
+                    : sending ||
+                      draft.trim().length === 0 ||
+                      (runtime !== null && runtime.phase !== "ready")
+                }
                 onClick={() => (sessionRunning ? void stop() : void send())}
                 className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg transition disabled:opacity-40 ${
                   sessionRunning

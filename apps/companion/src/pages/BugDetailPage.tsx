@@ -373,7 +373,6 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             <ActionButton
               icon={<Sparkles size={13} />}
               label={t("mobile.enqueue.title")}
-              disabled={!workspaceId}
               onClick={() => {
                 if (!workspaceId) return;
                 setEnqueueTarget({

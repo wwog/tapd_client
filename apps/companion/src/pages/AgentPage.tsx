@@ -5,6 +5,7 @@ import { asApiError } from "../lib/api";
 import { Badge, type BadgeTone } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
 import {
+  applyAgentTask,
   dshApi,
   refreshAgentFeed,
   useAgentFeed,
@@ -22,7 +23,7 @@ import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
 /** Runtime status cadence; the task/approval feed is polled once by `App`. */
 const LIST_POLL_MS = 8_000;
 
-const PHASE_LABELS: Record<DshStatus["phase"], MessageKey> = {
+export const PHASE_LABELS: Record<DshStatus["phase"], MessageKey> = {
   stopped: "mobile.agent.phaseStopped",
   starting: "mobile.agent.phaseStarting",
   ready: "mobile.agent.phaseReady",
@@ -69,9 +70,10 @@ export function WorkflowChip(props: { workflow: DshWorkflow; interrupted?: boole
 /**
  * A `running` row whose session is not working is a stopped turn. The backend
  * persists the flag on a user stop and at startup recovery; a failed session
- * row covers a runtime exit while the app stayed open.
+ * row covers a runtime exit while the app stayed open. Shared with the
+ * session page so its chips agree with the list.
  */
-const isInterrupted = (task: DshTask): boolean =>
+export const isInterrupted = (task: DshTask): boolean =>
   task.workflow === "running" && (Boolean(task.interrupted) || task.status === "failed");
 
 function ListSkeleton() {
@@ -491,10 +493,14 @@ export function AgentPage() {
     }
   };
 
-  /** Continue a stopped round from the existing context (desktop parity). */
+  /** Continue a stopped round from the existing context (desktop parity).
+   *  The local flip mirrors the desktop's optimistic update: between the
+   *  prompt ack and the engine's turn/start event landing in the feed, a
+   *  second tap would queue the nudge prompt twice. */
   const continueTask = (task: DshTask) =>
     void runQueueAction(task.id, async () => {
       await dshApi.taskResume(task.id);
+      applyAgentTask({ ...task, interrupted: false, status: "running" });
       await dshApi.prompt(task.id, t("mobile.agent.continuePrompt"));
       void refreshAgentFeed();
       navigate(`#/agent/session/${encodeURIComponent(task.id)}`);

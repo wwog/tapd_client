@@ -107,7 +107,12 @@ export function EnqueueSheet({ target, onClose, onDone }: Props) {
       <BottomSheet
         open={target !== null}
         title={t("mobile.enqueue.title")}
-        onClose={onClose}
+        onClose={() => {
+          // The in-flight hand-over must not lose its "submitting" feedback:
+          // closing mid-flight looks like nothing happened (the queue entry
+          // still lands, but the phone gives no cue).
+          if (!busy) onClose();
+        }}
         footer={
           <button
             type="button"

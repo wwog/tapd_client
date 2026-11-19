@@ -137,6 +137,7 @@
 - **`GET /companion/api/bug` 参数为 camelCase**（`workspaceId`/`bugId`，serde rename_all 统一）。
 - **`dist-companion/` 由构建链保证**：根 `build` / `dev` / `check:rust` / `test:rust` 都先 `build:companion` 再动 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。**CI 2026-11-13 修复**：GitHub Actions 上 `dist-companion/` 不存在导致 `RustEmbed` 编译失败，补完上述脚本前缀后 check/test job 只需 `pnpm check:rust` / `pnpm test:rust`；release job 增加显式 `pnpm build:companion` 步骤（发布包必须内嵌真实 SPA，不能落到占位页）。
 - **配对细节**：一次性码应用运行期间有效（配对成功不消费，重出码时复用现有码）、每 IP 每分钟 >10 次限速；同名设备重新配对保留原 id 与管理权限，只轮换 token；`companion_status` 不返回 token_hash。**多设备权限**：第一台配对设备默认 `canManage=true`，其余默认 false；电脑端可开关任意设备（包括第一台）；手机端管理员只能开关/解除其他设备，不能改自己；不自动继承，允许暂时没有手机管理员。
+- **视觉/间距标准**：手机端常量（gutter 16px、行 py-3、触控 44px、空态、页头节奏等）固定在 [UI_STYLE.md](UI_STYLE.md) §4.1，改留白先对照该表。
 - **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
 - **联调修复（2026-11-13 真实环境）**：移动端列表改用 `/companion/api/workspaces`（state 不含项目）；项目下拉显示 `name`（TAPD `prettyName` 是数字 ID）；`fetch_tapd_media` 将站内相对路径（`/tfl/...`）补全到 `TAPD_HOME` 后再过白名单。
 - **debug 调试缝**：`GET /dev/companion`（运行态快照）与 `POST /dev/companion/pairing`（生成配对码），debug-only，供自动化测试绕开设置卡。

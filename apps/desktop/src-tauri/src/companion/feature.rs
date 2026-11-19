@@ -25,10 +25,10 @@ use std::{
 };
 
 use axum::{
+    body::Bytes,
     extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     response::Response,
-    Json,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -140,12 +140,15 @@ pub(super) struct FeatureRequest {
 
 /// Whitelisted feature proxy. Check order: session auth first (an
 /// unauthenticated caller never consumes the paired phone's budget), then the
-/// rate limit, then the allowlist, then dispatch.
+/// rate limit, then the allowlist, then dispatch. The body is read as raw
+/// bytes and parsed here instead of via axum's `Json` extractor: a malformed
+/// body must answer with the JSON envelope (the phone renders `error`), not
+/// axum's plain-text rejection that the client would mistake for offline.
 pub(super) async fn api_feature(
     State(ctx): State<CompanionCtx>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(request): Json<FeatureRequest>,
+    body: Bytes,
 ) -> Response {
     let token = bearer_token(&headers);
     if let Some(response) = authorize_token(&ctx.state, token.clone()) {
@@ -170,6 +173,16 @@ pub(super) async fn api_feature(
             tr("companion.rate.limited"),
         );
     }
+    let request: FeatureRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return err_data(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                tr("companion.request.invalid"),
+            );
+        }
+    };
     feature_response(&ctx.app, &ctx.state, &request.name, request.payload).await
 }
 
@@ -274,15 +287,6 @@ mod tests {
     "local_item_update",
     "local_item_delete",
     "local_browse_dirs",
-    "dsh_status",
-    "dsh_start",
-    "dsh_stop",
-    "dsh_sessions",
-    "dsh_session_entries",
-    "dsh_prompt",
-    "dsh_new_session",
-    "dsh_approval_answer",
-    "dsh_question_answer",
 ];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {

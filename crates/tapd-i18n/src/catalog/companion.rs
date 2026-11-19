@@ -27,6 +27,11 @@ pub static MESSAGES: &[Message] = &[
     ("companion.pairing.notloggedin", "桌面端尚未登录 TAPD", "The desktop is not signed in to TAPD"),
     ("companion.pairing.save", "配对信息保存失败", "Could not save pairing details"),
     ("companion.rate.limited", "请求过于频繁，请稍后再试", "Too many requests; try again later"),
+    (
+        "companion.request.invalid",
+        "请求体无法解析",
+        "Couldn't parse the request body",
+    ),
     ("companion.tunnel.exited", "隧道进程已退出，请重新建立", "The tunnel process exited; start it again"),
     ("companion.tunnel.notready", "外网隧道尚未就绪", "Tunnel is not ready"),
     ("companion.tunnel.timeout", "建立外网隧道超时（30 秒）", "Tunnel setup timed out (30s)"),

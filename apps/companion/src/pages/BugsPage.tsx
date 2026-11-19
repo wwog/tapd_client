@@ -561,7 +561,7 @@ export function BugsPage() {
                 aria-haspopup="dialog"
                 title={t("mobile.bugs.actionsHint")}
                 onClick={() => setActionBug(bug)}
-                className="flex shrink-0 items-center px-3 text-slate-400 transition active:bg-overlay-soft"
+                className="grid w-11 shrink-0 place-items-center text-slate-400 transition active:bg-overlay-soft"
               >
                 <ChevronRight size={16} />
               </button>

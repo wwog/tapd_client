@@ -588,6 +588,9 @@ const emptyFeed = (): AgentFeed => ({
 let feed: AgentFeed = emptyFeed();
 const feedListeners = new Set<() => void>();
 let queue: Promise<void> = Promise.resolve();
+/** The refresh that is currently queued behind `queue`; further requests
+ *  coalesce onto it until it runs. */
+let refreshQueued: Promise<void> | null = null;
 
 /**
  * The session whose board the poller refreshes. The task page registers it on
@@ -626,13 +629,21 @@ const fetchFeed = async (): Promise<void> => {
 };
 
 /**
- * Refreshes both halves once. Calls are serialised so an answer that lands
- * while a poll is in flight still gets a request made after the answer.
+ * Refreshes both halves once. Calls are serialised AND coalesced: a request
+ * that arrives while another refresh is queued is satisfied by the queued one
+ * instead of stacking another full round (visibility restore used to chain
+ * 2–3 whole rounds back to back). The returned promise resolves with the
+ * queued run that will actually cover it.
  */
 export const refreshAgentFeed = (): Promise<void> => {
+  if (refreshQueued) return refreshQueued;
   const next = queue.then(fetchFeed, fetchFeed);
-  queue = next.catch(() => undefined);
-  return next;
+  refreshQueued = next.catch(() => undefined);
+  queue = refreshQueued;
+  void refreshQueued.finally(() => {
+    refreshQueued = null;
+  });
+  return refreshQueued;
 };
 
 /** Folds one command's returned task into the current snapshot. */

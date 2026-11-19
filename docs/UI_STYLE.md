@@ -73,6 +73,31 @@
 - 输入类控件（`input` / `textarea` / `select` / `contenteditable`）已在全局恢复原生选择，不要再单独加。
 - 元数据（ID、标题、版本、路径）不靠拖选复制，用复制按钮或右键菜单。
 
+
+### 4.1 移动端伴侣间距标准（apps/companion）
+
+手机端在 §4 的全局规则之上固定以下常量；改任何页面的留白先对照这里，不再各页自定：
+
+| 场景 | 值 |
+| --- | --- |
+| 页面 gutter（卡片/区块盒缘到屏幕边） | `mx-4`（16px）；卡内文字 `px-3`（12px） |
+| 全出血行（列表行、分组头） | 水平 `px-4` |
+| 列表行 | `px-4 py-3`（骨架屏必须同结构同 padding） |
+| 行尾图标按钮 | `grid w-11`（44px 触控）；带边框的行内按钮 `min-h-11` |
+| sheet / 页面主按钮 | `min-h-11 px-3`，不写 `py-2*` |
+| sheet 内容 ↔ footer 接缝 | footer `pb-3 pt-2`（合计 16px，不叠出 24px） |
+| 页头 | `px-4 pt-3 pb-2`；返回按钮与其余详情页统一 |
+| 区块间距 | 组间 `mt-4`、组内 `mt-2`/`mt-3`；列表容器 `gap-3` |
+| 空态 | 整页级 `py-12`、列表内 `py-10`、错误/轻空态 `py-8`；文案 `text-ui-base` |
+| 错误行 | `px-4 py-2 text-ui-xs text-rose-600`（全端一致） |
+| 卡片圆角 | `rounded-xl`（badge/小标签 `rounded-md`） |
+| 表单输入 | `px-2.5 py-2 text-ui-caption leading-5` |
+| 选项行（sheet 内） | 带说明 `min-h-12`、纯选项 `min-h-11`，行距 `space-y-2` |
+| 有底色块（diff/pre） | `mx-4`（margin），无底色行一律 `px-4` |
+| 触控反馈 | 只用 `active:bg-overlay-soft` / `active:bg-rose-50`；tap 灰块已全局禁用 |
+
+壳层事实：标签栏毛玻璃（`.tab-bar`，canvas 86% + blur）、sheet 顶部有 grabber、`#root`/固定栏已处理安全区（styles.css）。新页面先复制同款页头/行结构再改内容。
+
 ## 5. 层级
 
 固定层叠顺序，新增浮层不要随手写 `z-[999]`：

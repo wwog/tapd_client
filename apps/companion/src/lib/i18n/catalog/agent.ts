@@ -20,6 +20,7 @@ export const agent = {
     "Tasks come from work items or the desktop.",
   ],
   "mobile.agent.untitledSession": ["未命名会话", "Untitled session"],
+  "mobile.agent.sessionGone": ["会话已被删除", "This session was deleted"],
   "mobile.agent.noProject": ["未关联项目", "No project"],
   "mobile.agent.badgeHint": ["{n} 项待处理", "{n} pending"],
 

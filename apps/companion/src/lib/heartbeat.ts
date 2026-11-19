@@ -74,6 +74,15 @@ export function startHeartbeat(): void {
   document.addEventListener("visibilitychange", onVisible);
 }
 
+/** Stops the presence loop (session cleared / device unpaired on this end). */
+export function stopHeartbeat(): void {
+  if (timer === null) return;
+  window.clearInterval(timer);
+  timer = null;
+  document.removeEventListener("visibilitychange", onVisible);
+  update({ online: false });
+}
+
 const subscribe = (listener: () => void): (() => void) => {
   listeners.add(listener);
   return () => listeners.delete(listener);

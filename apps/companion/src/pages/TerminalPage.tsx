@@ -167,7 +167,7 @@ export function TerminalPage() {
             aria-label={t("mobile.terminal.close")}
             disabled={closingId === session.id}
             onClick={() => void close(session.id)}
-            className="flex shrink-0 items-center px-3 text-slate-400 transition active:bg-overlay-soft disabled:opacity-40"
+            className="grid w-11 shrink-0 place-items-center text-slate-400 transition active:bg-overlay-soft disabled:opacity-40"
           >
             <X size={15} />
           </button>

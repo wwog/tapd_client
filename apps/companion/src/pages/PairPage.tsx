@@ -79,10 +79,10 @@ export function PairPage() {
           <button
             type="button"
             onClick={() => setAttempt((value) => value + 1)}
-              className="mt-5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
-            >
-              {t("mobile.pair.retry")}
-            </button>
+            className="mt-5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
+          >
+            {t("mobile.pair.retry")}
+          </button>
         </div>
       )}
     </div>

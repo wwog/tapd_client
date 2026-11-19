@@ -3,7 +3,7 @@ import { Bug, Bot, Folder, ListChecks, RefreshCw, Settings, Terminal } from "luc
 
 import { retryConnection, useConnection } from "./lib/api";
 import { useAgentFeed, useAgentFeedPolling } from "./lib/dsh";
-import { startHeartbeat } from "./lib/heartbeat";
+import { startHeartbeat, stopHeartbeat } from "./lib/heartbeat";
 import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
@@ -140,9 +140,11 @@ export default function App() {
       (task) => task.workflow === "awaiting_review" || task.workflow === "finalizing",
     ).length;
   // Presence handshake: the desktop marks this device online while beats
-  // arrive, and the settings page renders the same state locally.
+  // arrive, and the settings page renders the same state locally. The loop
+  // stops when the session goes away (401 / unpair) instead of ticking on.
   useEffect(() => {
     if (session) startHeartbeat();
+    else stopHeartbeat();
   }, [session]);
 
   // Pairing is the only entry. Never rewrite the URL while there is no
