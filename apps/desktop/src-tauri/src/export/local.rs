@@ -18,6 +18,8 @@ pub(crate) struct LocalExportDocument {
     pub id: String,
     pub title: String,
     pub description: String,
+    /// `low` / `normal` / `high`; the agent reads it from the package.
+    pub importance: String,
     pub project_id: String,
     pub project_name: String,
     pub repo_path: String,
@@ -74,6 +76,7 @@ mod tests {
             id: "wi-7f3a91".to_string(),
             title: "修复登录页错位".to_string(),
             description: "登录按钮在小屏上溢出\n\n顺带核对错误提示".to_string(),
+            importance: "high".to_string(),
             project_id: "proj-local-1".to_string(),
             project_name: "本地项目".to_string(),
             repo_path: "/repos/app".to_string(),
@@ -130,6 +133,7 @@ mod tests {
         assert_eq!(json["projectId"], "proj-local-1");
         assert_eq!(json["repoPath"], "/repos/app");
         assert_eq!(json["projectRule"], "先跑 cargo test");
+        assert_eq!(json["importance"], "high");
         assert_eq!(json["title"], "修复登录页错位");
         assert!(json.get("project_id").is_none(), "keys are camelCase");
         assert_eq!(

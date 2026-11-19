@@ -25,11 +25,11 @@ export const SEVERITIES: ReadonlyArray<readonly [string, MessageKey]> = [
 ];
 
 /**
- * Bug list scope switch: my bugs, the whole project, or the bugs whose workflow
- * tasks are running / waiting. 队列中 only appears while that set is non-empty,
- * and those bugs leave the normal scopes.
+ * Bug list scope switch: my bugs or the whole project. Bugs whose workflow
+ * tasks are running / waiting leave both scopes; the global workflow queue is
+ * the single place to see them.
  */
-export type BugScope = "mine" | "all" | "queue";
+export type BugScope = "mine" | "all";
 
 export type ColumnKey =
   | "status"

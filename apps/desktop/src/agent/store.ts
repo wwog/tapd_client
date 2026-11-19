@@ -1413,6 +1413,14 @@ export const agentActions = {
               }
             : task,
         ) ?? null,
+      // A failed session row would otherwise make `taskInterrupted` true again
+      // immediately, before the turn-start event lands.
+      sessions: state.sessions[sessionId]
+        ? {
+            ...state.sessions,
+            [sessionId]: { ...state.sessions[sessionId], status: "running" },
+          }
+        : state.sessions,
       lastError: null,
     }));
     try {
@@ -1426,6 +1434,7 @@ export const agentActions = {
         return { ...state, pendingPrompts };
       });
       void agentActions.refreshTaskRows();
+      void agentActions.refreshSessions();
       throw error;
     }
   },

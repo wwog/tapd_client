@@ -10,11 +10,14 @@ use std::{path::PathBuf, sync::Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tapd_i18n::{tr, tr_args};
-use tapd_local::{project_id, work_item_id, LocalError, LocalProject, WorkItem, WorkItemStatus};
+use tapd_local::{
+    project_id, work_item_id, LocalError, LocalProject, WorkItem, WorkItemImportance,
+    WorkItemStatus,
+};
 
 /// Version written to `PRAGMA user_version`. New schema changes bump it and add
 /// an explicit migration; no silent upgrade chain.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS local_projects (
@@ -31,6 +34,7 @@ CREATE TABLE IF NOT EXISTS local_work_items (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
+    importance TEXT NOT NULL DEFAULT 'normal',
     agent_task_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -42,6 +46,10 @@ CREATE INDEX IF NOT EXISTS local_work_items_project_updated
 /// v1 -> v2: project rules. Everything else is unchanged; work-item status is
 /// free text, so `done` needs no migration.
 const MIGRATE_1_TO_2: &str = "ALTER TABLE local_projects ADD COLUMN rule TEXT NOT NULL DEFAULT '';";
+
+/// v2 -> v3: item importance. Existing rows become `normal`.
+const MIGRATE_2_TO_3: &str =
+    "ALTER TABLE local_work_items ADD COLUMN importance TEXT NOT NULL DEFAULT 'normal';";
 
 /// SQLite-backed local project store. A failed open leaves it disabled rather
 /// than aborting application startup.
@@ -73,9 +81,9 @@ impl LocalStore {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(sql_error)?;
-        if version != 0 && version != 1 && version != SCHEMA_VERSION {
-            // No silent multi-step upgrade chain. An unknown file stays
-            // untouched so an older build cannot rewrite it.
+        if version != 0 && version != 1 && version != 2 && version != SCHEMA_VERSION {
+            // Known older versions migrate in one transaction; an unknown
+            // (newer) file stays untouched so an older build cannot rewrite it.
             return Err(format!(
                 "local store schema version {version} is not {SCHEMA_VERSION}"
             ));
@@ -85,28 +93,27 @@ impl LocalStore {
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(sql_error)?;
         match version {
-            0 | 1 => {
-                // Serialize the whole migration: two processes opening a v1
+            0 | 1 | 2 => {
+                // Serialize the whole migration: two processes opening an old
                 // file must not both run the ALTER (the loser would fail and
                 // keep its store disabled for the rest of the process).
                 conn.execute_batch("BEGIN IMMEDIATE").map_err(sql_error)?;
                 let migrated = (|| -> Result<(), String> {
-                    if version == 0 {
-                        conn.execute_batch(SCHEMA).map_err(sql_error)?;
-                    }
-                    // A v1 build could have created its tables before stamping
-                    // the version. `CREATE TABLE IF NOT EXISTS` then leaves the
-                    // table without `rule`, so finish that migration before
-                    // stamping. The column check also makes a crash between the
-                    // ALTER and the stamp recoverable.
-                    if !has_column(&conn, "local_projects", "rule")? {
-                        if let Err(error) = conn.execute_batch(MIGRATE_1_TO_2) {
-                            // Another process won a race we did not serialize.
-                            if !error.to_string().contains("duplicate column name") {
-                                return Err(sql_error(error));
-                            }
-                        }
-                    }
+                    // `CREATE TABLE IF NOT EXISTS` is safe for every old
+                    // version and repairs a file whose tables are incomplete.
+                    conn.execute_batch(SCHEMA).map_err(sql_error)?;
+                    // An older build could have created its tables before
+                    // stamping the version. `CREATE TABLE IF NOT EXISTS` then
+                    // leaves the table without the newer columns, so finish
+                    // those migrations before stamping. The column checks also
+                    // make a crash between an ALTER and the stamp recoverable.
+                    add_column_if_missing(&conn, "local_projects", "rule", MIGRATE_1_TO_2)?;
+                    add_column_if_missing(
+                        &conn,
+                        "local_work_items",
+                        "importance",
+                        MIGRATE_2_TO_3,
+                    )?;
                     // Stamp only after the schema exists: writing the version
                     // first would make a failed creation look complete.
                     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -268,8 +275,8 @@ impl LocalStore {
             ensure_project(conn, project_id)?;
             let mut statement = conn
                 .prepare(
-                    "SELECT id, project_id, title, description, status, agent_task_id, \
-                            created_at, updated_at \
+                    "SELECT id, project_id, title, description, status, importance, \
+                            agent_task_id, created_at, updated_at \
                      FROM local_work_items WHERE project_id = ?1 \
                      ORDER BY updated_at DESC, created_at DESC",
                 )
@@ -285,13 +292,26 @@ impl LocalStore {
         })
     }
 
+    /// One item by id, for the detail panel. The project page still lists the
+    /// whole project in one call; this only avoids loading siblings for a panel.
+    pub fn item(&self, id: &str) -> Result<WorkItem, String> {
+        let id = id.trim();
+        self.with_conn(|conn| read_item(conn, id))
+    }
+
     pub fn create_item(
         &self,
         project_id: &str,
         title: &str,
         description: Option<&str>,
+        importance: Option<&str>,
     ) -> Result<WorkItem, String> {
         let project_id = project_id.trim();
+        let importance = match importance {
+            Some(value) => WorkItemImportance::parse(value)
+                .ok_or_else(|| tr_args("local.item.importance", &[&value]))?,
+            None => WorkItemImportance::Normal,
+        };
         let now = now_rfc3339();
         self.with_conn(|conn| {
             ensure_project(conn, project_id)?;
@@ -300,19 +320,21 @@ impl LocalStore {
                 project_id.to_string(),
                 title,
                 description.unwrap_or(""),
+                importance,
                 &now,
             )
             .map_err(local_error)?;
             conn.execute(
                 "INSERT INTO local_work_items \
-                    (id, project_id, title, description, status, agent_task_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (id, project_id, title, description, status, importance, agent_task_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     item.id,
                     item.project_id,
                     item.title,
                     item.description,
                     item.status.as_str(),
+                    item.importance.as_str(),
                     item.agent_task_id,
                     item.created_at,
                     item.updated_at
@@ -329,6 +351,7 @@ impl LocalStore {
         title: Option<&str>,
         description: Option<&str>,
         status: Option<&str>,
+        importance: Option<&str>,
     ) -> Result<WorkItem, String> {
         let id = id.trim();
         let status = match status {
@@ -338,10 +361,18 @@ impl LocalStore {
             ),
             None => None,
         };
+        let importance = match importance {
+            Some(value) => Some(
+                WorkItemImportance::parse(value)
+                    .ok_or_else(|| tr_args("local.item.importance", &[&value]))?,
+            ),
+            None => None,
+        };
         let now = now_rfc3339();
         self.with_conn(|conn| {
             let mut item = read_item(conn, id)?;
-            item.edit(title, description, &now).map_err(local_error)?;
+            item.edit(title, description, importance, &now)
+                .map_err(local_error)?;
             if let Some(status) = status {
                 item.set_status(status, &now);
             }
@@ -468,6 +499,7 @@ type ItemColumns = (
     String,
     String,
     String,
+    String,
     Option<String>,
     String,
     String,
@@ -494,20 +526,25 @@ fn item_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemColumns> {
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }
 
 fn item_from_columns(
-    (id, project_id, title, description, status, agent_task_id, created_at, updated_at): ItemColumns,
+    (id, project_id, title, description, status, importance, agent_task_id, created_at, updated_at): ItemColumns,
 ) -> Result<WorkItem, String> {
     let status =
         WorkItemStatus::parse(&status).ok_or_else(|| tr_args("local.item.status", &[&status]))?;
+    // A value written by a newer build is not a hard failure for an older row;
+    // normal keeps the item readable and editable.
+    let importance = WorkItemImportance::parse(&importance).unwrap_or_default();
     Ok(WorkItem {
         id,
         project_id,
         title,
         description,
         status,
+        importance,
         agent_task_id,
         created_at,
         updated_at,
@@ -529,8 +566,8 @@ fn read_project(conn: &Connection, id: &str) -> Result<LocalProject, String> {
 fn read_item(conn: &Connection, id: &str) -> Result<WorkItem, String> {
     let columns = conn
         .query_row(
-            "SELECT id, project_id, title, description, status, agent_task_id, \
-                    created_at, updated_at \
+            "SELECT id, project_id, title, description, status, importance, \
+                    agent_task_id, created_at, updated_at \
              FROM local_work_items WHERE id = ?1",
             [id],
             item_columns,
@@ -547,13 +584,14 @@ fn write_item(conn: &Connection, item: &WorkItem) -> Result<(), String> {
     conn.execute(
         "UPDATE local_work_items \
          SET project_id = ?1, title = ?2, description = ?3, status = ?4, \
-             agent_task_id = ?5, created_at = ?6, updated_at = ?7 \
-         WHERE id = ?8",
+             importance = ?5, agent_task_id = ?6, created_at = ?7, updated_at = ?8 \
+         WHERE id = ?9",
         params![
             item.project_id,
             item.title,
             item.description,
             item.status.as_str(),
+            item.importance.as_str(),
             item.agent_task_id,
             item.created_at,
             item.updated_at,
@@ -650,8 +688,27 @@ fn sql_error(error: rusqlite::Error) -> String {
     tr_args("local.store.failed", &[&error])
 }
 
-/// Whether a table already has a column. Used to make the v1 -> v2 ALTER
-/// re-runnable if the process died before the version stamp.
+/// Runs an `ALTER TABLE` only when the column is absent. A duplicate-column
+/// error is tolerated because another process may have won the same race.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    migration: &str,
+) -> Result<(), String> {
+    if has_column(conn, table, column)? {
+        return Ok(());
+    }
+    if let Err(error) = conn.execute_batch(migration) {
+        if !error.to_string().contains("duplicate column name") {
+            return Err(sql_error(error));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a table already has a column, so a migration can be re-run after a
+/// crash between the ALTER and the version stamp.
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let mut statement = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -746,13 +803,13 @@ mod tests {
         assert_eq!(updated.created_at, first.created_at);
 
         let item = store
-            .create_item(&first.id, "Ship it", Some("body"))
+            .create_item(&first.id, "Ship it", Some("body"), None)
             .expect("create item");
         assert!(item.id.starts_with("lw_"));
         assert_eq!(item.status, WorkItemStatus::Pending);
 
         let edited = store
-            .update_item(&item.id, Some("Ship it twice"), None, Some("in_progress"))
+            .update_item(&item.id, Some("Ship it twice"), None, Some("in_progress"), None)
             .expect("update item");
         assert_eq!(edited.title, "Ship it twice");
         assert_eq!(edited.status, WorkItemStatus::InProgress);
@@ -812,7 +869,7 @@ mod tests {
         let project = store
             .create_project(None, &temp.dir("repo"), None)
             .expect("project");
-        store.create_item(&project.id, "One", None).expect("item");
+        store.create_item(&project.id, "One", None, None).expect("item");
         store.delete_project(&project.id).expect("delete");
 
         assert_eq!(
@@ -833,14 +890,14 @@ mod tests {
         let project = store
             .create_project(None, &temp.dir("repo"), None)
             .expect("project");
-        let item = store.create_item(&project.id, "Work", None).expect("item");
+        let item = store.create_item(&project.id, "Work", None, None).expect("item");
 
         let attached = store.attach_task(&item.id, "task-1", NOW).expect("attach");
         assert_eq!(attached.agent_task_id.as_deref(), Some("task-1"));
         assert_eq!(attached.status, WorkItemStatus::InProgress);
 
         let error = store
-            .update_item(&item.id, None, None, Some("archived"))
+            .update_item(&item.id, None, None, Some("archived"), None)
             .expect_err("unknown status");
         assert_eq!(error, tr_args("local.item.status", &[&"archived"]));
     }
@@ -881,13 +938,13 @@ mod tests {
             .create_project(None, &temp.dir("repo"), None)
             .expect("project");
         let linked = store
-            .create_item(&project.id, "Linked", None)
+            .create_item(&project.id, "Linked", None, None)
             .expect("item");
         store
             .attach_task(&linked.id, "task-1", NOW)
             .expect("attach");
         let other = store
-            .create_item(&project.id, "Other", None)
+            .create_item(&project.id, "Other", None, None)
             .expect("other item");
 
         // Completion matches by (project, item), so a retried task's new id
@@ -922,7 +979,7 @@ mod tests {
 
         // A manual move back to pending is respected (not in_progress).
         let pending = store
-            .create_item(&project.id, "Moved back", None)
+            .create_item(&project.id, "Moved back", None, None)
             .expect("pending item");
         assert_eq!(
             store
@@ -1041,7 +1098,7 @@ mod tests {
         let db_path = temp.base.join("local.sqlite3");
         {
             let conn = Connection::open(&db_path).expect("open");
-            conn.pragma_update(None, "user_version", 3)
+            conn.pragma_update(None, "user_version", 4)
                 .expect("stamp a newer version");
         }
 
@@ -1055,7 +1112,78 @@ mod tests {
             .expect("reopen")
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 3, "a newer file is never rewritten");
+        assert_eq!(version, 4, "a newer file is never rewritten");
+    }
+
+    #[test]
+    fn a_v2_database_adds_importance_without_touching_items() {
+        const NOW: &str = "2026-01-01T00:00:00Z";
+        let temp = TempStore::new("migrate-v2-importance");
+        let db_path = temp.base.join("local.sqlite3");
+        {
+            let conn = Connection::open(&db_path).expect("open v2");
+            conn.execute_batch(
+                "CREATE TABLE local_projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    rule TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE local_work_items (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    agent_task_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                PRAGMA user_version = 2;",
+            )
+            .expect("v2 schema");
+            conn.execute(
+                "INSERT INTO local_projects (id, name, repo_path, rule, created_at, updated_at) \
+                 VALUES ('lp_old', 'Old', ?1, '', ?2, ?2)",
+                params![temp.dir("old"), NOW],
+            )
+            .expect("v2 project");
+            conn.execute(
+                "INSERT INTO local_work_items \
+                    (id, project_id, title, description, status, agent_task_id, created_at, updated_at) \
+                 VALUES ('lw_old', 'lp_old', 'Old item', 'body', 'pending', NULL, ?1, ?1)",
+                params![NOW],
+            )
+            .expect("v2 item");
+        }
+
+        let store = temp.store();
+        let items = store.items("lp_old").expect("migrated items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "lw_old");
+        assert_eq!(items[0].importance, WorkItemImportance::Normal);
+
+        // Importance round-trips through INSERT, UPDATE and the single-item read.
+        let created = store
+            .create_item("lp_old", "High", None, Some("high"))
+            .expect("create with importance");
+        assert_eq!(created.importance, WorkItemImportance::High);
+        let updated = store
+            .update_item(&created.id, None, None, None, Some("low"))
+            .expect("update importance");
+        assert_eq!(updated.importance, WorkItemImportance::Low);
+        assert_eq!(
+            store.item(&created.id).expect("read item").importance,
+            WorkItemImportance::Low
+        );
+
+        let version: i64 = Connection::open(&db_path)
+            .expect("reopen")
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

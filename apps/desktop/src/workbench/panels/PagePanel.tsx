@@ -20,7 +20,7 @@ import { usePageHost } from "../components/pageContext";
  * Hosts one full page view. App no longer has a global `view` switch; every
  * page tab renders its own view from the panel resource.
  */
-export function PagePanel({ panel }: PanelProps) {
+export function PagePanel({ panel, active }: PanelProps) {
   const host = usePageHost();
   const resource = panel.resource.type === "page" ? panel.resource : null;
   const view: PageView = resource?.view ?? "bugs";
@@ -42,6 +42,9 @@ export function PagePanel({ panel }: PanelProps) {
               key={project.id}
               project={project}
               toast={host.toast}
+              onOpenItem={(item) =>
+                host.onOpenLocalItem(project.id, item.id, item.title)
+              }
             />
           ) : host.localLoading ? (
             // The project list is still arriving; claiming "nothing selected"
@@ -62,7 +65,12 @@ export function PagePanel({ panel }: PanelProps) {
     case "queue":
       return (
         <div data-component="PagePanel" className="flex h-full min-h-0 flex-col">
-          <QueuePage onOpenTask={host.onOpenAgentTask} />
+          <QueuePage
+            active={active}
+            onOpenTask={host.onOpenAgentTask}
+            onOpenBug={host.onOpenBugById}
+            onOpenLocalItem={host.onOpenLocalItem}
+          />
         </div>
       );
 
@@ -108,6 +116,7 @@ export function PagePanel({ panel }: PanelProps) {
               onClaim={host.onClaim}
               onOpenAgentTask={host.onOpenAgentTask}
               onCancelAgentTask={host.onCancelAgentTask}
+              onOpenQueue={host.onOpenQueue}
               refreshToken={host.refreshToken}
             />
           ) : (

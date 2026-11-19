@@ -1594,6 +1594,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
         id: item.id.clone(),
         title: item.title.clone(),
         description: item.description.clone(),
+        importance: item.importance.as_str().to_string(),
         project_id: project.id.clone(),
         project_name: project.name.clone(),
         repo_path: repo_path.clone(),
@@ -1763,7 +1764,7 @@ async fn rollback(app: &AppHandle, record: &TaskRecord, local: Option<&LocalLink
         if let Err(error) = blocking(move || {
             store.forget_task(&task_id, &at)?;
             store
-                .update_item(&item_id, None, None, Some(previous.as_str()))
+                .update_item(&item_id, None, None, Some(previous.as_str()), None)
                 .map(|_| ())
         })
         .await
@@ -2980,7 +2981,7 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
             if let Err(error) = blocking(move || {
                 store.forget_task(&task_id, &at)?;
                 store
-                    .update_item(&item_id, None, None, Some(previous.as_str()))
+                    .update_item(&item_id, None, None, Some(previous.as_str()), None)
                     .map(|_| ())
             })
             .await
@@ -3769,7 +3770,7 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
             store.forget_task(&task_id, &at)?;
             if let Some(status) = restored {
                 store
-                    .update_item(&item_for_store, None, None, Some(status.as_str()))
+                    .update_item(&item_for_store, None, None, Some(status.as_str()), None)
                     .map(|_| ())?;
             }
             Ok::<_, String>(())
@@ -3901,6 +3902,10 @@ struct TaskView<'a> {
     model: Option<String>,
     /// The last turn never settled: stopped by the user or lost with the app.
     interrupted: bool,
+    /// The work item a local task was handed over from, for queue/report
+    /// navigation into its detail panel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_item_id: Option<String>,
 }
 
 fn task_view<'a>(record: &'a TaskRecord, task: &'a DshTask) -> TaskView<'a> {
@@ -3919,6 +3924,7 @@ fn task_view<'a>(record: &'a TaskRecord, task: &'a DshTask) -> TaskView<'a> {
         direct: record.meta.direct,
         model: record.meta.model.as_ref().map(|model| model.model.clone()),
         interrupted: record.meta.interrupted,
+        local_item_id: record.meta.local_item_id.clone(),
     }
 }
 

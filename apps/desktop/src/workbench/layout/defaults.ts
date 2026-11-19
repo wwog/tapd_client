@@ -52,6 +52,7 @@ export const defaultSidebarWidth = (viewport: number): number =>
 export const PANEL_MIN_SIZE: Record<PanelKind, PanelSize> = {
   page: { width: 460, height: 320 },
   bug: { width: 360, height: 240 },
+  local_item: { width: 360, height: 240 },
   explorer: { width: 240, height: 220 },
   file: { width: 320, height: 220 },
   terminal: { width: 280, height: 140 },
@@ -85,6 +86,7 @@ export function defaultTarget(kind: PanelKind): GroupRole {
     case "terminal":
       return "bottom";
     case "bug":
+    case "local_item":
     case "explorer":
     case "file":
       return "secondary";

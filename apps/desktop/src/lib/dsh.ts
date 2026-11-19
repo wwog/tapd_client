@@ -449,6 +449,8 @@ export type DshTask = {
   model?: string;
   /** The last turn stopped before the round settled (stop or app exit). */
   interrupted?: boolean;
+  /** The local work item a local task came from (queue/report navigation). */
+  localItemId?: string;
 };
 
 // ---------------------------------------------------------------------------

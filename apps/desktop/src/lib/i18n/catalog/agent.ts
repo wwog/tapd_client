@@ -73,6 +73,13 @@ export const agent = {
   "agent.queue.loading": ["正在读取工作流队列", "Loading the workflow queue"],
   "agent.queue.cancel": ["取消任务", "Cancel task"],
   "agent.queue.open": ["打开任务", "Open task"],
+  "agent.queue.openSource": ["查看来源记录", "Open source record"],
+  "agent.queue.created": ["创建 {time}", "Created {time}"],
+  "agent.queue.report": ["上次队列完成", "Last queue run"],
+  "agent.queue.reportSummary": [
+    "完成 {done} · 取消 {canceled} · 失败 {failed}",
+    "{done} done · {canceled} canceled · {failed} failed",
+  ],
 
   "agent.task.live": ["运行中", "Running"],
   // Stand-in for the row time while the session works: the live timestamp

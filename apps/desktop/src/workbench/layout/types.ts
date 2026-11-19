@@ -22,7 +22,13 @@ export type PageView =
   | "settings"
   | "account";
 
-export type PanelKind = "page" | "bug" | "explorer" | "file" | "terminal";
+export type PanelKind =
+  | "page"
+  | "bug"
+  | "local_item"
+  | "explorer"
+  | "file"
+  | "terminal";
 
 /**
  * What a panel points at. `workspaceId` already identifies the project, so the
@@ -36,6 +42,7 @@ export type PanelKind = "page" | "bug" | "explorer" | "file" | "terminal";
 export type PanelResource =
   | { type: "page"; view: PageView; projectId?: string }
   | { type: "bug"; workspaceId: string; bugId: string }
+  | { type: "local_item"; projectId: string; itemId: string }
   | { type: "explorer"; workspaceId: string }
   | { type: "file"; workspaceId: string; path: string }
   | { type: "terminal"; sessionId: string };
@@ -188,6 +195,8 @@ export const panelId = {
   page: (view: PageView, projectId?: string): string =>
     projectId ? `page:${view}:${projectId}` : `page:${view}`,
   bug: (workspaceId: string, bugId: string): string => `bug:${workspaceId}:${bugId}`,
+  localItem: (projectId: string, itemId: string): string =>
+    `local_item:${projectId}:${itemId}`,
   explorer: (workspaceId: string): string => `explorer:${workspaceId}`,
   file: (workspaceId: string, path: string): string => `file:${workspaceId}:${path}`,
   terminal: (sessionId: string): string => `terminal:${sessionId}`,
@@ -203,11 +212,13 @@ export function makePanel(
       ? panelId.page(resource.view, resource.projectId)
       : resource.type === "bug"
         ? panelId.bug(resource.workspaceId, resource.bugId)
-        : resource.type === "explorer"
-          ? panelId.explorer(resource.workspaceId)
-          : resource.type === "file"
-            ? panelId.file(resource.workspaceId, resource.path)
-            : panelId.terminal(resource.sessionId);
+        : resource.type === "local_item"
+          ? panelId.localItem(resource.projectId, resource.itemId)
+          : resource.type === "explorer"
+            ? panelId.explorer(resource.workspaceId)
+            : resource.type === "file"
+              ? panelId.file(resource.workspaceId, resource.path)
+              : panelId.terminal(resource.sessionId);
   return {
     id,
     kind: resource.type,

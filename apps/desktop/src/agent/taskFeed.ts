@@ -1,6 +1,6 @@
 /**
  * Workflow-task feed for surfaces outside the Agent page: the bug list's
- * 队列中 tab / row status line and the global workflow queue.
+ * row status line and the global workflow queue.
  *
  * The Agent store changes on every stream token, so subscribing to it whole
  * would re-render a 50-row bug table per token. This module keeps one cached,

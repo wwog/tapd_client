@@ -15,7 +15,7 @@ use crate::state::SharedState;
 
 
 pub async fn dispatch(
-    _app: &AppHandle,
+    app: &AppHandle,
     state: &SharedState,
     name: &str,
     payload: Value,
@@ -24,11 +24,12 @@ pub async fn dispatch(
         "local_projects_list" => projects_list(state).await,
         "local_project_create" => project_create(state, &payload).await,
         "local_project_update" => project_update(state, &payload).await,
-        "local_project_delete" => project_delete(state, &payload).await,
+        "local_project_delete" => project_delete(app, state, &payload).await,
         "local_items_list" => items_list(state, &payload).await,
-        "local_item_create" => item_create(state, &payload).await,
-        "local_item_update" => item_update(state, &payload).await,
-        "local_item_delete" => item_delete(state, &payload).await,
+        "local_item_get" => item_get(state, &payload).await,
+        "local_item_create" => item_create(app, state, &payload).await,
+        "local_item_update" => item_update(app, state, &payload).await,
+        "local_item_delete" => item_delete(app, state, &payload).await,
         "local_browse_dirs" => browse_dirs(state, &payload).await,
         other => Err(format!("unknown local command: {other}")),
     }
@@ -73,10 +74,18 @@ async fn project_update(state: &SharedState, payload: &Value) -> Result<Value, S
     Ok(json!({ "project": project }))
 }
 
-async fn project_delete(state: &SharedState, payload: &Value) -> Result<Value, String> {
+async fn project_delete(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
     let id = required_str(payload, "id")?;
     let store = state.local.clone();
+    let project_id = id.clone();
     blocking(move || store.delete_project(&id)).await?;
+    // The project cascade removed its items; open detail panels must learn
+    // that their record is gone.
+    super::emit_items_changed(app, Some(&project_id), None, None);
     Ok(json!({ "deleted": true }))
 }
 
@@ -91,17 +100,47 @@ async fn items_list(state: &SharedState, payload: &Value) -> Result<Value, Strin
     Ok(json!({ "items": items }))
 }
 
-async fn item_create(state: &SharedState, payload: &Value) -> Result<Value, String> {
-    let project_id = required_str(payload, "projectId")?;
-    let title = required_str(payload, "title")?;
-    let description = optional_str(payload, "description");
+async fn item_get(state: &SharedState, payload: &Value) -> Result<Value, String> {
+    let id = required_str(payload, "id")?;
     let store = state.local.clone();
-    let item =
-        blocking(move || store.create_item(&project_id, &title, description.as_deref())).await?;
+    let item = blocking(move || store.item(&id)).await?;
     Ok(json!({ "item": item }))
 }
 
-async fn item_update(state: &SharedState, payload: &Value) -> Result<Value, String> {
+async fn item_create(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
+    let project_id = required_str(payload, "projectId")?;
+    let title = required_str(payload, "title")?;
+    let description = optional_str(payload, "description");
+    let importance = optional_str(payload, "importance");
+    let store = state.local.clone();
+    let item = blocking(move || {
+        store.create_item(
+            &project_id,
+            &title,
+            description.as_deref(),
+            importance.as_deref(),
+        )
+    })
+    .await?;
+    // The list and any open detail panel refresh from the same event.
+    super::emit_items_changed(
+        app,
+        Some(&item.project_id),
+        Some(&item.id),
+        Some(item.status.as_str()),
+    );
+    Ok(json!({ "item": item }))
+}
+
+async fn item_update(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
     let id = required_str(payload, "id")?;
     let title = optional_str(payload, "title");
     // An empty description is meaningful (the user cleared it), so it is not
@@ -111,6 +150,7 @@ async fn item_update(state: &SharedState, payload: &Value) -> Result<Value, Stri
         .and_then(Value::as_str)
         .map(str::to_string);
     let status = optional_str(payload, "status");
+    let importance = optional_str(payload, "importance");
     let store = state.local.clone();
     let item = blocking(move || {
         store.update_item(
@@ -118,16 +158,47 @@ async fn item_update(state: &SharedState, payload: &Value) -> Result<Value, Stri
             title.as_deref(),
             description.as_deref(),
             status.as_deref(),
+            importance.as_deref(),
         )
     })
     .await?;
+    super::emit_items_changed(
+        app,
+        Some(&item.project_id),
+        Some(&item.id),
+        Some(item.status.as_str()),
+    );
     Ok(json!({ "item": item }))
 }
 
-async fn item_delete(state: &SharedState, payload: &Value) -> Result<Value, String> {
+async fn item_delete(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
     let id = required_str(payload, "id")?;
+    // Read before deleting so the refresh event can name the project.
+    let existing = {
+        let store = state.local.clone();
+        let key = id.clone();
+        blocking(move || store.item(&key)).await.ok()
+    };
     let store = state.local.clone();
-    blocking(move || store.delete_item(&id)).await?;
+    let key = id.clone();
+    blocking(move || store.delete_item(&key)).await?;
+    super::emit_items_changed(
+        app,
+        existing.as_ref().map(|item| item.project_id.as_str()),
+        // The store trims the id; echo the canonical one so an open panel can
+        // match the event.
+        Some(
+            existing
+                .as_ref()
+                .map(|item| item.id.as_str())
+                .unwrap_or(id.as_str()),
+        ),
+        None,
+    );
     Ok(json!({ "deleted": true }))
 }
 

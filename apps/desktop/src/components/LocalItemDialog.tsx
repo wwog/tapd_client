@@ -2,11 +2,16 @@ import { useState } from "react";
 import { ListChecks } from "lucide-react";
 
 import { t } from "../lib/i18n";
-import type { WorkItem } from "../lib/local";
+import type { WorkItem, WorkItemImportance } from "../lib/local";
 import { Dialog } from "./Dialog";
+import { Segmented } from "./Segmented";
 import { Button, inputClass } from "./ui";
 
-type Values = { title: string; description: string };
+export type LocalItemValues = {
+  title: string;
+  description: string;
+  importance: WorkItemImportance;
+};
 
 /** Create / edit dialog for one local work item; only the title is required. */
 export function LocalItemDialog(props: {
@@ -14,11 +19,14 @@ export function LocalItemDialog(props: {
   item: WorkItem | null;
   onClose: () => void;
   /** Rejects with the backend message, which stays visible in the dialog. */
-  onSubmit: (values: Values) => Promise<void>;
+  onSubmit: (values: LocalItemValues) => Promise<void>;
 }) {
   const { item, onClose, onSubmit } = props;
   const [title, setTitle] = useState(item?.title ?? "");
   const [description, setDescription] = useState(item?.description ?? "");
+  const [importance, setImportance] = useState<WorkItemImportance>(
+    item?.importance ?? "normal",
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,7 +37,11 @@ export function LocalItemDialog(props: {
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit({ title: title.trim(), description: description.trim() });
+      await onSubmit({
+        title: title.trim(),
+        description: description.trim(),
+        importance,
+      });
       onClose();
     } catch (cause) {
       setError(String(cause));
@@ -55,6 +67,21 @@ export function LocalItemDialog(props: {
           disabled={submitting}
           className={inputClass}
           autoFocus
+        />
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <div className="text-ui-xs text-slate-400">
+          {t("local.items.importance")}
+        </div>
+        <Segmented<WorkItemImportance>
+          value={importance}
+          onChange={setImportance}
+          options={[
+            { value: "low", label: t("local.importance.low") },
+            { value: "normal", label: t("local.importance.normal") },
+            { value: "high", label: t("local.importance.high") },
+          ]}
         />
       </div>
 

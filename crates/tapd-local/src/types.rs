@@ -96,6 +96,10 @@ pub struct WorkItem {
     pub title: String,
     pub description: String,
     pub status: WorkItemStatus,
+    /// User-facing importance mark; normal when the item was created without
+    /// one. Purely descriptive: it never gates a transition.
+    #[serde(default)]
+    pub importance: WorkItemImportance,
     /// Set while an agent task works on this item; the task lives elsewhere.
     pub agent_task_id: Option<String>,
     pub created_at: String,
@@ -109,6 +113,36 @@ pub enum WorkItemStatus {
     InProgress,
     /// The linked agent task succeeded, or the user marked it done.
     Done,
+}
+
+/// How important an item is to the user. Normal is the default so every item
+/// created before this field existed keeps a meaningful value.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemImportance {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+impl WorkItemImportance {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "normal" => Some(Self::Normal),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
 }
 
 impl WorkItemStatus {
@@ -136,6 +170,7 @@ impl WorkItem {
         project_id: String,
         title: &str,
         description: &str,
+        importance: WorkItemImportance,
         now: &str,
     ) -> Result<Self, LocalError> {
         let title = required(title, LocalError::EmptyTitle)?;
@@ -145,6 +180,7 @@ impl WorkItem {
             title: title.to_owned(),
             description: description.trim().to_owned(),
             status: WorkItemStatus::Pending,
+            importance,
             agent_task_id: None,
             created_at: now.to_owned(),
             updated_at: now.to_owned(),
@@ -157,6 +193,7 @@ impl WorkItem {
         &mut self,
         title: Option<&str>,
         description: Option<&str>,
+        importance: Option<WorkItemImportance>,
         now: &str,
     ) -> Result<(), LocalError> {
         let title = match title {
@@ -168,6 +205,9 @@ impl WorkItem {
         }
         if let Some(description) = description {
             self.description = description.trim().to_owned();
+        }
+        if let Some(importance) = importance {
+            self.importance = importance;
         }
         self.updated_at = now.to_owned();
         Ok(())

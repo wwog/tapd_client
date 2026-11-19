@@ -10,7 +10,6 @@ import {
   Check,
   Columns3,
   GripVertical,
-  ListTodo,
   Search,
   Users,
   UserRound,
@@ -45,9 +44,6 @@ type Props = {
   scope: BugScope;
   me: string | null;
   onScopeChange: (scope: BugScope) => void;
-  /** 队列中 exists only while the project owns running/waiting tasks. */
-  showQueue: boolean;
-  queueCount: number;
   keyword: string;
   onKeywordChange: (value: string) => void;
   columns: ColumnPref[];
@@ -61,8 +57,6 @@ export function BugTableToolbar(props: Props) {
     scope,
     me,
     onScopeChange,
-    showQueue,
-    queueCount,
     keyword,
     onKeywordChange,
     columns,
@@ -88,8 +82,8 @@ export function BugTableToolbar(props: Props) {
   /** The first real measurement is a settled layout, not an animation frame. */
   const measuredRef = useRef(false);
 
-  // Measure against the real content, not a breakpoint: the scope switch grows
-  // with a third segment and the UI font size is user-configurable. The row
+  // Measure against the real content, not a breakpoint: the scope switch and
+  // the UI font size are user-configurable. The row
   // never wraps (a dock opening beside it would otherwise fold the field onto a
   // second line for a frame); it only drops the search once the width has
   // stayed too narrow, so a transient dip does not blink it.
@@ -219,16 +213,6 @@ export function BugTableToolbar(props: Props) {
   const scopeOptions: SegmentedOption<BugScope>[] = [
     { value: "mine", label: t("bugs.scopeMine"), icon: <UserRound size={12} /> },
     { value: "all", label: t("common.all"), icon: <Users size={12} /> },
-    ...(showQueue
-      ? [
-          {
-            value: "queue" as const,
-            label: t("bugs.scopeQueue"),
-            icon: <ListTodo size={12} />,
-            count: queueCount,
-          },
-        ]
-      : []),
   ];
 
   return (

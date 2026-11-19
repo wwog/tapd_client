@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import clsx from "clsx";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight,
@@ -18,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { EnqueueControl } from "../agent/EnqueuePopover";
+import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
 import {
   localApi,
@@ -30,27 +24,38 @@ import {
 import type { ToastFn } from "../lib/feature";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
-import { LocalItemDialog } from "./LocalItemDialog";
+import { ImportanceBadge } from "./ImportanceBadge";
+import { LocalItemDialog, type LocalItemValues } from "./LocalItemDialog";
 import { ScrollingName } from "./ScrollingName";
 import { Segmented } from "./Segmented";
 import { SkeletonRows } from "./Skeleton";
-import { Button } from "./ui";
+import { Badge, Button } from "./ui";
+
+/** The list only splits by the user's two buckets; in-progress items stay with
+ *  pending (they are not done) and are labelled with a status badge. */
+type ItemTab = "pending" | "done";
+
+const bucketOf = (status: WorkItemStatus): ItemTab =>
+  status === "done" ? "done" : "pending";
 
 type Props = {
   project: LocalProject;
   toast: ToastFn;
+  /** Opens the item's detail panel without leaving the project page. */
+  onOpenItem?: (item: WorkItem) => void;
 };
 
 /**
- * Three-state work item list for one local project. Items are local-only: no
- * TAPD workspace, no export package, and no task link until the built-in agent
- * flow hands them over (P4).
+ * Work item list for one local project, split into 待处理 / 已完成. Items are
+ * local-only: no TAPD workspace, no export package, and no task link until the
+ * built-in agent flow hands them over. 处理中 is not a tab: an in-progress item
+ * stays in 待处理 with a status mark, and its task lives in the global queue.
  */
-export function LocalItemsPage({ project, toast }: Props) {
+export function LocalItemsPage({ project, toast, onOpenItem }: Props) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<WorkItemStatus>("pending");
+  const [tab, setTab] = useState<ItemTab>("pending");
   const [dialog, setDialog] = useState<{ item: WorkItem | null } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -71,21 +76,25 @@ export function LocalItemsPage({ project, toast }: Props) {
    * `quiet` reloads keep the current list on screen: task completion refreshes
    * the rows in place instead of flashing the skeleton over them.
    */
+  const loadSeq = useRef(0);
   const load = useCallback(
     async (quiet = false) => {
+      const seq = ++loadSeq.current;
       if (!quiet) {
         setLoading(true);
         setError(null);
       }
       try {
         const { items: next } = await localApi.listItems(project.id);
+        if (seq !== loadSeq.current) return;
         setItems(next);
         setError(null);
       } catch (cause) {
+        if (seq !== loadSeq.current) return;
         if (quiet) toastRef.current("error", String(cause));
         else setError(String(cause));
       } finally {
-        if (!quiet) setLoading(false);
+        if (seq === loadSeq.current && !quiet) setLoading(false);
       }
     },
     [project.id],
@@ -97,28 +106,15 @@ export function LocalItemsPage({ project, toast }: Props) {
 
   // The task flow changes an item's status in the database (attach → in
   // progress, done → finished, cancel/delete → restored) and emits this event.
-  // A quiet reload keeps the rows on screen; if the changed item is in the
-  // visible tab, follow it into its new tab like the row actions do.
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
+  // A quiet reload keeps the rows on screen; the visible tab is never switched
+  // for a background completion (that would yank the reader out of 待处理).
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<LocalItemsEvent>(LOCAL_ITEMS_EVENT, (event) => {
       const data = event.payload ?? {};
       if (data.projectId && data.projectId !== project.id) return;
-      const current = data.itemId
-        ? itemsRef.current.find((item) => item.id === data.itemId)
-        : undefined;
-      const follow =
-        current && current.status === tabRef.current && data.status
-          ? data.status
-          : null;
-      void load(true).then(() => {
-        if (!disposed && follow) setTab(follow);
-      });
+      void load(true);
     })
       .then((fn) => {
         if (disposed) fn();
@@ -134,17 +130,19 @@ export function LocalItemsPage({ project, toast }: Props) {
     };
   }, [load, project.id]);
 
-  const pending = items.filter((item) => item.status === "pending");
-  const inProgress = items.filter((item) => item.status === "in_progress");
+  // 处理中 is no longer its own tab: in-progress items are unfinished, so
+  // they stay in the pending bucket with a status badge. Their agent tasks are
+  // tracked in the global workflow queue.
+  const open = items.filter((item) => item.status !== "done");
   const done = items.filter((item) => item.status === "done");
-  const visible =
-    tab === "pending" ? pending : tab === "in_progress" ? inProgress : done;
+  const visible = tab === "pending" ? open : done;
 
-  const saveItem = async (values: { title: string; description: string }) => {
+  const saveItem = async (values: LocalItemValues) => {
     if (dialog?.item) {
       const { item } = await localApi.updateItem(dialog.item.id, {
         title: values.title,
         description: values.description,
+        importance: values.importance,
       });
       setItems((current) =>
         current.map((candidate) => (candidate.id === item.id ? item : candidate)),
@@ -154,20 +152,26 @@ export function LocalItemsPage({ project, toast }: Props) {
     const { item } = await localApi.createItem(project.id, {
       title: values.title,
       description: values.description,
+      importance: values.importance,
     });
-    setItems((current) => [item, ...current]);
-    setTab(item.status);
+    // The command also emits a refresh; dedupe in case that list landed first.
+    setItems((current) => [
+      item,
+      ...current.filter((candidate) => candidate.id !== item.id),
+    ]);
+    setTab(bucketOf(item.status));
   };
 
   /** Moves the item and follows it so the row does not just disappear. */
   const setStatus = async (item: WorkItem, status: WorkItemStatus) => {
+    if (actionBusy) return;
     setActionBusy(item.id);
     try {
       const { item: next } = await localApi.updateItem(item.id, { status });
       setItems((current) =>
         current.map((candidate) => (candidate.id === next.id ? next : candidate)),
       );
-      setTab(next.status);
+      setTab(bucketOf(next.status));
     } catch (cause) {
       toast("error", String(cause));
     } finally {
@@ -194,19 +198,14 @@ export function LocalItemsPage({ project, toast }: Props) {
   return (
     <div data-component="LocalItemsPage" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
-        <Segmented<WorkItemStatus>
+        <Segmented<ItemTab>
           value={tab}
           onChange={setTab}
           options={[
             {
               value: "pending",
               label: t("local.items.pending"),
-              count: pending.length,
-            },
-            {
-              value: "in_progress",
-              label: t("local.items.inProgress"),
-              count: inProgress.length,
+              count: open.length,
             },
             {
               value: "done",
@@ -253,9 +252,7 @@ export function LocalItemsPage({ project, toast }: Props) {
           >
             {tab === "pending"
               ? t("local.items.emptyPending")
-              : tab === "in_progress"
-                ? t("local.items.emptyInProgress")
-                : t("local.items.emptyDone")}
+              : t("local.items.emptyDone")}
           </div>
         ) : (
           <ul className="space-y-2">
@@ -265,7 +262,7 @@ export function LocalItemsPage({ project, toast }: Props) {
                 item={item}
                 projectId={project.id}
                 busy={actionBusy === item.id}
-                onSetStatus={(status) => void setStatus(item, status)}
+                onOpen={() => onOpenItem?.(item)}
                 onContextMenu={(x, y) => setMenu({ item, x, y })}
               />
             ))}
@@ -303,6 +300,46 @@ export function LocalItemsPage({ project, toast }: Props) {
         >
           {(requestClose) => (
             <>
+              {menu.item.status === "pending" ? (
+                <ContextMenuItem
+                  icon={<ArrowRight size={14} />}
+                  label={t("local.items.moveToProgress")}
+                  onClick={() => {
+                    void setStatus(menu.item, "in_progress");
+                    requestClose();
+                  }}
+                />
+              ) : null}
+              {menu.item.status === "in_progress" ? (
+                <ContextMenuItem
+                  icon={<Undo2 size={14} />}
+                  label={t("local.items.moveToPending")}
+                  onClick={() => {
+                    void setStatus(menu.item, "pending");
+                    requestClose();
+                  }}
+                />
+              ) : null}
+              {menu.item.status === "done" ? (
+                <ContextMenuItem
+                  icon={<Undo2 size={14} />}
+                  label={t("local.items.reopen")}
+                  onClick={() => {
+                    void setStatus(menu.item, "pending");
+                    requestClose();
+                  }}
+                />
+              ) : null}
+              {menu.item.status !== "done" ? (
+                <ContextMenuItem
+                  icon={<Check size={14} />}
+                  label={t("local.items.markDone")}
+                  onClick={() => {
+                    void setStatus(menu.item, "done");
+                    requestClose();
+                  }}
+                />
+              ) : null}
               <ContextMenuItem
                 icon={<Pencil size={14} />}
                 label={t("local.items.edit")}
@@ -332,71 +369,63 @@ function ItemRow(props: {
   item: WorkItem;
   projectId: string;
   busy: boolean;
-  onSetStatus: (status: WorkItemStatus) => void;
+  onOpen: () => void;
   onContextMenu: (x: number, y: number) => void;
 }) {
-  const { item, projectId, busy, onSetStatus, onContextMenu } = props;
+  const { item, projectId, busy, onOpen, onContextMenu } = props;
 
   return (
     <li data-component="ItemRow">
       <article
+        role="button"
+        tabIndex={0}
+        aria-label={item.title}
+        onClick={onOpen}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          onOpen();
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           onContextMenu(event.clientX, event.clientY);
         }}
-        className="flex items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300"
+        className="flex cursor-pointer items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300 focus-visible:outline-2 focus-visible:outline-sky-200"
       >
         <div className="min-w-0 flex-1">
-          <ScrollingName
-            text={item.title}
-            className="text-ui-caption text-slate-800"
-          />
+          <div className="flex min-w-0 items-center gap-2">
+            <ImportanceBadge value={item.importance} className="shrink-0" />
+            <ScrollingName
+              text={item.title}
+              className="min-w-0 flex-1 text-ui-caption text-slate-800"
+            />
+            {item.status === "in_progress" ? (
+              <Badge tone="blue" className="shrink-0">
+                {t("local.items.inProgress")}
+              </Badge>
+            ) : null}
+          </div>
           {item.description ? (
             <ScrollingName
               text={item.description}
               className="mt-0.5 text-ui-sm text-slate-400"
             />
           ) : null}
+          <div className="mt-1 text-ui-xs text-slate-400">
+            {t("local.items.created", {
+              time: formatDateTime(item.createdAt),
+            })}
+          </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          {item.status === "pending" ? (
-            <RowAction
-              label={t("local.items.moveToProgress")}
-              icon={<ArrowRight size={13} />}
-              disabled={busy}
-              onClick={() => onSetStatus("in_progress")}
-            />
-          ) : null}
-
-          {item.status === "in_progress" ? (
-            <RowAction
-              label={t("local.items.moveToPending")}
-              icon={<Undo2 size={13} />}
-              disabled={busy}
-              onClick={() => onSetStatus("pending")}
-            />
-          ) : null}
-
-          {item.status === "done" ? (
-            <RowAction
-              label={t("local.items.reopen")}
-              icon={<Undo2 size={13} />}
-              disabled={busy}
-              onClick={() => onSetStatus("pending")}
-            />
-          ) : null}
-
-          {item.status !== "done" ? (
-            <RowAction
-              label={t("local.items.markDone")}
-              icon={<Check size={13} />}
-              disabled={busy}
-              onClick={() => onSetStatus("done")}
-            />
-          ) : null}
-
-          {item.status !== "done" ? (
+        {item.status !== "done" && !item.agentTaskId ? (
+          // The row opens the detail panel; the compose sheet keeps its own
+          // click without also opening the panel. An item that already owns a
+          // task must not be handed over a second time.
+          <div
+            className="shrink-0"
+            onClick={(event) => event.stopPropagation()}
+          >
             <EnqueueControl
               target={{
                 kind: "local",
@@ -406,39 +435,9 @@ function ItemRow(props: {
               }}
               disabled={busy}
             />
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </article>
     </li>
-  );
-}
-
-/** Icon-only row action; the label lives in `title` and the accessible name. */
-function RowAction(props: {
-  label: string;
-  icon: ReactNode;
-  tone?: "default" | "danger";
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  const { label, icon, tone = "default", disabled = false, onClick } = props;
-  return (
-    <button
-      data-component="RowAction"
-      type="button"
-      title={label}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={clsx(
-        "grid h-7 w-7 place-items-center rounded-md transition focus-visible:outline-2 focus-visible:outline-sky-200",
-        tone === "danger"
-          ? "text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-          : "text-slate-400 hover:bg-overlay hover:text-slate-700",
-        disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
-      )}
-    >
-      {icon}
-    </button>
   );
 }

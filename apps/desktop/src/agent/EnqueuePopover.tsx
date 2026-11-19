@@ -23,7 +23,6 @@ import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { useDismiss } from "../hooks/useDismiss";
 import { useLayerClose } from "../hooks/useLayerClose";
-import { usePanelServices } from "../workbench/panels/context";
 import { Button, Switch } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { ModelPicker } from "./ModelPicker";
@@ -53,7 +52,6 @@ const EDGE = 8;
  * click, Escape and scrolling dismiss it like a menu.
  */
 export function EnqueueControl({ target, variant = "icon", disabled = false }: Props) {
-  const services = usePanelServices();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState({
     x: 0,
@@ -82,32 +80,33 @@ export function EnqueueControl({ target, variant = "icon", disabled = false }: P
     setSubmitting(true);
     const extraPrompt = note.trim() || undefined;
     try {
-      const { task } =
-        target.kind === "bug"
-          ? await dshTaskApi.enqueueBug(
-              target.workspaceId,
-              target.bugId,
-              extraPrompt,
-              undefined,
-              team,
-              model ?? undefined,
-            )
-          : await dshTaskApi.enqueueLocal(
-              target.projectId,
-              target.itemId,
-              extraPrompt,
-              undefined,
-              team,
-              model ?? undefined,
-            );
-      agentActions.adoptTask(task);
+      if (target.kind === "bug") {
+        await dshTaskApi.enqueueBug(
+          target.workspaceId,
+          target.bugId,
+          extraPrompt,
+          undefined,
+          team,
+          model ?? undefined,
+        );
+      } else {
+        await dshTaskApi.enqueueLocal(
+          target.projectId,
+          target.itemId,
+          extraPrompt,
+          undefined,
+          team,
+          model ?? undefined,
+        );
+      }
       // The pick is the default for the sessions that start next; this task
       // already carries its own copy from the enqueue payload.
       if (model) void agentActions.rememberModelDefault(model);
       // The backend emits the new list; one refetch keeps a dropped event from
-      // leaving the sidebar stale.
-      void agentActions.refreshTasks();
-      services.open({ resource: { type: "page", view: "agent" }, target: "primary" });
+      // leaving the sidebar/queue stale. `refreshTaskRows` never adopts a
+      // selection or loads a transcript, so hand-over cannot pull the reader
+      // into a (sessionless) queued task. Hand-over is not navigation.
+      void agentActions.refreshTaskRows();
       setOpen(false);
       setSubmitting(false);
     } catch (error) {

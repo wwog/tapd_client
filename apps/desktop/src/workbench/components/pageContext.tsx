@@ -44,6 +44,14 @@ export type PageHostServices = {
   onOpenBugById: (workspaceId: string, bugId: string) => void;
   /** Selects a workflow task and opens the Agent page on it. */
   onOpenAgentTask: (sessionId: string) => void;
+  /** Opens one local work item in the secondary detail panel. */
+  onOpenLocalItem: (
+    projectId: string,
+    itemId: string,
+    label?: string,
+  ) => void;
+  /** Brings the global workflow queue page to the front. */
+  onOpenQueue: () => void;
   /** Cancels a queued/running task (the row reports failures as a toast). */
   onCancelAgentTask: (sessionId: string) => Promise<void>;
   /** Opens a URL outside the app (TAPD links, media). */

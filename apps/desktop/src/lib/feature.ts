@@ -15,6 +15,7 @@ export type FeatureCommandName =
   | "coworker_select"
   | "local_item_create"
   | "local_item_delete"
+  | "local_item_get"
   | "local_item_update"
   | "local_items_list"
   | "local_project_create"

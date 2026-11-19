@@ -14,4 +14,6 @@ mod types;
 mod tests;
 
 pub use error::LocalError;
-pub use types::{project_id, work_item_id, LocalProject, WorkItem, WorkItemStatus};
+pub use types::{
+    project_id, work_item_id, LocalProject, WorkItem, WorkItemImportance, WorkItemStatus,
+};

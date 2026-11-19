@@ -148,7 +148,7 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
 
 - 本地项目只是一个本机目录，没有 TAPD workspace；事项（`WorkItem`）有 `pending` / `in_progress` / `done` 三个状态。关联 Agent 任务成功时由宿主自动置为 `done`，也可手动标记完成 / 重新打开。
 - 每个本地项目有独立的 `rule`（项目规则），创建 / 编辑时写入；交给 Agent 时随 `quest.json` 导出并追加到本地修复、提交与合并提示词，TAPD 任务不受影响。
-- 数据写 `<数据目录>/local.sqlite3`（`local_projects` / `local_work_items`，schema v2 增加 `rule`），与 `cache.sqlite3` 分开：TAPD 退出登录、清缓存和 `Cache::clear()` 都不会删除自己的项目；「清理缓存」显式保留该文件及 WAL 旁文件。
+- 数据写 `<数据目录>/local.sqlite3`（`local_projects` / `local_work_items`，schema v3：v2 增加 `rule`，v3 增加 `importance`），与 `cache.sqlite3` 分开：TAPD 退出登录、清缓存和 `Cache::clear()` 都不会删除自己的项目；「清理缓存」显式保留该文件及 WAL 旁文件。
 - 桌面在项目侧栏右键 / 项目页创建，移动端可浏览桌面目录后创建；文件浏览与终端共用同一目录解析：TAPD 项目配置优先，其次本地项目仓库。移动端文件 / 终端只列出有文件夹的 TAPD 项目，并加入本地项目。
 - 事项交给 Agent 时以 `kind = local_item` 进入统一任务列表（DSH.md §9），准备阶段导出 `quest.json` 而不是 `bug.json`，不注入 TAPD 工具，也不回写 TAPD；任务成功由宿主把事项置为 `done`。
 - 移动端文件页额外提供 `__root__` 源，从 `/` 只读浏览；写接口对根目录直接 403。项目目录选择仍限制 `$HOME` 或已配置的本地仓库；伴侣目录浏览在列目录前先校验允许根。

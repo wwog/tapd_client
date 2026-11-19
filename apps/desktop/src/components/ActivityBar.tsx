@@ -43,8 +43,8 @@ const RAIL_ANIM: Record<string, string> = {
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
-  // Global workflow queue, next to the bug list. Unlike the per-project 队列中
-  // tab it spans every project and is where an interrupted task is continued.
+  // Global workflow queue, next to the bug list. It spans every project and is
+  // where an interrupted task is continued.
   { id: "queue", label: "app.nav.queue", icon: <ListTodo size={15} /> },
   // 事项 has no rail entry: local projects open their own tab from the project
   // column (and the projects page), like TAPD projects do.
@@ -60,6 +60,8 @@ export type RailAnimation = { id: string; token: number } | null;
 type Props = {
   view: View;
   railAnim: RailAnimation;
+  /** Queue activity mark: yellow while running, green until its report is read. */
+  queueBadge: "running" | "done" | null;
   /** The project column is out of layout, so the chip eases into the rail. */
   sidebarHidden: boolean;
   meAvatar: string | null;
@@ -79,6 +81,7 @@ type Props = {
 export function ActivityBar({
   view,
   railAnim,
+  queueBadge,
   sidebarHidden,
   meAvatar,
   name,
@@ -117,11 +120,21 @@ export function ActivityBar({
             <span
               key={railAnim?.id === item.id ? railAnim.token : "idle"}
               className={clsx(
-                "inline-flex items-center justify-center",
+                "relative inline-flex items-center justify-center",
                 railAnim?.id === item.id && RAIL_ANIM[item.id],
               )}
             >
               {item.icon}
+              {item.id === "queue" && queueBadge ? (
+                <span
+                  aria-hidden="true"
+                  data-queue-badge={queueBadge}
+                  className={clsx(
+                    "absolute -right-1.5 -top-1 h-2 w-2 rounded-full border-2 border-canvas",
+                    queueBadge === "running" ? "bg-amber-400" : "bg-emerald-500",
+                  )}
+                />
+              ) : null}
             </span>
           </button>
         ))}

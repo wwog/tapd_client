@@ -22,6 +22,7 @@ import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
+import { useQueueBadge, useQueueBatchRuntime } from "./agent/queueBatch";
 import { agentActions } from "./agent/store";
 import { useTaskFeedRuntime } from "./agent/useAgentRuntime";
 import { AgentOpenButton } from "./components/AgentOpenButton";
@@ -97,6 +98,8 @@ export default function App() {
   // The workflow feed is global: the bug list paints queued tasks and the
   // activity bar's queue page works without the Agent page ever being opened.
   useTaskFeedRuntime();
+  useQueueBatchRuntime();
+  const queueBadge = useQueueBadge();
   const layoutApi = useWorkbenchLayout();
   /** Latest layout API for stable callbacks defined before the domain hooks. */
   const layoutRef = useRef(layoutApi);
@@ -600,6 +603,29 @@ export default function App() {
     layoutRef.current.openPage("agent");
   }, []);
 
+  /** Opens one local item in the secondary dock, like the bug detail panel. */
+  const openLocalItem = useCallback(
+    (projectId: string, itemId: string, label?: string) => {
+      if (layoutRef.current.layout.maximizedGroupId) {
+        layoutRef.current.maximizeGroup(null);
+      }
+      layoutRef.current.open({
+        resource: { type: "local_item", projectId, itemId },
+        target: "secondary",
+        ...(label ? { label } : {}),
+      });
+    },
+    [],
+  );
+
+  /** Brings the global queue forward (empty-state links, report rows). */
+  const openQueue = useCallback(() => {
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
+    layoutRef.current.openPage("queue");
+  }, []);
+
   /** Cancels one queued/running task; the row reports a failure as a toast. */
   const cancelAgentTask = useCallback(async (sessionId: string) => {
     try {
@@ -810,6 +836,8 @@ export default function App() {
     onOpenBugById: openBugById,
     onOpenAgentTask: openAgentTask,
     onCancelAgentTask: cancelAgentTask,
+    onOpenLocalItem: openLocalItem,
+    onOpenQueue: openQueue,
     onOpenWeb: openPath,
     onOpenPath: openPath,
     onCopy: copy,
@@ -912,6 +940,7 @@ export default function App() {
         <ActivityBar
           view={view}
           railAnim={railAnim}
+          queueBadge={queueBadge}
           sidebarHidden={sidebar.hidden}
           meAvatar={info.meAvatar}
           name={context?.user.nick || info.me}

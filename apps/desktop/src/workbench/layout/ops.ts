@@ -69,6 +69,7 @@ const PAGE_VIEW_SET: ReadonlySet<string> = new Set<string>(PAGE_VIEWS);
 const PANEL_KIND_SET: ReadonlySet<string> = new Set([
   "page",
   "bug",
+  "local_item",
   "explorer",
   "file",
   "terminal",
@@ -90,6 +91,13 @@ function isPanelResource(value: unknown): value is PanelResource {
         value.workspaceId.length > 0 &&
         typeof value.bugId === "string" &&
         value.bugId.length > 0
+      );
+    case "local_item":
+      return (
+        typeof value.projectId === "string" &&
+        value.projectId.length > 0 &&
+        typeof value.itemId === "string" &&
+        value.itemId.length > 0
       );
     case "explorer":
       return typeof value.workspaceId === "string" && value.workspaceId.length > 0;
@@ -581,10 +589,13 @@ export function openPanel(
 
   let next = cloneLayout(layout);
 
-  // `bug` is singleton by kind (docs/WORKBENCH.md §2.3).
-  if (panel.kind === "bug") {
+  // Detail panels (bug/local item) are singleton by kind (docs/WORKBENCH.md
+  // §2.3): opening another one retargets the existing tab instead of stacking.
+  if (panel.kind === "bug" || panel.kind === "local_item") {
     for (const group of listGroups(next.root)) {
-      const index = group.panels.findIndex((candidate) => candidate.kind === "bug");
+      const index = group.panels.findIndex(
+        (candidate) => candidate.kind === panel.kind,
+      );
       if (index === -1) continue;
       group.panels[index] = panel;
       group.activePanelId = panel.id;

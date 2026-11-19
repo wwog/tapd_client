@@ -2,7 +2,10 @@
 
 use serde_json::json;
 
-use crate::{project_id, work_item_id, LocalError, LocalProject, WorkItem, WorkItemStatus};
+use crate::{
+    project_id, work_item_id, LocalError, LocalProject, WorkItem, WorkItemImportance,
+    WorkItemStatus,
+};
 
 const NOW: &str = "2026-01-01T09:00:00Z";
 const LATER: &str = "2026-01-02T09:00:00Z";
@@ -17,6 +20,7 @@ fn item() -> WorkItem {
         project().id,
         "  Ship it  ",
         "  body  ",
+        WorkItemImportance::Normal,
         NOW,
     )
     .unwrap()
@@ -103,7 +107,15 @@ fn new_work_item_is_pending() {
 #[test]
 fn work_item_without_title_is_rejected() {
     assert_eq!(
-        WorkItem::new("lw_w1".into(), "lp_p1".into(), "  ", "body", NOW).unwrap_err(),
+        WorkItem::new(
+            "lw_w1".into(),
+            "lp_p1".into(),
+            "  ",
+            "body",
+            WorkItemImportance::Normal,
+            NOW
+        )
+        .unwrap_err(),
         LocalError::EmptyTitle
     );
 }
@@ -112,16 +124,16 @@ fn work_item_without_title_is_rejected() {
 fn edit_updates_only_supplied_fields() {
     let mut item = item();
 
-    item.edit(Some(" Ship it twice "), None, LATER).unwrap();
+    item.edit(Some(" Ship it twice "), None, None, LATER).unwrap();
     assert_eq!(item.title, "Ship it twice");
     assert_eq!(item.description, "body");
     assert_eq!(item.updated_at, LATER);
 
-    item.edit(None, Some("new body"), LATER).unwrap();
+    item.edit(None, Some("new body"), None, LATER).unwrap();
     assert_eq!(item.title, "Ship it twice");
     assert_eq!(item.description, "new body");
 
-    item.edit(None, Some(""), LATER).unwrap();
+    item.edit(None, Some(""), None, LATER).unwrap();
     assert_eq!(item.description, "");
 
     assert_eq!(item.created_at, NOW);
@@ -131,7 +143,7 @@ fn edit_updates_only_supplied_fields() {
 fn edit_with_empty_title_keeps_the_item_untouched() {
     let mut item = item();
     assert_eq!(
-        item.edit(Some(" "), Some("new body"), LATER).unwrap_err(),
+        item.edit(Some(" "), Some("new body"), None, LATER).unwrap_err(),
         LocalError::EmptyTitle
     );
     assert_eq!(item.title, "Ship it");
@@ -220,6 +232,22 @@ fn status_roundtrips_through_its_text() {
 }
 
 #[test]
+fn importance_roundtrips_and_defaults_to_normal() {
+    for importance in [
+        WorkItemImportance::Low,
+        WorkItemImportance::Normal,
+        WorkItemImportance::High,
+    ] {
+        assert_eq!(
+            WorkItemImportance::parse(importance.as_str()),
+            Some(importance)
+        );
+    }
+    assert_eq!(WorkItemImportance::parse("urgent"), None);
+    assert_eq!(WorkItemImportance::default(), WorkItemImportance::Normal);
+}
+
+#[test]
 fn complete_marks_the_item_done() {
     let mut item = item();
     item.attach_task("t1", NOW).unwrap();
@@ -275,6 +303,7 @@ fn work_item_json_is_camel_case_with_snake_case_status() {
             "title": "Ship it",
             "description": "body",
             "status": "in_progress",
+            "importance": "normal",
             "agentTaskId": "t1",
             "createdAt": NOW,
             "updatedAt": LATER,

@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import {
   Bot,
   Bug,
+  ClipboardList,
   FileCode2,
   FolderGit2,
   FolderTree,
@@ -30,6 +31,7 @@ import type {
 import { BugPanel } from "../panels/BugPanel";
 import { FilePanel } from "../panels/FilePanel";
 import { ExplorerPanel } from "../panels/ExplorerPanel";
+import { LocalItemPanel } from "../panels/LocalItemPanel";
 import { PagePanel } from "../panels/PagePanel";
 import { TerminalPanel } from "../panels/TerminalPanel";
 import type { PanelProps } from "./context";
@@ -103,6 +105,15 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     closable: () => true,
     singleton: "kind",
     render: (props) => <BugPanel {...props} />,
+  },
+  local_item: {
+    kind: "local_item",
+    title: (panel) => panel.label ?? t("local.items.detail"),
+    icon: () => <ClipboardList size={13} />,
+    minSize: PANEL_MIN_SIZE.local_item,
+    closable: () => true,
+    singleton: "kind",
+    render: (props) => <LocalItemPanel {...props} />,
   },
   explorer: {
     kind: "explorer",

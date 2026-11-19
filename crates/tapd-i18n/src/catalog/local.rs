@@ -15,6 +15,11 @@ pub static MESSAGES: &[Message] = &[
         "Unknown work item status: {}",
     ),
     (
+        "local.item.importance",
+        "未知的重要度：{}",
+        "Unknown work item importance: {}",
+    ),
+    (
         "local.item.task",
         "Agent 任务 ID 不能为空",
         "Agent task id cannot be empty",
