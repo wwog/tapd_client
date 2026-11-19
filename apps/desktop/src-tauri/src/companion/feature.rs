@@ -16,7 +16,7 @@
 //! commands that do depend on one return their own business error from the
 //! desktop side, which passes through unchanged (`ok: false, upstream`).
 //!
-//! Rate limiting is a fresh per-IP 60/minute budget on top of session auth;
+//! Rate limiting is a fresh per-IP 120/minute budget on top of session auth;
 //! the pairing limiter stays pairing-specific.
 
 use std::{
@@ -46,25 +46,45 @@ use super::{
 /// `feature_router::dispatch`; anything else answers 403 `forbidden` before
 /// the desktop command layer is ever reached.
 const ALLOWED_FEATURES: &[&str] = &[
-    // Agent 任务：查看 / 历史 / 入队
-    "agent_tasks_list",
-    "agent_tasks_history",
-    "agent_enqueue_bug",
-    // Agent 审核 / 合并
-    "agent_review_approve",
-    "agent_review_stop",
-    "agent_task_changes",
-    "agent_task_diff",
-    "agent_merge_start",
-    "agent_merge_verify",
-    // Agent 任务控制
-    "agent_task_cancel",
-    "agent_task_retry",
-    // Agent 配置与检测
-    "agent_config_get",
-    "agent_config_set",
-    "agent_runtimes",
-    "agent_scan",
+    // 内置 Agent 运行时（会话、提示词、审批回执；流式只在桌面端）
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_pending",
+    "dsh_new_session",
+    "dsh_prompt",
+    // 停止当前回合：发送键的停止态（工作流取消仍走 dsh_task_cancel）
+    "dsh_session_cancel",
+    "dsh_select_model",
+    "dsh_session_mode_get",
+    "dsh_session_mode_set",
+    "dsh_approval_answer",
+    "dsh_question_answer",
+    // 任务工作流（P4）与权限模式（P3）
+    "dsh_tasks",
+    "dsh_task_enqueue_bug",
+    "dsh_task_enqueue_local",
+    "dsh_task_approve",
+    "dsh_task_retry_finalize",
+    "dsh_task_cancel",
+    "dsh_task_changes",
+    "dsh_task_diff",
+    "dsh_task_resume",
+    // 会话列表分组：所有已配置项目（空分组也要渲染头）
+    "dsh_projects",
+    // 自由会话的 worktree 开关（输入框上方）
+    "dsh_chat_worktree",
+    "dsh_policy_get",
+    "dsh_policy_set",
+    "dsh_team_get",
+    "dsh_team_set",
+    // Agent 配置（Worktree 隔离与执行单元；提示词仍只在桌面端编辑）
+    "settings_agent_get",
+    "settings_agent_set",
+    // 模型目录（脱敏投影：无 apiKey/protocol），供会话级模型选择
+    "settings_agent_models",
     // 通知设置
     "notification_settings_get",
     "notification_settings_set",
@@ -86,12 +106,18 @@ const ALLOWED_FEATURES: &[&str] = &[
     "local_item_create",
     "local_item_update",
     "local_item_delete",
-    "local_item_enqueue",
     "local_browse_dirs",
 ];
 
-/// Feature-proxy budget: at most 60 requests per IP per minute.
-const FEATURE_MAX_REQUESTS: usize = 60;
+/// Feature-proxy budget: at most 120 requests per IP per minute.
+///
+/// Sized for the live session page: transcript + session rows + feed + an open
+/// child fold poll add up to ~70/min in steady state, so the original 60/min
+/// budget locked the phone out mid-session (rate limited replies surface as
+/// error bars and a frozen transcript). Still well under an unauthenticated
+/// hammering threshold: the session auth and the pairing flow keep their own
+/// budgets.
+const FEATURE_MAX_REQUESTS: usize = 120;
 const FEATURE_WINDOW: Duration = Duration::from_secs(60);
 
 /// The feature proxy's own limiter; the budget numbers live here only.
@@ -184,40 +210,65 @@ mod tests {
     /// The feature surface mobile v2 documents. The allowlist must cover every
     /// documented name (each one is also an arm of `feature_router::dispatch`).
     const DOCUMENTED_FEATURES: &[&str] = &[
-        "agent_tasks_list",
-        "agent_tasks_history",
-        "agent_enqueue_bug",
-        "agent_review_approve",
-        "agent_review_stop",
-        "agent_task_changes",
-        "agent_task_diff",
-        "agent_merge_start",
-        "agent_merge_verify",
-        "agent_task_cancel",
-        "agent_task_retry",
-        "agent_config_get",
-        "agent_config_set",
-        "agent_runtimes",
-        "agent_scan",
-        "notification_settings_get",
-        "notification_settings_set",
-        "coworker_list",
-        "coworker_select",
-        "terminal_list",
-        "terminal_create",
-        "terminal_close",
-        "terminal_ticket",
-        "local_projects_list",
-        "local_project_create",
-        "local_project_update",
-        "local_project_delete",
-        "local_items_list",
-        "local_item_create",
-        "local_item_update",
-        "local_item_delete",
-        "local_item_enqueue",
-        "local_browse_dirs",
-    ];
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_pending",
+    "dsh_new_session",
+    "dsh_prompt",
+    "dsh_session_cancel",
+    "dsh_select_model",
+    "dsh_session_mode_get",
+    "dsh_session_mode_set",
+    "dsh_approval_answer",
+    "dsh_question_answer",
+    "dsh_tasks",
+    "dsh_task_enqueue_bug",
+    "dsh_task_enqueue_local",
+    "dsh_task_approve",
+    "dsh_task_retry_finalize",
+    "dsh_task_cancel",
+    "dsh_task_changes",
+    "dsh_task_diff",
+    "dsh_task_resume",
+    "dsh_projects",
+    "dsh_chat_worktree",
+    "dsh_policy_get",
+    "dsh_policy_set",
+    "dsh_team_get",
+    "dsh_team_set",
+    "settings_agent_get",
+    "settings_agent_set",
+    "settings_agent_models",
+    "notification_settings_get",
+    "notification_settings_set",
+    "coworker_list",
+    "coworker_select",
+    "terminal_list",
+    "terminal_create",
+    "terminal_close",
+    "terminal_ticket",
+    "local_projects_list",
+    "local_project_create",
+    "local_project_update",
+    "local_project_delete",
+    "local_items_list",
+    "local_item_create",
+    "local_item_update",
+    "local_item_delete",
+    "local_browse_dirs",
+    "dsh_status",
+    "dsh_start",
+    "dsh_stop",
+    "dsh_sessions",
+    "dsh_session_entries",
+    "dsh_prompt",
+    "dsh_new_session",
+    "dsh_approval_answer",
+    "dsh_question_answer",
+];
 
     async fn envelope_of(response: Response) -> (StatusCode, serde_json::Value) {
         let (parts, body) = response.into_parts();
@@ -242,8 +293,8 @@ mod tests {
 
     #[test]
     fn whitelisted_names_pass_the_gate() {
-        assert!(whitelist_rejection("agent_review_approve").is_none());
-        assert!(whitelist_rejection("agent_enqueue_bug").is_none());
+        assert!(whitelist_rejection("settings_agent_get").is_none());
+        assert!(whitelist_rejection("settings_agent_set").is_none());
         assert!(whitelist_rejection("coworker_list").is_none());
     }
 

@@ -398,24 +398,6 @@ impl LocalStore {
         })
     }
 
-    /// Points the item from the old task at a retried task and reopens it.
-    /// TAPD task ids simply update zero rows.
-    pub fn relink_task(
-        &self,
-        old_task_id: &str,
-        new_task_id: &str,
-        now: &str,
-    ) -> Result<usize, String> {
-        self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE local_work_items SET agent_task_id = ?2, status = 'in_progress', \
-                 updated_at = ?3 WHERE agent_task_id = ?1",
-                params![old_task_id.trim(), new_task_id.trim(), now],
-            )
-            .map_err(sql_error)
-        })
-    }
-
     /// Drops the link when a task record is deleted. The status is the user's
     /// own field (see `WorkItem::clear_task`), so unlinking never moves an item
     /// back to pending behind their back.
@@ -949,23 +931,14 @@ mod tests {
             0
         );
 
-        // Retry repoints the item and reopens it; deletion clears the link.
+        // Deletion clears the link and leaves the user's status alone.
         store
-            .attach_task(&other.id, "task-old", NOW)
-            .expect("attach old");
-        assert_eq!(
-            store
-                .relink_task("task-old", "task-new", NOW)
-                .expect("relink"),
-            1
-        );
-        let relinked = find(&other.id);
-        assert_eq!(relinked.agent_task_id.as_deref(), Some("task-new"));
-        assert_eq!(relinked.status, WorkItemStatus::InProgress);
+            .attach_task(&other.id, "task-new", NOW)
+            .expect("attach");
         assert_eq!(
             store
                 .complete_work_item(&project.id, &other.id, "task-new", DONE_AT)
-                .expect("complete retried"),
+                .expect("complete"),
             1
         );
         assert_eq!(store.forget_task("task-new", NOW).expect("forget"), 1);

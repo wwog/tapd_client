@@ -29,7 +29,7 @@ use tapd_i18n::{tr, tr_args};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, watch};
 
-use crate::{agent, shell_path};
+use crate::{agent_settings, pty_util, shell_path};
 
 /// Simultaneous sessions. Each one is a shell plus two threads; the limit is a
 /// real number, quoted back in the error, not a soft suggestion.
@@ -363,7 +363,7 @@ impl Session {
     }
 
     /// Signals the process group and the direct child, mirroring
-    /// `agent::pty::AgentRuntime::kill`.
+    /// `pty_util::kill_process_group`.
     fn kill(&self) {
         // An already reaped pid may belong to another process by now; killing
         // it would signal an innocent group. `reaped` is set by the waiter the
@@ -372,7 +372,7 @@ impl Session {
             return;
         }
         if let Some(pid) = self.pid {
-            agent::kill_process_group(pid, SIGTERM);
+            pty_util::kill_process_group(pid, SIGTERM);
         }
         if let Ok(mut killer) = self.killer.lock() {
             // portable-pty sends SIGHUP to the direct child on Unix.
@@ -381,7 +381,7 @@ impl Session {
         if let Some(pid) = self.pid {
             // Own session: this also reaps grandchildren that ignore
             // SIGHUP/SIGTERM.
-            agent::kill_process_group(pid, SIGKILL);
+            pty_util::kill_process_group(pid, SIGKILL);
         }
     }
 }
@@ -578,7 +578,7 @@ fn spawn_writer(
 
 /// Publishes one decoded frame: ring first, then broadcast, then the webview.
 fn flush(session: &Session, osc: &mut OscParser, pending: &mut Vec<u8>) {
-    let bytes = agent::take_utf8_prefix(pending);
+    let bytes = pty_util::take_utf8_prefix(pending);
     if bytes.is_empty() {
         return;
     }
@@ -1182,7 +1182,7 @@ fn session_shell() -> String {
 fn session_cwd(app: &AppHandle, workspace_id: Option<&str>, explicit: Option<&str>) -> PathBuf {
     let explicit = real_dir(explicit.map(Path::new));
     let project = workspace_id.and_then(|workspace_id| {
-        let repo_path = agent::mcp_agent_config(app)
+        let repo_path = agent_settings::mcp_agent_config(app)
             .projects
             .get(workspace_id)?
             .repo_path

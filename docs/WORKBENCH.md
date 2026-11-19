@@ -33,6 +33,7 @@
 | 分割节点 | Split | `SplitNode` | `direction: "row" \| "column"` + children + sizes |
 | 组 | Group | `GroupNode` | 标签容器（旧称「挤压容器」） |
 | 标签栏 | Tab strip | `TabStrip` | 组顶部 |
+| 标签右侧槽 | Tab trailing slot | `ActiveTabExtra` | 标签栏右端；只渲染本组聚焦标签的声明，换标签即换内容 |
 | 标签 | Tab | `TabItem` | 预览标签 / 固定标签 |
 | 面板 | Panel | `PanelRef` / `PanelHost` | 标签背后的内容实例 |
 | 分割条 | Sash | `Sash` | 相邻组之间的拖拽条 |
@@ -45,6 +46,8 @@
 - `primary` 主组：主视图，承载页面标签，始终存在。项目页（`bugs` / `local`，带 `projectId`）每个项目一个、可关闭，本地项目标签稳定排在最前；全局页（设置 / Agent / 同事 / MCP / 项目 / 账号）共用**一个**导航标签，左侧导航切换时替换内容而不是追加，且只在它是可见页时保留：激活任一项目标签会收起它，再点左侧导航时重新出现。本地项目页没有自己的活动栏入口，选中时活动栏「缺陷」保持高亮。
 - `secondary` 副组：右侧，缺陷详情 / 资源管理器 / 文件的默认落点。
 - `bottom` 底组：终端默认落点，横跨窗口下方。
+
+标签栏右端的 `ActiveTabExtra` 属于**该组当前聚焦的标签**，而不是组或它的角色：同一个页面被拖到副组后仍带着自己的动作，切换标签就切换槽内内容，没有声明时槽位不渲染。具体声明由 `App` 的 `activeTabExtra(panel)` 决定，目前缺陷列表声明「打开」（绑定的项目目录）、Agent 声明「打开」（选中会话的工作目录：worktree → 仓库 → 聊天临时目录），其他页面留空。
 
 默认树（`defaultLayout()`）：
 
@@ -129,10 +132,16 @@ type PanelDefinition = {
 `uiPrefs["workbench.layout.v1"]`：
 
 ```ts
-type LayoutPrefs = { version: 1; layout: LayoutState; sidebarWidth: number };
+type LayoutPrefs = {
+  version: 1;
+  layout: LayoutState;
+  sidebarWidth: number;
+  sidebarCollapsed: boolean;
+};
 ```
 
-- 启动先读该键；缺失/损坏 → `defaultLayout()`。
+- 启动先读该键；缺失/损坏 → `defaultLayout()`。旧信封没有 `sidebarCollapsed` 时按未收起处理。
+- `sidebarCollapsed` 只记用户主动收起；窗口太窄的自动收起仍是派生态，不落盘。
 - 旧 `terminal.panel.v1`（`{ open, height }`）迁移：`open` 为真时生成一个终端面板放进底组。
 - 归一化：未知面板丢弃、非 role 空组删除、单子 split 提升、比例重新配平、active 指针修复。
 - 资源管理器展开目录存 `uiPrefs["explorer.tree.v1"]`（`{ [workspaceId]: string[] }`）。
@@ -142,6 +151,7 @@ type LayoutPrefs = { version: 1; layout: LayoutState; sidebarWidth: number };
 Rust `src-tauri/src/fs.rs`：
 
 - 根 = `agent.json` 的 `projects[workspaceId].repoPath`；未配置直接报错。
+- 两个特殊根：`__root__` = 文件系统根（只读浏览，`fs.rs` 自带凭据黑名单），`__session__:<sessionId>` = 该 Agent 会话的工作目录（自由会话的 `<data>/dsh/chats/<id>`、任务的 worktree，回退到仓库）。Agent 回复里的本地路径由 `dsh::files::resolve` 映射到项目根 / 会话根 / `__root__` 之一，桌面据此在副组打开文件标签；会话根同样走 `resolve_in_root` 的包含检查。
 - 所有入参只接受**相对路径**；`resolve_in_root` 拒绝绝对路径、`..`、NUL、非 UTF-8，canonicalize 后按组件比较，拒绝符号链接逃逸；规范化后的路径再按组件（忽略大小写）拒绝 `.git`，大小写变体与 `docs -> .git` 这类符号链接别名同样挡住。
 - `fs_list`（一层，dirs-first，5000 条截断）、`fs_read`（文本 2 MiB 截断；`text/markdown/image/audio/video/binary/tooLarge`）、`fs_stat`。读取返回秒级 `mtime`（展示）与毫秒级 `mtimeMs`（冲突令牌）。
 - 二进制预览走本机流式路由 `GET /file?token&ws&path`（Range）；移动端 `GET /companion/api/file/raw?t&ws&path` 复用同一实现。

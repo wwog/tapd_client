@@ -15,25 +15,19 @@ import {
   Eye,
   Info,
   Loader2,
+  Send,
+  Sparkles,
   X,
 } from "lucide-react";
 
-import {
-  agentApi,
-  isBugAgentTask,
-  type AgentPromptOption,
-  type AgentSummary,
-} from "../lib/agent";
-import { formatElapsed } from "../lib/agentChat";
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
-import { AgentIcon } from "../components/AgentIcon";
+import { ScrollingName } from "../components/ScrollingName";
 import { formatBytes } from "../lib/format";
 import { bugTitle } from "../lib/bug";
 import {
   formatNotificationTime,
   NOTIFICATION_KIND_LABELS,
   notificationApi,
-  onIslandHover,
   onIslandLayout,
   onNotificationShow,
   pendingItems,
@@ -85,13 +79,6 @@ export function IslandWindow() {
   const [layout, setLayout] = useState<IslandLayout>(PILL_LAYOUT);
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [snapshot, setSnapshot] = useState<NotificationStateSnapshot | null>(null);
-  const [agentSummary, setAgentSummary] = useState<AgentSummary | null>(null);
-  /** Pointer on the capsule: reported by AppKit (`island://hover`), because the
-   *  window never becomes key and WebKit only tracks hover for that one. */
-  const [nativeHover, setNativeHover] = useState(false);
-  /** DOM hover, kept for platforms without the native tracking above. */
-  const [domHover, setDomHover] = useState(false);
-  const hovered = nativeHover || domHover;
   /** Hovering the collapsed capsule asks Rust to grow the Agent summary card. */
   const [peeking, setPeeking] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
@@ -132,15 +119,6 @@ export function IslandWindow() {
     }
   }, []);
 
-  /** Refreshes the Agent snapshot. */
-  const refreshAgentSummary = useCallback(async () => {
-    try {
-      setAgentSummary(await agentApi.summary());
-    } catch {
-      // Keep the last snapshot; the next tick or event will retry.
-    }
-  }, []);
-
   useTauriSubscription(
     () =>
       onNotificationShow(({ items: next }) => {
@@ -151,33 +129,30 @@ export function IslandWindow() {
   );
 
   useTauriSubscription(() => onIslandLayout(setLayout), []);
-  useTauriSubscription(() => onIslandHover(setNativeHover), []);
 
   // The main window broadcasts appearance changes; the island applies them so
   // the capsule follows light/dark without a reload.
   useTauriEvent<Appearance>("appearance://changed", applyExternalAppearance);
 
-  useTauriEvent<AgentSummary>("agent://summary", setAgentSummary);
-
   useEffect(() => {
     void refreshStatus();
-    void refreshAgentSummary();
 
     // Keep the capsule honest even between polls; also self-heals if the
     // initial `island://layout` was emitted before the webview loaded.
-    // Agent state arrives through `agent://summary`.
     const timer = window.setInterval(() => {
       void refreshStatus();
-      void refreshAgentSummary();
     }, 30_000);
 
     return () => {
       window.clearInterval(timer);
       if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
     };
-  }, [refreshStatus, refreshAgentSummary]);
+  }, [refreshStatus]);
 
-  const run = async (item: NotificationItem, action: "handle" | "view" | "ignore") => {
+  const run = async (
+    item: NotificationItem,
+    action: "handle" | "view" | "ignore" | "fix",
+  ) => {
     if (busy) return;
     setBusy({ id: item.id, action });
     setErrors((previous) => {
@@ -189,6 +164,7 @@ export function IslandWindow() {
     try {
       if (action === "handle") await notificationApi.handle(item.id);
       else if (action === "view") await notificationApi.view(item.id);
+      else if (action === "fix") await notificationApi.fix(item.id);
       else await notificationApi.ignore(item.id);
       setItems((previous) => previous.filter((candidate) => candidate.id !== item.id));
       void refreshStatus();
@@ -199,10 +175,15 @@ export function IslandWindow() {
     }
   };
 
-  /** Reports an AI card's button click back to the waiting MCP call. */
-  const runAi = async (item: NotificationItem, actionId: string) => {
+  /** Reports an AI card decision (button id, or typed text) back to the
+   *  request that raised the card. */
+  const runAi = async (
+    item: NotificationItem,
+    actionId: string | null,
+    value?: string,
+  ) => {
     if (busy) return;
-    setBusy({ id: item.id, action: `ai:${actionId}` });
+    setBusy({ id: item.id, action: `ai:${actionId ?? "custom"}` });
     setErrors((previous) => {
       const next = { ...previous };
       delete next[item.id];
@@ -210,7 +191,7 @@ export function IslandWindow() {
     });
 
     try {
-      await notificationApi.aiAction(item.id, actionId);
+      await notificationApi.aiAction(item.id, actionId, value);
       setItems((previous) => previous.filter((candidate) => candidate.id !== item.id));
       void refreshStatus();
     } catch (error) {
@@ -219,32 +200,6 @@ export function IslandWindow() {
       setBusy(null);
     }
   };
-
-  // Only treat the agent as clickable when there is actually something to show.
-  const agentTaskId =
-    agentSummary &&
-    ((agentSummary.awaitingApproval ?? 0) > 0 ||
-      (agentSummary.awaitingMerge ?? 0) > 0 ||
-      agentSummary.running)
-      ? agentSummary.activeTaskId
-      : null;
-  const agentAwaiting = agentSummary?.awaitingApproval ?? 0;
-  const agentMerging = agentSummary?.awaitingMerge ?? 0;
-  /** Name of the runtime doing the work; falls back to the generic label. */
-  const agentRuntimeLabel = agentSummary?.runtimeName?.trim() || "Agent";
-  /** 权限 / 提问优先于通用运行中文案，胶囊与 peek 共用。 */
-  const agentPromptLabel = agentSummary?.prompt
-    ? agentSummary.prompt.kind === "approval"
-      ? t("app.island.waitingPermission")
-      : t("app.island.waitingAnswer")
-    : null;
-  /** Capsule wording: review first, then merge, then running. */
-  const agentStatusLabel =
-    agentAwaiting > 0
-      ? t("app.island.awaitingReview")
-      : agentMerging > 0
-        ? t("app.island.awaitingMerge")
-        : (agentPromptLabel ?? t("app.island.fixing", { runtime: agentRuntimeLabel }));
 
   // The label is translated copy, so the memo must re-run after a language
   // switch; `locale` is only here for that dependency.
@@ -256,26 +211,6 @@ export function IslandWindow() {
         tone: "alert" as const,
       };
     }
-    if ((agentSummary?.awaitingApproval ?? 0) > 0) {
-      return { label: t("app.island.awaitingReview"), tone: "review" as const };
-    }
-    if ((agentSummary?.awaitingMerge ?? 0) > 0) {
-      return { label: t("app.island.awaitingMerge"), tone: "review" as const };
-    }
-    if (agentSummary?.prompt) {
-      return {
-        label: agentPromptLabel ?? t("app.island.waitingConfirm"),
-        tone: "agent" as const,
-      };
-    }
-    if (agentSummary?.running) {
-      return {
-        label: t("app.island.fixing", {
-          runtime: agentSummary.runtimeName?.trim() || "Agent",
-        }),
-        tone: "agent" as const,
-      };
-    }
     if (!snapshot) return { label: t("app.island.connecting"), tone: "idle" as const };
     if (!snapshot.running)
       return { label: t("app.island.notificationsPaused"), tone: "paused" as const };
@@ -284,20 +219,11 @@ export function IslandWindow() {
     if (items.length > 0) return { label: t("app.island.pending"), tone: "alert" as const };
     return { label: t("app.island.standby"), tone: "ok" as const };
   }, [
-    agentSummary,
-    agentPromptLabel,
     items.length,
     locale,
     snapshot,
     updateState?.available,
   ]);
-
-  /** The capsule only offers the peek while it is actually reporting Agent
-   *  work; an update notice or pending cards take precedence. */
-  const agentActive =
-    (agentSummary?.awaitingApproval ?? 0) > 0 ||
-    (agentSummary?.awaitingMerge ?? 0) > 0 ||
-    Boolean(agentSummary?.running);
 
   // Resident mode keeps the capsule on screen; "仅通知" hides it while
   // everything is idle. The Rust side ignores this while cards or an update
@@ -313,13 +239,6 @@ export function IslandWindow() {
       lastVisible.current = null;
     });
   }, [idle, resident, updateActive]);
-
-  // The peek only makes sense on the collapsed capsule while the Agent has
-  // something in flight; notification cards, an update panel and a finished
-  // Agent all close it.
-  useEffect(() => {
-    setPeeking(hovered && agentActive && !layout.expanded && !updateActive);
-  }, [hovered, agentActive, layout.expanded, updateActive]);
 
   // Rust owns the window size, so each peek change round-trips once.
   const peekSynced = useRef(false);
@@ -337,17 +256,10 @@ export function IslandWindow() {
 
   if (!layout.expanded) {
     return (
-      <div
-        className="flex h-full w-full flex-col items-center overflow-hidden"
-        // The card sits inside the same window: leaving it closes the peek,
-        // moving from the pill down into the card keeps it open. macOS reports
-        // this natively; the DOM events only cover the platforms without it.
-        onMouseLeave={() => setDomHover(false)}
-      >
-        <div className="flex h-[34px] shrink-0 items-center">
+      <div data-component="IslandWindow" className="flex h-full w-full flex-col items-center overflow-hidden">
+        <div className="flex h-8.5 shrink-0 items-center">
           <button
             type="button"
-            onMouseEnter={() => setDomHover(true)}
             onMouseDown={(event) => {
               if (event.button === 0) dragStart.current = { x: event.clientX, y: event.clientY };
             }}
@@ -369,9 +281,7 @@ export function IslandWindow() {
               clickTimer.current = window.setTimeout(() => {
                 clickTimer.current = null;
                 setPeeking(false);
-                if (agentTaskId) {
-                  void agentApi.openTask(agentTaskId).catch(() => undefined);
-                } else if (items.length > 0) {
+                if (items.length > 0) {
                   void notificationApi.expandIsland(true).catch(() => undefined);
                 } else {
                   void notificationApi.openMain();
@@ -391,20 +301,11 @@ export function IslandWindow() {
               // repeat it (and cover it).
               peeking
                 ? undefined
-                : agentTaskId
-                  ? t("app.island.tipTask", {
-                      status: agentStatusLabel,
-                    })
-                  : items.length > 0
-                    ? t("app.island.tipNotifications")
-                    : t("app.island.tipOpen")
+                : items.length > 0
+                  ? t("app.island.tipNotifications")
+                  : t("app.island.tipOpen")
             }
-            className={clsx(
-              "island-pill group flex cursor-grab items-center gap-2 rounded-full px-3 py-1.5 text-ui-sm text-island-muted border border-island-line backdrop-blur-xl transition active:cursor-grabbing",
-              // `hover:` only fires in a key window; the native hover state does
-              // not, so it picks the same background itself.
-              hovered ? "bg-island-hover" : "bg-island hover:bg-island-hover",
-            )}
+            className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line active:cursor-grabbing"
           >
             <StatusDot tone={tone} />
             <span className="font-normal text-island-ink">TAPD</span>
@@ -418,27 +319,14 @@ export function IslandWindow() {
             ) : null}
           </button>
         </div>
-        {peeking && agentActive && agentSummary ? (
-          <AgentPeekCard
-            summary={agentSummary}
-            onOpenDetail={() => {
-              const { workspaceId, bugId } = agentSummary;
-              if (!workspaceId || !bugId) return;
-              setPeeking(false);
-              void notificationApi
-                .openBug(workspaceId, bugId)
-                .catch(() => undefined);
-            }}
-          />
-        ) : null}
       </div>
     );
   }
 
   return (
-    <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
+    <div data-component="IslandWindow" className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
       {items.length === 0 ? (
-        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line backdrop-blur-xl">
+        <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line">
           {t("app.island.empty")}
         </div>
       ) : (
@@ -456,7 +344,7 @@ export function IslandWindow() {
                 payload={item.ai}
                 busyAction={itemBusy}
                 error={error}
-                onAction={(actionId) => void runAi(item, actionId)}
+                onAction={(actionId, value) => void runAi(item, actionId, value)}
                 onDismiss={() => void run(item, "ignore")}
               />
             );
@@ -465,7 +353,7 @@ export function IslandWindow() {
           return (
             <article
               key={item.id}
-              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl"
+              className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line"
             >
               <button
                 type="button"
@@ -516,31 +404,45 @@ export function IslandWindow() {
               </div>
 
               <div className="mt-auto flex items-center gap-1.5 pt-2">
+                {/* 384px card, three buttons: equal width keeps them on one row. */}
+                <button
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onClick={() => void run(item, "fix")}
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {itemBusy === "fix" ? (
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
+                  ) : (
+                    <Sparkles size={12} className="shrink-0" />
+                  )}
+                  <span className="truncate">{t("app.island.fix")}</span>
+                </button>
                 <button
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => void run(item, "handle")}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1.5 text-ui-sm font-normal text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {itemBusy === "handle" ? (
-                    <Loader2 size={12} className="animate-spin" />
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
                   ) : (
-                    <Check size={12} />
+                    <Check size={12} className="shrink-0" />
                   )}
-                  {t("app.island.handle")}
+                  <span className="truncate">{t("app.island.handle")}</span>
                 </button>
                 <button
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => void run(item, "view")}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2.5 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg bg-island-soft px-2 py-1.5 text-ui-sm font-normal text-island-ink border border-island-line transition hover:bg-island-soft-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {itemBusy === "view" ? (
-                    <Loader2 size={12} className="animate-spin" />
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
                   ) : (
-                    <Eye size={12} />
+                    <Eye size={12} className="shrink-0" />
                   )}
-                  {t("app.island.viewBug")}
+                  <span className="truncate">{t("app.island.viewBug")}</span>
                 </button>
               </div>
 
@@ -619,16 +521,25 @@ function AiCard(props: {
   payload: AiPayload;
   busyAction: string | null;
   error?: string;
-  onAction: (actionId: string) => void;
+  /** A button pick, or `null` + text for the card's "other answer" field. */
+  onAction: (actionId: string | null, value?: string) => void;
   onDismiss: () => void;
 }) {
   const { item, payload, busyAction, error, onAction, onDismiss } = props;
   const meta = AI_TONE_META[payload.tone] ?? AI_TONE_META.info;
   const Icon = meta.icon;
   const dismissBusy = busyAction === "ignore";
+  /** Agent question options: one full-width row each, label over description.
+   *  Older payloads have no flag, so a hint alone also means "list". A single
+   *  action never stacks, unless the card also takes a typed answer below. */
+  const stacked =
+    payload.actions.length > 1
+      ? (payload.stackActions ??
+        payload.actions.some((action) => action.description))
+      : Boolean(payload.allowCustom);
 
   return (
-    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line backdrop-blur-xl">
+    <article data-component="AiCard" className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line">
       <button
         type="button"
         aria-label={t("common.close")}
@@ -647,9 +558,10 @@ function AiCard(props: {
             className={clsx(meta.iconColor, payload.tone === "progress" && "animate-spin")}
           />
         </span>
-        <span className="truncate font-normal text-island-ink" title={payload.client || item.workspaceName}>
-          {payload.client || item.workspaceName || "AI"}
-        </span>
+        <ScrollingName
+          text={payload.client || item.workspaceName || "AI"}
+          className="min-w-0 font-normal text-island-ink"
+        />
         <span className={clsx("shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal", meta.badge)}>
           {t(meta.label)}
         </span>
@@ -667,7 +579,12 @@ function AiCard(props: {
 
       <AiBlocks blocks={payload.blocks} />
 
-      <div className="mt-auto flex items-center gap-1.5 pt-2">
+      <div
+        className={clsx(
+          "mt-auto flex pt-2",
+          stacked ? "min-h-0 flex-1 flex-col gap-1" : "items-center gap-1.5",
+        )}
+      >
         {payload.actions.length === 0 ? (
           <button
             type="button"
@@ -678,6 +595,16 @@ function AiCard(props: {
             {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             {t("common.gotIt")}
           </button>
+        ) : stacked ? (
+          payload.actions.map((action) => (
+            <AiOptionRow
+              key={action.id}
+              action={action}
+              busy={busyAction === `ai:${action.id}`}
+              disabled={Boolean(busyAction)}
+              onClick={() => onAction(action.id)}
+            />
+          ))
         ) : (
           payload.actions.map((action) => (
             <AiActionButton
@@ -689,6 +616,13 @@ function AiCard(props: {
             />
           ))
         )}
+        {payload.allowCustom ? (
+          <CustomAnswer
+            busy={busyAction === "ai:custom"}
+            disabled={Boolean(busyAction)}
+            onSubmit={(text) => onAction(null, text)}
+          />
+        ) : null}
       </div>
 
       {error ? (
@@ -709,6 +643,7 @@ function AiActionButton(props: {
   const { action, busy, disabled, onClick } = props;
   return (
     <button
+      data-component="AiActionButton"
       type="button"
       disabled={disabled}
       onClick={onClick}
@@ -717,9 +652,109 @@ function AiActionButton(props: {
         AI_ACTION_CLASS[action.style ?? "secondary"] ?? AI_ACTION_CLASS.secondary,
       )}
     >
-      {busy ? <Loader2 size={12} className="animate-spin" /> : null}
-      {action.label}
+      {busy ? <Loader2 size={12} className="shrink-0 animate-spin" /> : null}
+      {/* Centred while it fits, scrolls in place when it does not. */}
+      <ScrollingName text={action.label} className="flex-1 text-center" />
     </button>
+  );
+}
+
+/**
+ * Agent question option: a full-width row with the label over its description,
+ * both kept to one line. Too-long text scrolls on hover at a constant pace
+ * (same as a bug title) instead of wrapping the button into a second line.
+ */
+function AiOptionRow(props: {
+  action: AiAction;
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const { action, busy, disabled, onClick } = props;
+  return (
+    <button
+      data-component="AiOptionRow"
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={clsx(
+        "flex min-h-0 flex-1 flex-col justify-center gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
+        AI_ACTION_CLASS[action.style ?? "secondary"] ?? AI_ACTION_CLASS.secondary,
+      )}
+    >
+      <span className="flex items-center gap-1 text-ui-sm font-normal">
+        {busy ? <Loader2 size={12} className="shrink-0 animate-spin" /> : null}
+        <ScrollingName text={action.label} className="flex-1" />
+      </span>
+      {action.description ? (
+        <ScrollingName
+          text={action.description}
+          className="text-ui-2xs font-normal opacity-80"
+        />
+      ) : null}
+    </button>
+  );
+}
+
+/**
+ * "Other answer" field under a question card's options.
+ *
+ * The capsule is a non-activating window, so it cannot receive keystrokes on
+ * its own: focusing the field asks the Rust side for the keyboard, and sending
+ * hands it back to the app the user came from.
+ */
+function CustomAnswer(props: {
+  busy: boolean;
+  disabled: boolean;
+  onSubmit: (text: string) => void;
+}) {
+  const { busy, disabled, onSubmit } = props;
+  const [text, setText] = useState("");
+  /** Set on send so the unmount blur does not release the keyboard twice. */
+  const sent = useRef(false);
+  const value = text.trim();
+
+  const lend = (active: boolean, restore = false) => {
+    void notificationApi.setAnswerFocus(active, restore).catch(() => undefined);
+  };
+
+  return (
+    <form
+      data-component="CustomAnswer"
+      className="flex shrink-0 items-center gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!value || disabled) return;
+        sent.current = true;
+        onSubmit(value);
+        lend(false, true);
+      }}
+    >
+      <input
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onFocus={() => lend(true)}
+        onBlur={() => {
+          if (sent.current) return;
+          lend(false);
+        }}
+        disabled={disabled}
+        maxLength={500}
+        aria-label={t("agent.question.custom")}
+        placeholder={t("agent.question.custom")}
+        spellCheck={false}
+        className="min-w-0 flex-1 rounded-lg border border-island-line bg-island-soft px-2 py-1 text-ui-sm text-island-ink transition placeholder:text-island-muted disabled:opacity-50"
+      />
+      <button
+        type="submit"
+        disabled={disabled || !value}
+        aria-label={t("common.send")}
+        title={t("common.send")}
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-island-muted transition hover:bg-island-soft-hover hover:text-island-ink disabled:opacity-40"
+      >
+        {busy ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+      </button>
+    </form>
   );
 }
 
@@ -727,14 +762,14 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
   if (blocks.length === 0) return null;
 
   return (
-    <div className="mt-1 min-h-0 space-y-1 overflow-hidden">
+    <div data-component="AiBlocks" className="mt-1 min-h-0 space-y-1 overflow-hidden">
       {blocks.map((block, index) => {
         switch (block.type) {
           case "text":
             return (
               <p
                 key={index}
-                className="line-clamp-2 whitespace-pre-wrap break-words text-ui-sm leading-4 text-island-muted"
+                className="line-clamp-2 whitespace-pre-wrap wrap-break-word text-ui-sm leading-4 text-island-muted"
               >
                 {block.text}
               </p>
@@ -757,9 +792,10 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
                     className="flex items-center justify-between gap-2 text-ui-xs leading-4"
                   >
                     <span className="shrink-0 text-island-muted">{field.label}</span>
-                    <span className="min-w-0 truncate text-right text-island-ink" title={field.value}>
-                      {field.value || "—"}
-                    </span>
+                    <ScrollingName
+                      text={field.value || "—"}
+                      className="min-w-0 text-right text-island-ink"
+                    />
                   </div>
                 ))}
               </div>
@@ -795,180 +831,13 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
   );
 }
 
-/**
- * Hover summary under the collapsed capsule: which bug the current Agent task
- * belongs to, the fields worth seeing before opening it, and any blocking
- * permission / question. Its height/gap must match the Rust
- * `PEEK_CARD_HEIGHT` / `PEEK_GAP` constants, which size the window.
- */
-function AgentPeekCard({
-  summary,
-  onOpenDetail,
-}: {
-  summary: AgentSummary;
-  onOpenDetail: () => void;
-}) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [, tick] = useState(0);
-  const title = summary.title
-    ? isBugAgentTask(summary)
-      ? bugTitle(summary.title)
-      : summary.title
-    : "";
-  const review = summary.awaitingApproval ?? 0;
-  const merge = summary.awaitingMerge ?? 0;
-  const prompt = summary.prompt ?? null;
-  // Local work items have no bug to open; the capsule only shows the task.
-  const canOpen =
-    Boolean(summary.workspaceId && summary.bugId) && isBugAgentTask(summary);
-
-  // 已用时长每秒刷新；摘要本身由 `agent://summary` 推送。
-  useEffect(() => {
-    if (!summary.running) return;
-    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [summary.running]);
-
-  // Both counts fit side by side only while they are small; keep one kind of
-  // label per state so 300px stays readable.
-  const status = prompt
-    ? prompt.kind === "approval"
-      ? t("app.peek.permission")
-      : t("app.peek.answer")
-    : review > 0 && merge > 0
-      ? t("app.peek.reviewAndMerge", { n: review, m: merge })
-      : review > 0
-        ? review > 1
-          ? t("app.peek.reviewCount", { n: review })
-          : t("app.peek.review")
-        : merge > 0
-          ? merge > 1
-            ? t("app.peek.mergeCount", { n: merge })
-            : t("app.peek.merge")
-          : t("app.peek.fixing");
-  const elapsed = formatElapsed(summary.startedAt ?? undefined, Date.now());
-  // peek 高度固定 112px，最多放 3 个按钮，其余引导回任务页处理。
-  const options = (prompt?.options ?? []).slice(0, 3);
-
-  const answer = async (option: AgentPromptOption) => {
-    if (!prompt || !summary.activeTaskId || busy) return;
-    setBusy(option.id);
-    try {
-      await agentApi.promptAnswer(summary.activeTaskId, prompt.promptId, option.id);
-    } catch {
-      // 失败时保持卡片不动；用户可以展开主窗口在终端处理。
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <div className="mt-1.5 flex h-[112px] w-full flex-col justify-center rounded-xl border border-island-line bg-island px-3 py-2 text-island-ink backdrop-blur-xl">
-      <div className="flex items-center gap-1.5 text-ui-xs text-island-muted">
-        <AgentIcon
-          runtimeId={summary.runtimeId}
-          name={summary.runtimeName}
-          size={14}
-        />
-        <span className="truncate text-island-ink">
-          {summary.runtimeName || "Agent"}
-        </span>
-        <span
-          className={clsx(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            prompt || review + merge > 0 ? "bg-amber-500" : "bg-sky-500",
-          )}
-        />
-        <span className="truncate">{status}</span>
-        {elapsed ? (
-          <span className="ml-auto shrink-0 tabular-nums">{elapsed}</span>
-        ) : null}
-      </div>
-
-      <p className="mt-1 line-clamp-1 text-ui-sm" title={title || undefined}>
-        {title || t("app.peek.preparing")}
-      </p>
-
-      {prompt ? (
-        <div className="mt-0.5">
-          <p
-            className="line-clamp-1 text-ui-xs text-island-muted"
-            title={prompt.question ?? prompt.summary ?? undefined}
-          >
-            {prompt.question ?? prompt.summary ?? t("app.peek.awaitingConfirm")}
-          </p>
-          {prompt.canAnswer && options.length > 0 ? (
-            <div className="mt-1 flex items-center gap-1">
-              {options.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void answer(option);
-                  }}
-                  className={clsx(
-                    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-ui-2xs transition disabled:opacity-50",
-                    option.id === "reject"
-                      ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                      : "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100",
-                  )}
-                >
-                  {busy === option.id ? (
-                    <Loader2 size={9} className="animate-spin" />
-                  ) : null}
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-1 truncate text-ui-2xs text-amber-700">
-              {t("app.peek.answerInTerminal")}
-            </p>
-          )}
-        </div>
-      ) : (
-        <div className="mt-1.5 flex items-center gap-1.5 text-ui-xs">
-          {!isBugAgentTask(summary) && summary.workspaceName ? (
-            <span className="min-w-0 truncate text-island-muted">
-              {summary.workspaceName}
-            </span>
-          ) : null}
-          {summary.severity ? (
-            <span className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-700">
-              {summary.severity}
-            </span>
-          ) : null}
-          {summary.priority ? (
-            <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700">
-              {t("app.island.priority", { priority: summary.priority })}
-            </span>
-          ) : null}
-          {canOpen ? (
-            <button
-              type="button"
-              onClick={onOpenDetail}
-              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-island-line bg-island-soft px-2 py-0.5 text-ui-xs text-island-ink transition hover:bg-island-soft-hover"
-            >
-              <Eye size={11} />
-              {t("app.peek.openDetail")}
-            </button>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
 function StatusDot({
   tone,
 }: {
   tone: "ok" | "alert" | "paused" | "error" | "idle" | "review" | "agent";
 }) {
   return (
-    <span className="relative grid h-2 w-2 shrink-0 place-items-center">
+    <span data-component="StatusDot" className="relative grid h-2 w-2 shrink-0 place-items-center">
       <span
         className={clsx(
           "absolute h-full w-full rounded-full",
@@ -1024,7 +893,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
   if (failed) {
     return (
-      <div className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line backdrop-blur-xl">
+      <div data-component="UpdateCapsule" className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-rose-500/15 text-rose-700">
           <AlertTriangle size={16} />
         </span>
@@ -1080,7 +949,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
         : t("app.update.verifying");
 
   return (
-    <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line backdrop-blur-xl">
+    <div data-component="UpdateCapsule" className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line">
       <div className="flex items-center gap-2">
         {phase === "ready" ? (
           <CheckCircle2 size={15} className="text-emerald-700" />
@@ -1124,6 +993,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 function KindBadge({ kind }: { kind: NotificationItem["kind"] }) {
   return (
     <span
+      data-component="KindBadge"
       className={clsx(
         "shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal",
         kind === "new" && "bg-sky-400/15 text-sky-700",

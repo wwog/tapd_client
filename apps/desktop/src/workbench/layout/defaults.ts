@@ -94,9 +94,8 @@ export function defaultTarget(kind: PanelKind): GroupRole {
 export const PAGE_VIEWS: readonly PageView[] = [
   "bugs",
   "local",
-  "projects",
-  "chat",
   "agent",
+  "projects",
   "coworker",
   "mcp",
   "settings",

@@ -6,6 +6,8 @@ pub mod bug;
 pub mod common;
 pub mod companion;
 pub mod core;
+pub mod dsh_policy;
+pub mod dsh_task;
 pub mod local;
 pub mod mcp;
 pub mod misc;

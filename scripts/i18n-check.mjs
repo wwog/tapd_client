@@ -48,7 +48,7 @@ const RUST_ROOTS = [
   path.join(root, "apps/desktop/src-tauri/src"),
   path.join(root, "crates/tapd-core/src"),
   path.join(root, "crates/tapd-mcp/src"),
-  path.join(root, "crates/tapd-workflow/src"),
+  path.join(root, "crates/tapd-workspace/src"),
 ];
 const RUST_CATALOG = path.join(root, "crates/tapd-i18n/src/catalog");
 
@@ -160,14 +160,25 @@ function checkFrontend(front) {
     (file) =>
       /\.(ts|tsx)$/.test(file) &&
       !file.includes("/lib/i18n/") &&
+      // Dev-only 60fps fixture: its Chinese sample content is test data, not UI.
+      !file.includes("/src/perf/") &&
       !file.endsWith(".d.ts"),
   );
   const untranslated = [];
   const used = new Set();
   const problems = [...catalogue.problems];
 
+  /** Keys also appear in label maps, ternaries and constants, not only as
+   *  direct `t()` arguments; any literal occurrence keeps them alive. */
+  const noteKeyLiterals = (text) => {
+    for (const match of text.matchAll(/["'`]([a-z][a-zA-Z0-9_.-]{2,})["'`]/g)) {
+      if (catalogue.entries.has(match[1])) used.add(match[1]);
+    }
+  };
+
   for (const file of files) {
     const text = readFileSync(file, "utf8");
+    noteKeyLiterals(text);
     const exempt = new Set();
     text.split("\n").forEach((line, index) => {
       if (line.includes("i18n-exempt")) exempt.add(index);
@@ -249,11 +260,29 @@ function checkFrontend(front) {
 
 function checkRust() {
   const files = RUST_ROOTS.flatMap((dir) => walk(dir, (file) => file.endsWith(".rs")));
+  // Keys of the Rust catalogue, pre-read so const/map literals can be counted
+  // as usage (the full entry parse below stays the source of truth).
+  const RUST_KEYS = new Set();
+  for (const file of walk(
+    RUST_CATALOG,
+    (f) => f.endsWith(".rs") && !f.endsWith("mod.rs"),
+  )) {
+    for (const match of readFileSync(file, "utf8").matchAll(
+      /\(\s*"((?:[^"\\]|\\.)*)"\s*,/g,
+    )) {
+      RUST_KEYS.add(match[1]);
+    }
+  }
   const untranslated = [];
   const used = new Set();
 
   for (const file of files) {
     const text = readFileSync(file, "utf8");
+    // Fixtures opt out with `// i18n-exempt: <reason>` in the header: scripted
+    // test data is not interface copy and has nothing to translate.
+    if (/^\s*\/\/!?\s*i18n-exempt:/m.test(text.split("\n").slice(0, 8).join("\n"))) {
+      continue;
+    }
     const lines = text.split("\n");
     let testDepth = 0;
     let depth = 0;
@@ -282,6 +311,10 @@ function checkRust() {
       // tr("key") / tr_args("key", …): collect the key so unused keys are real.
       for (const match of code.matchAll(/\btr(?:_args)?\(\s*"((?:[^"\\]|\\.)*)"/g)) {
         used.add(match[1]);
+      }
+      // Consts and maps hold keys too (prompt templates, field names).
+      for (const match of code.matchAll(/"([a-z][a-zA-Z0-9_.-]{2,})"/g)) {
+        if (RUST_KEYS.has(match[1])) used.add(match[1]);
       }
 
       if (!CJK.test(code)) return;

@@ -274,11 +274,8 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
         return (
           <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
             <FolderTree size={20} className="text-slate-300" />
-            <p className="text-ui-caption text-slate-600">
+            <p className="text-ui-caption text-slate-600" title={t("explorer.noFolderHint")}>
               {t("explorer.noFolder")}
-            </p>
-            <p className="text-ui-xs leading-5 text-slate-400">
-              {t("explorer.noFolderHint")}
             </p>
           </div>
         );
@@ -314,6 +311,7 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
 
   return (
     <div
+      data-component="ExplorerPanel"
       className="flex h-full min-h-0 flex-col bg-surface"
       data-panel-id={panel.id}
       data-panel-active={active ? "true" : "false"}
@@ -323,18 +321,12 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
         className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2"
         data-workbench-explorer="header"
       >
-        <span
-          className="min-w-0 flex-1 truncate text-ui-sm text-slate-700"
-          title={projectName}
-        >
-          {projectName}
-        </span>
         <button
           type="button"
           aria-label={t("explorer.refresh")}
           title={t("explorer.refresh")}
           onClick={refreshTree}
-          className="rounded-md p-1 text-slate-500 transition hover:bg-overlay hover:text-slate-700"
+          className="ml-auto rounded-md p-1 text-slate-500 transition hover:bg-overlay hover:text-slate-700"
         >
           <RefreshCw size={12} />
         </button>

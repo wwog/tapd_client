@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { api, type DirListing } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useLayerClose } from "../hooks/useLayerClose";
+import { ScrollingName } from "./ScrollingName";
 import { Button, ModalDragStrip } from "./ui";
 
 /**
@@ -77,6 +78,7 @@ export function FolderPicker(props: {
 
   return (
     <div
+      data-component="FolderPicker"
       className={clsx(
         "modal-overlay fixed inset-0 flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
         elevated ? "z-[85]" : "z-[70]",
@@ -130,7 +132,7 @@ export function FolderPicker(props: {
               if (event.key === "Enter") void load(pathInput);
             }}
             spellCheck={false}
-            className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 font-mono text-ui-sm text-slate-600 transition focus:bg-surface"
           />
           <Button size="sm" variant="secondary" onClick={() => void load(pathInput)}>
             {t("folder.go")}
@@ -157,7 +159,7 @@ export function FolderPicker(props: {
                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-ui-caption text-slate-700 transition hover:bg-slate-50"
                   >
                     <Folder size={14} className="shrink-0 text-sky-500" />
-                    <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                    <ScrollingName text={entry.name} className="min-w-0 flex-1" />
                   </button>
                 </li>
               ))}

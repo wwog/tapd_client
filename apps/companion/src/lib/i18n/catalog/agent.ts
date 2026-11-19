@@ -1,174 +1,216 @@
-/** agent catalogue: short semantic key -> [zh, en]. */
+/** agent catalogue: built-in dsh runtime, unified task list, task actions and
+ *  the approvals/questions the phone can answer. */
 import type { Catalog } from "../types";
 
 export const agent = {
-  // Shared within the agent screens
-  "magent.untitled": ["（无标题）", "(No title)"],
+  /* -- Tab ---------------------------------------------------------------- */
+  "mobile.agent.creating": ["创建中…", "Creating…"],
+  "mobile.agent.newSessionInProject": [
+    "在「{project}」新建会话",
+    "New session in {project}",
+  ],
+  "mobile.agent.projectsLoadFailed": [
+    "读取项目列表失败",
+    "Couldn't load projects",
+  ],
+  "mobile.agent.loadFailed": ["读取任务失败", "Couldn't load tasks"],
+  "mobile.agent.newSessionFailed": ["新建会话失败", "Couldn't create a session"],
+  "mobile.agent.empty": ["还没有任务", "No tasks yet"],
+  "mobile.agent.emptyHint": [
+    "任务来自「事项」或桌面端。",
+    "Tasks come from work items or the desktop.",
+  ],
+  "mobile.agent.untitledSession": ["未命名会话", "Untitled session"],
+  "mobile.agent.noProject": ["未关联项目", "No project"],
+  "mobile.agent.badgeHint": ["{n} 项待处理", "{n} pending"],
 
-  // Agent page
-  "magent.cancelHint": [
-    "取消后任务结束，已产生的改动保留在工作区。",
-    "Cancelling ends the task and keeps changes already made in the workspace.",
+  /* -- Runtime status ----------------------------------------------------- */
+  "mobile.agent.phaseStopped": ["未启动", "Stopped"],
+  "mobile.agent.phaseStarting": ["启动中", "Starting"],
+  "mobile.agent.phaseReady": ["已就绪", "Ready"],
+  "mobile.agent.phaseFailed": ["启动失败", "Failed"],
+  "mobile.agent.statusLoadFailed": [
+    "读取运行时状态失败",
+    "Couldn't read the runtime status",
   ],
-  "magent.coworkersHint": [
-    "选择随任务一起提示 Agent 的同事包。",
-    "Choose the coworker packs to include in Agent prompts.",
-  ],
-  "magent.coworkers": ["同事包", "Coworker packs"],
-  "magent.historyHint": [
-    "已结束任务的执行记录与重试。",
-    "Execution history and retry for finished tasks.",
-  ],
-  "magent.history": ["执行记录", "Execution history"],
-  "magent.queuePaused": ["队列已暂停（在桌面端恢复）", "Queue paused (resume on desktop)"],
-  "magent.queuePausedHint": [
-    "搁置审核会暂停队列；在桌面端 Agent 页恢复。",
-    "Shelving a review pauses the queue; resume it on the desktop Agent page.",
-  ],
-  "magent.storageHint": ["任务状态可能无法在重启后保留。", "Task state may not survive a restart."],
-  "magent.refreshFailedHint": [
-    "刷新失败，将在下个轮询周期重试。",
-    "Refresh failed; it will retry on the next poll.",
-  ],
-  "magent.lastActionFailedHint": [
-    "上一次操作失败的结果，重试成功后消失。",
-    "Result of the last failed action; it clears after a successful retry.",
-  ],
-  "magent.idleHint": [
-    "在缺陷列表对单个缺陷使用「用 Agent 修复」发起任务。",
-    'Start a task from the bug list with "Fix with Agent" on a single bug.',
-  ],
-  "magent.noActiveTasks": ["没有进行中的任务", "No active tasks"],
-  "magent.awaitingAction": ["待处理", "Awaiting action"],
-  "magent.running": ["运行中", "Running"],
-  "magent.queue": ["队列", "Queue"],
-  "magent.cancelQueuedHint": ["取消这个排队中的任务。", "Cancel this queued task."],
+  "mobile.agent.start": ["启动", "Start"],
+  "mobile.agent.startFailed": ["启动运行时失败", "Couldn't start the runtime"],
 
-  // Task detail page
-  "magent.taskDetail": ["任务详情", "Task details"],
-  "magent.retryHint": ["用同样内容创建一个新任务。", "Create a new task with the same content."],
-  "magent.taskLoading": ["正在读取任务…", "Reading task…"],
-  "magent.taskDeletedHint": ["任务可能已被删除。", "The task may have been deleted."],
-  "magent.taskNotFound": ["未找到该任务", "Task not found"],
-  "magent.repo": ["仓库", "Repository"],
-  "magent.localProject": ["本地项目", "Local project"],
-  "magent.branch": ["分支", "Branch"],
-  "magent.source": ["来源", "Source"],
-  "magent.runtime": ["运行时", "Runtime"],
-  "magent.created": ["创建", "Created"],
-  "magent.started": ["开始", "Started"],
-  "magent.finished": ["结束", "Finished"],
-  "magent.duration": ["耗时", "Duration"],
-  "magent.noRepo": ["未配置仓库", "No repository configured"],
-  "magent.error": ["错误：{error}", "Error: {error}"],
-  "magent.cancelHintDetail": [
-    "取消后任务结束，已产生的改动保留。搁置审核请在上方审核卡操作。",
-    "Cancelling ends the task and keeps changes already made. To shelve the review, use the review card above.",
-  ],
-  "magent.cancelTask": ["取消任务", "Cancel task"],
-  "magent.retryNote": [
-    "重试会创建一个新任务并重新排队。",
-    "Retry creates a new task and queues it again.",
-  ],
-  "magent.prompt": ["提示词", "Prompt"],
-  "magent.lastActionFailed": ["上一次操作失败的结果。", "Result of the last failed action."],
+  /* -- Workflow chips ----------------------------------------------------- */
+  "mobile.agent.workflowQueued": ["排队中", "Queued"],
+  "mobile.agent.workflowRunning": ["进行中", "Running"],
+  "mobile.agent.workflowReview": ["待审核", "In review"],
+  "mobile.agent.workflowFinalizing": ["收尾中", "Finishing"],
+  "mobile.agent.workflowDone": ["已完成", "Done"],
+  "mobile.agent.workflowFailed": ["失败", "Failed"],
+  "mobile.agent.workflowCanceled": ["已取消", "Canceled"],
 
-  // Execution history page
-  "magent.retryConfirm": [
-    "重试会创建一个新任务并重新排队，确定重试？",
-    "Retry creates a new task and queues it again. Retry?",
+  /* -- Review & finalizing (docs/AGENT_TASK_FLOW.md §7) ------------------- */
+  "mobile.agent.reviewTitle": ["审核", "Review"],
+  "mobile.agent.reviewSummary": ["AI 摘要", "AI summary"],
+  "mobile.agent.reviewVerification": ["验证", "Verification"],
+  "mobile.agent.reviewRisks": ["风险", "Risks"],
+  "mobile.agent.reviewFiles": ["改动文件", "Changed files"],
+  "mobile.agent.reviewNoFiles": ["没有可查看的文件", "No files to show"],
+  "mobile.agent.reviewLoading": ["正在读取改动…", "Loading changes…"],
+  "mobile.agent.reviewLoadFailed": [
+    "改动列表读取失败",
+    "Could not load the changed files",
   ],
-  "magent.filterByStatus": ["按状态筛选", "Filter by status"],
-  "magent.lastRetryFailed": ["上一次重试失败的结果。", "Result of the last failed retry."],
-  "magent.historyLoading": ["正在读取记录…", "Reading history…"],
-  "magent.historyEmptyHint": ["结束的任务会出现在这里。", "Finished tasks appear here."],
-  "magent.historyEmpty": ["没有执行记录", "No execution history"],
-  "magent.historyDeleteHint": ["删除执行记录请在桌面端操作。", "Delete execution history on the desktop."],
-  "magent.createdAt": ["创建 {time}", "Created {time}"],
-  "magent.loadMore": [
-    "加载更多（已显示 {shown} / {total}）",
-    "Load more ({shown} / {total} shown)",
+  "mobile.agent.reviewTruncated": ["已截断", "Truncated"],
+  "mobile.agent.fileAdded": ["新增", "Added"],
+  "mobile.agent.fileModified": ["修改", "Modified"],
+  "mobile.agent.fileDeleted": ["删除", "Deleted"],
+  "mobile.agent.fileRenamed": ["重命名", "Renamed"],
+  "mobile.agent.fileUntracked": ["未跟踪", "Untracked"],
+  "mobile.agent.finalizeTitle": ["正在收尾", "Finishing"],
+  "mobile.agent.finalizeStepCommit": ["提交", "Commit"],
+  "mobile.agent.finalizeStepMerge": ["合并", "Merge"],
+  "mobile.agent.finalizeStepCleanup": ["清理", "Cleanup"],
+  "mobile.agent.finalizeStepWriteback": ["回写", "Writeback"],
+  "mobile.agent.finalizeRetry": ["重试收尾", "Retry finishing"],
+  "mobile.agent.finalizeRetrying": ["重试中…", "Retrying…"],
+
+  /* -- Task actions ------------------------------------------------------- */
+  "mobile.agent.approve": ["通过并收尾", "Approve and finish"],
+  "mobile.agent.abandon": ["放弃", "Discard"],
+  "mobile.agent.stop": ["停止", "Stop"],
+  "mobile.agent.resumeFailed": ["恢复会话失败", "Couldn't resume the session"],
+
+  /* -- Approvals ---------------------------------------------------------- */
+  "mobile.agent.approvalRequest": ["授权请求", "Approval request"],
+  "mobile.agent.approvalTool": ["工具", "Tool"],
+  "mobile.agent.approvalTarget": ["目标", "Target"],
+  "mobile.agent.allowOnce": ["允许一次", "Allow once"],
+  "mobile.agent.reject": ["拒绝", "Reject"],
+  "mobile.agent.approvalFailed": ["审批失败", "Couldn't answer the approval"],
+  "mobile.agent.pendingLoadFailed": [
+    "读取待处理请求失败",
+    "Couldn't load pending requests",
   ],
 
-  // Coworkers page
-  "magent.coworkersSelectedHint": [
-    "勾选的同事会随 Agent 任务一起提示。",
-    "Selected coworkers are included in Agent task prompts.",
-  ],
-  "magent.selectedCount": ["已选 {n}", "Selected: {n}"],
-  "magent.reload": ["重新加载", "Reload"],
-  "magent.coworkersLoading": ["正在读取同事包…", "Reading coworker packs…"],
-  "magent.coworkersEmptyHint": [
-    "把同事包放进桌面端 assets/coworker 后重启。",
-    "Put coworker packs in the desktop assets/coworker folder, then restart.",
-  ],
-  "magent.coworkersEmpty": ["还没有同事入职", "No coworkers yet"],
-  "magent.noSkills": ["没有技能包", "No skill packs"],
-  "magent.saveFailed": ["保存失败，勾选未丢失，可重试。", "Save failed; your selection is kept. Try again."],
-  "magent.saveHint": [
-    "保存后启用的同事包会附加到之后发起的 Agent 任务提示词里。",
-    "Enabled packs are appended to prompts for Agent tasks started afterwards.",
-  ],
-  "magent.saving": ["保存中…", "Saving…"],
+  /* -- Questions ---------------------------------------------------------- */
+  "mobile.agent.questionRequest": ["需要你的回答", "Question"],
+  "mobile.agent.answerQuestion": ["去回答", "Answer"],
+  "mobile.agent.questionProgress": ["问题 {i}/{n}", "Question {i} of {n}"],
+  "mobile.agent.questionCustom": ["自定义回答", "Custom answer"],
+  "mobile.agent.questionCustomPlaceholder": ["输入回答", "Type an answer"],
+  "mobile.agent.questionFailed": ["提交回答失败", "Couldn't submit the answer"],
 
-  // Review / merge cards
-  "magent.approve": ["通过", "Approve"],
-  "magent.approveHint": [
-    "通过后 Agent 继续核对、提交并回写 TAPD。",
-    "Once approved, the Agent verifies, commits and writes back to TAPD.",
+  /* -- Team board --------------------------------------------------------- */
+  "mobile.agent.teamToggle": ["同事协作", "Coworkers"],
+  "mobile.agent.teamToggleHint": [
+    "会话开始时选择是否让同事一起干活；发送第一条消息后不可更改。",
+    "Choose whether coworkers join before the session starts; fixed after the first message.",
   ],
-  "magent.shelve": ["搁置", "Shelve"],
-  "magent.shelveHint": [
-    "搁置：本次改动存入 git stash，任务取消，队列暂停（在桌面端恢复）。代码不会丢。",
-    "Shelve: changes go into git stash, the task is cancelled and the queue pauses (resume on desktop). Nothing is lost.",
+  "mobile.agent.teamToggleFailed": ["切换团队协作失败", "Couldn't switch team mode"],
+  "mobile.agent.viewChat": ["会话", "Chat"],
+  "mobile.agent.viewBoard": ["任务板", "Board"],
+  "mobile.agent.colPending": ["待分配", "Pending"],
+  "mobile.agent.colInProgress": ["进行中", "In progress"],
+  "mobile.agent.colCompleted": ["已完成", "Done"],
+  "mobile.agent.teamUnassigned": ["未分配", "Unassigned"],
+  "mobile.agent.teamBlocked": ["{n} 项阻塞", "{n} blocked"],
+  "mobile.agent.teamReady": ["可开始", "Ready"],
+  "mobile.agent.teamMoreScopes": ["+{n}", "+{n}"],
+  "mobile.agent.teamEmpty": ["任务板为空", "No board tasks"],
+  "mobile.agent.teamEmptyHint": [
+    "团队协作开启后，主 Agent 会把可拆分的工作登记在这里。",
+    "With team mode on, the lead agent registers splittable work here.",
   ],
-  "magent.viewDiff": ["查看改动", "View changes"],
-  "magent.hideDiff": ["收起改动", "Hide changes"],
-  "magent.risk": ["风险：{risk}", "Risk: {risk}"],
-  "magent.diffTitle": ["相对任务起点的差异（只读）", "Diff from task start (read-only)"],
-  "magent.diffLoading": ["正在读取差异…", "Reading diff…"],
-  "magent.awaitingReviewHint": [
-    "Agent 已完成修改，等待审核。",
-    "Agent finished the changes and is awaiting review.",
-  ],
-  "magent.files.count": [
-    "涉及文件 {n} 个",
-    ({ n }) => `${n} file${Number(n) === 1 ? "" : "s"}`,
-  ],
-  "magent.mergeHint": [
-    "合并由原 Agent 在主仓库执行，合并成功才算完成。",
-    "The original Agent merges in the main repository; the task completes only when the merge succeeds.",
-  ],
-  "magent.mergeReady": [
-    "审核已通过。确认后使用原 Agent 把分支合并到主仓库。",
-    "Review approved. Confirm to merge the branch into the main repository with the original Agent.",
-  ],
-  "magent.manualMergeSteps": ["手动合并步骤", "Manual merge steps"],
-  "magent.mergeStart": ["用原 Agent 合并", "Merge with original Agent"],
+  "mobile.agent.teamLoadFailed": ["读取任务板失败", "Couldn't load the board"],
 
-  // Task changes / per-file diff
-  "magent.changes.title": ["变更", "Changes"],
-  "magent.changes.files": [
-    "{count} 个文件",
-    ({ count }) => `${count} file${Number(count) === 1 ? "" : "s"}`,
+  /* -- Session view ------------------------------------------------------- */
+  "mobile.agent.resuming": ["正在恢复会话…", "Resuming…"],
+  "mobile.agent.entriesLoadFailed": ["读取消息失败", "Couldn't load messages"],
+  "mobile.agent.emptyTranscript": ["还没有消息", "No messages yet"],
+  "mobile.agent.emptyTranscriptHint": [
+    "在下方输入第一条消息。",
+    "Type the first message below.",
   ],
-  "magent.changes.binary": ["二进制", "Binary"],
-  "magent.changes.loading": ["正在读取变更…", "Reading changes…"],
-  "magent.changes.empty": ["本次任务没有变更", "No changes in this task"],
-  "magent.changes.truncated": [
-    "仅显示前 {count} 个文件",
-    "Showing the first {count} files",
+
+  /* -- Composer ---------------------------------------------------------- */
+  "mobile.agent.composerPlaceholder": ["给 Agent 发消息", "Message the Agent"],
+  "mobile.agent.composerHint": [
+    "Enter 发送，Shift+Enter 换行。",
+    "Enter to send, Shift+Enter for a new line.",
   ],
-  "magent.changes.refresh": ["刷新变更", "Refresh changes"],
-  "magent.changes.loadFailed": [
-    "读取变更失败：{error}",
-    "Failed to read changes: {error}",
+  "mobile.agent.promptFailed": ["发送失败", "Couldn't send the message"],
+  "mobile.agent.stopFailed": ["停止失败", "Couldn't stop the turn"],
+  "mobile.agent.chatWorktree": ["Worktree", "Worktree"],
+  "mobile.agent.chatWorktreeHint": [
+    "会话开始时选择是否在独立 worktree 中运行；发送第一条消息后不可更改。",
+    "Choose whether this session runs in an isolated worktree before it starts; fixed after the first message.",
   ],
-  "magent.changes.readingDiff": ["正在读取差异…", "Reading diff…"],
-  "magent.changes.noDiff": ["该文件没有差异", "No diff for this file"],
-  "magent.changes.diffTruncated": ["差异已截断", "Diff truncated"],
-  "magent.changes.commit": ["提交", "Commit"],
-  "magent.changes.mergedCommit": ["合并提交", "Merge commit"],
-  "magent.changes.copied": ["已复制", "Copied"],
-  "magent.changes.copyHash": ["复制完整 hash", "Copy full hash"],
+  "mobile.agent.workBarLocked": [
+    "会话已经开始，同事协作与 worktree 不可再更改",
+    "The session has started; coworkers and the worktree can no longer be changed",
+  ],
+  "mobile.agent.chatWorktreeFailed": [
+    "切换 worktree 失败",
+    "Couldn't switch the worktree",
+  ],
+
+  /* -- Session mode picker (composer) ------------------------------------- */
+  "mobile.agent.modeTitle": ["会话模式", "Session mode"],
+  "mobile.agent.modePlan": ["计划模式", "Plan mode"],
+  "mobile.agent.modePlanHint": [
+    "先出计划，批准后再动手",
+    "Plan first; act after approval",
+  ],
+  "mobile.agent.modeNotify": ["变更前通知", "Notify before changes"],
+  "mobile.agent.modeNotifyHint": [
+    "全部放行，执行前推一条通知",
+    "Everything is allowed; a notice is sent before it runs",
+  ],
+  "mobile.agent.modeAuto": ["自主", "Autonomous"],
+  "mobile.agent.modeAutoHint": [
+    "只有风险操作才询问",
+    "Only risky operations ask for approval",
+  ],
+  "mobile.agent.modeFull": ["完全访问", "Full access"],
+  "mobile.agent.modeFullHint": [
+    "除硬黑名单外全部放行",
+    "Everything except the hard blocklist is allowed",
+  ],
+  "mobile.agent.modeSetFailed": ["切换模式失败", "Couldn't switch mode"],
+
+  /* -- Session model picker (composer) ------------------------------------ */
+  "mobile.agent.modelPickTitle": ["模型", "Model"],
+  "mobile.agent.modelNoAvailable": ["还没有可用模型", "No model available yet"],
+  "mobile.agent.modelProviderModels": ["{count} 个模型", "{count} models"],
+  "mobile.agent.modelImage": ["图像输入", "Image input"],
+  "mobile.agent.modelReasoningTag": ["可推理", "Reasoning"],
+  "mobile.agent.modelReasoningEffort": ["思考强度", "Reasoning effort"],
+  "mobile.agent.modelReasoningOff": ["关闭", "Off"],
+  "mobile.agent.modelSetFailed": ["切换模型失败", "Couldn't switch model"],
+
+  /* -- Composer status line ----------------------------------------------- */
+  "mobile.agent.usageTurns": ["{turns} 轮 · {steps} 步", "{turns} turns · {steps} steps"],
+  "mobile.agent.usageTokens": ["{tokens} tokens", "{tokens} tokens"],
+  "mobile.agent.usageContext": ["上下文 {percent}%", "Context {percent}%"],
+
+  /* -- Task / conversation / trajectory panes ----------------------------- */
+  "mobile.agent.paneTask": ["任务", "Task"],
+  "mobile.agent.paneChat": ["对话", "Chat"],
+  "mobile.agent.paneTrajectory": ["轨迹", "Trajectory"],
+
+  /* -- Task pane ---------------------------------------------------------- */
+  "mobile.agent.taskBranch": ["分支", "Branch"],
+  "mobile.agent.taskWorkingDir": ["工作目录", "Working dir"],
+  "mobile.agent.taskDirect": ["主仓库直接运行", "Runs in the main checkout"],
+  "mobile.agent.taskBug": ["缺陷", "Bug"],
+  "mobile.agent.taskChanges": ["{files} 个文件", "{files} files"],
+  "mobile.agent.taskRevisions": ["修订", "Revisions"],
+  "mobile.agent.taskGitStart": ["开始", "Start"],
+  "mobile.agent.taskGitCommit": ["提交", "Commit"],
+  "mobile.agent.taskGitMerge": ["合并", "Merge"],
+  "mobile.agent.taskWriteback": ["TAPD 回写", "TAPD write-back"],
+  "mobile.agent.taskWritebackComment": ["评论已写入", "Comment written"],
+  "mobile.agent.taskWritebackStatus": [
+    "状态 {from} → {to}",
+    "Status {from} → {to}",
+  ],
+  "mobile.agent.doneTitle": ["任务已完成", "Task finished"],
+  "mobile.agent.viewTask": ["查看任务", "View task"],
 } as const satisfies Catalog;

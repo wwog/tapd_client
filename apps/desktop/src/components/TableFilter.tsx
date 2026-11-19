@@ -12,6 +12,7 @@ import clsx from "clsx";
 
 import { useDismiss } from "../hooks/useDismiss";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 
 export type TableFilterOption = { value: string; label: string };
 
@@ -137,6 +138,16 @@ export function TableFilter(props: Props) {
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500" />
             )
           ) : null}
+          <ChevronDown
+            size={12}
+            className={clsx(
+              "ml-0.5 shrink-0 transition",
+              open || active
+                ? "text-sky-600"
+                : "text-slate-400 opacity-0 group-hover/head:opacity-100",
+              open && "rotate-180",
+            )}
+          />
         </button>
 
         {sort ? (
@@ -167,29 +178,6 @@ export function TableFilter(props: Props) {
             )}
           </button>
         ) : null}
-
-        <button
-          type="button"
-          title={
-            open
-              ? t("bugs.collapseFilter", { label })
-              : t("bugs.filterBy", { label })
-          }
-          aria-hidden="true"
-          tabIndex={-1}
-          onClick={() => (open ? close() : openMenu())}
-          className={clsx(
-            "ml-0.5 grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",
-            open || active
-              ? "text-sky-600"
-              : "text-slate-400 opacity-0 group-hover/head:opacity-100",
-          )}
-        >
-          <ChevronDown
-            size={12}
-            className={clsx("transition", open && "rotate-180")}
-          />
-        </button>
       </div>
 
       {open && position
@@ -218,7 +206,7 @@ export function TableFilter(props: Props) {
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       placeholder={t("bugs.matchLabel", { label })}
-                      className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+                      className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:bg-surface"
                     />
                   </div>
                 </div>
@@ -252,14 +240,13 @@ export function TableFilter(props: Props) {
                             )
                           ) : null}
                         </span>
-                        <span
+                        <ScrollingName
+                          text={option.label}
                           className={clsx(
-                            "min-w-0 flex-1 truncate",
+                            "min-w-0 flex-1",
                             checked ? "text-slate-800" : "text-slate-600",
                           )}
-                        >
-                          {option.label}
-                        </span>
+                        />
                       </button>
                     );
                   })}

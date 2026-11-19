@@ -64,7 +64,7 @@ export function CoworkersPage() {
   const coworkers = data?.coworkers ?? [];
 
   return (
-    <div>
+    <div data-component="CoworkersPage">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"

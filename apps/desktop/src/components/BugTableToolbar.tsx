@@ -7,7 +7,6 @@ import {
   type SetStateAction,
 } from "react";
 import {
-  Activity,
   Check,
   Columns3,
   GripVertical,
@@ -45,11 +44,11 @@ type Props = {
   scope: BugScope;
   me: string | null;
   onScopeChange: (scope: BugScope) => void;
-  /** Show the 处理中 scope; only set while an agent works on the project. */
-  showProcessing: boolean;
   keyword: string;
   onKeywordChange: (value: string) => void;
   activeFilterCount: number;
+  /** The empty state owns the clear-filters action; the header only adds it above results. */
+  hasResults: boolean;
   onClearFilters: () => void;
   columns: ColumnPref[];
   onColumnsChange: Dispatch<SetStateAction<ColumnPref[]>>;
@@ -62,10 +61,10 @@ export function BugTableToolbar(props: Props) {
     scope,
     me,
     onScopeChange,
-    showProcessing,
     keyword,
     onKeywordChange,
     activeFilterCount,
+    hasResults,
     onClearFilters,
     columns,
     onColumnsChange,
@@ -218,22 +217,14 @@ export function BugTableToolbar(props: Props) {
     onColumnsChange(DEFAULT_COLUMNS.map((column) => ({ ...column })));
   };
 
-  // 处理中 is a live view over agent activity, so the segment only exists while
-  // the local agent queue is working on this project.
   const scopeOptions: SegmentedOption<BugScope>[] = [
     { value: "mine", label: t("bugs.scopeMine"), icon: <UserRound size={12} /> },
     { value: "all", label: t("common.all"), icon: <Users size={12} /> },
   ];
-  if (showProcessing) {
-    scopeOptions.push({
-      value: "processing",
-      label: t("bugs.scopeProcessing"),
-      icon: <Activity size={12} />,
-    });
-  }
 
   return (
     <div
+      data-component="BugTableToolbar"
       ref={toolbarRef}
       className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-5 py-3"
     >
@@ -250,7 +241,7 @@ export function BugTableToolbar(props: Props) {
           </span>
         ) : null}
 
-        {activeFilterCount > 0 ? (
+        {activeFilterCount > 0 && hasResults ? (
           <button
             type="button"
             onClick={onClearFilters}
@@ -270,7 +261,7 @@ export function BugTableToolbar(props: Props) {
               onChange={(event) => onKeywordChange(event.target.value)}
               placeholder={t("bugs.searchPlaceholder")}
               title={t("bugs.searchHint")}
-              className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+              className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:bg-surface"
             />
           </div>
         ) : null}

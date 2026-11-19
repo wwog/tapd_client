@@ -4,7 +4,6 @@ import {
   Bot,
   Bug,
   FolderGit2,
-  MessagesSquare,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -18,9 +17,8 @@ import { t, type MessageKey } from "../lib/i18n";
 export type View =
   | "bugs"
   | "local"
-  | "projects"
-  | "chat"
   | "agent"
+  | "projects"
   | "coworker"
   | "mcp"
   | "settings"
@@ -28,9 +26,8 @@ export type View =
 
 const RAIL_ANIM: Record<string, string> = {
   bugs: "rail-bug-jump",
-  projects: "rail-folder-bounce",
-  chat: "rail-chat-pop",
   agent: "rail-bot-shake",
+  projects: "rail-folder-bounce",
   coworker: "rail-users-wave",
   mcp: "rail-plug-rise",
   settings: "rail-settings-spin",
@@ -45,9 +42,8 @@ const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
   // 事项 has no rail entry: local projects open their own tab from the project
   // column (and the projects page), like TAPD projects do.
-  { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
-  { id: "chat", label: "app.nav.chat", icon: <MessagesSquare size={15} /> },
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
+  { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
   { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
@@ -96,7 +92,7 @@ export function ActivityBar({
   const railView: View = view === "local" ? "bugs" : view;
 
   return (
-    <div className="flex w-[52px] shrink-0 flex-col items-center pb-2">
+    <div data-component="ActivityBar" className="flex w-[52px] shrink-0 flex-col items-center pb-2">
       <div className="flex flex-col items-center gap-1">
         {NAV.filter((item) => item.id !== "settings").map((item) => (
           <button

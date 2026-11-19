@@ -33,7 +33,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # The built-in agent runtime requires Node >= 24.9, and verify:dsh
+          # actually boots it; the payload build needs >= 22.15 for zstd.
+          node-version: 24
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -111,6 +113,16 @@ jobs:
 
       - name: Test Rust workspace
         run: pnpm test:rust
+
+      - name: Build built-in agent payload
+        # `apps/desktop/src-tauri/resources/dsh` is gitignored and produced only
+        # by prepare.mjs; the bundler embeds it, so a fresh runner must build it.
+        run: pnpm prepare:dsh
+
+      - name: Verify built-in agent payload
+        # Boots the prepared tree against the pinned dsh version and fails on
+        # missing plugins or schema errors before anything ships.
+        run: pnpm verify:dsh
 
       - name: Build arm64 MCP sidecar
         run: bash scripts/build-sidecar.sh aarch64-apple-darwin

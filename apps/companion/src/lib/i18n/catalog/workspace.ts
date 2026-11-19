@@ -85,7 +85,6 @@ export const workspace = {
   "mobile.files.saving": ["保存中…", "Saving…"],
   "mobile.files.unsaved": ["未保存", "Unsaved"],
   "mobile.files.noChanges": ["无修改", "No changes"],
-  "mobile.files.readOnlyHint": ["预览模式", "Preview mode"],
   "mobile.files.readOnly": ["只读", "Read-only"],
   "mobile.files.rootReadOnly": [
     "根目录只能浏览，无法编辑",

@@ -4,7 +4,6 @@ import type { Catalog } from "../types";
 export const bugs = {
   // ------------------------------------------------------------------ list
   "bugs.scopeMine": ["我负责的", "Mine"],
-  "bugs.scopeProcessing": ["处理中", "In progress"],
   "bugs.noCurrentUser": [
     "未能识别当前用户，暂按全部查询",
     "Could not identify the current user, showing all bugs",
@@ -32,18 +31,8 @@ export const bugs = {
   "bugs.offlineSnapshot": ["离线数据 · 上次同步 {time}", "Offline data · Last synced {time}"],
   "bugs.loadFailed": ["缺陷加载失败", "Failed to load bugs"],
   "bugs.loadingList": ["正在读取缺陷列表", "Loading bug list"],
-  "bugs.processingLoadFailed": [
-    "正在处理的缺陷加载失败，请稍后重试。",
-    "Failed to load the bugs in progress. Try again later.",
-  ],
-  "bugs.emptyProcessing": ["当前没有正在处理的缺陷", "No bugs in progress"],
   "bugs.emptyMine": ["你名下没有符合条件的缺陷", "No bugs assigned to you match the filters"],
   "bugs.emptyAll": ["没有符合条件的缺陷", "No bugs match the filters"],
-  "bugs.emptyHintFilters": ["试试清除部分筛选条件。", "Try clearing some filters."],
-  "bugs.emptyProcessingHint": [
-    "内部 Agent 开始处理后会出现在这里。",
-    "Bugs appear here once the internal agent starts working on them.",
-  ],
   "bugs.emptyHintFiltersAll": [
     "试试清除部分筛选条件，或切换到「全部」。",
     'Try clearing some filters, or switch to "All".',
@@ -79,31 +68,18 @@ export const bugs = {
   "bugs.sortAscending": ["按 {label} 升序", "Sort {label} ascending"],
   "bugs.sortBy": ["按 {label} 排序", "Sort by {label}"],
   "bugs.filterBy": ["筛选 {label}", "Filter {label}"],
-  "bugs.collapseFilter": ["收起 {label} 筛选", "Collapse {label} filter"],
   "bugs.closeFilter": ["关闭筛选", "Close filter"],
   "bugs.matchLabel": ["匹配 {label}", "Match {label}"],
   "bugs.noMatches": ["没有匹配项", "No matches"],
 
   // ----------------------------------------------------------- row actions
-  "bugs.viewAgentTask": ["查看 Agent 任务", "View agent task"],
-  "bugs.removeFromQueue": [
-    "从 Agent 队列中移除这个任务",
-    "Remove this task from the agent queue",
-  ],
-  "bugs.interruptAgentTask": ["中断当前 Agent 任务", "Interrupt the current agent task"],
-  "bugs.cancelAgentTask": ["取消 Agent 任务", "Cancel agent task"],
   "bugs.claimHint": [
     "认领后可以修改处理人/开发人员与流转状态，评论不受限制",
     "Claim this bug to edit the owner/developer and change status; comments stay open",
   ],
   "bugs.claim": ["认领", "Claim"],
   "bugs.claiming": ["认领中", "Claiming"],
-  "bugs.fixWith": ["用 {agent} 修复", "Fix with {agent}"],
   "bugs.fixWithAgent": ["用 Agent 修复", "Fix with agent"],
-  "bugs.startWithNote": [
-    "添加补充说明或资源后启动",
-    "Add instructions or resources, then start",
-  ],
   "bugs.openInTapd": ["在 TAPD 中打开", "Open in TAPD"],
   "bugs.quickActions": ["缺陷快捷操作", "Bug quick actions"],
   "bugs.copyShortId": ["复制 ID", "Copy ID"],
@@ -161,13 +137,6 @@ export const bugs = {
     "{first} 等 {count} 条",
     ({ first, count }) => `${first} and ${Number(count) - 1} more`,
   ],
-  "bugs.agentQueued": [
-    "该缺陷已在 Agent 队列中，点击查看任务",
-    "This bug is already in the agent queue; click to view the task",
-  ],
-  "bugs.viewTaskLabel": ["{label} · 查看任务", "{label} · View task"],
-  "bugs.currentAgent": ["当前 Agent：{name}（{binary}）", "Current agent: {name} ({binary})"],
-  "bugs.loadingAgent": ["正在读取当前 Agent", "Loading the current agent"],
   "bugs.exporting": ["导出中…", "Exporting…"],
   "bugs.export": ["导出", "Export"],
 
@@ -245,13 +214,10 @@ export const bugs = {
   "bugs.secondsAgo": ["{n} 秒前", "{n}s ago"],
   "bugs.minutesAgo": ["{n} 分钟前", "{n}m ago"],
   "bugs.hoursAgo": ["{n} 小时前", "{n}h ago"],
+  "bugs.daysAgo": ["{n} 天前", "{n}d ago"],
 
   // ------------------------------------------------------------- directory
   "bugs.membersFailed": ["处理人列表加载失败：{error}", "Failed to load owners: {error}"],
 
   // -------------------------------------------------------- dev-only sim
-  "bugs.devTest": ["开发测试", "Dev test"],
-  "bugs.simQueued": ["模拟本地排队 #1", "Simulate queued locally #1"],
-  "bugs.simRunning": ["模拟队头执行", "Simulate running at queue head"],
-  "bugs.simClear": ["清除模拟状态", "Clear simulated state"],
 } as const satisfies Catalog;

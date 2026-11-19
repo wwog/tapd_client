@@ -119,6 +119,7 @@ export function MonacoView({
 
   return (
     <div
+      data-component="MonacoView"
       ref={hostRef}
       className="h-full w-full"
       data-workbench-file="monaco"

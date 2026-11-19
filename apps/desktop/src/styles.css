@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Shared agent view components live outside this app root; scan them too. */
+@source "../../shared";
+
 @theme {
   --color-ink-900: #0b1524;
   --color-ink-800: #0f1e31;
@@ -24,11 +27,12 @@
   --color-primary-hover: #1e293b;
   --color-primary-foreground: #ffffff;
 
-  /* Floating island capsule. Neutral glass chip (like a macOS widget button):
-     a flat tinted fill with a hairline edge, never an inner shadow/highlight.
-     Its own palette instead of the inverted slate ramp. */
-  --color-island: rgb(226 226 230 / 0.8);
-  --color-island-hover: rgb(236 236 240 / 0.88);
+  /* Floating island capsule. Neutral chip (like a macOS widget button): a flat
+     tinted fill with a hairline edge, never an inner shadow/highlight. One
+     opacity, no hover state: the window behind it is transparent, so a hover
+     tint read as "sometimes solid, sometimes see-through". Its own palette
+     instead of the inverted slate ramp. */
+  --color-island: rgb(226 226 230 / var(--island-alpha, 0.82));
   --color-island-line: rgb(255 255 255 / 0.55);
   --color-island-ink: #404046;
   --color-island-muted: #6f6f77;
@@ -52,6 +56,19 @@
   --text-ui-base--line-height: 1.5;
   --text-ui-lg: calc(var(--ui-font-size) + 2px);
   --text-ui-lg--line-height: 1.4;
+}
+
+/* The Agent session is prose, not table chrome: every tier sits one step above
+   the app scale. Shifting the tokens (not the classes) keeps the hierarchy and
+   the user's font-size setting intact — the transcript, composer, task column
+   and trajectory all move together. */
+.agent-type {
+  --text-ui-2xs: calc(var(--ui-font-size) - 3px);
+  --text-ui-xs: calc(var(--ui-font-size) - 2px);
+  --text-ui-sm: calc(var(--ui-font-size) - 1px);
+  --text-ui-caption: var(--ui-font-size);
+  --text-ui-base: calc(var(--ui-font-size) + 1px);
+  --text-ui-lg: calc(var(--ui-font-size) + 3px);
 }
 
 html,
@@ -100,6 +117,18 @@ select,
 [contenteditable="plaintext-only"] {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Text fields never take a coloured focus edge: the resting hairline border is
+   the only edge, so clicking in does not repaint the control. Keyboard focus
+   stays visible on buttons, switches and other non-text controls. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+textarea:focus,
+select:focus,
+[contenteditable="true"]:focus,
+[contenteditable="plaintext-only"]:focus {
+  outline: none;
+  border-color: var(--color-border);
 }
 
 /* Style contract: borders carry structure, never shadows. This also keeps
@@ -651,12 +680,6 @@ select,
   font-size: 12px;
 }
 
-.agent-compose-editor .w-md-editor:focus-within {
-  border-color: #38bdf8;
-  outline: 2px solid rgb(224 242 254);
-  outline-offset: -1px;
-}
-
 .agent-compose-editor .w-md-editor-toolbar {
   border-bottom: 1px solid #f1f5f9;
   border-radius: 12px 12px 0 0;
@@ -721,8 +744,7 @@ select,
   --color-primary-hover: #1e293b;
   --color-primary-foreground: #ffffff;
 
-  --color-island: rgb(226 226 230 / 0.8);
-  --color-island-hover: rgb(236 236 240 / 0.88);
+  --color-island: rgb(226 226 230 / var(--island-alpha, 0.82));
   --color-island-line: rgb(255 255 255 / 0.55);
   --color-island-ink: #404046;
   --color-island-muted: #6f6f77;
@@ -812,6 +834,30 @@ select,
   --color-cyan-800: #155e75;
   --color-cyan-900: #164e63;
   --color-cyan-950: #083344;
+
+  --color-teal-50: #f0fdfa;
+  --color-teal-100: #ccfbf1;
+  --color-teal-200: #99f6e4;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2dd4bf;
+  --color-teal-500: #14b8a6;
+  --color-teal-600: #0d9488;
+  --color-teal-700: #0f766e;
+  --color-teal-800: #115e59;
+  --color-teal-900: #134e4a;
+  --color-teal-950: #042f2e;
+
+  --color-indigo-50: #eef2ff;
+  --color-indigo-100: #e0e7ff;
+  --color-indigo-200: #c7d2fe;
+  --color-indigo-300: #a5b4fc;
+  --color-indigo-400: #818cf8;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #4f46e5;
+  --color-indigo-700: #4338ca;
+  --color-indigo-800: #3730a3;
+  --color-indigo-900: #312e81;
+  --color-indigo-950: #1e1b4b;
 }
 
 [data-theme="dark"] {
@@ -829,8 +875,7 @@ select,
   --color-primary-foreground: #0f172a;
 
   /* Same neutral glass, inverted: graphite instead of navy, soft gray ink. */
-  --color-island: rgb(56 56 61 / 0.8);
-  --color-island-hover: rgb(68 68 74 / 0.88);
+  --color-island: rgb(56 56 61 / var(--island-alpha, 0.82));
   --color-island-line: rgb(255 255 255 / 0.14);
   --color-island-ink: #e6e6eb;
   --color-island-muted: #a6a6af;
@@ -920,6 +965,30 @@ select,
   --color-cyan-800: #cffafe;
   --color-cyan-900: #ecfeff;
   --color-cyan-950: #f5feff;
+
+  --color-teal-50: #0b2622;
+  --color-teal-100: #0e342e;
+  --color-teal-200: #164d42;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2dd4bf;
+  --color-teal-500: #14b8a6;
+  --color-teal-600: #5eead4;
+  --color-teal-700: #99f6e4;
+  --color-teal-800: #ccfbf1;
+  --color-teal-900: #f0fdfa;
+  --color-teal-950: #f3fdfb;
+
+  --color-indigo-50: #1c1d3a;
+  --color-indigo-100: #26274e;
+  --color-indigo-200: #383a75;
+  --color-indigo-300: #a5b4fc;
+  --color-indigo-400: #818cf8;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #a5b4fc;
+  --color-indigo-700: #c7d2fe;
+  --color-indigo-800: #e0e7ff;
+  --color-indigo-900: #eef2ff;
+  --color-indigo-950: #f5f5ff;
 }
 
 /* Always-dark panels (media viewer, code blocks, overlays) opt out of the
@@ -964,10 +1033,6 @@ select,
 [data-theme="dark"] .agent-compose-editor .w-md-editor-text-pre > code,
 [data-theme="dark"] .agent-compose-editor .w-md-editor-text {
   color: var(--color-slate-700) !important;
-}
-
-[data-theme="dark"] .agent-compose-editor .w-md-editor:focus-within {
-  outline-color: rgb(56 189 248 / 0.35);
 }
 
 [data-theme="dark"] .agent-compose-editor .w-md-editor-preview {

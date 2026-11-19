@@ -7,7 +7,24 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppInfo } from "./api";
+/**
+ * Workspace id prefix that scopes a file panel to one agent session's working
+ * directory (`__session__:<sessionId>`). Mirrors `fs.rs`, which resolves the
+ * root and keeps the same containment checks.
+ */
+export const SESSION_WORKSPACE_PREFIX = "__session__:";
+
+/** Workspace id for whole-disk reads (`fs.rs` keeps its credential deny list). */
+export const ROOT_WORKSPACE_ID = "__root__";
+
+/** Where a local path from an assistant reply should open. */
+export type FileTabTarget = {
+  workspaceId: string;
+  /** Relative to the workspace root, `/`-separated. */
+  path: string;
+  /** Tab label; the panel falls back to the file name. */
+  label?: string;
+};
 
 export type FsEntryKind = "dir" | "file" | "symlink";
 
@@ -98,16 +115,6 @@ let fileBase: string | null = null;
 
 const buildFileBase = (port: number, token: string): string =>
   `http://127.0.0.1:${port}/file?token=${encodeURIComponent(token)}`;
-
-/** Remembered next to `setMediaEndpoint`; both come from `app_info`. */
-export const setFileEndpoint = (
-  info: Pick<AppInfo, "mediaPort" | "mediaToken">,
-): void => {
-  fileBase =
-    info.mediaPort && info.mediaToken
-      ? buildFileBase(info.mediaPort, info.mediaToken)
-      : null;
-};
 
 /** Late fallback for the first paint: the loopback server may still be starting. */
 export const ensureFileEndpoint = async (): Promise<void> => {

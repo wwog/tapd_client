@@ -149,6 +149,10 @@ pub(super) fn notify_user() -> ToolSpec {
                                 ],
                                 "default": "secondary",
                             },
+                            "description": {
+                                "type": "string",
+                                "description": tr("mcp.arg.actiondesc"),
+                            },
                         },
                         "required": [
                             "id",

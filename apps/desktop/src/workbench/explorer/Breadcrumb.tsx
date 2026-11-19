@@ -30,6 +30,7 @@ export function Breadcrumb({ rootLabel, path, onNavigate, className }: Props) {
 
   return (
     <nav
+      data-component="Breadcrumb"
       aria-label={t("explorer.root")}
       data-workbench-explorer="breadcrumb"
       className={clsx(

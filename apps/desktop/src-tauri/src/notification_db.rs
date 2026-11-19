@@ -3,7 +3,7 @@
 //! The in-memory [`NotificationStore`] is the working set (fast pending-list
 //! rendering); this module loads it once at startup and mirrors mutations
 //! row-by-row so a 30s poll never rewrites the whole state. Tables are created
-//! by the cache migration (v3) in `cache.rs`.
+//! by the cache schema in `cache/migrate.rs`.
 
 use std::collections::BTreeMap;
 
@@ -22,7 +22,7 @@ pub fn load(cache: &Cache) -> Option<NotificationStore> {
 }
 
 /// True only when the settings row is confirmed absent. A failed load (corrupt
-/// or partially migrated schema) must not look like a fresh install, otherwise
+/// or damaged schema) must not look like a fresh install, otherwise
 /// startup would overwrite the stored state with defaults.
 pub fn is_fresh(cache: &Cache) -> bool {
     match cache.with_conn(|conn| {

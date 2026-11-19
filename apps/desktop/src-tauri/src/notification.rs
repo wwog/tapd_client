@@ -16,13 +16,16 @@
 //! - `model` — serde/wire types, settings defaults and clamping.
 //! - `rules` — pure classification, time, quiet-hours and pruning rules.
 //! - `ai` — AI/MCP payload parsing, transient AI cards, MCP entry points.
+//! - `review` — the built-in agent's "awaiting review" card (`raise` / `settle`).
 //! - `poll` — identity resolution, paged TAPD fetches and poll rounds.
 //! - `actions` — Tauri command dispatch, card actions and the accept flow.
 
 mod actions;
+pub(crate) mod agent;
 pub(crate) mod ai;
 pub(crate) mod model;
 mod poll;
+pub(crate) mod review;
 pub(crate) mod rules;
 
 use std::{
@@ -56,6 +59,21 @@ const MAX_HISTORY: usize = 100;
 const MAX_AI_ITEMS: usize = 20;
 const MAX_AI_BLOCKS: usize = 8;
 const MAX_AI_ACTIONS: usize = 4;
+const MAX_AI_ACTION_DESC_CHARS: usize = 120;
+
+/// Caps text at `max` chars, ending in `…` when it had to cut. Shared by the
+/// card builders so their limits stay comparable.
+pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// Longest free-text answer a card accepts from its answer field.
+const MAX_AI_ANSWER_CHARS: usize = 500;
 const MAX_AI_TITLE_CHARS: usize = 140;
 const MAX_AI_TEXT_CHARS: usize = 1_500;
 const MAX_AI_CODE_CHARS: usize = 4_000;
@@ -295,8 +313,15 @@ impl NotificationService {
             json!({ "items": items, "quiet": quiet }),
         );
 
-        let (expanded, count) = island_layout_state(&items, quiet);
-        crate::island_window::apply_island(&self.app, &self.state, expanded, count, true);
+        let (expanded, count, stacked_rows) = island_layout_state(&items, quiet);
+        crate::island_window::apply_island(
+            &self.app,
+            &self.state,
+            expanded,
+            count,
+            stacked_rows,
+            true,
+        );
     }
 }
 
@@ -386,20 +411,36 @@ pub fn refresh_island_layout(app: &AppHandle, state: &SharedState) {
         return;
     }
 
-    let (expanded, count) = service()
+    let (expanded, count, stacked_rows) = service()
         .map(|service| {
             let (items, _quiet) = service.pending_payload();
             island_layout_state(&items, false)
         })
-        .unwrap_or((false, 0));
-    crate::island_window::apply_island(app, state, expanded, count, true);
+        .unwrap_or((false, 0, 0));
+    crate::island_window::apply_island(app, state, expanded, count, stacked_rows, true);
 }
 
-/// Expanded state and row count for a layout refresh. Only pending
-/// notifications can expand the capsule; a collapsed capsule never opens on its
-/// own.
-fn island_layout_state(items: &[NotificationItem], quiet: bool) -> (bool, usize) {
-    (!items.is_empty() && !quiet, items.len())
+/// Expanded state, row count and the tallest card's stacked rows for a layout
+/// refresh. Only pending notifications can expand the capsule; a collapsed
+/// capsule never opens on its own.
+fn island_layout_state(items: &[NotificationItem], quiet: bool) -> (bool, usize, usize) {
+    (
+        !items.is_empty() && !quiet,
+        items.len(),
+        stacked_rows(items),
+    )
+}
+
+/// Agent question cards list their options one per row (plus the answer field),
+/// so the island has to grow past the shared action row; the tallest card
+/// decides by how much.
+pub(super) fn stacked_rows(items: &[NotificationItem]) -> usize {
+    items
+        .iter()
+        .filter_map(|item| item.ai.as_ref())
+        .map(|ai| ai.stacked_rows())
+        .max()
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +486,10 @@ pub fn init(app: &AppHandle, state: SharedState) {
     if SERVICE.set(service.clone()).is_err() {
         return;
     }
+
+    // The capsule answers the built-in agent's approvals and questions as well;
+    // requests arrive as Tauri events, so the listener is installed once here.
+    agent::mount(app);
 
     service.refresh_window();
 

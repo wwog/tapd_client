@@ -106,7 +106,7 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
 
   if (!mcp) {
     return (
-      <section className="rounded-2xl border border-border bg-surface p-4">
+      <section data-component="McpClientImport" className="rounded-2xl border border-border bg-surface p-4">
         <header className="flex items-center gap-2">
           <Wrench size={15} className="text-slate-400" />
           <h3 className="text-ui-caption text-slate-900">{t("mcp.connectClients")}</h3>
@@ -187,7 +187,7 @@ export function McpClientImport({ onCopy, toast, onImported, config }: Props) {
     mcp.clients.find((client) => client.id === id);
 
   return (
-    <section className="space-y-2">
+    <section data-component="McpClientImport" className="space-y-2">
       <header className="px-1">
         <h3
           className="flex items-center gap-2 text-ui-base text-slate-900"

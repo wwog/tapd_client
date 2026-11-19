@@ -107,8 +107,13 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       firstRender.current = false;
       return;
     }
-    savePrefs({ version: 1, layout: prefs.layout, sidebarWidth: prefs.sidebarWidth });
-  }, [prefs.layout, prefs.sidebarWidth]);
+    savePrefs({
+      version: 1,
+      layout: prefs.layout,
+      sidebarWidth: prefs.sidebarWidth,
+      sidebarCollapsed: prefs.sidebarCollapsed,
+    });
+  }, [prefs.layout, prefs.sidebarWidth, prefs.sidebarCollapsed]);
 
   const groups = useMemo(() => listGroups(prefs.layout.root), [prefs.layout]);
 
@@ -372,6 +377,14 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
     );
   }, []);
 
+  const setSidebarCollapsed = useCallback((collapsed: boolean) => {
+    setPrefs((prev) =>
+      prev.sidebarCollapsed === collapsed
+        ? prev
+        : { ...prev, sidebarCollapsed: collapsed },
+    );
+  }, []);
+
   return useMemo<WorkbenchLayoutApi>(
     () => ({
       layout: prefs.layout,
@@ -397,10 +410,13 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       hasPanel,
       sidebarWidth: prefs.sidebarWidth,
       setSidebarWidth,
+      sidebarCollapsed: prefs.sidebarCollapsed,
+      setSidebarCollapsed,
     }),
     [
       prefs.layout,
       prefs.sidebarWidth,
+      prefs.sidebarCollapsed,
       groups,
       activeGroup,
       activePanelId,
@@ -422,6 +438,7 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       syncTerminalPanels,
       hasPanel,
       setSidebarWidth,
+      setSidebarCollapsed,
     ],
   );
 }

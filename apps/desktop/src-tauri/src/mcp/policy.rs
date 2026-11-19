@@ -4,8 +4,8 @@ use serde_json::Value;
 use tapd_core::config::McpPolicy;
 use tapd_i18n::{tr, tr_args};
 
-/// Tools that change TAPD state. Both the policy write switch and the local
-/// agent's commit-before-write rule key off this set, so it is defined once.
+/// Tools that change TAPD state. The policy write switch keys off this set, so
+/// it is defined once.
 pub(super) fn is_write_tool(tool: &str) -> bool {
     matches!(tool, "tapd_add_bug_comment" | "tapd_update_bug_status")
 }

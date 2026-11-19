@@ -229,6 +229,10 @@ pub struct AiAction {
     pub label: String,
     /// `primary` / `secondary` / `danger`; unknown values render as secondary.
     pub style: String,
+    /// Hint shown under the label. Options with one get a second line; the
+    /// label itself never wraps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -240,6 +244,10 @@ pub struct AiResolution {
     pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_label: Option<String>,
+    /// Free text typed into the card's answer field (a question's custom
+    /// answer); no action is picked in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     pub at: String,
 }
 
@@ -251,10 +259,34 @@ pub struct AiPayload {
     pub client: String,
     pub blocks: Vec<AiBlock>,
     pub actions: Vec<AiAction>,
+    /// Actions are listed one per row (agent question options) instead of
+    /// sharing one row; the capsule grows to fit them.
+    #[serde(default)]
+    pub stack_actions: bool,
+    /// The card ends with a free-text answer field (agent question options):
+    /// whatever the user types goes back as a custom answer.
+    #[serde(default)]
+    pub allow_custom: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<AiResolution>,
+}
+
+impl AiPayload {
+    /// Rows the stacked block needs: one per action plus the answer field.
+    /// A single action never stacks, so it keeps the shared action row — except
+    /// on a card that also takes a typed answer.
+    pub fn stacked_rows(&self) -> usize {
+        if self.allow_custom {
+            return self.actions.len() + 1;
+        }
+        if self.stack_actions && self.actions.len() > 1 {
+            self.actions.len()
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

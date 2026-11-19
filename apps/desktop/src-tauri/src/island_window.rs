@@ -115,6 +115,24 @@ pub fn set_peek(active: bool) {
     PEEK.store(active, Ordering::SeqCst);
 }
 
+/// Lets the capsule take the keyboard while its answer field is focused, and
+/// hands it back to the previous app once the answer is sent. Everything else
+/// keeps the capsule out of the focus chain.
+pub fn set_answer_focus(app: &AppHandle, active: bool, restore: bool) {
+    #[cfg(target_os = "macos")]
+    macos::set_answer_focus(app, active, restore);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, active, restore);
+    }
+}
+
+/// Forgets any keyboard permission; the cards that needed it are gone.
+fn reset_answer_focus() {
+    #[cfg(target_os = "macos")]
+    macos::reset_answer_focus();
+}
+
 /// Applies the 3x update panel.
 pub fn apply_update_panel(app: &AppHandle, state: &SharedState) {
     // The update panel owns the capsule: drop any open hover peek so it does
@@ -251,66 +269,72 @@ fn monitor_for(app: &AppHandle) -> Option<tauri::Monitor> {
         .or_else(|| app.primary_monitor().ok().flatten())
 }
 
+/// Monitor whose work area holds `anchor`. The capsule can be dragged to any
+/// display, and the room a card has is the room on *that* display.
+fn monitor_at(app: &AppHandle, anchor: (i32, i32)) -> Option<tauri::Monitor> {
+    let monitors = app.available_monitors().ok()?;
+    monitors.into_iter().find(|monitor| {
+        let area = monitor.work_area();
+        let left = area.position.x;
+        let top = area.position.y;
+        let right = left + area.size.width as i32;
+        let bottom = top + area.size.height as i32;
+        // The pill may sit a few pixels above the work area (dragged under the
+        // menu bar); that still counts as its monitor.
+        anchor.0 >= left && anchor.0 <= right && anchor.1 >= top - 40 && anchor.1 <= bottom
+    })
+}
+
 /// Rectangle (physical pixels) for a logical island size.
 ///
-/// Uses the anchor the user dragged the capsule to, otherwise top-centre.
+/// Uses the anchor the user dragged the capsule to, otherwise top-centre, and
+/// keeps the window inside that monitor's work area.
 fn island_rect(
     app: &AppHandle,
     state: &SharedState,
     width: f64,
     height: f64,
 ) -> Option<(i32, i32, u32, u32)> {
-    let monitor = monitor_for(app)?;
+    let saved = state.config_snapshot().island_anchor;
+    // A saved anchor from a monitor that is no longer attached is ignored.
+    let anchor = saved.filter(|anchor| monitor_at(app, *anchor).is_some());
+    let monitor = anchor
+        .and_then(|anchor| monitor_at(app, anchor))
+        .or_else(|| monitor_for(app))?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let w = (width * scale).round().max(1.0) as u32;
     let h = (height * scale).round().max(1.0) as u32;
 
-    let anchor = state
-        .config_snapshot()
-        .island_anchor
-        .filter(|anchor| anchor_is_on_screen(app, *anchor));
-
     let left = area.position.x;
     let top = area.position.y;
+    // The card is centred on the capsule and opens to the side with room, so a
+    // pill dragged near an edge still gets a fully reachable card.
     let (x, y) = place_island(
         anchor,
         left,
         top,
         area.size.width as i32,
-        w as i32,
+        area.size.height as i32,
+        (w as i32, h as i32),
+        (PILL_HEIGHT * scale).round() as i32,
         (ISLAND_TOP_MARGIN * scale).round() as i32,
     );
 
     Some((x, y, w, h))
 }
 
-/// Guards against a saved position from a monitor that is no longer attached.
-fn anchor_is_on_screen(app: &AppHandle, anchor: (i32, i32)) -> bool {
-    let Ok(monitors) = app.available_monitors() else {
-        return true;
-    };
-    if monitors.is_empty() {
-        return true;
-    }
-
-    monitors.iter().any(|monitor| {
-        let area = monitor.work_area();
-        let left = area.position.x;
-        let top = area.position.y;
-        let right = left + area.size.width as i32;
-        let bottom = top + area.size.height as i32;
-        anchor.0 >= left && anchor.0 <= right && anchor.1 >= top - 40 && anchor.1 <= bottom
-    })
-}
-
 /// Places the island at the top centre of the screen. `animated` interpolates
 /// the resize so the card grows out of the capsule (Dynamic Island style).
+///
+/// `stacked_rows` is the tallest stacked block (agent question options plus the
+/// answer field), so the card can grow past the shared action row.
 pub(crate) fn apply_island(
     app: &AppHandle,
     state: &SharedState,
     expanded: bool,
     count: usize,
+    stacked_rows: usize,
     animated: bool,
 ) {
     // An update owns the capsule: polling, notification expansion and user
@@ -322,11 +346,15 @@ pub(crate) fn apply_island(
     // arrived must not come back when they are dismissed.
     if expanded {
         PEEK.store(false, Ordering::SeqCst);
+    } else {
+        // The answer field is gone with the cards: the capsule goes back to
+        // never taking the keyboard.
+        reset_answer_focus();
     }
     let (width, height) = if !expanded && PEEK.load(Ordering::SeqCst) {
         (PEEK_WIDTH, PEEK_HEIGHT)
     } else {
-        island_size(expanded, count)
+        island_size(expanded, count, stacked_rows)
     };
     apply_island_sized(app, state, width, height, expanded, count, animated);
 }

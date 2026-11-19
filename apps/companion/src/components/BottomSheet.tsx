@@ -19,7 +19,7 @@ export function BottomSheet(props: {
 }) {
   if (!props.open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50">
+    <div data-component="BottomSheet" className="fixed inset-0 z-50">
       <div
         className="sheet-backdrop absolute inset-0 bg-black/40"
         onClick={props.onClose}

@@ -1,0 +1,226 @@
+/*
+ * Rendered Markdown, shared by the file preview and agent replies.
+ *
+ * `@uiw/react-md-editor` brings its own GitHub-ish styles; these rules only
+ * align them with the app tokens (transparent surface, real border, 400
+ * weight) and supply the syntax palette, since refractor ships none.
+ */
+
+.md-body .wmde-markdown {
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: var(--text-ui-caption);
+  line-height: 1.65;
+}
+
+.md-body .wmde-markdown > :first-child {
+  margin-top: 0;
+}
+
+.md-body .wmde-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.md-body .wmde-markdown h1,
+.md-body .wmde-markdown h2,
+.md-body .wmde-markdown h3,
+.md-body .wmde-markdown h4,
+.md-body .wmde-markdown h5,
+.md-body .wmde-markdown h6 {
+  border-bottom: 0;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.md-body .wmde-markdown a {
+  color: var(--color-sky-600);
+}
+
+.md-body .wmde-markdown pre,
+.md-body .wmde-markdown code {
+  font-family: var(--font-mono);
+}
+
+.md-body .wmde-markdown pre {
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--color-slate-50);
+  font-size: var(--text-ui-xs);
+  line-height: 1.55;
+}
+
+.md-body .wmde-markdown code {
+  background: var(--color-slate-50);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.md-body .wmde-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.md-body .wmde-markdown img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+/* Local files in agent replies: the file glyph plus the link tint marks the
+   path as an in-app viewer link, not ordinary code. Inline code stays
+   copyable and images open the same viewer tab. */
+.md-body .wmde-markdown .md-file-icon {
+  display: inline;
+  vertical-align: -0.125em;
+  margin-right: 3px;
+  color: var(--color-sky-600);
+}
+
+.md-body .wmde-markdown code.md-file-link {
+  background: var(--color-sky-50);
+  color: var(--color-sky-700);
+  cursor: pointer;
+}
+
+.md-body .wmde-markdown code.md-file-link:hover {
+  background: var(--color-sky-100);
+  text-decoration: underline;
+}
+
+.md-body .wmde-markdown img.md-local-image {
+  cursor: pointer;
+}
+
+.md-body .wmde-markdown button.md-image-missing {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-slate-50);
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-ui-xs);
+  color: var(--color-slate-500);
+  cursor: pointer;
+}
+
+.md-body .wmde-markdown table {
+  border-collapse: collapse;
+}
+
+.md-body .wmde-markdown th,
+.md-body .wmde-markdown td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+}
+
+.md-body .wmde-markdown blockquote {
+  border-left: 2px solid var(--color-border);
+  color: var(--color-slate-500);
+}
+
+/* Tailwind's preflight clears markers; Markdown lists still need them. */
+.md-body .wmde-markdown ul,
+.md-body .wmde-markdown ol {
+  padding-left: 1.25em;
+}
+
+.md-body .wmde-markdown ul {
+  list-style: disc;
+}
+
+.md-body .wmde-markdown ol {
+  list-style: decimal;
+}
+
+.md-body .wmde-markdown ul ul {
+  list-style: circle;
+}
+
+.md-body .wmde-markdown .contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.md-body .wmde-markdown li + li {
+  margin-top: 0.2em;
+}
+
+.md-body .wmde-markdown .token.comment,
+.md-body .wmde-markdown .token.prolog,
+.md-body .wmde-markdown .token.doctype,
+.md-body .wmde-markdown .token.cdata {
+  color: #94a3b8;
+}
+
+.md-body .wmde-markdown .token.keyword,
+.md-body .wmde-markdown .token.atrule,
+.md-body .wmde-markdown .token.attr-value {
+  color: #7c3aed;
+}
+
+.md-body .wmde-markdown .token.string,
+.md-body .wmde-markdown .token.char,
+.md-body .wmde-markdown .token.attr-name,
+.md-body .wmde-markdown .token.builtin,
+.md-body .wmde-markdown .token.inserted {
+  color: #0f766e;
+}
+
+.md-body .wmde-markdown .token.number,
+.md-body .wmde-markdown .token.boolean,
+.md-body .wmde-markdown .token.constant,
+.md-body .wmde-markdown .token.symbol {
+  color: #b45309;
+}
+
+.md-body .wmde-markdown .token.function,
+.md-body .wmde-markdown .token.class-name {
+  color: #0369a1;
+}
+
+.md-body .wmde-markdown .token.tag,
+.md-body .wmde-markdown .token.property,
+.md-body .wmde-markdown .token.selector,
+.md-body .wmde-markdown .token.deleted {
+  color: #be123c;
+}
+
+/* Dark theme: same hues, lighter inks. */
+[data-theme="dark"] .md-body .wmde-markdown .token.comment,
+[data-theme="dark"] .md-body .wmde-markdown .token.prolog,
+[data-theme="dark"] .md-body .wmde-markdown .token.doctype,
+[data-theme="dark"] .md-body .wmde-markdown .token.cdata {
+  color: #8b93a1;
+}
+
+[data-theme="dark"] .md-body .wmde-markdown .token.keyword,
+[data-theme="dark"] .md-body .wmde-markdown .token.atrule,
+[data-theme="dark"] .md-body .wmde-markdown .token.attr-value {
+  color: #c4b5fd;
+}
+
+[data-theme="dark"] .md-body .wmde-markdown .token.string,
+[data-theme="dark"] .md-body .wmde-markdown .token.char,
+[data-theme="dark"] .md-body .wmde-markdown .token.attr-name,
+[data-theme="dark"] .md-body .wmde-markdown .token.builtin,
+[data-theme="dark"] .md-body .wmde-markdown .token.inserted {
+  color: #6ee7b7;
+}
+
+[data-theme="dark"] .md-body .wmde-markdown .token.number,
+[data-theme="dark"] .md-body .wmde-markdown .token.boolean,
+[data-theme="dark"] .md-body .wmde-markdown .token.constant,
+[data-theme="dark"] .md-body .wmde-markdown .token.symbol {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .md-body .wmde-markdown .token.function,
+[data-theme="dark"] .md-body .wmde-markdown .token.class-name {
+  color: #7dd3fc;
+}
+
+[data-theme="dark"] .md-body .wmde-markdown .token.tag,
+[data-theme="dark"] .md-body .wmde-markdown .token.property,
+[data-theme="dark"] .md-body .wmde-markdown .token.selector,
+[data-theme="dark"] .md-body .wmde-markdown .token.deleted {
+  color: #fda4af;
+}

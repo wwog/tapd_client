@@ -64,6 +64,7 @@ export function Segmented<T extends string>({
 
   return (
     <div
+      data-component="Segmented"
       ref={containerRef}
       role="tablist"
       className={clsx(

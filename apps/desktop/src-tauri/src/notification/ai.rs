@@ -18,19 +18,12 @@ use super::{
         NotificationKind, NotificationSource, NotificationState,
     },
     rules::format_tapd_time,
-    service, NotificationService, DEFAULT_NOTIFY_WAIT_SECS, MAX_AI_ACTIONS, MAX_AI_BLOCKS,
+    service, truncate_chars, NotificationService, DEFAULT_NOTIFY_WAIT_SECS,
+    MAX_AI_ACTION_DESC_CHARS,
+    MAX_AI_ACTIONS, MAX_AI_BLOCKS,
     MAX_AI_CODE_CHARS, MAX_AI_ITEMS, MAX_AI_TAG_CHARS, MAX_AI_TEXT_CHARS, MAX_AI_TITLE_CHARS,
     MAX_NOTIFY_WAIT_SECS, NOT_FOUND,
 };
-
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
-    truncated.push('…');
-    truncated
-}
 
 fn required_text(value: Option<&Value>, path: &str, max: usize) -> Result<String, String> {
     value
@@ -161,7 +154,17 @@ fn parse_ai_actions(value: Option<&Value>) -> Result<Vec<AiAction>, String> {
                 ));
             }
         };
-        actions.push(AiAction { id, label, style });
+        actions.push(AiAction {
+            id,
+            label,
+            style,
+            description: item
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| truncate_chars(text, MAX_AI_ACTION_DESC_CHARS)),
+        });
     }
     Ok(actions)
 }
@@ -246,6 +249,11 @@ pub fn ai_payload_from_arguments(
             tone,
             client,
             blocks,
+            // A hint only reads under its own label: an action row would cut it
+            // off, so actions carrying a description get a row each. MCP cards
+            // have no free-text answer: only the agent's questions do.
+            stack_actions: actions.iter().any(|action| action.description.is_some()),
+            allow_custom: false,
             actions,
             tag,
             resolution: None,
@@ -322,6 +330,7 @@ impl NotificationService {
                             kind: "replaced".to_string(),
                             action_id: None,
                             action_label: None,
+                            value: None,
                             at: now.to_rfc3339(),
                         });
                     }
@@ -339,12 +348,14 @@ impl NotificationService {
     }
 
     /// Stores the user's decision on an AI card. `kind` is `action`,
-    /// `dismissed` or `replaced`; `action_id` is required for `action`.
+    /// `dismissed` or `replaced`; `action` needs an action id or a typed
+    /// `value` (the card's free-text answer).
     pub(super) fn finish_ai(
         &self,
         id: &str,
         kind: &str,
         action_id: Option<&str>,
+        value: Option<&str>,
     ) -> Result<NotificationItem, String> {
         let item = {
             let mut items = self.ai_items.lock().expect("ai notification lock");
@@ -370,6 +381,7 @@ impl NotificationService {
                     kind: kind.to_string(),
                     action_id: action.as_ref().map(|action| action.id.clone()),
                     action_label: action.as_ref().map(|action| action.label.clone()),
+                    value: value.map(str::to_string),
                     at: Local::now().to_rfc3339(),
                 });
             }
@@ -384,12 +396,50 @@ impl NotificationService {
         Ok(item)
     }
 
-    fn ai_state(&self, id: &str) -> (bool, Option<AiResolution>) {
+    pub(super) fn ai_state(&self, id: &str) -> (bool, Option<AiResolution>) {
         let items = self.ai_items.lock().expect("ai notification lock");
         match items.iter().find(|item| item.id == id) {
             Some(item) => (true, item.ai.as_ref().and_then(|ai| ai.resolution.clone())),
             None => (false, None),
         }
+    }
+
+    /// Dismisses every pending card carrying `tag`, without a card id.
+    ///
+    /// Cards that name their request in the tag (a review waits per session)
+    /// are settled elsewhere — the Agent page's own button, a cancel, or a
+    /// new turn — and the capsule must not keep offering a stale decision.
+    /// A card the user already acted on keeps its first decision.
+    pub(super) fn finish_ai_by_tag(&self, tag: &str, kind: &str) -> usize {
+        let now = Local::now().to_rfc3339();
+        let mut settled = 0usize;
+        {
+            let mut items = self.ai_items.lock().expect("ai notification lock");
+            for item in items.iter_mut() {
+                if item.state != NotificationState::Pending {
+                    continue;
+                }
+                let Some(ai) = item.ai.as_mut() else {
+                    continue;
+                };
+                if ai.tag.as_deref() != Some(tag) || ai.resolution.is_some() {
+                    continue;
+                }
+                ai.resolution = Some(AiResolution {
+                    kind: kind.to_string(),
+                    action_id: None,
+                    action_label: None,
+                    value: None,
+                    at: now.clone(),
+                });
+                item.state = NotificationState::Ignored;
+                settled += 1;
+            }
+        }
+        if settled > 0 {
+            self.refresh_window();
+        }
+        settled
     }
 
     /// Waits for a user decision. Returns the stored resolution when the user
@@ -604,6 +654,33 @@ mod ai_notification_tests {
             "client",
         );
         assert!(bad_style.is_err());
+    }
+
+    #[test]
+    fn parses_action_descriptions_and_counts_option_rows() {
+        let (_, payload) = ai_payload_from_arguments(
+            &json!({
+                "title": "x",
+                "actions": [
+                    {"id": "a", "label": "A", "description": "  第一条  "},
+                    {"id": "b", "label": "B", "description": "   "}
+                ]
+            }),
+            "client",
+        )
+        .expect("payload");
+        assert_eq!(payload.actions[0].description.as_deref(), Some("第一条"));
+        // Blank hints are dropped instead of rendering an empty line.
+        assert_eq!(payload.actions[1].description, None);
+        // Two actions are listed one per row, so the card needs the extra height.
+        assert_eq!(payload.stacked_rows(), 2);
+
+        let (_, single) = ai_payload_from_arguments(
+            &json!({"title": "x", "actions": [{"id": "a", "label": "A"}]}),
+            "client",
+        )
+        .expect("payload");
+        assert_eq!(single.stacked_rows(), 0);
     }
 
     #[test]

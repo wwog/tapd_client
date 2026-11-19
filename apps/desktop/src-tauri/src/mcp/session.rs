@@ -22,7 +22,7 @@ use tapd_core::{
 use tapd_i18n::{tr, tr_args};
 use tauri::AppHandle;
 
-use crate::{agent, commands::auth::session_request_json, state::SharedState};
+use crate::{agent_settings, commands::auth::session_request_json, state::SharedState};
 
 use super::args::{root_hint, root_is_cwd_hint, string_arg};
 
@@ -128,7 +128,7 @@ pub(super) fn resolve_workspace(
     }
 
     if let Some(root) = root_hint(arguments) {
-        let projects = agent::mcp_agent_config(app).projects;
+        let projects = agent_settings::mcp_agent_config(app).projects;
         match match_workspace_by_root(&projects, &root) {
             Some(workspace_id) => {
                 if !workspaces
@@ -198,7 +198,7 @@ pub(super) fn default_workspace_id(
 /// parent root only matches when exactly one project lives beneath it, so a
 /// shared parent never picks a sibling project by accident.
 pub(super) fn match_workspace_by_root(
-    projects: &BTreeMap<String, agent::ProjectAgentConfig>,
+    projects: &BTreeMap<String, agent_settings::ProjectAgentConfig>,
     root: &str,
 ) -> Option<String> {
     let root = normalize_path(root)?;
@@ -274,7 +274,7 @@ fn is_inside(child: &Path, parent: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::match_workspace_by_root;
-    use crate::agent::ProjectAgentConfig;
+    use crate::agent_settings::ProjectAgentConfig;
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -282,6 +282,7 @@ mod tests {
         ProjectAgentConfig {
             repo_path: repo_path.to_string_lossy().to_string(),
             rule: String::new(),
+            name: String::new(),
         }
     }
 

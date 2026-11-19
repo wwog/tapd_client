@@ -993,6 +993,69 @@ pub fn open_path(path: String) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Opens a path's *containing* folder with the item selected (Finder reveal).
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let target = tapd_core::paths::expand_home(path.trim());
+    if target.as_os_str().is_empty() {
+        return Err(tr("app.project.unbound").to_string());
+    }
+    // `open -R` needs an existing item; for a directory that is gone, fall back
+    // to its parent so "reveal" still lands somewhere useful.
+    let arg = if target.exists() {
+        target
+    } else {
+        target.parent().map(std::path::Path::to_path_buf).unwrap_or(target)
+    };
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&arg)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// One local image as a `data:` URL, for the transcript's image previews.
+///
+/// The path comes from a tool result, so it is deliberately not restricted to a
+/// workspace: this hands back the same bytes the agent already read. Anything
+/// larger than [`MAX_PREVIEW_BYTES`] is refused instead of being encoded into
+/// the webview.
+#[tauri::command]
+pub fn image_data_url(path: String) -> Result<String, String> {
+    use base64::Engine as _;
+
+    const MAX_PREVIEW_BYTES: u64 = 24 * 1024 * 1024;
+
+    let file = tapd_core::paths::expand_home(path.trim());
+    let meta = std::fs::metadata(&file).map_err(|_| tr("agent.image.missing").to_string())?;
+    if !meta.is_file() {
+        return Err(tr("agent.image.missing").to_string());
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(tr("agent.image.tooLarge").to_string());
+    }
+    let mime = match file
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        _ => return Err(tr("agent.image.unsupported").to_string()),
+    };
+    let bytes = std::fs::read(&file).map_err(|_| tr("agent.image.missing").to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 /// Opens a local file with the saved "打开方式" choice for its kind.
 ///
 /// `open_path` hands everything to the system default; this variant honours the
@@ -1041,6 +1104,20 @@ pub async fn open_directory(
     let selected = selected_open_target(state.inner(), target, "directory");
 
     open_local(&dir, &selected)
+}
+
+/// Opens an http(s) URL in the default browser.
+///
+/// Markdown links (agent replies, file previews) go through this instead of
+/// letting the WebView navigate away from the app; the scheme check keeps
+/// `file:` / custom handlers out of `open`.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| tr("app.open.url").to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(tr("app.open.url").to_string());
+    }
+    run_open(&[url.as_str()])
 }
 
 /// Opens a TAPD resource locally.

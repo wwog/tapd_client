@@ -37,13 +37,3 @@ export const dismissToast = (): void => {
 export function useToast(): Toast | null {
   return toastStore.use();
 }
-
-/** Toast state plus the stable actions shared by the app and its children. */
-export function useToastStore(): {
-  toast: Toast | null;
-  show: ToastFn;
-  dismiss: () => void;
-} {
-  const toast = toastStore.use();
-  return { toast, show: showToast, dismiss: dismissToast };
-}

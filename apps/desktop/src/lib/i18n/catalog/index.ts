@@ -4,7 +4,6 @@
  */
 import { agent } from "./agent";
 import { bugs } from "./bugs";
-import { chat } from "./chat";
 import { common } from "./common";
 import { explorer } from "./explorer";
 import { layout } from "./layout";
@@ -17,11 +16,10 @@ import { workbench } from "./workbench";
 
 export const CATALOG = {
   ...common,
+  ...agent,
   ...shell,
   ...settings,
   ...bugs,
-  ...agent,
-  ...chat,
   ...workbench,
   ...terminal,
   ...layout,

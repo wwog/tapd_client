@@ -128,5 +128,5 @@ export function CodeRain({ className, active = true }: Props) {
     };
   }, [active]);
 
-  return <canvas ref={canvasRef} className={className} aria-hidden="true" />;
+  return <canvas data-component="CodeRain" ref={canvasRef} className={className} aria-hidden="true" />;
 }

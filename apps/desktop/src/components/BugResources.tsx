@@ -27,6 +27,7 @@ import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 import { MediaPreview, type PreviewItem } from "./MediaPreview";
 import { BugSectionTitle } from "./BugSectionTitle";
+import { ScrollingName } from "./ScrollingName";
 
 type Props = {
   open: boolean;
@@ -221,6 +222,7 @@ function Thumbnail(props: {
 
   return (
     <button
+      data-component="Thumbnail"
       type="button"
       onClick={onClick}
       title={title}
@@ -248,6 +250,7 @@ function Thumbnail(props: {
 function PreviewButton(props: { onClick: () => void }) {
   return (
     <button
+      data-component="PreviewButton"
       type="button"
       onClick={props.onClick}
       title={t("bugs.preview")}
@@ -283,7 +286,7 @@ function OpenButton(props: {
   });
 
   return (
-    <div className="relative shrink-0">
+    <div data-component="OpenButton" className="relative shrink-0">
       <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-surface text-ui-sm text-slate-600">
         <button
           type="button"
@@ -365,6 +368,7 @@ function TargetIcon(props: {
   if (target?.icon) {
     return (
       <img
+        data-component="TargetIcon"
         src={target.icon}
         alt={target.label}
         title={fallback}
@@ -374,6 +378,7 @@ function TargetIcon(props: {
   }
   return (
     <span
+      data-component="TargetIcon"
       title={fallback}
       className="grid h-4 w-4 shrink-0 place-items-center rounded-[4px] bg-slate-100 text-slate-500"
     >
@@ -399,7 +404,7 @@ function AttachmentRow(props: {
     : -1;
 
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
+    <div data-component="AttachmentRow" className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
       <Thumbnail
         url={previewable ? attachment.downloadUrl : ""}
         icon={Icon}
@@ -408,9 +413,10 @@ function AttachmentRow(props: {
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption font-normal text-slate-700" title={attachment.filename}>
-          {attachment.filename}
-        </div>
+        <ScrollingName
+          text={attachment.filename}
+          className="text-ui-caption font-normal text-slate-700"
+        />
         <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
           <span>{formatBytes(attachment.size)}</span>
           <span className="truncate">{attachment.contentType || attachment.filetype}</span>
@@ -456,7 +462,7 @@ function EmbeddedMediaRow(props: {
     : -1;
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
+    <div data-component="EmbeddedMediaRow" className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
       <Thumbnail
         url={previewable ? media.url : ""}
         icon={Icon}
@@ -465,9 +471,10 @@ function EmbeddedMediaRow(props: {
         onClick={previewable && previewIndex >= 0 ? () => onPreview(previewIndex) : undefined}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-ui-caption text-slate-700" title={media.filenameHint || media.url}>
-          {media.filenameHint || t("bugs.embeddedResource")}
-        </div>
+        <ScrollingName
+          text={media.filenameHint || t("bugs.embeddedResource")}
+          className="text-ui-caption text-slate-700"
+        />
         <div className="mt-0.5 flex items-center gap-2 text-ui-xs text-slate-400">
           {media.size > 0 ? <span>{formatBytes(media.size)}</span> : null}
           <span className="truncate">{t("bugs.embeddedKind", { kind: kindLabel })}</span>

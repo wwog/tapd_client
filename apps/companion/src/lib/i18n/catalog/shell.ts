@@ -5,10 +5,6 @@ export const shell = {
   /* -- App shell / navigation --------------------------------------------- */
   "mobile.nav.main": ["主导航", "Main navigation"],
   "mobile.nav.back": ["返回", "Back"],
-  "mobile.nav.pendingTasks": [
-    "{n} 个待处理任务",
-    ({ n }) => `${n} pending task${Number(n) === 1 ? "" : "s"}`,
-  ],
   /** Product noun; identical in both languages. */
   "mobile.tab.agent": ["Agent", "Agent"],
 
@@ -39,15 +35,9 @@ export const shell = {
     "解除配对后需要重新扫码，确定解除？",
     "You will need to scan the QR code again. Unpair now?",
   ],
-  "mobile.settings.desktop": ["桌面端", "Desktop"],
-  "mobile.settings.heartbeatHint": [
-    "手机每 20 秒向桌面端发送一次心跳；连续两次未送达即显示掉线。",
-    "The phone sends a heartbeat to the desktop every 20 seconds; two missed beats in a row show it as offline.",
-  ],
   "mobile.settings.presenceOnline": ["在线", "Online"],
   "mobile.settings.presenceOffline": ["掉线", "Offline"],
   "mobile.settings.device": ["设备", "Device"],
-  "mobile.settings.desktopVersion": ["桌面版本", "Desktop version"],
   "mobile.settings.lastSync": ["最近同步", "Last sync"],
   "mobile.settings.devices": ["设备管理", "Device management"],
   "mobile.settings.host": ["桌面主机", "Desktop host"],
@@ -77,34 +67,7 @@ export const shell = {
     "Changes are written back to the desktop immediately; failures restore the previous value and show the error.",
   ],
   "mobile.settings.agentExecution": ["Agent 执行", "Agent execution"],
-  "mobile.settings.worktreeIsolation": ["Worktree 隔离", "Worktree isolation"],
-  "mobile.settings.worktreeBusyHint": [
-    "有活跃任务时切换会被桌面端拒绝，等队列清空后再试。",
-    "The desktop rejects switching while tasks are active; wait for the queue to clear.",
-  ],
-  "mobile.settings.worktreeHint": [
-    "每个任务在独立 git worktree 中运行，完成后保留提交分支。",
-    "Each task runs in its own git worktree and keeps its commit branch afterwards.",
-  ],
-  "mobile.settings.executionUnits": ["执行单元", "Execution units"],
-  "mobile.settings.restoreQueued": ["启动恢复排队", "Resume queue on start"],
-  "mobile.settings.restoreQueuedHint": [
-    "桌面端重启后，之前排队的任务自动继续；关闭则保留队列但暂停，等你在桌面端手动继续。",
-    "After a desktop restart, queued tasks resume automatically; when off, the queue stays but pauses until you resume it on the desktop.",
-  ],
-  "mobile.settings.defaultRuntime": ["默认运行时", "Default runtime"],
-  "mobile.settings.runtimeListHint": [
-    "只列出本机已安装（available）的运行时。",
-    "Only runtimes installed (available) on this machine are listed.",
-  ],
-  "mobile.settings.worktreeLockHint": [
-    "与桌面端一致的锁：等队列清空后再切换。",
-    "Same lock as the desktop: wait for the queue to clear before switching.",
-  ],
-  "mobile.settings.worktreeQueueBusy": [
-    "队列中有任务，完成后才能切换 Worktree。",
-    "Tasks are queued. Worktree can be switched only after they finish.",
-  ],
+  "mobile.settings.executionUnits": ["并行任务数", "Parallel tasks"],
   "mobile.settings.newBugNotifications": [
     "新缺陷通知",
     "New bug notifications",
@@ -198,25 +161,6 @@ export const shell = {
     "Options come from project members",
   ],
   "mobile.bugs.viewDetail": ["查看详情", "View details"],
-  "mobile.bugs.fixWithAgent": ["用 Agent 修复", "Fix with Agent"],
-  "mobile.bugs.enqueueing": ["正在入队…", "Queueing…"],
-  "mobile.bugs.enqueue": ["入队", "Queue"],
-  "mobile.bugs.severityValue": ["严重程度 {value}", "Severity {value}"],
-  "mobile.bugs.ownerValue": ["处理人 {owner}", "Owner {owner}"],
-  "mobile.bugs.extraPrompt": ["附加说明", "Additional notes"],
-  "mobile.bugs.extraPromptPlaceholder": [
-    "给 Agent 的补充说明（可选，支持 Markdown）",
-    "Extra instructions for the Agent (optional, Markdown supported)",
-  ],
-  "mobile.bugs.runtime": ["运行时", "Runtime"],
-  "mobile.bugs.runtimeHint": [
-    "默认跟随桌面端设置。",
-    "Follows the desktop setting by default.",
-  ],
-  "mobile.bugs.enqueueFailedHint": [
-    "入队失败，表单保留可重试。",
-    "Queueing failed; your input is kept so you can retry.",
-  ],
 
   /* -- Bug detail ---------------------------------------------------------- */
   "mobile.bugDetail.title": ["缺陷详情", "Bug details"],
@@ -293,15 +237,6 @@ export const shell = {
   ],
 
   /* -- Agent task statuses -------------------------------------------------- */
-  "mobile.status.queued": ["排队中", "Queued"],
-  "mobile.status.preparing": ["准备中", "Preparing"],
-  "mobile.status.running": ["运行中", "Running"],
-  "mobile.status.awaitingApproval": ["待审核", "Awaiting review"],
-  "mobile.status.awaitingMerge": ["待合并", "Awaiting merge"],
-  "mobile.status.merging": ["合并中", "Merging"],
-  "mobile.status.succeeded": ["已完成", "Succeeded"],
-  "mobile.status.failed": ["失败", "Failed"],
-  "mobile.status.canceled": ["已取消", "Canceled"],
 
   "mobile.notif.manyWithTitle": [
     "{title} 等 {n} 条新通知",

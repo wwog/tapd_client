@@ -34,6 +34,7 @@ export function Dialog(props: {
 
   return createPortal(
     <div
+      data-component="Dialog"
       className={clsx(
         "modal-overlay fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[1px]",
         closing && "modal-overlay-out",

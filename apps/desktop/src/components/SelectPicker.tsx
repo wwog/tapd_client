@@ -6,6 +6,7 @@ import { Check, ChevronDown, Search } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
 import { t } from "../lib/i18n";
 import { computeMenuPosition, type MenuPosition } from "../lib/menuPosition";
+import { ScrollingName } from "./ScrollingName";
 
 export type SelectOption = {
   value: string;
@@ -128,7 +129,7 @@ export function SelectPicker(props: Props) {
   };
 
   return (
-    <div className={clsx("relative", className)}>
+    <div data-component="SelectPicker" className={clsx("relative", className)}>
       <button
         ref={anchorRef}
         type="button"
@@ -225,7 +226,7 @@ export function SelectPicker(props: Props) {
                         placeholder={
                           allowCustom ? t("common.picker.searchOrTypeModel") : t("common.search")
                         }
-                        className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+                        className="h-7 w-full rounded-md border border-border bg-slate-50 pl-6 pr-2 text-ui-xs text-slate-700 transition placeholder:text-slate-300 focus:bg-surface"
                       />
                     </div>
                   </div>
@@ -238,9 +239,10 @@ export function SelectPicker(props: Props) {
                       onClick={() => choose(custom)}
                       className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-50"
                     >
-                      <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
-                        {t("common.picker.useValue", { value: custom })}
-                      </span>
+                      <ScrollingName
+                        text={t("common.picker.useValue", { value: custom })}
+                        className="min-w-0 flex-1 text-ui-caption text-slate-700"
+                      />
                     </button>
                   ) : null}
 
@@ -269,18 +271,18 @@ export function SelectPicker(props: Props) {
                           )}
                         >
                           <span className="min-w-0 flex-1">
-                            <span
+                            <ScrollingName
+                              text={option.label}
                               className={clsx(
-                                "block truncate text-ui-caption",
+                                "text-ui-caption",
                                 active ? "text-sky-700" : "text-slate-700",
                               )}
-                            >
-                              {option.label}
-                            </span>
+                            />
                             {option.description ? (
-                              <span className="mt-0.5 block truncate text-ui-2xs text-slate-400">
-                                {option.description}
-                              </span>
+                              <ScrollingName
+                                text={option.description}
+                                className="mt-0.5 text-ui-2xs text-slate-400"
+                              />
                             ) : null}
                           </span>
                           <span className="grid h-3 w-3 shrink-0 place-items-center">
@@ -295,7 +297,7 @@ export function SelectPicker(props: Props) {
 
                   {shown.length === 0 && !custom ? (
                     <div className="px-2 py-3 text-center text-ui-xs text-slate-400">
-                      {t("agent.picker.noMatch")}
+                      {t("common.noMatch")}
                     </div>
                   ) : null}
                 </div>

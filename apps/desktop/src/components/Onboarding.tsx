@@ -34,7 +34,7 @@ type Props = {
 
 function NotificationArt() {
   return (
-    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-100 via-sky-50 to-surface p-3">
+    <div data-component="NotificationArt" className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-100 via-sky-50 to-surface p-3">
       <div className="absolute right-3 top-3 flex h-5 items-center gap-1 rounded-full bg-slate-900 px-2 text-[7px] text-slate-200 ">
         <span className="h-1 w-1 rounded-full bg-emerald-400" />
         {t("onboard.standby")}
@@ -62,7 +62,7 @@ function NotificationArt() {
 
 function FocusArt() {
   return (
-    <div className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 via-surface to-sky-50 p-2.5">
+    <div data-component="FocusArt" className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-emerald-50 via-surface to-sky-50 p-2.5">
       <div className="flex h-full gap-1.5 rounded-lg bg-surface p-1.5  border border-border/70">
         <div className="flex w-6 flex-col items-center gap-1 rounded-md bg-slate-50 py-1">
           <span className="h-2 w-2 rounded bg-sky-400" />
@@ -90,7 +90,7 @@ function FocusArt() {
 
 function FixArt() {
   return (
-    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-violet-50">
+    <div data-component="FixArt" className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-violet-50">
       <div className="absolute left-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-2xl bg-surface  border border-border">
         <div className="relative">
           <Bot size={26} className="text-slate-800" strokeWidth={1.8} />
@@ -117,7 +117,7 @@ function AgentArt() {
   ];
 
   return (
-    <div className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-slate-100 p-2.5">
+    <div data-component="AgentArt" className="h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-surface to-slate-100 p-2.5">
       <div className="flex h-full flex-col gap-1 rounded-lg border border-border bg-surface p-2">
         <div className="flex items-center gap-1 text-[7px] text-slate-500">
           <Bot size={9} className="text-sky-500" />
@@ -153,7 +153,7 @@ function CoworkerArt() {
   ];
 
   return (
-    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-amber-50 via-surface to-sky-50 p-2.5">
+    <div data-component="CoworkerArt" className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-amber-50 via-surface to-sky-50 p-2.5">
       <div className="flex h-full flex-col gap-1.5">
         <div className="flex items-center gap-1.5">
           {people.map((person, index) => (
@@ -193,7 +193,7 @@ function CoworkerArt() {
 
 function McpArt() {
   return (
-    <div className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 p-3 text-slate-200">
+    <div data-component="McpArt" className="relative h-[120px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 p-3 text-slate-200">
       <span className="absolute left-3 top-2.5 rounded bg-white/5 px-1.5 py-1 font-mono text-[7px] text-slate-300">
         {"{ }"}
       </span>
@@ -304,7 +304,7 @@ export function Onboarding({ info, onDone }: Props) {
   const last = step === 2;
 
   return (
-    <div className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-canvas text-slate-900">
+    <div data-component="Onboarding" className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-canvas text-slate-900">
       <header
         data-tauri-drag-region
         className="flex shrink-0 items-center gap-3 border-b border-border bg-surface pb-4 pl-[86px] pr-6 pt-5"
@@ -318,7 +318,7 @@ export function Onboarding({ info, onDone }: Props) {
           />
         </div>
         <div className="pointer-events-none min-w-0 flex-1">
-          <div className="text-ui-2xs uppercase tracking-[0.16em] text-sky-600/70">
+          <div className="text-ui-2xs text-sky-600/70">
             TAPD Client · V{info.version}
           </div>
           <h1 className="truncate text-[19px] font-normal tracking-tight text-slate-900">
@@ -353,7 +353,7 @@ export function Onboarding({ info, onDone }: Props) {
           ) : null}
 
           {step === 1 ? (
-            <div className="mx-auto w-full max-w-4xl space-y-4">
+            <div className="mx-auto w-full max-w-4xl space-y-3">
               <section className={cardClass}>
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="min-w-0 max-w-[260px]">

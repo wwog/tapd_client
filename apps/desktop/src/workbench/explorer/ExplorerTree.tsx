@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 
+import { ScrollingName } from "../../components/ScrollingName";
 import type { FsEntry } from "../../lib/fs";
 import { t } from "../../lib/i18n";
 import { visualKindForPath } from "./language";
@@ -91,6 +92,7 @@ export function ExplorerTree(props: Props) {
 
   return (
     <div
+      data-component="ExplorerTree"
       ref={containerRef}
       role="tree"
       aria-label={t("explorer.title")}
@@ -182,9 +184,7 @@ export function ExplorerTree(props: Props) {
               <span className="h-4 w-4 shrink-0" />
             )}
             <EntryIcon entry={entry} expanded={isExpanded} />
-            <span className="min-w-0 flex-1 truncate" title={entry.name}>
-              {entry.name}
-            </span>
+            <ScrollingName text={entry.name} className="min-w-0 flex-1" />
           </div>
         );
       })}

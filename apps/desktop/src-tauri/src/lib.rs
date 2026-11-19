@@ -1,11 +1,11 @@
-mod agent;
-mod agent_scan;
+mod agent_settings;
 mod bug_write;
 mod cache;
 mod commands;
 mod companion;
 mod coworker;
 mod diagnostics;
+mod dsh;
 mod export;
 mod feature_router;
 mod fs;
@@ -20,12 +20,12 @@ mod media_cache;
 mod notification;
 mod notification_db;
 mod open_with;
+mod pty_util;
 mod reset;
 mod server;
 mod session;
 mod shell_path;
 mod state;
-mod task_changes;
 mod terminal;
 mod update;
 mod window_state;
@@ -99,6 +99,21 @@ pub fn run() {
             commands::reset_onboarding,
             commands::mcp_policy_get,
             commands::mcp_policy_set,
+            agent_settings::agent_settings_get,
+            agent_settings::agent_settings_set,
+            agent_settings::agent_model_default_set,
+            dsh::commands::dsh_prepare,
+            dsh::commands::dsh_status,
+            dsh::commands::dsh_start,
+            dsh::commands::dsh_stop,
+            dsh::commands::dsh_sessions,
+            dsh::commands::dsh_session_entries,
+            dsh::commands::dsh_pending,
+            dsh::commands::dsh_prompt,
+            dsh::commands::dsh_select_model,
+            dsh::commands::dsh_file_target,
+            dsh::commands::dsh_approval_answer,
+            dsh::commands::dsh_question_answer,
             commands::mcp_audit_list,
             commands::mcp_audit_clear,
             commands::mcp_audit_export,
@@ -114,9 +129,12 @@ pub fn run() {
             commands::capture_export,
             commands::clear_app_data,
             commands::open_path,
+            commands::reveal_path,
+            commands::image_data_url,
             commands::open_file,
             commands::open_directory,
             commands::open_media,
+            commands::open_url,
             commands::media_endpoint,
             commands::list_dirs,
             fs::fs_list,
@@ -146,12 +164,40 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let state = setup_state.clone();
+            app.manage(std::sync::Arc::new(dsh::runtime::RuntimeState::default()));
+            // Normalized transcript + plugin socket; owned here so commands and
+            // the runtime share one registry.
+            app.manage(std::sync::Arc::new(dsh::bridge::BridgeState::default()));
 
             let server_state = state.clone();
             let server_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = server::run(server_handle, server_state).await {
                     tracing::error!(%error, "local API server stopped");
+                }
+            });
+
+            // The built-in agent is a service, not a session: one child process
+            // serves every conversation, starts with the app and dies with it.
+            // Nothing in the UI asks the user to start it; a missing model or
+            // payload is reported where it can be fixed.
+            let agent_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // Debug builds inject the fake provider while loading settings,
+                // and that entry needs the local API port. Starting before the
+                // server binds would silently fall back to another provider.
+                #[cfg(debug_assertions)]
+                for _ in 0..100 {
+                    if dsh::test_agent::port().is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                match dsh::feature::start(&agent_handle).await {
+                    Ok(status) => {
+                        tracing::info!(phase = ?status.phase, "built-in agent runtime started")
+                    }
+                    Err(error) => tracing::warn!(%error, "built-in agent runtime did not start"),
                 }
             });
 
@@ -189,7 +235,6 @@ pub fn run() {
             window_state::install(&handle, &state);
 
             notification::init(&handle, state.clone());
-            agent::init(&handle, state.clone());
             terminal::init(&handle);
             // Check GitHub Releases shortly after launch, then every two hours.
             update::init(&handle, state.clone());
@@ -201,10 +246,15 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::Exit => {
-                // The agent TUI/serve run in their own sessions, so they must be
-                // stopped explicitly or they keep working after the app is gone.
-                agent::shutdown(app);
-                // Terminal shells are in their own sessions too.
+                // The built-in runtime and terminal shells live in their own
+                // sessions, so they must be stopped explicitly.
+                if let Some(dsh) = app.try_state::<Arc<dsh::runtime::RuntimeState>>() {
+                    let dsh = dsh.inner().clone();
+                    let app = app.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let _ = dsh.stop(&app).await;
+                    });
+                }
                 terminal::shutdown(app);
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     // Persist the final geometry before the config file goes away.

@@ -41,6 +41,81 @@ fn default_eval_timeout() -> u64 {
     15
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DshRequest {
+    action: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Debug-only driver for the built-in agent runtime: payload → start → prompt.
+/// Keeps the whole host path testable with `curl` instead of the UI.
+pub(super) async fn dev_dsh(
+    State(ctx): State<ApiState>,
+    headers: HeaderMap,
+    Json(request): Json<DshRequest>,
+) -> (StatusCode, Json<Value>) {
+    if !authorized(&ctx.state, &headers) {
+        return unauthorized();
+    }
+    let Some(runtime) = ctx.app.try_state::<std::sync::Arc<crate::dsh::runtime::RuntimeState>>()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ok": false, "error": "dsh state unavailable" })),
+        );
+    };
+    let runtime = runtime.inner().clone();
+
+    let result: Result<Value, String> = match request.action.as_str() {
+        "payload" => crate::dsh::payload::status(&ctx.app).and_then(|status| {
+            serde_json::to_value(status).map_err(|error| error.to_string())
+        }),
+        "prepare" => tauri::async_runtime::spawn_blocking({
+            let app = ctx.app.clone();
+            move || crate::dsh::payload::ensure_payload(&app)
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result)
+        .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string())),
+        "status" => serde_json::to_value(runtime.status()).map_err(|error| error.to_string()),
+        "start" => runtime
+            .ensure_ready(&ctx.app)
+            .await
+            .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string())),
+        "stop" => runtime
+            .stop(&ctx.app)
+            .await
+            .map(|_| json!({ "stopped": true })),
+        "prompt" => match (request.session_id, request.text) {
+            (Some(session_id), Some(text)) => {
+                if let Err(error) = runtime.ensure_ready(&ctx.app).await {
+                    Err(error)
+                } else {
+                    runtime
+                        .query(&ctx.app, &session_id, &text)
+                        .await
+                        .map(|receipt| json!({ "sessionId": session_id, "receipt": receipt }))
+                }
+            }
+            _ => Err("sessionId and text are required".to_string()),
+        },
+        other => Err(format!("unknown dsh action: {other}")),
+    };
+
+    match result {
+        Ok(value) => (StatusCode::OK, Json(json!({ "ok": true, "data": value }))),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+    }
+}
+
 /// Token-protected entry point for testing feature commands without the UI.
 pub(super) async fn dev_feature(
     State(ctx): State<ApiState>,

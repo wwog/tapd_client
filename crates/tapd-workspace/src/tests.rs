@@ -308,6 +308,25 @@ fn untracked_file_diff_comes_from_no_index() {
 }
 
 #[test]
+fn whole_tree_diff_includes_untracked_files() {
+    let temp = TempDir::new("untracked-all");
+    let repo = init_repo(&temp.path);
+    write(&repo, "base.txt", b"base\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    write(&repo, "new.txt", b"fresh line\n");
+    write(&repo, "sub/other.txt", b"other\n");
+
+    let workspace = workspace(&repo, &repo, None, Some(&baseline), Vec::new());
+    let diff = workspace.diff(None).unwrap();
+
+    // The review must show what `summary()` counts: two untracked files.
+    assert!(diff.text.contains("+fresh line"), "{}", diff.text);
+    assert!(diff.text.contains("+other"), "{}", diff.text);
+    assert!(!diff.empty);
+}
+
+#[test]
 fn clean_working_tree_has_an_empty_diff() {
     let temp = TempDir::new("clean");
     let repo = init_repo(&temp.path);

@@ -2,18 +2,16 @@
  * Local-only projects and their work items.
  *
  * These never touch TAPD: a local project is a folder on disk plus a three-state
- * item list (待处理 / 处理中 / 已完成), and any item can be handed to an Agent. The
- * commands are routed through the same `feature_command` surface as the Agent
- * and notification modules.
+ * item list (待处理 / 处理中 / 已完成). Commands are routed through the same
+ * `feature_command` surface as the notification module.
  */
-import type { AgentTask } from "./agent";
 import { featureCommand } from "./feature";
 
 export type LocalProject = {
   id: string;
   name: string;
   repoPath: string;
-  /** Appended to Agent prompts for tasks handed over from this project. */
+  /** Appended to agent prompts for tasks handed over from this project. */
   rule: string;
   createdAt: string;
   updatedAt: string;
@@ -28,8 +26,6 @@ export type WorkItem = {
   title: string;
   description: string;
   status: WorkItemStatus;
-  /** The Agent task this item was last handed to, if any. */
-  agentTaskId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -58,13 +54,14 @@ export type WorkItemPatch = {
   status?: WorkItemStatus;
 };
 
-/** Per-task Agent options, mirroring the compose sheet. */
-export type WorkItemEnqueue = {
-  extraPrompt?: string | null;
-  attachments?: string[];
-  runtimeId?: string | null;
-  model?: string | null;
-  permissionMode?: string | null;
+/** Tauri event emitted when a task changes an item's status or task link. */
+export const LOCAL_ITEMS_EVENT = "local://items";
+
+export type LocalItemsEvent = {
+  /** Missing means every open project page should refresh. */
+  projectId?: string | null;
+  itemId?: string;
+  status?: WorkItemStatus;
 };
 
 export const localApi = {
@@ -90,10 +87,4 @@ export const localApi = {
     featureCommand<{ item: WorkItem }>("local_item_update", { id, ...patch }),
   deleteItem: (id: string) =>
     featureCommand<{ deleted: boolean }>("local_item_delete", { id }),
-  /** Hands one item to an Agent and links the created task back to it. */
-  enqueueItem: (id: string, options: WorkItemEnqueue = {}) =>
-    featureCommand<{ task: AgentTask; item: WorkItem }>("local_item_enqueue", {
-      id,
-      ...options,
-    }),
 };

@@ -66,6 +66,11 @@ export const settings = {
   ],
   "settings.capsule.always": ["常驻", "Always"],
   "settings.capsule.activity": ["仅通知", "Alerts only"],
+  "settings.capsule.opacity": ["胶囊透明度", "Capsule opacity"],
+  "settings.capsule.opacityTooltip": [
+    "胶囊与通知卡的不透明度。越低越透，能看见后面的桌面；低到一定程度文字对比会变弱。",
+    "Opacity of the capsule and its cards. Lower shows more of the desktop behind it; very low values weaken contrast.",
+  ],
 
   // New bug notifications
   "settings.notify.title": ["新缺陷通知", "New bug notifications"],
@@ -441,8 +446,6 @@ export const settings = {
 
   // Account
   "settings.account.title": ["账户与会话", "Account & sessions"],
-  "settings.account.signedIn": ["已登录", "Signed in"],
-  "settings.account.signedOut": ["未登录", "Signed out"],
   "settings.account.refreshTooltip": [
     "重新读取当前用户与会话状态",
     "Re-read the current user and session",
@@ -493,6 +496,24 @@ export const settings = {
     "Set the local repository for this TAPD project; the agent uses it as its working directory and MCP matches the AI's root directory to it.",
   ],
 
+  // Worktrees the agent created (project settings)
+  "settings.worktrees.title": ["Worktree", "Worktrees"],
+  "settings.worktrees.hint": [
+    "任务用独立 worktree 隔离改动。删除会话会一起清理它自己的 worktree，这里列出的都是仍然占着目录的，可以随时打开或删掉。",
+    "Tasks isolate their changes in a worktree. Deleting a session removes its own; anything listed here still occupies a directory and can be opened or removed.",
+  ],
+  "settings.worktrees.root": ["默认目标目录", "Default target folder"],
+  "settings.worktrees.openRoot": ["打开目录", "Open folder"],
+  "settings.worktrees.open": ["打开这个 worktree", "Open this worktree"],
+  "settings.worktrees.remove": ["删除这个 worktree", "Remove this worktree"],
+  "settings.worktrees.orphan": ["残留", "Left over"],
+  "settings.worktrees.empty": ["还没有 worktree", "No worktrees yet"],
+  "settings.worktrees.removeHint": [
+    "删除「{title}」的 worktree？里面未提交的改动会丢失，仓库本身不受影响。",
+    "Remove the worktree for “{title}”? Uncommitted changes in it are lost; the repository is untouched.",
+  ],
+  "settings.worktrees.removeFailed": ["删除 worktree 失败：{error}", "Could not remove the worktree: {error}"],
+
   // Project sidebar
   "settings.sidebar.reading": ["正在读取项目…", "Loading projects…"],
   "settings.sidebar.allHidden": [
@@ -509,18 +530,4 @@ export const settings = {
   "settings.sidebar.manage": ["管理项目", "Manage projects"],
 
   // Recovery banner
-  "settings.recovery.requeued": ["{n} 个已重新排队", ({ n }) => `${n} requeued`],
-  "settings.recovery.review": ["{n} 个待审核", ({ n }) => `${n} awaiting review`],
-  "settings.recovery.merge": ["{n} 个待合并", ({ n }) => `${n} awaiting merge`],
-  "settings.recovery.failed": ["{n} 个失败", ({ n }) => `${n} failed`],
-  "settings.recovery.summary": [
-    "已恢复 {total} 个任务：{details}。",
-    ({ total, details }) =>
-      `Restored ${total} task${Number(total) === 1 ? "" : "s"}: ${details}.`,
-  ],
-  "settings.recovery.paused": [
-    "队列已暂停，可到 Agent 页继续。",
-    "The queue is paused; resume it on the Agent page.",
-  ],
-  "settings.recovery.viewTasks": ["查看任务", "View tasks"],
 } as const satisfies Catalog;

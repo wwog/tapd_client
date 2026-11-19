@@ -241,7 +241,7 @@ export function BugTransitionDialog(props: Props) {
 
 function TransitionError({ text }: { text: string }) {
   return (
-    <div className="break-all rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-ui-caption leading-5 text-rose-700">
+    <div data-component="TransitionError" className="break-all rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-ui-caption leading-5 text-rose-700">
       {text}
     </div>
   );
@@ -264,6 +264,7 @@ function TransitionField(props: {
 
   return (
     <label
+      data-component="TransitionField"
       className={clsx(
         "block min-w-0",
         htmlType === "textarea" && "sm:col-span-2",
@@ -388,6 +389,7 @@ function UserChooserField(props: {
   if (multiple) {
     return (
       <input
+        data-component="UserChooserField"
         type="text"
         value={value}
         disabled={disabled}
@@ -409,6 +411,7 @@ function UserChooserField(props: {
 
   return (
     <select
+      data-component="UserChooserField"
       value={current}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}

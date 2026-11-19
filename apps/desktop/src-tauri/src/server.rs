@@ -2,18 +2,18 @@
 //!
 //! The server binds an ephemeral port on `127.0.0.1` and publishes it (plus a
 //! bearer token) through the runtime file. Routes:
-//! - `/healthz`, `/mcp/call`, `/agent/hook`, `/media`, `/file` — shipped.
-//! - `/dev/*` — debug builds only (`dev` module).
+//! - `/healthz`, `/mcp/call`, `/media`, `/file` — shipped.
+//! - `/dev/*` — debug builds only (`dev` module for the hidden session webview,
+//!   `dev_ui` for the app's own UI window).
 
 mod auth;
 #[cfg(debug_assertions)]
 mod dev;
+#[cfg(debug_assertions)]
+mod dev_ui;
 mod proxy;
 
-use std::collections::HashMap;
-
 use axum::{
-    body::Bytes,
     extract::{Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -61,6 +61,9 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
     *state.runtime.lock().expect("runtime lock") = Some(runtime);
 
     tracing::info!(port = address.port(), "local API listening");
+    // Debug builds expose the fake model provider on this port.
+    #[cfg(debug_assertions)]
+    crate::dsh::test_agent::set_port(address.port());
 
     let api_state = ApiState {
         app,
@@ -70,7 +73,6 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
     let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/mcp/call", post(mcp_call))
-        .route("/agent/hook", post(agent_hook))
         .route("/media", get(proxy::media_proxy))
         .route("/file", get(file_proxy));
 
@@ -83,8 +85,21 @@ pub async fn run(app: AppHandle, state: SharedState) -> Result<(), String> {
         .route("/dev/cookies", get(dev::dev_cookies))
         .route("/dev/export", post(dev::dev_export))
         .route("/dev/feature", post(dev::dev_feature))
+        .route("/dev/dsh", post(dev::dev_dsh))
         .route("/dev/companion", get(dev::dev_companion))
-        .route("/dev/companion/pairing", post(dev::dev_companion_pairing));
+        .route("/dev/companion/pairing", post(dev::dev_companion_pairing))
+        // Debug-only bridge into the app's own UI window: evaluate JS, read the
+        // console and capture PNGs without driving the OS.
+        .route("/dev/ui/eval", post(dev_ui::dev_ui_eval))
+        .route("/dev/ui/call", post(dev_ui::dev_ui_call))
+        .route("/dev/ui/console", get(dev_ui::dev_ui_console))
+        .route("/dev/ui/snapshot", post(dev_ui::dev_ui_snapshot))
+        .route("/dev/ui/snapshot.png", get(dev_ui::dev_ui_snapshot_png))
+        // Fake model provider for the built-in agent; debug builds only.
+        .route(
+            "/test-agent/v1/chat/completions",
+            post(crate::dsh::test_agent::completions),
+        );
 
     let router = router.with_state(api_state);
 
@@ -133,88 +148,6 @@ async fn mcp_call(
             Json(json!({ "ok": false, "error": error })),
         ),
     }
-}
-
-/// Agent 原生 hook 的入口。
-///
-/// 客户端脚本用 `application/x-www-form-urlencoded` 提交，避免在 shell 里
-/// 拼 JSON。鉴权用任务级 `X-Tapd-Hook-Token`，与主 API 的 bearer token 隔离。
-async fn agent_hook(
-    State(ctx): State<ApiState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    let token = headers
-        .get("x-tapd-hook-token")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    let form = parse_hook_form(&body);
-    let task_id = form.get("taskId").map(String::as_str).unwrap_or_default();
-    if token.is_empty() || task_id.is_empty() {
-        return unauthorized();
-    }
-    let event = form
-        .get("event")
-        .map(String::as_str)
-        .filter(|event| !event.is_empty())
-        .unwrap_or("agent_end");
-    let payload = form
-        .get("payload")
-        .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
-    let session_id = form
-        .get("sessionId")
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            payload
-                .as_ref()
-                .and_then(crate::agent::extract_hook_session_id)
-        });
-    let will_continue = form.get("willContinue").is_some_and(|value| value == "true");
-    let awaiting_async_work = form
-        .get("awaitingAsyncWork")
-        .is_some_and(|value| value == "true");
-
-    let report = crate::agent::HookReport {
-        token: token.to_string(),
-        task_id: task_id.to_string(),
-        event: event.to_string(),
-        session_id,
-        payload,
-        will_continue,
-        awaiting_async_work,
-    };
-    match crate::agent::handle_session_hook(&ctx.app, report) {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
-        Err(crate::agent::HookError::Unauthorized) => unauthorized(),
-        Err(crate::agent::HookError::UnknownTask) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "ok": false, "error": "unknown task" })),
-        ),
-        Err(crate::agent::HookError::Internal) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "ok": false, "error": "hook unavailable" })),
-        ),
-    }
-}
-
-/// 解析 `application/x-www-form-urlencoded`。curl 的 `--data-urlencode`
-/// 用 `+` 表示空格，percent-decoding 前先还原。
-fn parse_hook_form(body: &[u8]) -> HashMap<String, String> {
-    let text = String::from_utf8_lossy(body);
-    text.split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (decode_form(key), decode_form(value)))
-        .collect()
-}
-
-fn decode_form(value: &str) -> String {
-    let normalized = value.replace('+', " ");
-    percent_encoding::percent_decode_str(&normalized)
-        .decode_utf8_lossy()
-        .into_owned()
 }
 
 /// Two concatenated v4 UUIDs: 64 hex characters of unpredictable token.
@@ -416,7 +349,7 @@ fn file_error(status: StatusCode, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_stream_response, parse_hook_form, parse_single_range};
+    use super::{file_stream_response, parse_single_range};
     use axum::http::{header, StatusCode};
 
     #[test]
@@ -452,31 +385,5 @@ mod tests {
             "bytes 2-4/10"
         );
         assert_eq!(partial.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
-    }
-
-    #[test]
-    fn parses_url_encoded_hook_payloads() {
-        // curl --data-urlencode 会把空格写成 +、引号和换行写成 %XX。
-        let body = b"taskId=task-1&event=agent_end&sessionId=abc&payload=%7B%22session_id%22%3A%22abc%22%7D&willContinue=false";
-        let form = parse_hook_form(body);
-
-        assert_eq!(form.get("taskId").map(String::as_str), Some("task-1"));
-        assert_eq!(form.get("event").map(String::as_str), Some("agent_end"));
-        assert_eq!(form.get("sessionId").map(String::as_str), Some("abc"));
-        assert_eq!(
-            form.get("payload").map(String::as_str),
-            Some(r#"{"session_id":"abc"}"#)
-        );
-        assert_eq!(form.get("willContinue").map(String::as_str), Some("false"));
-    }
-
-    #[test]
-    fn form_decoding_restores_spaces_and_ignores_empty_pairs() {
-        let body = b"a=hello+world&b=&broken";
-        let form = parse_hook_form(body);
-
-        assert_eq!(form.get("a").map(String::as_str), Some("hello world"));
-        assert_eq!(form.get("b").map(String::as_str), Some(""));
-        assert!(!form.contains_key("broken"));
     }
 }

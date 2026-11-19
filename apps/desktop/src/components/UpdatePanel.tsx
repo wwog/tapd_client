@@ -217,6 +217,7 @@ export function UpdatePanel({ toast }: Props) {
 
   return (
     <section
+      data-component="UpdatePanel"
       className={clsx(cardClass, phase === "available" && "border-sky-200")}
     >
       {body}

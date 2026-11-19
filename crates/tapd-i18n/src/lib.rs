@@ -39,6 +39,8 @@ const BUCKETS: &[&[Message]] = &[
     catalog::terminal::MESSAGES,
     catalog::app::MESSAGES,
     catalog::misc::MESSAGES,
+    catalog::dsh_policy::MESSAGES,
+    catalog::dsh_task::MESSAGES,
 ];
 
 mod catalog;

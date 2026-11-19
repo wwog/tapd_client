@@ -270,17 +270,17 @@ test("project pages open as tabs beside each other; global pages share one", () 
 
   // Global navigation only ever owns one tab.
   layout = openPage(layout, "settings");
-  layout = openPage(layout, "agent");
+  layout = openPage(layout, "coworker");
   primary = findRoleGroup(layout.root, "primary")!;
   const globals = primary.panels.filter(
     (panel) => panel.resource.type === "page" && !panel.resource.projectId,
   );
-  assert.deepEqual(globals.map((panel) => panel.id), ["page:agent"]);
+  assert.deepEqual(globals.map((panel) => panel.id), ["page:coworker"]);
 
   // Project tabs are closable; the global navigation tab is not.
   layout = closePanel(layout, panelId.page("bugs", "ws-2"));
   assert.equal(findPanel(layout.root, panelId.page("bugs", "ws-2")), null);
-  assert.equal(closePanel(layout, panelId.page("agent")), layout);
+  assert.equal(closePanel(layout, panelId.page("coworker")), layout);
 });
 
 test("a project page in front keeps no shared navigation tab", () => {
@@ -294,11 +294,11 @@ test("a project page in front keeps no shared navigation tab", () => {
   );
 
   // A navigation page still gets its single tab while it is visible.
-  layout = openPage(layout, "agent");
+  layout = openPage(layout, "coworker");
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:bugs:ws-1", "page:agent"],
+    ["page:bugs:ws-1", "page:coworker"],
   );
 
   // Going back to the project tab drops it again.
@@ -330,7 +330,7 @@ test("normalize keeps every project page in primary and one global page", () => 
   const projectA = makePanel({ type: "page", view: "bugs", projectId: "ws-1" });
   const settings = makePanel({ type: "page", view: "settings" });
   const projectB = makePanel({ type: "page", view: "local", projectId: "local-1" });
-  const agent = makePanel({ type: "page", view: "agent" });
+  const coworker = makePanel({ type: "page", view: "coworker" });
 
   const layout: LayoutState = {
     version: 1,
@@ -340,7 +340,7 @@ test("normalize keeps every project page in primary and one global page", () => 
       direction: "row",
       children: [
         createGroup("primary"),
-        createGroup("secondary", [projectA, settings, projectB, agent]),
+        createGroup("secondary", [projectA, settings, projectB, coworker]),
       ],
       sizes: [0.66, 0.34],
     },
@@ -823,12 +823,25 @@ test("persistence round-trips a normalized layout", () => {
     version: 1 as const,
     layout: defaultLayout(),
     sidebarWidth: 208,
+    sidebarCollapsed: true,
   };
   savePrefs(prefs);
   const loaded = loadPrefs();
   assert.ok(loaded);
   assert.deepEqual(loaded.layout, prefs.layout);
   assert.equal(loaded.sidebarWidth, 208);
+  assert.equal(loaded.sidebarCollapsed, true);
+});
+
+test("loadPrefs defaults the collapse flag on envelopes that predate it", () => {
+  writePref(LAYOUT_PREF, {
+    version: 1,
+    layout: defaultLayout(),
+    sidebarWidth: 200,
+  });
+  const loaded = loadPrefs();
+  assert.ok(loaded);
+  assert.equal(loaded.sidebarCollapsed, false);
 });
 
 test("loadPrefs keeps valid panels and drops unknown ones", () => {

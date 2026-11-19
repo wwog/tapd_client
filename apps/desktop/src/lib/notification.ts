@@ -28,12 +28,16 @@ export type AiAction = {
   id: string;
   label: string;
   style?: AiActionStyle;
+  /** Hint shown under the label; the label itself never wraps. */
+  description?: string;
 };
 
 export type AiResolution = {
   kind: "action" | "dismissed" | "replaced" | string;
   actionId?: string;
   actionLabel?: string;
+  /** Free text typed into the card's answer field (no action picked). */
+  value?: string;
   at: string;
 };
 
@@ -43,6 +47,10 @@ export type AiPayload = {
   client: string;
   blocks: AiBlock[];
   actions: AiAction[];
+  /** List the actions one per row (question options) instead of one row. */
+  stackActions?: boolean;
+  /** The card ends with a free-text answer field ("other answer"). */
+  allowCustom?: boolean;
   tag?: string | null;
   resolution?: AiResolution | null;
 };
@@ -108,6 +116,12 @@ export type NotificationHandleResult = {
   transitioned: boolean;
 };
 
+/** Result of 修复: the enqueued workflow task (null if the reply carried none). */
+export type NotificationFixResult = {
+  ok: boolean;
+  task: { id: string; workflow: string } | null;
+};
+
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
   scope: "mine",
@@ -143,6 +157,9 @@ export const notificationApi = {
   state: () => featureCommand<NotificationStateSnapshot>("notification_state_get"),
   handle: (notificationId: string) =>
     featureCommand<NotificationHandleResult>("notification_handle", { notificationId }),
+  /** 用 Agent 修复: enqueue a workflow task for this bug, then open it. */
+  fix: (notificationId: string) =>
+    featureCommand<NotificationFixResult>("notification_fix_bug", { notificationId }),
   view: (notificationId: string) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_view", {
       notificationId,
@@ -153,11 +170,13 @@ export const notificationApi = {
     }),
   simulate: (payload: { title?: string; bugId?: string; kind?: NotificationKind } = {}) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_simulate", payload),
-  /** Reports the user's choice on an AI card back to the waiting MCP call. */
-  aiAction: (notificationId: string, actionId: string) =>
+  /** Reports the user's choice on an AI card back to the waiting MCP call.
+   *  A free-text answer sends the text instead of an action id. */
+  aiAction: (notificationId: string, actionId: string | null, value?: string) =>
     featureCommand<{ ok: boolean; item: NotificationItem }>("notification_ai_action", {
       notificationId,
-      actionId,
+      ...(actionId ? { actionId } : {}),
+      ...(value ? { value } : {}),
     }),
   /** Raises a card from the settings debug panel (works even when AI is off). */
   aiDebug: (payload: {
@@ -190,6 +209,13 @@ export const notificationApi = {
     featureCommand<{ ok: boolean }>("notification_open_bug", { workspaceId, bugId }),
   /** Starts an OS window drag; the Rust side persists the final position. */
   startDrag: () => featureCommand<{ ok: boolean }>("notification_start_drag"),
+  /** Lends the capsule the keyboard while its answer field is focused; with
+   *  `restore` the previous app gets it back once the answer is sent. */
+  setAnswerFocus: (active: boolean, restore = false) =>
+    featureCommand<{ ok: boolean }>("notification_island_answer_focus", {
+      active,
+      restore,
+    }),
 };
 
 /** Subscribes to the pending list pushed by the Rust window manager. */
@@ -211,17 +237,6 @@ export const onIslandLayout = (
   callback: (layout: IslandLayout) => void,
 ): Promise<UnlistenFn> =>
   listen<IslandLayout>("island://layout", (event) => callback(event.payload));
-
-/**
- * Pointer enter/exit of the capsule, tracked by AppKit: the window never
- * becomes the key window, and WebKit only reports hover to that one.
- */
-export const onIslandHover = (
-  callback: (active: boolean) => void,
-): Promise<UnlistenFn> =>
-  listen<{ active: boolean }>("island://hover", (event) =>
-    callback(Boolean(event.payload?.active)),
-  );
 
 export const pendingItems = (items: NotificationItem[]): NotificationItem[] =>
   items.filter((item) => item.state === "pending");

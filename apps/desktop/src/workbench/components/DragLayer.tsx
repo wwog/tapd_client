@@ -36,6 +36,7 @@ const DROP_LABELS: Record<DropZone, MessageKey> = {
 export function DragGhost({ drag }: { drag: TabDrag }) {
   return (
     <div
+      data-component="DragGhost"
       className="pointer-events-none fixed z-50 flex max-w-64 items-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700"
       style={{ left: drag.x + 12, top: drag.y + 12 }}
     >
@@ -69,6 +70,7 @@ export function DropOverlay({ drop }: { drop: TabDrop }) {
 
   return (
     <div
+      data-component="DropOverlay"
       aria-hidden
       className={clsx(
         "pointer-events-none fixed z-50 rounded-lg border border-sky-300 bg-sky-400/10",

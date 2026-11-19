@@ -16,12 +16,20 @@ import clsx from "clsx";
 import { mediaSrc } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { t } from "../lib/i18n";
+import { ScrollingName } from "./ScrollingName";
 
 export type PreviewItem = {
+  /** Proxy URL or the raw resource URL; `src` wins when both are present. */
   url: string;
   kind: "image" | "video";
   label: string;
   size?: number;
+  /**
+   * A renderable URL (`blob:`, `data:`, loopback `/file?...`). TAPD resources
+   * leave it empty and ride the loopback media proxy, while local images that
+   * were already resolved pass their source here.
+   */
+  src?: string;
 };
 
 type Props = {
@@ -29,7 +37,8 @@ type Props = {
   index: number;
   onIndexChange: (index: number) => void;
   onClose: () => void;
-  onOpenExternal: (url: string, mode: "file" | "browser") => void;
+  /** Absent for local images: there is no remote URL to hand to an app. */
+  onOpenExternal?: (url: string, mode: "file" | "browser") => void;
 };
 
 const MIN_ZOOM = 0.2;
@@ -185,7 +194,7 @@ export function MediaPreview(props: Props) {
 
   if (!current) return null;
 
-  const source = mediaSrc(current.url);
+  const source = current.src ?? mediaSrc(current.url);
 
   // Zoom is relative to "fits the stage": 100% always shows the whole resource.
   const fit =
@@ -201,15 +210,13 @@ export function MediaPreview(props: Props) {
     : null;
 
   return createPortal(
-    <div className="theme-static-dark fixed inset-0 z-[60] flex flex-col bg-slate-950/95 text-slate-100">
+    <div data-component="MediaPreview" className="theme-static-dark fixed inset-0 z-[60] flex flex-col bg-slate-950/95 text-slate-100">
       <header
         data-tauri-drag-region
         className="relative flex shrink-0 items-center justify-center border-b border-white/10 px-4 py-2.5"
       >
         <div data-tauri-drag-region className="min-w-0 max-w-[min(60%,34rem)] text-center">
-          <div className="truncate text-ui-caption font-normal" title={current.label}>
-            {current.label}
-          </div>
+          <ScrollingName text={current.label} className="text-ui-caption font-normal" />
           <div className="text-ui-xs text-slate-400">
             {index + 1} / {items.length}
             {current.size ? ` · ${formatBytes(current.size)}` : ""}
@@ -234,18 +241,22 @@ export function MediaPreview(props: Props) {
               </IconButton>
             </>
           ) : null}
-          <IconButton
-            label={t("media.openWithApp")}
-            onClick={() => onOpenExternal(current.url, "file")}
-          >
-            <ExternalLink size={15} />
-          </IconButton>
-          <IconButton
-            label={t("media.openInBrowser")}
-            onClick={() => onOpenExternal(current.url, "browser")}
-          >
-            <Globe size={15} />
-          </IconButton>
+          {onOpenExternal ? (
+            <>
+              <IconButton
+                label={t("media.openWithApp")}
+                onClick={() => onOpenExternal(current.url, "file")}
+              >
+                <ExternalLink size={15} />
+              </IconButton>
+              <IconButton
+                label={t("media.openInBrowser")}
+                onClick={() => onOpenExternal(current.url, "browser")}
+              >
+                <Globe size={15} />
+              </IconButton>
+            </>
+          ) : null}
           <IconButton label={t("media.closePreview")} onClick={onClose}>
             <X size={17} />
           </IconButton>
@@ -356,9 +367,9 @@ export function MediaPreview(props: Props) {
                   : "border-transparent opacity-60 hover:opacity-100",
               )}
             >
-              {item.kind === "image" && mediaSrc(item.url) ? (
+              {item.kind === "image" && (item.src ?? mediaSrc(item.url)) ? (
                 <img
-                  src={mediaSrc(item.url)}
+                  src={(item.src ?? mediaSrc(item.url))!}
                   alt={item.label}
                   loading="lazy"
                   className="h-full w-full object-cover"
@@ -384,6 +395,7 @@ function IconButton(props: {
 }) {
   return (
     <button
+      data-component="IconButton"
       type="button"
       aria-label={props.label}
       title={props.label}
@@ -397,7 +409,7 @@ function IconButton(props: {
 
 function Hint(props: { text: string }) {
   return (
-    <div className="m-auto rounded-xl border border-dashed border-white/20 px-4 py-6 text-ui-caption text-slate-400">
+    <div data-component="Hint" className="m-auto rounded-xl border border-dashed border-white/20 px-4 py-6 text-ui-caption text-slate-400">
       {props.text}
     </div>
   );

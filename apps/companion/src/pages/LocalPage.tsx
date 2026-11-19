@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
-  Bot,
   ChevronRight,
   CircleCheck,
   Folder,
   FolderPlus,
-  LoaderCircle,
   Pencil,
   Plus,
   RotateCcw,
@@ -15,16 +13,12 @@ import {
 } from "lucide-react";
 
 import {
-  AGENT_STATUS_LABELS,
-  AGENT_STATUS_TONES,
   api,
   asApiError,
-  type AgentRuntimeDescriptor,
   type LocalProject,
   type WorkItem,
   type WorkItemStatus,
 } from "../lib/api";
-import { refreshAgentTasks, useAgentTasks } from "../lib/agentTasks";
 import { relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
@@ -98,6 +92,7 @@ function SheetAction(props: {
   const Icon = props.icon;
   return (
     <button
+      data-component="SheetAction"
       type="button"
       disabled={props.disabled}
       onClick={props.onClick}
@@ -115,11 +110,11 @@ const primaryButton =
   "min-h-11 w-full rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50";
 
 const textField =
-  "mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 transition placeholder:text-slate-400";
 
 function ItemsSkeleton() {
   return (
-    <div aria-hidden="true">
+    <div data-component="ItemsSkeleton" aria-hidden="true">
       {[0, 1, 2, 3].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-3/4 animate-pulse rounded bg-overlay-soft" />
@@ -132,12 +127,9 @@ function ItemsSkeleton() {
 
 /**
  * 事项 tab: local projects on the desktop machine and their work items.
- * Nothing here touches TAPD — a project is a folder, an item is a note, and
- * handing it to the Agent enqueues the same task pipeline a bug would.
+ * Nothing here touches TAPD — a project is a folder, an item is a note.
  */
 export function LocalPage(props: { projectId: string | null }) {
-  const { state: agentState } = useAgentTasks();
-
   const [projects, setProjects] = useState<LocalProject[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   // `#/local?p=<id>` wins at mount; otherwise the remembered project is used.
@@ -178,14 +170,6 @@ export function LocalPage(props: { projectId: string | null }) {
   const [editDescription, setEditDescription] = useState("");
   const [itemBusy, setItemBusy] = useState(false);
   const [itemError, setItemError] = useState<string | null>(null);
-
-  // Hand to Agent: optional extra prompt + runtime.
-  const [enqueueItem, setEnqueueItem] = useState<WorkItem | null>(null);
-  const [extraPrompt, setExtraPrompt] = useState("");
-  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
-  const [runtimeId, setRuntimeId] = useState("");
-  const [enqueueBusy, setEnqueueBusy] = useState(false);
-  const [enqueueError, setEnqueueError] = useState<string | null>(null);
 
   const loadProjects = useCallback(() => {
     setProjectsError(null);
@@ -241,30 +225,6 @@ export function LocalPage(props: { projectId: string | null }) {
     void loadItems(selection, false);
   }, [selection, loadItems]);
 
-  // The backend marks a linked item done when its Agent task succeeds, and
-  // tasks leave the live feed once they finish. The item list is not polled,
-  // so watch the feed: any task appearing, changing or dropping out refetches
-  // quietly, keeping the current list on screen while it does.
-  const agentSignature = useMemo(
-    () =>
-      (agentState?.tasks ?? [])
-        .map((task) => `${task.id}:${task.status}`)
-        .sort()
-        .join("|"),
-    [agentState],
-  );
-  const lastAgentSignature = useRef(agentSignature);
-
-  useEffect(() => {
-    if (lastAgentSignature.current === agentSignature) return;
-    // The feed populating for the first time is not a status change; the
-    // initial list load already reflects it.
-    const firstFeed = lastAgentSignature.current === "";
-    lastAgentSignature.current = agentSignature;
-    if (firstFeed || !selection) return;
-    void loadItems(selection, true);
-  }, [agentSignature, selection, loadItems]);
-
   const project = projects?.find((row) => row.id === selection) ?? null;
 
   const counts = useMemo(() => {
@@ -280,12 +240,6 @@ export function LocalPage(props: { projectId: string | null }) {
     () => (items ?? []).filter((item) => item.status === status),
     [items, status],
   );
-
-  /** Live status of the Agent task an item was handed to (terminal ones drop out). */
-  const linkedTask = (item: WorkItem) =>
-    item.agentTaskId
-      ? (agentState?.tasks.find((task) => task.id === item.agentTaskId) ?? null)
-      : null;
 
   const applyItem = (updated: WorkItem) => {
     setItems((current) => {
@@ -462,55 +416,8 @@ export function LocalPage(props: { projectId: string | null }) {
     }
   };
 
-  // Hand to Agent: load the runtime catalog and the desktop default per open.
-  useEffect(() => {
-    if (!enqueueItem) return;
-    let cancelled = false;
-    setExtraPrompt("");
-    setEnqueueError(null);
-    setRuntimes([]);
-    setRuntimeId("");
-    void Promise.all([api.agentConfig(), api.agentRuntimes()])
-      .then(([config, catalog]) => {
-        if (cancelled) return;
-        setRuntimes(catalog.filter((runtime) => runtime.available));
-        setRuntimeId(config.runtimeId);
-      })
-      .catch(() => {
-        // Catalog unavailable: submit anyway and let the desktop pick.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [enqueueItem]);
-
-  const submitEnqueue = async () => {
-    if (!enqueueItem || enqueueBusy) return;
-    setEnqueueBusy(true);
-    setEnqueueError(null);
-    try {
-      const { item } = await api.enqueueLocalItem({
-        id: enqueueItem.id,
-        extraPrompt: extraPrompt.trim() || null,
-        runtimeId: runtimeId || null,
-      });
-      // The desktop flips the item to in_progress; render that before leaving.
-      applyItem(item);
-      setEnqueueItem(null);
-      if (selection) await loadItems(selection, true);
-      await refreshAgentTasks();
-      navigate("#/agent");
-    } catch (err) {
-      setEnqueueError(asApiError(err).message);
-    } finally {
-      setEnqueueBusy(false);
-    }
-  };
-
-  const activeLinked = activeItem ? linkedTask(activeItem) : null;
-
   return (
-    <div>
+    <div data-component="LocalPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center gap-2 px-4 pt-3 pb-2">
           <h1 className="text-ui-base text-slate-900">{t("mobile.local.title")}</h1>
@@ -532,7 +439,7 @@ export function LocalPage(props: { projectId: string | null }) {
                 title={project.repoPath}
                 value={project.id}
                 onChange={(event) => selectProject(event.target.value)}
-                className="min-h-11 min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+                className="min-h-11 min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 text-ui-sm text-slate-700"
               >
                 {projects?.map((row) => (
                   <option key={row.id} value={row.id}>
@@ -623,7 +530,6 @@ export function LocalPage(props: { projectId: string | null }) {
 
       {project
         ? visible.map((item) => {
-            const linked = linkedTask(item);
             return (
               <button
                 key={item.id}
@@ -640,11 +546,6 @@ export function LocalPage(props: { projectId: string | null }) {
                   </span>
                 ) : null}
                 <span className="mt-1 flex w-full items-center gap-2 text-ui-xs text-slate-500">
-                  {linked ? (
-                    <Badge tone={AGENT_STATUS_TONES[linked.status]}>
-                      {t(AGENT_STATUS_LABELS[linked.status])}
-                    </Badge>
-                  ) : null}
                   <span className="ml-auto shrink-0 text-slate-400">
                     {relativeTime(item.updatedAt)}
                   </span>
@@ -894,39 +795,11 @@ export function LocalPage(props: { projectId: string | null }) {
               <Badge tone={STATUS_TONES[activeItem.status]}>
                 {t(STATUS_LABELS[activeItem.status])}
               </Badge>
-              {activeLinked ? (
-                <Badge tone={AGENT_STATUS_TONES[activeLinked.status]}>
-                  {t(AGENT_STATUS_LABELS[activeLinked.status])}
-                </Badge>
-              ) : null}
               <span className="ml-auto shrink-0 text-slate-400">
                 {relativeTime(activeItem.updatedAt)}
               </span>
             </p>
             <div className="mt-4 space-y-2">
-              {activeItem.status !== "pending" && activeItem.agentTaskId ? (
-                <SheetAction
-                  icon={Bot}
-                  label={t("mobile.local.openTask")}
-                  onClick={() => {
-                    if (activeItem.agentTaskId) {
-                      navigate(`#/agent/task/${activeItem.agentTaskId}`);
-                    }
-                  }}
-                />
-              ) : null}
-              {activeItem.status !== "done" ? (
-                <SheetAction
-                  icon={Bot}
-                  label={t("mobile.local.toAgent")}
-                  disabled={itemBusy}
-                  onClick={() => {
-                    const target = activeItem;
-                    closeItem();
-                    setEnqueueItem(target);
-                  }}
-                />
-              ) : null}
               {activeItem.status === "pending" ? (
                 <SheetAction
                   icon={ArrowRight}
@@ -979,70 +852,6 @@ export function LocalPage(props: { projectId: string | null }) {
         ) : null}
       </BottomSheet>
 
-      {/* -- 交给 Agent：附加说明 + 运行时 -------------------------------- */}
-      <BottomSheet
-        open={enqueueItem !== null}
-        title={t("mobile.local.toAgent")}
-        onClose={() => setEnqueueItem(null)}
-        footer={
-          <button
-            type="button"
-            disabled={enqueueBusy}
-            onClick={() => void submitEnqueue()}
-            className={`${primaryButton} flex items-center justify-center gap-1.5`}
-          >
-            {enqueueBusy ? (
-              <LoaderCircle size={13} className="animate-spin" />
-            ) : (
-              <Bot size={13} />
-            )}
-            {enqueueBusy ? t("mobile.local.enqueueing") : t("mobile.local.enqueue")}
-          </button>
-        }
-      >
-        {enqueueItem ? (
-          <>
-            <p className="text-ui-caption leading-5 text-slate-900">{enqueueItem.title}</p>
-            <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500">{t("mobile.local.extraPrompt")}</span>
-              <textarea
-                value={extraPrompt}
-                onChange={(event) => setExtraPrompt(event.target.value)}
-                rows={4}
-                placeholder={t("mobile.local.extraPromptPlaceholder")}
-                className={`${textField} resize-none leading-5`}
-              />
-            </label>
-            <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500" title={t("mobile.local.runtimeHint")}>
-                {t("mobile.local.runtime")}
-              </span>
-              <select
-                value={runtimeId}
-                onChange={(event) => setRuntimeId(event.target.value)}
-                className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
-              >
-                {runtimeId && !runtimes.some((runtime) => runtime.id === runtimeId) ? (
-                  <option value={runtimeId}>{runtimeId}</option>
-                ) : null}
-                {runtimes.map((runtime) => (
-                  <option key={runtime.id} value={runtime.id}>
-                    {runtime.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {enqueueError ? (
-              <p
-                className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-                title={t("mobile.local.enqueueFailedHint")}
-              >
-                {enqueueError}
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </BottomSheet>
     </div>
   );
 }

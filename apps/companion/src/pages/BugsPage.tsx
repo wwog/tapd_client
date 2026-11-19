@@ -1,22 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, ChevronRight, LoaderCircle, Search, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, Search, SlidersHorizontal } from "lucide-react";
 
 import {
   api,
   asApiError,
-  type AgentRuntimeDescriptor,
   type BugListPage,
   type BugSummary,
   type Workspace,
   type WorkspaceMember,
 } from "../lib/api";
-import { refreshAgentTasks } from "../lib/agentTasks";
 import { bugTitle, ownerNames, relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { loadMembers, subscribeMembers } from "../lib/members";
 import {
   cached,
-  invalidateBug,
   STATE_KEY,
   subscribeCache,
   TTL,
@@ -130,6 +127,7 @@ function uniqueValues(values: Array<string | null | undefined>): string[] {
 function FilterChip(props: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
+      data-component="FilterChip"
       type="button"
       aria-pressed={props.selected}
       onClick={props.onSelect}
@@ -144,7 +142,7 @@ function FilterChip(props: { label: string; selected: boolean; onSelect: () => v
 
 function FilterGroup(props: { label: string; children: React.ReactNode }) {
   return (
-    <section className="mt-4 first:mt-0">
+    <section data-component="FilterGroup" className="mt-4 first:mt-0">
       <h3 className="text-ui-sm text-slate-500">{props.label}</h3>
       <div className="mt-2 flex flex-wrap gap-1.5">{props.children}</div>
     </section>
@@ -154,6 +152,7 @@ function FilterGroup(props: { label: string; children: React.ReactNode }) {
 function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) => void }) {
   return (
     <div
+      data-component="ScopeSegmented"
       role="tablist"
       aria-label={t("mobile.bugs.scope")}
       className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
@@ -181,7 +180,7 @@ function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) =>
 
 function ListSkeleton() {
   return (
-    <div>
+    <div data-component="ListSkeleton">
       {[0, 1, 2, 3, 4, 5].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-3/4 animate-pulse rounded bg-overlay-soft" />
@@ -211,14 +210,7 @@ export function BugsPage() {
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [membersError, setMembersError] = useState<string | null>(null);
 
-  // 行操作 sheet 与「用 Agent 修复」sheet 互斥；入队表单独立在 compose。
   const [actionBug, setActionBug] = useState<BugSummary | null>(null);
-  const [composeBug, setComposeBug] = useState<BugSummary | null>(null);
-  const [extraPrompt, setExtraPrompt] = useState("");
-  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
-  const [runtimeId, setRuntimeId] = useState("");
-  const [enqueueBusy, setEnqueueBusy] = useState(false);
-  const [enqueueError, setEnqueueError] = useState<string | null>(null);
 
   // Persisted filter; the sheet edits a draft that applies on 确认.
   const [filter, setFilter] = useState<BugFilter>(readFilter);
@@ -433,66 +425,12 @@ export function BugsPage() {
     setFilterOpen(true);
   };
 
-  // 用 Agent 修复：打开时读取运行时目录与桌面默认运行时。
-  useEffect(() => {
-    if (!composeBug) return;
-    let cancelled = false;
-    setExtraPrompt("");
-    setEnqueueError(null);
-    setRuntimes([]);
-    setRuntimeId("");
-    void Promise.all([api.agentConfig(), api.agentRuntimes()])
-      .then(([config, catalog]) => {
-        if (cancelled) return;
-        setRuntimes(catalog.filter((runtime) => runtime.available));
-        setRuntimeId(config.runtimeId);
-      })
-      .catch(() => {
-        // 目录读取失败时仍可提交；省略 runtimeId 走桌面默认。
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [composeBug]);
-
-  const workspaceName = (id: string | null): string | null =>
-    workspaces.find((workspace) => workspace.id === id)?.name || null;
-
-  const submitEnqueue = async () => {
-    if (!composeBug || !workspaceId || enqueueBusy) return;
-    setEnqueueBusy(true);
-    setEnqueueError(null);
-    try {
-      await api.agentEnqueueBug({
-        workspaceId,
-        bugId: composeBug.id,
-        workspaceName: workspaceName(workspaceId),
-        title: composeBug.title,
-        severity: composeBug.severity || null,
-        priority: composeBug.priority || null,
-        extraPrompt: extraPrompt.trim() || null,
-        runtimeId: runtimeId || null,
-        source: "companion",
-      });
-      // 入队会在缺陷上留下 source 标记：失效该项目列表与详情缓存。
-      invalidateBug(workspaceId, composeBug.id);
-      setComposeBug(null);
-      // 立刻刷新角标，并跳到 Agent 页看队列里的新任务。
-      await refreshAgentTasks();
-      navigate("#/agent");
-    } catch (err) {
-      setEnqueueError(asApiError(err).message);
-    } finally {
-      setEnqueueBusy(false);
-    }
-  };
-
   const totalPages = result
     ? Math.max(1, Math.ceil(result.total / Math.max(1, result.perpage)))
     : 1;
 
   return (
-    <div>
+    <div data-component="BugsPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center px-4 pt-3 pb-2">
           <h1 className="text-ui-base text-slate-900">{t("common.bugs")}</h1>
@@ -503,7 +441,7 @@ export function BugsPage() {
               aria-label={t("common.projects")}
               value={workspaceId ?? ""}
               onChange={(event) => setWorkspaceId(event.target.value)}
-              className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+              className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700"
             >
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>
@@ -521,7 +459,7 @@ export function BugsPage() {
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
               placeholder={t("mobile.bugs.search")}
-              className="w-full rounded-lg border border-border bg-surface py-1.5 pr-2.5 pl-7 text-ui-caption text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+              className="w-full rounded-lg border border-border bg-surface py-1.5 pr-2.5 pl-7 text-ui-caption text-slate-700 transition placeholder:text-slate-400"
             />
           </div>
         </div>
@@ -569,7 +507,7 @@ export function BugsPage() {
                 });
               }
             }}
-            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200"
+            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700"
           >
             {SORT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -819,93 +757,11 @@ export function BugsPage() {
               >
                 {t("mobile.bugs.viewDetail")}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const target = actionBug;
-                  setActionBug(null);
-                  setComposeBug(target);
-                }}
-                className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft"
-              >
-                <Bot size={14} className="shrink-0 text-slate-400" />
-                {t("mobile.bugs.fixWithAgent")}
-              </button>
             </div>
           </>
         ) : null}
       </BottomSheet>
 
-      {/* -- 用 Agent 修复 sheet：附加说明 + 运行时 ------------------------ */}
-      <BottomSheet
-        open={composeBug !== null}
-        title={t("mobile.bugs.fixWithAgent")}
-        onClose={() => setComposeBug(null)}
-        footer={
-          <button
-            type="button"
-            disabled={enqueueBusy}
-            onClick={() => void submitEnqueue()}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
-          >
-            {enqueueBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}
-            {enqueueBusy ? t("mobile.bugs.enqueueing") : t("mobile.bugs.enqueue")}
-          </button>
-        }
-      >
-        {composeBug ? (
-          <>
-            <p className="text-ui-caption leading-5 text-slate-900" title={bugTitle(composeBug.title)}>
-              {bugTitle(composeBug.title)}
-            </p>
-            <p className="mt-1 flex items-center gap-3 text-ui-xs text-slate-500">
-              <span title={t("mobile.bugs.severityValue", { value: composeBug.severityLabel || composeBug.severity || "—" })}>
-                {t("mobile.bugs.severityValue", { value: composeBug.severityLabel || composeBug.severity || "—" })}
-              </span>
-              <span title={t("mobile.bugs.ownerValue", { owner: ownerNames(composeBug.owner)[0] || t("mobile.bugs.unassigned") })}>
-                {ownerNames(composeBug.owner)[0] || t("mobile.bugs.unassigned")}
-              </span>
-            </p>
-            <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500">{t("mobile.bugs.extraPrompt")}</span>
-              <textarea
-                value={extraPrompt}
-                onChange={(event) => setExtraPrompt(event.target.value)}
-                rows={4}
-                placeholder={t("mobile.bugs.extraPromptPlaceholder")}
-                className="mt-1.5 w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
-              />
-            </label>
-            <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500" title={t("mobile.bugs.runtimeHint")}>
-                {t("mobile.bugs.runtime")}
-              </span>
-              <select
-                value={runtimeId}
-                onChange={(event) => setRuntimeId(event.target.value)}
-                className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200"
-              >
-                {runtimeId && !runtimes.some((runtime) => runtime.id === runtimeId) ? (
-                  <option value={runtimeId}>{runtimeId}</option>
-                ) : null}
-                {runtimes.map((runtime) => (
-                  <option key={runtime.id} value={runtime.id}>
-                    {runtime.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {enqueueError ? (
-              <p
-                className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-                title={t("mobile.bugs.enqueueFailedHint")}
-              >
-                {enqueueError}
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </BottomSheet>
     </div>
   );
 }

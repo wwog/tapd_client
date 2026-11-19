@@ -26,6 +26,11 @@ use tauri::{AppHandle, Manager};
 /// Workspace id the paired phone uses to browse the filesystem root. Reading
 /// is allowed; the companion's text write route rejects this id.
 pub(crate) const ROOT_WORKSPACE_ID: &str = "__root__";
+/// Workspace id scoping a file panel to one agent session's working directory
+/// (`__session__:<sessionId>`). The path stays relative to that directory and
+/// containment still runs through [`resolve_in_root`], so a tab opened from a
+/// reply cannot read outside the session.
+pub(crate) const SESSION_WORKSPACE_ID_PREFIX: &str = "__session__:";
 /// Stable prefix the UI matches to render its "configure a folder" empty state.
 pub const NO_FOLDER_PREFIX: &str = "no_folder:";
 /// One directory level stops after this many entries.
@@ -137,17 +142,22 @@ impl std::error::Error for FsError {}
 /// Root of one workspace: `agent.json`'s configured repository folder with a
 /// leading `~` expanded. When the id names no TAPD workspace folder, a local
 /// project with the same id supplies the root. [`ROOT_WORKSPACE_ID`] bypasses
-/// both lookups and maps to the filesystem root. An empty config is the UI's
+/// both lookups and maps to the filesystem root, and [`SESSION_WORKSPACE_ID_PREFIX`]
+/// maps to the session's own working directory. An empty config is the UI's
 /// recognized empty state.
 pub(crate) fn root_for(app: &AppHandle, workspace_id: &str) -> Result<PathBuf, FsError> {
     let workspace_id = workspace_id.trim();
     if let Some(root) = root_override(workspace_id) {
         return Ok(root);
     }
+    if let Some(session_id) = workspace_id.strip_prefix(SESSION_WORKSPACE_ID_PREFIX) {
+        return crate::dsh::tasks::session_root(app, session_id)
+            .ok_or_else(|| FsError::not_found(tr("dsh.file.noSession")));
+    }
     if workspace_id.is_empty() {
         return Err(FsError::no_folder());
     }
-    let config = crate::agent::mcp_agent_config(app);
+    let config = crate::agent_settings::mcp_agent_config(app);
     let repo_path = config
         .projects
         .get(workspace_id)
@@ -157,6 +167,34 @@ pub(crate) fn root_for(app: &AppHandle, workspace_id: &str) -> Result<PathBuf, F
         Ok(root) => Ok(root),
         Err(error) => local_root(app, workspace_id).ok_or(error),
     }
+}
+
+/// Every directory the file viewer can be scoped to besides the filesystem
+/// root: configured TAPD projects and local projects, paired with their id.
+/// Agent replies use this to open a file under the workspace it really belongs
+/// to, so the tab matches the one the Explorer opens. TAPD wins an id collision
+/// exactly like [`root_for`].
+pub(crate) fn project_roots(app: &AppHandle) -> Vec<(String, PathBuf)> {
+    let mut roots: Vec<(String, PathBuf)> = Vec::new();
+    let config = crate::agent_settings::mcp_agent_config(app);
+    for (id, project) in config.projects {
+        if let Ok(root) = root_from_repo_path(&project.repo_path) {
+            roots.push((id, root));
+        }
+    }
+    if let Some(state) = app.try_state::<crate::state::SharedState>() {
+        if let Ok(projects) = state.local.projects() {
+            for project in projects {
+                if roots.iter().any(|(id, _)| id == &project.id) {
+                    continue;
+                }
+                if let Ok(root) = root_from_repo_path(&project.repo_path) {
+                    roots.push((project.id, root));
+                }
+            }
+        }
+    }
+    roots
 }
 
 /// Roots that come from neither TAPD nor a local project. Only the filesystem

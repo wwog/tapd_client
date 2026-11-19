@@ -6,6 +6,8 @@ import {
   FONT_OPTIONS,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
+  ISLAND_OPACITY_MAX,
+  ISLAND_OPACITY_MIN,
   setAppearance,
   useAppearance,
   type IslandDisplayMode,
@@ -38,7 +40,7 @@ export function ThemePicker({ className }: { className?: string }) {
   const { mode } = useAppearance();
 
   return (
-    <div className={clsx("grid grid-cols-3 gap-2", className)}>
+    <div data-component="ThemePicker" className={clsx("grid grid-cols-3 gap-2", className)}>
       {THEMES.map((item) => {
         const selected = mode === item.value;
         const Icon = item.icon;
@@ -69,7 +71,15 @@ export function ThemePicker({ className }: { className?: string }) {
 /** Appearance card: theme mode, UI font and the shared base font size. */
 export function AppearanceCard() {
   const appearance = useAppearance();
-  const { island, islandDisplay, font, customFont, fontSize, locale } = appearance;
+  const {
+    island,
+    islandDisplay,
+    islandOpacity,
+    font,
+    customFont,
+    fontSize,
+    locale,
+  } = appearance;
 
   // Language names stay in their own script, the way OS pickers show them.
   const languages: Array<{ value: LocaleMode; label: string }> = [
@@ -79,7 +89,7 @@ export function AppearanceCard() {
   ];
 
   return (
-    <section className={cardClass}>
+    <section data-component="AppearanceCard" className={cardClass}>
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -209,6 +219,30 @@ export function AppearanceCard() {
             onChange={(value) => setAppearance({ islandDisplay: value })}
           />
         </div>
+        <label className="block">
+          <span
+            className="flex items-center justify-between gap-3 text-ui-xs font-normal text-slate-500"
+            title={t("settings.capsule.opacityTooltip")}
+          >
+            {t("settings.capsule.opacity")}
+            <span className="tabular-nums text-slate-400">
+              {Math.round(islandOpacity * 100)}%
+            </span>
+          </span>
+          <input
+            type="range"
+            min={Math.round(ISLAND_OPACITY_MIN * 100)}
+            max={Math.round(ISLAND_OPACITY_MAX * 100)}
+            step={1}
+            value={Math.round(islandOpacity * 100)}
+            aria-label={t("settings.capsule.opacity")}
+            aria-valuetext={`${Math.round(islandOpacity * 100)}%`}
+            onChange={(event) =>
+              setAppearance({ islandOpacity: Number(event.target.value) / 100 })
+            }
+            className="mt-2 h-1.5 w-full cursor-pointer accent-sky-500"
+          />
+        </label>
       </div>
 
     </section>
@@ -219,7 +253,7 @@ export function AppearanceCard() {
 function ThemeThumb(props: { mode: ThemeMode }) {
   if (props.mode === "system") {
     return (
-      <div className="flex h-[54px] overflow-hidden rounded-lg border border-border">
+      <div data-component="ThemeThumb" className="flex h-[54px] overflow-hidden rounded-lg border border-border">
         <div className="flex w-1/2 flex-col gap-1 bg-[#ffffff] p-2">
           <Bar className="w-2/3 bg-[#cbd5e1]" />
           <Bar className="w-full bg-[#e2e8f0]" />
@@ -237,6 +271,7 @@ function ThemeThumb(props: { mode: ThemeMode }) {
   const dark = props.mode === "dark";
   return (
     <div
+      data-component="ThemeThumb"
       className={clsx(
         "flex h-[54px] flex-col gap-1 rounded-lg border p-2",
         dark
@@ -257,5 +292,5 @@ function ThemeThumb(props: { mode: ThemeMode }) {
 }
 
 function Bar(props: { className?: string }) {
-  return <span className={clsx("block h-1 rounded-full", props.className)} />;
+  return <span data-component="Bar" className={clsx("block h-1 rounded-full", props.className)} />;
 }

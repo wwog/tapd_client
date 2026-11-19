@@ -14,9 +14,8 @@ export type GroupRole = "primary" | "secondary" | "bottom";
 export type PageView =
   | "bugs"
   | "local"
-  | "projects"
-  | "chat"
   | "agent"
+  | "projects"
   | "coworker"
   | "mcp"
   | "settings"
@@ -113,6 +112,8 @@ export type LayoutPrefs = {
   version: 1;
   layout: LayoutState;
   sidebarWidth: number;
+  /** The project column is collapsed by the user (auto-collapse is separate). */
+  sidebarCollapsed: boolean;
 };
 
 /** One split boundary: `sizes[index] / sizes[index + 1]`. */
@@ -172,6 +173,9 @@ export type WorkbenchLayoutApi = {
   hasPanel: (panelId: string) => boolean;
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
+  /** User-chosen collapse of the project column; persisted with the layout. */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
 };
 
 // ---------------------------------------------------------------------------

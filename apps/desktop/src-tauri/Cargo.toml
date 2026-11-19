@@ -24,6 +24,8 @@ tapd-i18n.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 axum = { version = "0.8", features = ["ws"] }
+# Streaming body for the debug-only fake model provider (`dsh/test_agent.rs`).
+futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
 portable-pty = "0.9"
@@ -32,10 +34,12 @@ base64 = "0.21"
 rusqlite = { version = "0.41", features = ["bundled"] }
 semver = "1"
 sha2 = "0.10"
+tar = "0.4"
+zstd = "0.13"
 toml_edit = "0.22"
+dsh-host = { path = "../../../crates/dsh-host" }
 tapd-core = { path = "../../../crates/tapd-core" }
 tapd-local = { path = "../../../crates/tapd-local" }
-tapd-workflow = { path = "../../../crates/tapd-workflow" }
 tapd-workspace = { path = "../../../crates/tapd-workspace" }
 tauri-plugin-dialog = "2"
 # Companion LAN server: local address for the pairing URL, embedded SPA assets
@@ -52,6 +56,12 @@ objc2-app-kit = { version = "0.3", features = [
   "NSView",
   "NSTrackingArea",
   "NSEvent",
+  # Answering a question from the capsule needs the keyboard: the "never key"
+  # rule is lifted for as long as its text field is focused.
+  "NSApplication",
+  "NSResponder",
+  "NSWorkspace",
+  "NSRunningApplication",
 ] }
 objc2-foundation = { version = "0.3", features = ["NSObject", "NSGeometry"] }
 

@@ -5,6 +5,7 @@ import { Check, Coffee, RefreshCw } from "lucide-react";
 import { coworkerApi, type Coworker } from "../lib/coworker";
 import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
+import { ScrollingName } from "./ScrollingName";
 import { Button, EmptyState, Spinner } from "./ui";
 
 type Toast = (kind: "ok" | "error", text: string) => void;
@@ -110,7 +111,7 @@ export function CoworkerGrid(props: {
 
   if (loadError) {
     return (
-      <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
+      <div data-component="CoworkerGrid" className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
         <div className="break-all">{loadError}</div>
         <Button
           size="sm"
@@ -126,7 +127,7 @@ export function CoworkerGrid(props: {
 
   if (coworkers === null) {
     return (
-      <div className="flex items-center justify-center gap-2 py-16 text-ui-caption text-slate-400">
+      <div data-component="CoworkerGrid" className="flex items-center justify-center gap-2 py-16 text-ui-caption text-slate-400">
         <Spinner />
         {t("coworker.loading")}
       </div>
@@ -144,7 +145,7 @@ export function CoworkerGrid(props: {
   }
 
   return (
-    <div className={clsx("grid gap-3 sm:grid-cols-2 xl:grid-cols-3", props.className)}>
+    <div data-component="CoworkerGrid" className={clsx("grid gap-3 sm:grid-cols-2 xl:grid-cols-3", props.className)}>
       {coworkers.map((coworker, index) => (
         <CoworkerCard
           key={coworker.id}
@@ -172,6 +173,7 @@ function CoworkerCard(props: {
 
   return (
     <button
+      data-component="CoworkerCard"
       type="button"
       aria-pressed={selected}
       disabled={disabled}
@@ -212,9 +214,10 @@ function CoworkerCard(props: {
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className="truncate text-ui-base text-slate-900">
-              {coworker.name}
-            </span>
+            <ScrollingName
+              text={coworker.name}
+              className="text-ui-base text-slate-900"
+            />
             <span
               className="shrink-0 rounded-full px-1.5 py-0.5 text-ui-2xs"
               style={{ color: accent, backgroundColor: `${accent}16` }}
@@ -223,9 +226,10 @@ function CoworkerCard(props: {
             </span>
           </div>
           {coworker.title ? (
-            <div className="mt-0.5 truncate text-ui-xs text-slate-400">
-              {coworker.title}
-            </div>
+            <ScrollingName
+              text={coworker.title}
+              className="mt-0.5 text-ui-xs text-slate-400"
+            />
           ) : null}
         </div>
       </div>

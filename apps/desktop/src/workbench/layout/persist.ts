@@ -76,6 +76,8 @@ export function loadPrefs(): LayoutPrefs | null {
     version: 1,
     layout: raw.layout,
     sidebarWidth: raw.sidebarWidth,
+    // Pre-collapse envelopes predate the field.
+    sidebarCollapsed: raw.sidebarCollapsed === true,
   });
 }
 
@@ -90,6 +92,7 @@ export function normalizePrefs(prefs: LayoutPrefs): LayoutPrefs {
     version: 1,
     layout: normalize(prefs.layout),
     sidebarWidth: isFiniteNumber(prefs.sidebarWidth) ? prefs.sidebarWidth : 0,
+    sidebarCollapsed: prefs.sidebarCollapsed === true,
   };
 }
 
@@ -124,6 +127,7 @@ export function initialPrefs(
     version: 1,
     layout,
     sidebarWidth: defaultSidebarWidth(width),
+    sidebarCollapsed: false,
   };
 }
 

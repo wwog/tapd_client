@@ -69,7 +69,7 @@ export function PairPage() {
   }, [code, attempt]);
 
   return (
-    <div className="grid min-h-full place-items-center p-6">
+    <div data-component="PairPage" className="grid min-h-full place-items-center p-6">
       {pairing ? (
         <p className="text-ui-base text-slate-500">{t("mobile.pair.pairing")}</p>
       ) : (

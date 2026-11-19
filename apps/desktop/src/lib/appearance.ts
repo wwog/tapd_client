@@ -23,6 +23,9 @@ export type Appearance = {
   island: IslandThemeMode;
   /** `always` keeps the capsule resident; `activity` hides it while idle. */
   islandDisplay: IslandDisplayMode;
+  /** Capsule fill opacity 0.6-1. The window behind it is transparent, so this
+   *  is what decides how much of the desktop shows through. */
+  islandOpacity: number;
   font: FontChoice;
   /** Only used when `font` is `custom`; a comma-separated CSS font stack. */
   customFont: string;
@@ -39,6 +42,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   mode: "system",
   island: "follow",
   islandDisplay: "always",
+  islandOpacity: 0.82,
   font: "system",
   customFont: "",
   fontSize: 14,
@@ -66,6 +70,10 @@ export const FONT_OPTIONS: Array<{ value: FontChoice; label: MessageKey }> = [
   { value: "custom", label: "settings.font.custom" },
 ];
 
+/** Capsule opacity range: below 0.6 the text contrast collapses. */
+export const ISLAND_OPACITY_MIN = 0.6;
+export const ISLAND_OPACITY_MAX = 1;
+
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 17;
 
@@ -80,6 +88,12 @@ const listeners = new Set<() => void>();
 function clampSize(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_APPEARANCE.fontSize;
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(value)));
+}
+
+function clampOpacity(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_APPEARANCE.islandOpacity;
+  const clamped = Math.min(ISLAND_OPACITY_MAX, Math.max(ISLAND_OPACITY_MIN, value));
+  return Math.round(clamped * 100) / 100;
 }
 
 function normalize(parsed: Partial<Appearance>): Appearance {
@@ -108,6 +122,9 @@ function normalize(parsed: Partial<Appearance>): Appearance {
     mode,
     island,
     islandDisplay,
+    islandOpacity: clampOpacity(
+      parsed.islandOpacity ?? DEFAULT_APPEARANCE.islandOpacity,
+    ),
     font,
     customFont:
       typeof parsed.customFont === "string" ? parsed.customFont.slice(0, 160) : "",
@@ -152,6 +169,8 @@ function apply() {
   applyLocale(resolveLocaleMode(current.locale));
   root.dataset.theme = overlay ? resolvedIslandTheme(current) : resolvedTheme(current);
   root.style.setProperty("--ui-font-size", `${current.fontSize}px`);
+  // The capsule's whole palette hangs off this one alpha, in both themes.
+  root.style.setProperty("--island-alpha", String(current.islandOpacity));
   if (current.font === "system") root.style.removeProperty("--font-sans");
   else root.style.setProperty("--font-sans", fontStack(current));
 
@@ -233,6 +252,7 @@ export function setAppearance(patch: Partial<Appearance>) {
     ...current,
     ...patch,
     fontSize: clampSize(patch.fontSize ?? current.fontSize),
+    islandOpacity: clampOpacity(patch.islandOpacity ?? current.islandOpacity),
   };
   apply();
   persist();

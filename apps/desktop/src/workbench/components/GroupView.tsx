@@ -37,8 +37,12 @@ type GroupViewProps = {
   canMaximize: boolean;
   /** Side bar toggle, rendered left of the primary group's tabs. */
   primaryLeading?: ReactNode;
-  /** Project-open button, rendered on the right of the primary group strip. */
-  primaryActions?: ReactNode;
+  /**
+   * The tab strip's trailing slot (`ActiveTabExtra`). Only the tab focused in
+   * *this* group may declare content for it: the slot belongs to the focused
+   * tab, not to a fixed group role, so switching tabs swaps its content.
+   */
+  activeTabExtra?: (panel: PanelRef) => ReactNode;
   onRegisterBody: (groupId: string, element: HTMLElement | null) => void;
   onSpawnTerminal: () => void;
   onTabPointerDown: (
@@ -80,7 +84,7 @@ export function GroupView({
   maximized,
   canMaximize,
   primaryLeading,
-  primaryActions,
+  activeTabExtra,
   onRegisterBody,
   onSpawnTerminal,
   onTabPointerDown,
@@ -95,6 +99,8 @@ export function GroupView({
   }, [group.id, empty, onRegisterBody]);
 
   const hasTerminal = group.panels.some((panel) => panel.kind === "terminal");
+  const activePanel =
+    group.panels.find((panel) => panel.id === group.activePanelId) ?? null;
   const isMaximized = maximized;
 
   const toggleMaximize = () =>
@@ -108,6 +114,7 @@ export function GroupView({
 
   return (
     <div
+      data-component="GroupView"
       data-workbench-group={group.id}
       data-workbench-group-cell="true"
       {...(empty ? { "data-workbench-group-empty": "true" } : {})}
@@ -163,7 +170,7 @@ export function GroupView({
             </div>
 
             <div className="flex shrink-0 items-center gap-0.5">
-              {group.role === "primary" ? primaryActions : null}
+              <ActiveTabExtra panel={activePanel} render={activeTabExtra} />
               {hasTerminal ? (
                 <StripButton label={t("terminal.new")} onClick={onSpawnTerminal}>
                   <Plus size={14} />
@@ -303,6 +310,7 @@ function TabItem({
 
   return (
     <div
+      data-component="TabItem"
       role="tab"
       aria-selected={active}
       data-tab-id={panel.id}
@@ -376,6 +384,32 @@ function TabItem({
   );
 }
 
+/**
+ * Trailing slot of one group's tab strip. It renders the declaration of that
+ * group's focused tab and nothing else: an extra never leaks to the group or to
+ * a sibling tab, so moving focus moves the slot's content with it.
+ */
+function ActiveTabExtra({
+  panel,
+  render,
+}: {
+  panel: PanelRef | null;
+  render?: (panel: PanelRef) => ReactNode;
+}) {
+  if (!panel || !render) return null;
+  const extra = render(panel);
+  if (extra === null || extra === undefined || extra === false) return null;
+  return (
+    <div
+      data-component="ActiveTabExtra"
+      data-active-tab-extra={panel.id}
+      className="flex shrink-0 items-center"
+    >
+      {extra}
+    </div>
+  );
+}
+
 function StripButton({
   label,
   onClick,
@@ -387,6 +421,7 @@ function StripButton({
 }) {
   return (
     <button
+      data-component="StripButton"
       type="button"
       aria-label={label}
       title={label}

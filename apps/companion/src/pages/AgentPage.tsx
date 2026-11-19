@@ -1,293 +1,437 @@
-import { useState } from "react";
-import { ChevronRight, Clock, LoaderCircle, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LoaderCircle, Play, Plus, RefreshCw } from "lucide-react";
 
+import { asApiError } from "../lib/api";
+import { Badge, type BadgeTone } from "../components/Badge";
 import {
-  AGENT_STATUS_LABELS,
-  AGENT_STATUS_TONES,
-  api,
-  asApiError,
-  type AgentTask,
-  type AgentTasksState,
-} from "../lib/api";
-import { bucketAgentTasks, useAgentTasks } from "../lib/agentTasks";
-import { t } from "../lib/i18n";
+  dshApi,
+  useAgentFeed,
+  type DshProjectOption,
+  type DshStatus,
+  type DshTask,
+  type DshTaskProject,
+  type DshWorkflow,
+} from "../lib/dsh";
+import { relativeTime } from "../lib/format";
+import { t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
-import { bugTitle } from "../lib/format";
-import { Badge } from "../components/Badge";
-import { MergeCard, ReviewCard } from "../components/AgentTaskCards";
+import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
 
-/** 运行中任务卡：标题 + 运行时 + 实时阶段摘要 + 取消。 */
-function RunningCard(props: {
-  task: AgentTask;
-  state: AgentTasksState | null;
-  busy: boolean;
-  onCancel: (task: AgentTask) => void;
-}) {
-  const { task, state } = props;
-  const runtimeStatus = state?.runtimeStatus?.[task.id];
-  const phase = runtimeStatus
-    ? `${runtimeStatus.label}${runtimeStatus.tool ? ` · ${runtimeStatus.tool}` : ""}`
-    : null;
+/** Runtime status cadence; the task/approval feed is polled once by `App`. */
+const LIST_POLL_MS = 8_000;
 
+const PHASE_LABELS: Record<DshStatus["phase"], MessageKey> = {
+  stopped: "mobile.agent.phaseStopped",
+  starting: "mobile.agent.phaseStarting",
+  ready: "mobile.agent.phaseReady",
+  failed: "mobile.agent.phaseFailed",
+};
+
+const PHASE_DOTS: Record<DshStatus["phase"], string> = {
+  stopped: "bg-slate-400",
+  starting: "bg-amber-500",
+  ready: "bg-emerald-500",
+  failed: "bg-rose-500",
+};
+
+const WORKFLOW_LABELS: Record<DshWorkflow, MessageKey> = {
+  queued: "mobile.agent.workflowQueued",
+  running: "mobile.agent.workflowRunning",
+  awaiting_review: "mobile.agent.workflowReview",
+  finalizing: "mobile.agent.workflowFinalizing",
+  done: "mobile.agent.workflowDone",
+  failed: "mobile.agent.workflowFailed",
+  canceled: "mobile.agent.workflowCanceled",
+};
+
+const WORKFLOW_TONES: Record<DshWorkflow, BadgeTone> = {
+  queued: "neutral",
+  running: "blue",
+  awaiting_review: "amber",
+  finalizing: "cyan",
+  done: "green",
+  failed: "red",
+  canceled: "neutral",
+};
+
+/** Workflow chip shared by the task list and the session header. */
+export function WorkflowChip(props: { workflow: DshWorkflow }) {
   return (
-    <article className="rounded-2xl border border-border bg-surface p-4">
-      <div className="flex min-w-0 items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <h3
-            className="min-w-0 text-ui-caption leading-5 text-slate-900"
-            title={bugTitle(task.title) || t("magent.untitled")}
-          >
-            {bugTitle(task.title) || t("magent.untitled")}
-          </h3>
-          <p className="mt-0.5 truncate font-mono text-ui-xs text-slate-400" title={task.runtimeId}>
-            {task.runtimeId || "—"}
-          </p>
-        </div>
-        <Badge tone={AGENT_STATUS_TONES[task.status]}>
-          {t(AGENT_STATUS_LABELS[task.status])}
-        </Badge>
-      </div>
-      {phase ? (
-        <p
-          className="select-text mt-2 truncate text-ui-sm text-slate-500"
-          title={runtimeStatus?.detail || phase}
-        >
-          {phase}
-        </p>
-      ) : null}
-      <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
-        <button
-          type="button"
-          disabled={props.busy}
-          title={t("magent.cancelHint")}
-          onClick={() => props.onCancel(task)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
-        >
-          <X size={12} />
-          {t("common.cancel")}
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate(`#/agent/task/${task.id}`)}
-          className="ml-auto rounded-md px-2 py-1.5 text-ui-sm text-slate-400 transition active:bg-overlay-soft"
-        >
-          {t("common.details")}
-        </button>
-      </div>
-    </article>
+    <Badge tone={WORKFLOW_TONES[props.workflow]}>{t(WORKFLOW_LABELS[props.workflow])}</Badge>
   );
 }
 
-/** Agent 首页：待审核 / 待合并 / 运行中 / 队列，8s 轮询。 */
-export function AgentPage() {
-  const { state, error: feedError, refresh } = useAgentTasks();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  // 手动合并步骤：merge_start 返回 manual 时展示在对应卡片上。
-  const [manualMerge, setManualMerge] = useState<{ taskId: string; instructions: string } | null>(
-    null,
+function ListSkeleton() {
+  return (
+    <div data-component="ListSkeleton" aria-hidden="true">
+      {[0, 1, 2, 3].map((row) => (
+        <div key={row} className="border-b border-border px-4 py-3">
+          <div className="h-4 w-2/3 animate-pulse rounded bg-overlay-soft" />
+        </div>
+      ))}
+    </div>
   );
+}
 
-  const tasks = state?.tasks ?? [];
-  const { approvals, merges, running, queued } = bucketAgentTasks(tasks);
-  const idle =
-    approvals.length === 0 && merges.length === 0 && running.length === 0 && queued.length === 0;
+/* -------------------------------------------------------------------------
+   Task list
+   ------------------------------------------------------------------------- */
 
-  const act = async (key: string, run: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(key);
+/** The default "no project" group; its key never collides with a real one. */
+const NO_PROJECT_GROUP = "";
+
+type TaskGroup = {
+  key: string;
+  project: DshTaskProject | null;
+  tasks: DshTask[];
+};
+
+const projectKey = (project: DshTaskProject): string => `${project.kind}:${project.id}`;
+
+const newestFirst = (left: DshTask, right: DshTask): number =>
+  right.updatedAt.localeCompare(left.updatedAt);
+
+const latestActivity = (group: TaskGroup): string => group.tasks[0]?.updatedAt ?? "";
+
+/**
+ * Groups = every configured project + the default "no project" group. Projects
+ * keep a header even when they have no sessions; groups follow their newest
+ * session and the default group is always last.
+ */
+function groupTasks(tasks: DshTask[], projects: DshProjectOption[]): TaskGroup[] {
+  const groups = new Map<string, TaskGroup>();
+  const ensure = (project: DshTaskProject): TaskGroup => {
+    const key = projectKey(project);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, project, tasks: [] };
+      groups.set(key, group);
+    }
+    return group;
+  };
+
+  for (const project of projects) ensure(project);
+
+  const noProject: TaskGroup = {
+    key: NO_PROJECT_GROUP,
+    project: null,
+    tasks: [],
+  };
+  for (const task of tasks) {
+    if (task.project) ensure(task.project).tasks.push(task);
+    else noProject.tasks.push(task);
+  }
+
+  for (const group of groups.values()) group.tasks.sort(newestFirst);
+  noProject.tasks.sort(newestFirst);
+
+  const list = [...groups.values()].sort((left, right) => {
+    const delta = latestActivity(right).localeCompare(latestActivity(left));
+    if (delta !== 0) return delta;
+    return (left.project?.name ?? "").localeCompare(right.project?.name ?? "");
+  });
+  list.push(noProject);
+  return list;
+}
+
+function TaskRow(props: { task: DshTask }) {
+  const task = props.task;
+  return (
+    <button
+      data-component="TaskRow"
+      type="button"
+      onClick={() => navigate(`#/agent/session/${encodeURIComponent(task.id)}`)}
+      className="flex min-h-11 w-full flex-col border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
+    >
+      <span className="flex items-start gap-2">
+        {task.status === "running" && task.kind === "chat" ? (
+          <span
+            title={t("mobile.agent.workflowRunning")}
+            className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
+          />
+        ) : null}
+        <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
+          {task.title || t("mobile.agent.untitledSession")}
+        </span>
+      </span>
+      <span className="mt-1 flex items-center gap-2">
+        {task.kind === "chat" ? null : <WorkflowChip workflow={task.workflow} />}
+        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+          {relativeTime(task.updatedAt)}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Agent tab: the built-in dsh runtime on the desktop and one unified task list
+ * grouped by project. The task/approval snapshot is shared with the tab badge
+ * and the session page (`useAgentFeed`), so this page does not poll it itself.
+ */
+export function AgentPage() {
+  const feed = useAgentFeed();
+  const [status, setStatus] = useState<DshStatus | null>(null);
+  const [statusError, setStatusError] = useState<{
+    message: string;
+    title: MessageKey;
+  } | null>(null);
+  const [starting, setStarting] = useState(false);
+  /** Group key whose "+" is creating a session; `null` when idle. */
+  const [creating, setCreating] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  /** Every configured project, so empty groups still render a header. */
+  const [projects, setProjects] = useState<DshProjectOption[] | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const refreshStatus = useCallback(async () => {
     try {
-      await run();
-      setActionError(null);
-      await refresh();
+      const next = await dshApi.status();
+      if (!alive.current) return;
+      setStatus(next);
+      setStatusError(null);
     } catch (err) {
-      setActionError(asApiError(err).message);
+      if (!alive.current) return;
+      setStatusError({
+        message: asApiError(err).message,
+        title: "mobile.agent.statusLoadFailed",
+      });
+    }
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const { projects: rows } = await dshApi.projects();
+      if (!alive.current) return;
+      setProjects(rows);
+      setProjectsError(null);
+    } catch (err) {
+      if (!alive.current) return;
+      setProjectsError(asApiError(err).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+    void refreshProjects();
+    const timer = window.setInterval(() => {
+      if (!isPageHidden()) void refreshStatus();
+    }, LIST_POLL_MS);
+    const off = onPageVisibilityChange(() => {
+      if (isPageHidden()) return;
+      void refreshStatus();
+      void refreshProjects();
+    });
+    return () => {
+      window.clearInterval(timer);
+      off();
+    };
+  }, [refreshStatus, refreshProjects]);
+
+  /** A stopped or failed runtime gets one explicit start/retry button. */
+  const startRuntime = async () => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      const next = await dshApi.start();
+      if (alive.current) {
+        setStatus(next);
+        setStatusError(null);
+      }
+    } catch (err) {
+      if (alive.current) {
+        setStatusError({
+          message: asApiError(err).message,
+          title: "mobile.agent.startFailed",
+        });
+      }
     } finally {
-      setBusy(null);
+      if (alive.current) setStarting(false);
     }
   };
 
-  const approve = (task: AgentTask) => void act(`approve:${task.id}`, () => api.agentApprove(task.id));
-  const stop = (task: AgentTask) => void act(`stop:${task.id}`, () => api.agentStop(task.id));
-  const cancel = (task: AgentTask) => void act(`cancel:${task.id}`, () => api.agentCancel(task.id));
-  const mergeStart = (task: AgentTask) =>
-    void act(`merge:${task.id}`, async () => {
-      const result = await api.agentMergeStart(task.id);
-      setManualMerge(
-        result.mode === "manual" && result.instructions
-          ? { taskId: task.id, instructions: result.instructions }
-          : null,
+  /** A group's "+" creates a free chat; the project scopes its cwd/group. */
+  const createSession = async (project: DshTaskProject | null) => {
+    if (creating !== null) return;
+    const key = project ? projectKey(project) : NO_PROJECT_GROUP;
+    setCreating(key);
+    setActionError(null);
+    try {
+      const { sessionId } = await dshApi.newSession(
+        project ? { kind: project.kind, id: project.id } : undefined,
       );
-    });
+      navigate(`#/agent/session/${encodeURIComponent(sessionId)}`);
+    } catch (err) {
+      if (alive.current) setActionError(asApiError(err).message);
+    } finally {
+      if (alive.current) setCreating(null);
+    }
+  };
+
+  const groups = useMemo(
+    () => groupTasks(feed.tasks ?? [], projects ?? []),
+    [feed.tasks, projects],
+  );
+
+  const runtimeLabel =
+    status?.phase === "ready"
+      ? [status.provider, status.model]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ")
+      : "";
+  const failure = status?.phase === "failed" ? (status.error ?? status.errorCode) : null;
 
   return (
-    <div>
-      <header className="sticky top-0 z-20 border-b border-border bg-canvas px-4 pt-3 pb-2">
-        <h1 className="text-ui-base text-slate-900">Agent</h1>
+    <div data-component="AgentPage">
+      <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-canvas px-4 py-2">
+        <h1 className="min-w-0 flex-1 text-ui-base text-slate-900">{t("mobile.tab.agent")}</h1>
       </header>
 
-      <button
-        type="button"
-        onClick={() => navigate("#/coworkers")}
-        className="flex w-full items-center gap-2 border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-        title={t("magent.coworkersHint")}
-      >
-        <Users size={16} className="shrink-0 text-slate-400" />
-        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">{t("magent.coworkers")}</span>
-        <ChevronRight size={14} className="shrink-0 text-slate-400" />
-      </button>
-
-      <button
-        type="button"
-        onClick={() => navigate("#/agent/history")}
-        className="flex w-full items-center gap-2 border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-        title={t("magent.historyHint")}
-      >
-        <Clock size={16} className="shrink-0 text-slate-400" />
-        <span className="min-w-0 flex-1 text-ui-caption text-slate-900">{t("magent.history")}</span>
-        <ChevronRight size={14} className="shrink-0 text-slate-400" />
-      </button>
-
-      {state?.queuePaused ? (
-        <p
-          className="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-ui-sm leading-5 text-amber-800"
-          title={t("magent.queuePausedHint")}
-        >
-          {t("magent.queuePaused")}
-        </p>
-      ) : null}
-
-      {state?.storageError ? (
-        <p
-          className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title={t("magent.storageHint")}
-        >
-          {state.storageError}
-        </p>
-      ) : null}
-
-      {feedError ? (
-        <p
-          className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title={t("magent.refreshFailedHint")}
-        >
-          {feedError}
-        </p>
-      ) : null}
+      <section className="border-b border-border px-4 py-3">
+        {status ? (
+          <div className="flex items-center gap-2 text-ui-caption text-slate-900">
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${PHASE_DOTS[status.phase]} ${
+                status.phase === "starting" ? "animate-pulse" : ""
+              }`}
+            />
+            <span className="shrink-0">{t(PHASE_LABELS[status.phase])}</span>
+            {runtimeLabel ? (
+              <span
+                className="min-w-0 truncate font-mono text-ui-xs text-slate-400"
+                title={runtimeLabel}
+              >
+                {runtimeLabel}
+              </span>
+            ) : null}
+            {status.phase === "stopped" || status.phase === "failed" ? (
+              <button
+                type="button"
+                disabled={starting}
+                onClick={() => void startRuntime()}
+                className="ml-auto inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+              >
+                {starting ? (
+                  <LoaderCircle size={12} className="animate-spin" />
+                ) : status.phase === "failed" ? (
+                  <RefreshCw size={12} />
+                ) : (
+                  <Play size={12} />
+                )}
+                {status.phase === "failed" ? t("common.retry") : t("mobile.agent.start")}
+              </button>
+            ) : null}
+          </div>
+        ) : statusError ? null : (
+          <p className="text-ui-caption text-slate-400">{t("common.reading")}</p>
+        )}
+        {failure ? (
+          <p className="mt-1 text-ui-sm leading-5 text-rose-600" title={status?.errorCode}>
+            {failure}
+          </p>
+        ) : null}
+        {statusError ? (
+          <p className="mt-1 text-ui-caption leading-5 text-rose-600" title={t(statusError.title)}>
+            {statusError.message}
+          </p>
+        ) : null}
+      </section>
 
       {actionError ? (
         <p
-          className="mx-3 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
-          title={t("magent.lastActionFailedHint")}
+          className="px-4 py-3 text-ui-caption text-rose-600"
+          title={t("mobile.agent.newSessionFailed")}
         >
           {actionError}
         </p>
       ) : null}
 
-      {!state && !feedError ? (
-        <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
-          <LoaderCircle size={14} className="animate-spin" />
-          {t("magent.taskLoading")}
-        </div>
-      ) : null}
-
-      {state && idle ? (
+      {feed.tasksError ? (
         <p
-          className="px-4 py-10 text-center text-ui-base text-slate-400"
-          title={t("magent.idleHint")}
+          className="px-4 py-3 text-ui-caption text-rose-600"
+          title={t("mobile.agent.loadFailed")}
         >
-          {t("magent.noActiveTasks")}
+          {feed.tasksError}
         </p>
       ) : null}
 
-      {approvals.length > 0 || merges.length > 0 ? (
-        <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.awaitingAction")}</h2>
-          <div className="space-y-3">
-            {approvals.map((task) => (
-              <ReviewCard
-                key={task.id}
-                task={task}
-                busy={busy !== null}
-                onApprove={approve}
-                onStop={stop}
-                onOpen={() => navigate(`#/agent/task/${task.id}`)}
-              />
-            ))}
-            {merges.map((task) => (
-              <MergeCard
-                key={task.id}
-                task={task}
-                busy={busy !== null}
-                instructions={
-                  manualMerge?.taskId === task.id ? manualMerge.instructions : undefined
+      {feed.pendingError && feed.pendingError !== feed.tasksError ? (
+        <p
+          className="px-4 py-3 text-ui-caption text-rose-600"
+          title={t("mobile.agent.pendingLoadFailed")}
+        >
+          {feed.pendingError}
+        </p>
+      ) : null}
+
+      {projectsError && projects === null ? (
+        <p
+          className="px-4 py-2 text-ui-xs text-rose-600"
+          title={t("mobile.agent.projectsLoadFailed")}
+        >
+          {projectsError}
+        </p>
+      ) : null}
+
+      {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
+
+      {groups.map((group) => {
+        const name = group.project?.name ?? t("mobile.agent.noProject");
+        return (
+          <section key={group.key || "__none__"}>
+            <div className="flex items-center gap-2 border-b border-border bg-overlay-soft px-4 py-1">
+              <h2 className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500" title={name}>
+                {name}
+              </h2>
+              {group.tasks.length > 0 ? (
+                <span className="shrink-0 text-ui-2xs text-slate-400">
+                  {group.tasks.length}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                aria-label={t("mobile.agent.newSessionInProject", { project: name })}
+                title={
+                  creating === group.key
+                    ? t("mobile.agent.creating")
+                    : t("mobile.agent.newSessionInProject", { project: name })
                 }
-                onMergeStart={mergeStart}
-                onOpen={() => navigate(`#/agent/task/${task.id}`)}
-              />
+                disabled={creating !== null}
+                onClick={() => void createSession(group.project)}
+                className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
+              >
+                {creating === group.key ? (
+                  <LoaderCircle size={14} className="animate-spin" />
+                ) : (
+                  <Plus size={14} />
+                )}
+              </button>
+            </div>
+            {group.tasks.map((task) => (
+              <TaskRow key={task.id} task={task} />
             ))}
-          </div>
-        </section>
-      ) : null}
-
-      {running.length > 0 ? (
-        <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.running")}</h2>
-          <div className="space-y-3">
-            {running.map((task) => (
-              <RunningCard
-                key={task.id}
-                task={task}
-                state={state}
-                busy={busy !== null}
-                onCancel={cancel}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {queued.length > 0 ? (
-        <section className="px-3 pt-3">
-          <h2 className="px-1 pb-2 text-ui-sm text-slate-500">{t("magent.queue")}</h2>
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface">
-            {queued.map((task, index) => (
-              <div key={task.id} className="border-b border-border last:border-b-0">
-                <button
-                  type="button"
-                  onClick={() => navigate(`#/agent/task/${task.id}`)}
-                  className="flex w-full items-center gap-2 px-4 pt-3 pb-1 text-left transition active:bg-overlay-soft"
-                >
-                  <span className="w-5 shrink-0 text-center font-mono text-ui-xs text-slate-400">
-                    {index + 1}
-                  </span>
-                  <span
-                    className="min-w-0 flex-1 truncate text-ui-caption text-slate-900"
-                    title={bugTitle(task.title) || t("magent.untitled")}
-                  >
-                    {bugTitle(task.title) || t("magent.untitled")}
-                  </span>
-                  <Badge tone={AGENT_STATUS_TONES.queued}>
-                    {t(AGENT_STATUS_LABELS.queued)}
-                  </Badge>
-                </button>
-                <div className="flex justify-end px-4 pb-2">
-                  <button
-                    type="button"
-                    disabled={busy !== null}
-                    title={t("magent.cancelQueuedHint")}
-                    onClick={() => cancel(task)}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-ui-xs text-slate-500 transition active:bg-overlay-soft disabled:opacity-50"
-                  >
-                    <X size={12} />
-                    {t("common.cancel")}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+            {group.project === null &&
+            group.tasks.length === 0 &&
+            feed.tasks !== null &&
+            !feed.tasksError ? (
+              <p
+                className="px-4 py-10 text-center text-ui-base text-slate-400"
+                title={t("mobile.agent.emptyHint")}
+              >
+                {t("mobile.agent.empty")}
+              </p>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Check, ChevronDown, ChevronUp, Eye, EyeOff, Folder, FolderGit2, FolderOpen, Pencil, Plus, ScrollText, Trash2 } from "lucide-react";
 import clsx from "clsx";
 
-import { agentApi, type ProjectAgentConfig } from "../lib/agent";
+import { agentSettingsApi, type ProjectAgentConfig } from "../lib/agentSettings";
 import { api, type Workspace, type WorkspaceContext } from "../lib/api";
 import { copyText } from "../lib/desktop";
 import type { SettingsSectionProps } from "../lib/feature";
@@ -12,6 +12,8 @@ import type { LocalProject } from "../lib/local";
 import { useTauriSubscription } from "../lib/tauriEvent";
 import { Button, cardClass, inputClass } from "./ui";
 import { FolderPicker } from "./FolderPicker";
+import { ScrollingName } from "./ScrollingName";
+import { WorktreeCard } from "./WorktreeCard";
 
 const emptyProject = (): ProjectAgentConfig => ({ repoPath: "", rule: "" });
 
@@ -63,9 +65,9 @@ export function ProjectSettings(props: {
   }, [projects]);
 
   useEffect(() => {
-    void agentApi
-      .configGet()
-      .then(({ config }) => setProjects(config.projects ?? {}))
+    void agentSettingsApi
+      .get()
+      .then((config) => setProjects(config.projects ?? {}))
       .catch((error) => toast("error", String(error)));
   }, [toast]);
 
@@ -73,7 +75,8 @@ export function ProjectSettings(props: {
     async (next: Record<string, ProjectAgentConfig>) => {
       setProjects(next);
       try {
-        const { config: updated } = await agentApi.configSet({ projects: next });
+        const current = await agentSettingsApi.get();
+        const updated = await agentSettingsApi.set({ ...current, projects: next });
         setProjects(updated.projects ?? {});
       } catch (error) {
         toast("error", String(error));
@@ -89,6 +92,9 @@ export function ProjectSettings(props: {
       return {
         ...current,
         [workspaceId]: {
+          // Keep fields this form does not edit (the TAPD project name the
+          // backend learns on the first enqueue).
+          ...previous,
           repoPath: patch.repoPath ?? previous.repoPath,
           rule: patch.rule ?? previous.rule,
         },
@@ -180,7 +186,7 @@ export function ProjectSettings(props: {
   const pickerProject = pickerFor ? projects[pickerFor] ?? emptyProject() : null;
 
   return (
-    <div className="space-y-4">
+    <div data-component="ProjectSettings" className="space-y-3">
       <section className={`${cardClass} @container`}>
         <h2
           className="flex items-center gap-2 text-ui-base text-slate-900"
@@ -215,12 +221,10 @@ export function ProjectSettings(props: {
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: workspace.logoColor || "#0ea5e9" }}
                   />
-                  <span
-                    className="min-w-0 flex-1 truncate text-ui-caption font-normal text-slate-800"
-                    title={workspace.name}
-                  >
-                    {workspace.name}
-                  </span>
+                  <ScrollingName
+                    text={workspace.name}
+                    className="min-w-0 flex-1 text-ui-caption font-normal text-slate-800"
+                  />
                   <button
                     type="button"
                     title={t("settings.projects.copyId")}
@@ -356,6 +360,8 @@ export function ProjectSettings(props: {
         />
       </section>
 
+      <WorktreeCard toast={toast} />
+
       <section className={`${cardClass} @container`}>
         <div className="flex items-center gap-2">
           <h2
@@ -407,11 +413,11 @@ export function ProjectSettings(props: {
                       type="button"
                       onClick={() => onSelectLocalProject(project.id)}
                       className={clsx(
-                        "min-w-0 flex-1 truncate text-left text-ui-caption transition hover:text-sky-700",
+                        "min-w-0 flex-1 text-left text-ui-caption transition hover:text-sky-700",
                         active ? "text-slate-900" : "text-slate-800",
                       )}
                     >
-                      {project.name}
+                      <ScrollingName text={project.name} />
                     </button>
                     {project.rule?.trim() ? (
                       <span

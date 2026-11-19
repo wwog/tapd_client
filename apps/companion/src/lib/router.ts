@@ -3,11 +3,10 @@ import { useSyncExternalStore } from "react";
 export type Route =
   | { name: "pair"; query: URLSearchParams }
   | { name: "bugs" }
+  | { name: "agent" }
+  | { name: "agent-session"; id: string }
   | { name: "local"; projectId: string | null }
   | { name: "bug"; id: string; workspaceId: string | null }
-  | { name: "agent" }
-  | { name: "agent-history" }
-  | { name: "agent-task"; id: string }
   | { name: "coworkers" }
   | { name: "files"; workspaceId: string | null; path: string }
   | { name: "file"; workspaceId: string | null; path: string }
@@ -24,6 +23,11 @@ const parse = (hash: string): Route => {
       return { name: "pair", query };
     case "bugs":
       return { name: "bugs" };
+    case "agent":
+      // One session: #/agent/session/<sessionId>.
+      return parts[1] === "session" && parts[2]
+        ? { name: "agent-session", id: parts[2] }
+        : { name: "agent" };
     case "local":
       // Selected local project: #/local?p=<projectId>.
       return { name: "local", projectId: query.get("p") };
@@ -32,10 +36,6 @@ const parse = (hash: string): Route => {
       return parts[1]
         ? { name: "bug", id: parts[1], workspaceId: query.get("w") }
         : { name: "bugs" };
-    case "agent":
-      if (parts[1] === "history") return { name: "agent-history" };
-      if (parts[1] === "task" && parts[2]) return { name: "agent-task", id: parts[2] };
-      return { name: "agent" };
     case "coworkers":
       return { name: "coworkers" };
     case "files":

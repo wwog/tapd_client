@@ -5,7 +5,7 @@
 //! authenticates with `Authorization: Bearer <token>` whose SHA-256 must
 //! match a paired device. Rate limiting is one sliding per-IP window
 //! implementation shared by the pair route (10/min) and the feature proxy
-//! (60/min, see `feature`).
+//! (120/min, see `feature`).
 
 use std::{
     collections::{HashMap, VecDeque},

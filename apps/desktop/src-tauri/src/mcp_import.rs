@@ -206,6 +206,7 @@ fn client_spec(client: &str) -> Option<&'static ClientSpec> {
 ///
 /// Returns `{ path, backupPath, changed, imported }`, matching the frontend
 /// `McpImportResult` contract.
+#[allow(dead_code)] // exercised by the unit tests below
 pub fn ensure_opencode_mcp(command_path: &str) -> Result<Value, String> {
     if command_path.trim().is_empty() {
         return Err(tr("app.mcp.import.opencode.empty").to_string());

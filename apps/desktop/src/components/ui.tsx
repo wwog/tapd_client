@@ -36,6 +36,7 @@ export function Button(
 
   return (
     <button
+      data-component="Button"
       type="button"
       {...rest}
       disabled={disabled || loading}
@@ -52,7 +53,7 @@ export function Button(
   );
 }
 
-type BadgeTone = "neutral" | "blue" | "green" | "amber" | "red" | "cyan";
+export type BadgeTone = "neutral" | "blue" | "green" | "amber" | "red" | "cyan";
 
 const BADGE_TONES: Record<BadgeTone, string> = {
   neutral: "bg-slate-100 text-slate-600",
@@ -73,6 +74,7 @@ export function Badge(props: {
 
   return (
     <span
+      data-component="Badge"
       className={clsx(
         "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-ui-sm font-normal",
         BADGE_TONES[tone],
@@ -91,12 +93,12 @@ export function Spinner({ className }: { className?: string }) {
 
 /** Shared form field styles; callers add layout classes with `clsx`. */
 export const inputClass =
-  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300 focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition placeholder:text-slate-300";
 
 export const selectClass =
-  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200";
+  "rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 transition";
 
-export const cardClass = "rounded-2xl border border-border bg-surface p-5";
+export const cardClass = "rounded-2xl border border-border bg-surface p-4";
 
 /**
  * Transparent strip at the top of a modal overlay. The overlay covers the
@@ -106,6 +108,7 @@ export const cardClass = "rounded-2xl border border-border bg-surface p-5";
 export function ModalDragStrip({ className }: { className?: string }) {
   return (
     <div
+      data-component="ModalDragStrip"
       data-tauri-drag-region
       className={clsx("absolute inset-x-0 top-0 h-11", className)}
     />
@@ -132,6 +135,7 @@ export function Switch(props: {
 
   return (
     <button
+      data-component="Switch"
       type="button"
       role="switch"
       aria-checked={checked}
@@ -163,6 +167,7 @@ export function EmptyState(props: {
 }) {
   return (
     <div
+      data-component="EmptyState"
       className="grid min-h-[280px] place-items-center p-8 text-center"
       title={props.description}
     >

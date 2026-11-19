@@ -4,13 +4,11 @@ import { Check, ChevronLeft, Copy, Minus, Plus, Star } from "lucide-react";
 import {
   api,
   asApiError,
-  type AgentConfig,
-  type AgentRuntimeDescriptor,
+  type AgentSettings,
   type CompanionDeviceInfo,
   type CompanionDevices,
   type NotificationSettings,
 } from "../lib/api";
-import { useAgentTasks } from "../lib/agentTasks";
 import { Badge } from "../components/Badge";
 import { copyText } from "../lib/clipboard";
 import { relativeTime } from "../lib/format";
@@ -37,6 +35,7 @@ function Segmented<T extends string>(props: {
 }) {
   return (
     <div
+      data-component="Segmented"
       role="tablist"
       aria-label={props.label}
       className="inline-flex rounded-lg border border-border bg-slate-50 p-0.5"
@@ -64,7 +63,7 @@ function Segmented<T extends string>(props: {
 
 function SettingRow(props: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+    <div data-component="SettingRow" className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
       <span className="shrink-0 text-ui-caption text-slate-700">{props.label}</span>
       {props.children}
     </div>
@@ -81,6 +80,7 @@ function SwitchButton(props: {
 }) {
   return (
     <button
+      data-component="SwitchButton"
       type="button"
       role="switch"
       aria-checked={props.checked}
@@ -135,7 +135,7 @@ function Stepper(props: {
 }) {
   const step = props.step ?? 1;
   return (
-    <div className="flex items-center gap-3">
+    <div data-component="Stepper" className="flex items-center gap-3">
       <button
         type="button"
         aria-label={t("mobile.settings.decrease", { label: props.label })}
@@ -169,6 +169,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   if (props.error) {
     return (
       <p
+        data-component="DeskStatus"
         className="border-b border-border py-2.5 text-ui-sm leading-5 text-rose-600 last:border-b-0"
         title={t("mobile.settings.loadErrorHint")}
       >
@@ -178,7 +179,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   }
   if (props.loading) {
     return (
-      <p className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
+      <p data-component="DeskStatus" className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
         {t("mobile.settings.loadingDesktop")}
       </p>
     );
@@ -191,13 +192,9 @@ const UNITS_MAX = 8;
 const POLL_MIN = 20;
 const POLL_MAX = 600;
 
-/** 不再占据队列的任务状态（Worktree 开关的锁依据，与桌面一致）。 */
-const TERMINAL_STATUSES = ["succeeded", "failed", "canceled"];
-
 type SettingsCache = {
-  agentConfig: AgentConfig | null;
+  agentConfig: AgentSettings | null;
   notif: NotificationSettings | null;
-  runtimes: AgentRuntimeDescriptor[];
 };
 
 /** Last values from the previous Settings visit. Re-entering renders these
@@ -212,10 +209,6 @@ const rememberSettings = (patch: Partial<SettingsCache>): void => {
         : (settingsCache?.agentConfig ?? null),
     notif:
       patch.notif !== undefined ? patch.notif : (settingsCache?.notif ?? null),
-    runtimes:
-      patch.runtimes !== undefined
-        ? patch.runtimes
-        : (settingsCache?.runtimes ?? []),
   };
 };
 
@@ -225,16 +218,11 @@ const rememberSettings = (patch: Partial<SettingsCache>): void => {
 export function SettingsPage() {
   const prefs = usePrefs();
   const presence = useDesktopPresence();
-  const { state: agentTasksState } = useAgentTasks();
-
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(
+  const [agentConfig, setAgentConfig] = useState<AgentSettings | null>(
     () => settingsCache?.agentConfig ?? null,
   );
   const [notif, setNotif] = useState<NotificationSettings | null>(
     () => settingsCache?.notif ?? null,
-  );
-  const [runtimes, setRuntimes] = useState<AgentRuntimeDescriptor[]>(
-    () => settingsCache?.runtimes ?? [],
   );
   const [pendingLoads, setPendingLoads] = useState(() => (settingsCache ? 0 : 3));
   const [deskError, setDeskError] = useState<string | null>(null);
@@ -270,7 +258,7 @@ export function SettingsPage() {
     void (async () => {
       let failure: string | null = null;
       try {
-        const config = await api.agentConfig();
+        const config = await api.agentSettings();
         if (!cancelled) {
           setAgentConfig(config);
           rememberSettings({ agentConfig: config });
@@ -283,15 +271,6 @@ export function SettingsPage() {
         if (!cancelled) {
           setNotif(settings);
           rememberSettings({ notif: settings });
-        }
-      } catch (err) {
-        failure = failure ?? asApiError(err).message;
-      }
-      try {
-        const catalog = await api.agentRuntimes();
-        if (!cancelled) {
-          setRuntimes(catalog);
-          rememberSettings({ runtimes: catalog });
         }
       } catch (err) {
         failure = failure ?? asApiError(err).message;
@@ -332,14 +311,14 @@ export function SettingsPage() {
   }, [presence.canManage, presence.lastSync, deviceBusy, loadDevices]);
 
   // Agent 配置：乐观更新，失败回滚并保留错误（无 toast，错误留在页面）。
-  const patchConfig = async (patch: Partial<AgentConfig>) => {
+  const patchConfig = async (patch: Partial<AgentSettings>) => {
     if (!agentConfig) return;
     const previous = agentConfig;
     const optimistic = { ...agentConfig, ...patch };
     setAgentConfig(optimistic);
     rememberSettings({ agentConfig: optimistic });
     try {
-      const saved = await api.agentConfigSet(patch);
+      const saved = await api.agentSettingsSet(patch);
       setAgentConfig(saved);
       rememberSettings({ agentConfig: saved });
       setDeskError(null);
@@ -479,15 +458,8 @@ export function SettingsPage() {
     window.setTimeout(() => setLinkCopied(false), 1500);
   };
 
-  // 队列里有未结束任务时，桌面端会拒绝切换 Worktree；开关直接锁住。
-  const queueBusy = (agentTasksState?.tasks ?? []).some(
-    (task) => !TERMINAL_STATUSES.includes(task.status),
-  );
-  const worktreeEnabled = agentConfig?.worktreeEnabled ?? false;
-  const availableRuntimes = runtimes.filter((runtime) => runtime.available);
-
   return (
-    <div className="pb-6">
+    <div data-component="SettingsPage" className="pb-6">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
@@ -501,29 +473,9 @@ export function SettingsPage() {
       </header>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        <SettingRow label={t("mobile.settings.desktop")}>
-          <span
-            className="flex items-center gap-1.5 text-ui-caption text-slate-700"
-            title={t("mobile.settings.heartbeatHint")}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                presence.online ? "bg-emerald-500" : "bg-slate-300"
-              }`}
-            />
-            {presence.online
-              ? t("mobile.settings.presenceOnline")
-              : t("mobile.settings.presenceOffline")}
-          </span>
-        </SettingRow>
         <SettingRow label={t("mobile.settings.device")}>
           <span className="text-ui-caption text-slate-700">
             {presence.deviceName ?? "—"}
-          </span>
-        </SettingRow>
-        <SettingRow label={t("mobile.settings.desktopVersion")}>
-          <span className="text-ui-caption text-slate-700">
-            {presence.version ? `v${presence.version}` : "—"}
           </span>
         </SettingRow>
         <SettingRow label={t("mobile.settings.lastSync")}>
@@ -722,58 +674,16 @@ export function SettingsPage() {
         title={t("mobile.settings.writeBackHint")}
       >
         <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.agentExecution")}</h3>
-        <SwitchRow
-          label={t("mobile.settings.worktreeIsolation")}
-          title={
-            queueBusy
-              ? t("mobile.settings.worktreeBusyHint")
-              : t("mobile.settings.worktreeHint")
-          }
-          checked={worktreeEnabled}
-          disabled={!agentConfig || queueBusy}
-          onChange={(value) => void patchConfig({ worktreeEnabled: value })}
-        />
         <SettingRow label={t("mobile.settings.executionUnits")}>
           <Stepper
             label={t("mobile.settings.executionUnits")}
-            value={worktreeEnabled ? agentConfig?.executionUnits ?? 2 : 1}
+            value={agentConfig?.executionUnits ?? 2}
             min={UNITS_MIN}
             max={UNITS_MAX}
-            disabled={!agentConfig || !worktreeEnabled}
+            disabled={!agentConfig}
             onChange={(value) => void patchConfig({ executionUnits: value })}
           />
         </SettingRow>
-        <SwitchRow
-          label={t("mobile.settings.restoreQueued")}
-          title={t("mobile.settings.restoreQueuedHint")}
-          checked={agentConfig?.restoreQueuedTasks ?? false}
-          disabled={!agentConfig}
-          onChange={(value) => void patchConfig({ restoreQueuedTasks: value })}
-        />
-        <SettingRow label={t("mobile.settings.defaultRuntime")}>
-          <select
-            aria-label={t("mobile.settings.defaultRuntime")}
-            title={t("mobile.settings.runtimeListHint")}
-            value={agentConfig?.runtimeId ?? ""}
-            disabled={!agentConfig}
-            onChange={(event) => void patchConfig({ runtimeId: event.target.value })}
-            className="max-w-[60%] rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
-          >
-            {availableRuntimes.length === 0 ? (
-              <option value={agentConfig?.runtimeId ?? ""}>{agentConfig?.runtimeId || "—"}</option>
-            ) : null}
-            {availableRuntimes.map((runtime) => (
-              <option key={runtime.id} value={runtime.id}>
-                {runtime.name}
-              </option>
-            ))}
-          </select>
-        </SettingRow>
-        {queueBusy ? (
-          <p className="py-2 text-ui-xs leading-4 text-slate-500" title={t("mobile.settings.worktreeLockHint")}>
-            {t("mobile.settings.worktreeQueueBusy")}
-          </p>
-        ) : null}
       </section>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
@@ -833,7 +743,7 @@ export function SettingsPage() {
               value={notif?.quietHours.start ?? "22:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ start: event.target.value })}
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 disabled:opacity-40"
             />
             <span className="text-ui-sm text-slate-400">{t("mobile.settings.to")}</span>
             <input
@@ -842,7 +752,7 @@ export function SettingsPage() {
               value={notif?.quietHours.end ?? "09:00"}
               disabled={!notif || !notif?.quietHours.enabled}
               onChange={(event) => void patchQuietHours({ end: event.target.value })}
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 focus:outline-2 focus:outline-sky-200 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-caption text-slate-700 disabled:opacity-40"
             />
           </span>
         </SettingRow>

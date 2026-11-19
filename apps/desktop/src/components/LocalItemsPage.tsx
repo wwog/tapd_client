@@ -1,16 +1,15 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArrowRight,
   Check,
-  Eye,
   Pencil,
   Plus,
   RefreshCw,
@@ -19,67 +18,50 @@ import {
   Undo2,
 } from "lucide-react";
 
-import {
-  AGENT_STATUS_LABELS,
-  AGENT_STATUS_TONES,
-  isAgentTerminalStatus,
-  type AgentTask,
-} from "../lib/agent";
-import { useAgentTasksStore } from "../lib/agentStore";
+import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { t } from "../lib/i18n";
 import {
   localApi,
+  LOCAL_ITEMS_EVENT,
+  type LocalItemsEvent,
   type LocalProject,
   type WorkItem,
   type WorkItemStatus,
 } from "../lib/local";
 import type { ToastFn } from "../lib/feature";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { LocalItemDialog } from "./LocalItemDialog";
 import { ScrollingName } from "./ScrollingName";
 import { Segmented } from "./Segmented";
 import { SkeletonRows } from "./Skeleton";
-import { Badge, Button } from "./ui";
+import { Button } from "./ui";
 
 type Props = {
   project: LocalProject;
-  /** Bumped by App after an enqueue so the linked task id is refetched. */
-  refreshToken: number;
   toast: ToastFn;
-  onComposeAgent: (project: LocalProject, item: WorkItem) => void;
-  onOpenAgentTask: (taskId: string) => void;
 };
 
-/** Delay before a task-finished reload, so a status burst reloads once. */
-const TASK_REFRESH_DELAY_MS = 350;
-
 /**
- * Three-state work item list for one local project. Items are local-only; the
- * only Agent link is the task id the backend stores when an item is handed
- * over. Task state is read from the shared queue snapshot, not refetched.
+ * Three-state work item list for one local project. Items are local-only: no
+ * TAPD workspace, no export package, and no task link until the built-in agent
+ * flow hands them over (P4).
  */
-export function LocalItemsPage({
-  project,
-  refreshToken,
-  toast,
-  onComposeAgent,
-  onOpenAgentTask,
-}: Props) {
+export function LocalItemsPage({ project, toast }: Props) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkItemStatus>("pending");
   const [dialog, setDialog] = useState<{ item: WorkItem | null } | null>(null);
+  /** Item whose enqueue sheet is open; one sheet serves every row. */
+  const [handOver, setHandOver] = useState<WorkItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
-
-  const agentState = useAgentTasksStore();
-  const tasks = useMemo(() => {
-    const map = new Map<string, AgentTask>();
-    for (const task of agentState?.tasks ?? []) map.set(task.id, task);
-    return map;
-  }, [agentState]);
+  /** Row context menu: the item and the click position. */
+  const [menu, setMenu] = useState<{ item: WorkItem; x: number; y: number } | null>(
+    null,
+  );
 
   // The toast callback is not a dependency of `load`: App may hand a new
   // identity each render, which would restart the fetch on every render.
@@ -114,35 +96,46 @@ export function LocalItemsPage({
 
   useEffect(() => {
     void load();
-  }, [load, refreshToken]);
+  }, [load]);
 
-  /**
-   * The backend marks a linked item done when its task succeeds, without a
-   * push for the item itself. A signature of live tasks changes on that
-   * transition; the reload is deferred so a burst of runtime updates does not
-   * fetch the list repeatedly.
-   */
-  const liveTaskSignature = useMemo(() => {
-    const live: string[] = [];
-    for (const task of agentState?.tasks ?? []) {
-      if (!isAgentTerminalStatus(task.status)) {
-        live.push(`${task.id}:${task.status}`);
-      }
-    }
-    live.sort();
-    return live.join("|");
-  }, [agentState]);
-
-  const lastSignature = useRef<string | null>(null);
+  // The task flow changes an item's status in the database (attach → in
+  // progress, done → finished, cancel/delete → restored) and emits this event.
+  // A quiet reload keeps the rows on screen; if the changed item is in the
+  // visible tab, follow it into its new tab like the row actions do.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   useEffect(() => {
-    if (lastSignature.current === null || lastSignature.current === liveTaskSignature) {
-      lastSignature.current = liveTaskSignature;
-      return;
-    }
-    lastSignature.current = liveTaskSignature;
-    const timer = setTimeout(() => void load(true), TASK_REFRESH_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [liveTaskSignature, load]);
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<LocalItemsEvent>(LOCAL_ITEMS_EVENT, (event) => {
+      const data = event.payload ?? {};
+      if (data.projectId && data.projectId !== project.id) return;
+      const current = data.itemId
+        ? itemsRef.current.find((item) => item.id === data.itemId)
+        : undefined;
+      const follow =
+        current && current.status === tabRef.current && data.status
+          ? data.status
+          : null;
+      void load(true).then(() => {
+        if (!disposed && follow) setTab(follow);
+      });
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // Without the event bridge the page still loads on mount/project
+        // switch; a missed refresh must not break the list.
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [load, project.id]);
 
   const pending = items.filter((item) => item.status === "pending");
   const inProgress = items.filter((item) => item.status === "in_progress");
@@ -202,7 +195,7 @@ export function LocalItemsPage({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-component="LocalItemsPage" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
         <Segmented<WorkItemStatus>
           value={tab}
@@ -273,13 +266,10 @@ export function LocalItemsPage({
               <ItemRow
                 key={item.id}
                 item={item}
-                task={item.agentTaskId ? tasks.get(item.agentTaskId) ?? null : null}
                 busy={actionBusy === item.id}
-                onCompose={() => onComposeAgent(project, item)}
                 onSetStatus={(status) => void setStatus(item, status)}
-                onEdit={() => setDialog({ item })}
-                onDelete={() => setDeleteTarget(item)}
-                onOpenTask={(taskId) => onOpenAgentTask(taskId)}
+                onHandOver={() => setHandOver(item)}
+                onContextMenu={(x, y) => setMenu({ item, x, y })}
               />
             ))}
           </ul>
@@ -305,26 +295,72 @@ export function LocalItemsPage({
           onConfirm={() => void confirmDelete()}
         />
       ) : null}
+
+      {menu ? (
+        <ContextMenu
+          key={`${menu.item.id}-${menu.x}-${menu.y}`}
+          x={menu.x}
+          y={menu.y}
+          label={t("local.items.menu")}
+          onClose={() => setMenu(null)}
+        >
+          {(requestClose) => (
+            <>
+              <ContextMenuItem
+                icon={<Pencil size={14} />}
+                label={t("local.items.edit")}
+                onClick={() => {
+                  setDialog({ item: menu.item });
+                  requestClose();
+                }}
+              />
+              <ContextMenuItem
+                icon={<Trash2 size={14} />}
+                label={t("local.items.delete")}
+                tone="danger"
+                onClick={() => {
+                  setDeleteTarget(menu.item);
+                  requestClose();
+                }}
+              />
+            </>
+          )}
+        </ContextMenu>
+      ) : null}
+
+      {handOver ? (
+        <EnqueueSheet
+          target={{
+            kind: "local",
+            projectId: project.id,
+            itemId: handOver.id,
+            title: handOver.title,
+          }}
+          onClose={() => setHandOver(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
 function ItemRow(props: {
   item: WorkItem;
-  task: AgentTask | null;
   busy: boolean;
-  onCompose: () => void;
   onSetStatus: (status: WorkItemStatus) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onOpenTask: (taskId: string) => void;
+  onHandOver: () => void;
+  onContextMenu: (x: number, y: number) => void;
 }) {
-  const { item, task, busy, onCompose, onSetStatus, onEdit, onDelete, onOpenTask } =
-    props;
+  const { item, busy, onSetStatus, onHandOver, onContextMenu } = props;
 
   return (
-    <li>
-      <article className="flex items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300">
+    <li data-component="ItemRow">
+      <article
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu(event.clientX, event.clientY);
+        }}
+        className="flex items-start gap-2 rounded-xl border border-border bg-surface p-3 transition hover:border-slate-300"
+      >
         <div className="min-w-0 flex-1">
           <ScrollingName
             text={item.title}
@@ -338,29 +374,7 @@ function ItemRow(props: {
           ) : null}
         </div>
 
-        {task ? (
-          <Badge tone={AGENT_STATUS_TONES[task.status]} className="mt-0.5">
-            {t(AGENT_STATUS_LABELS[task.status])}
-          </Badge>
-        ) : null}
-
-        <div className="flex shrink-0 items-center gap-0.5">
-          {item.status !== "pending" && item.agentTaskId ? (
-            <RowAction
-              label={t("local.items.viewTask")}
-              icon={<Eye size={13} />}
-              onClick={() => onOpenTask(item.agentTaskId!)}
-            />
-          ) : null}
-
-          {item.status !== "done" ? (
-            <RowAction
-              label={t("local.items.toAgent")}
-              icon={<Sparkles size={13} />}
-              onClick={onCompose}
-            />
-          ) : null}
-
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           {item.status === "pending" ? (
             <RowAction
               label={t("local.items.moveToProgress")}
@@ -397,17 +411,19 @@ function ItemRow(props: {
             />
           ) : null}
 
-          <RowAction
-            label={t("local.items.edit")}
-            icon={<Pencil size={13} />}
-            onClick={onEdit}
-          />
-          <RowAction
-            label={t("local.items.delete")}
-            icon={<Trash2 size={13} />}
-            tone="danger"
-            onClick={onDelete}
-          />
+          {item.status !== "done" ? (
+            <button
+              type="button"
+              title={t("local.items.toAgentHint")}
+              aria-label={t("local.items.toAgent")}
+              disabled={busy}
+              onClick={onHandOver}
+              className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Sparkles size={12} />
+              {t("local.items.toAgent")}
+            </button>
+          ) : null}
         </div>
       </article>
     </li>
@@ -425,6 +441,7 @@ function RowAction(props: {
   const { label, icon, tone = "default", disabled = false, onClick } = props;
   return (
     <button
+      data-component="RowAction"
       type="button"
       title={label}
       aria-label={label}

@@ -11,6 +11,7 @@ export function ToastHost() {
 
   return (
     <div
+      data-component="ToastHost"
       className={clsx(
         "theme-static-dark fixed bottom-5 right-5 z-[60] flex max-w-md items-start gap-2 rounded-xl px-4 py-3 text-ui-base ",
         toast.kind === "ok" ? "bg-slate-900 text-slate-100" : "bg-rose-500 text-white",

@@ -385,7 +385,7 @@ export function CompanionDialog({
   })();
 
   const renderQr = () => (
-    <div className="rounded-2xl border border-border bg-slate-50/60 p-5">
+    <div className="rounded-2xl border border-border bg-slate-50/60 p-4">
       <div className="flex items-center gap-2">
         <span className={clsx("h-2 w-2 rounded-full", TONE_DOT[statusLine.tone])} />
         <span className="text-ui-sm text-slate-700">{statusLine.text}</span>
@@ -466,7 +466,7 @@ export function CompanionDialog({
     if (mode === "tunnel") {
       if (!cloudflaredInstalled) {
         return (
-          <div className="rounded-2xl border border-border bg-surface p-5">
+          <div className="rounded-2xl border border-border bg-surface p-4">
             <h3 className="text-ui-base text-slate-900">{t("settings.companion.needCloudflared")}</h3>
             <p className="mt-1 text-ui-caption text-slate-500">
               {t("settings.companion.cloudflaredHint")}
@@ -530,7 +530,7 @@ export function CompanionDialog({
 
       if (status.tunnel.state === "failed") {
         return (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-5">
+          <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
             <p className="text-ui-sm text-rose-700">{t("settings.companion.tunnelFailed")}</p>
             <p className="mt-1 break-all text-ui-xs text-rose-600">
               {status.tunnel.error ?? actionError ?? t("settings.companion.unknownError")}
@@ -629,7 +629,7 @@ export function CompanionDialog({
           </div>
         </section>
 
-        <aside className="min-w-0 space-y-4">
+        <aside className="min-w-0 space-y-3">
           <div className="rounded-2xl border border-border bg-surface p-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-ui-sm text-slate-900">{t("settings.companion.publicTunnel")}</h3>

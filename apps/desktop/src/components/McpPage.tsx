@@ -35,7 +35,7 @@ const COPY_BUTTON =
 
 /**
  * MCP tab: server status, policy/audit, and per-client one-click import
- * (opencode / Claude Code / Cursor / Codex) with manual project-level config.
+ * (opencode / ZCode / Claude Code / Cursor) with manual project-level config.
  */
 export function McpPage({ workspaces, onCopy, toast }: Props) {
   const [mcp, setMcp] = useState<McpConfigInfo | null>(null);
@@ -147,7 +147,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
 
   if (!mcp) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div data-component="McpPage" className="flex h-full items-center justify-center">
         <div className="text-center text-ui-caption text-slate-400">
           {configError ? (
             <>
@@ -182,7 +182,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
 
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div data-component="McpPage" className="mx-auto max-w-4xl space-y-3">
       <McpClientImport
         config={mcp}
         onCopy={onCopy}
@@ -201,12 +201,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
             </h2>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Badge tone="green" dot>
-              {t("mcp.enabled")}
-            </Badge>
-            <Badge tone={writable ? "blue" : "neutral"}>
-              {writable ? t("mcp.readWrite") : t("mcp.readOnly")}
-            </Badge>
             <Button
               size="sm"
               onClick={() => {
@@ -267,7 +261,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
             {t("mcp.policyReading")}
           </div>
         ) : (
-          <div className="mt-4 space-y-4">
+          <div className="mt-4 space-y-3">
             <div className="space-y-3">
               <PolicyRow
                 title={t("mcp.allowWrites")}
@@ -368,7 +362,7 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
               onChange={(event) =>
                 setAuditFilter(event.target.value as "all" | "denied" | "error")
               }
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-600 focus:border-sky-300"
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-600"
             >
               <option value="all">{t("common.all")}</option>
               <option value="denied">{t("mcp.filterDenied")}</option>
@@ -488,7 +482,7 @@ function chipClass(active: boolean): string {
 
 function PolicyRow(props: { title: string; hint: string; children: ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+    <div data-component="PolicyRow" className="flex items-start justify-between gap-4 rounded-xl border border-slate-100 bg-slate-50/70 p-3">
       <div className="min-w-0">
         <div className="text-ui-sm font-normal text-slate-700">{props.title}</div>
         <div className="mt-0.5 text-ui-xs leading-5 text-slate-400">{props.hint}</div>
@@ -508,7 +502,7 @@ function StatusTile({
   mono?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
+    <div data-component="StatusTile" className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
       <div className="text-ui-xs text-slate-400">{label}</div>
       <div
         className={
@@ -530,7 +524,7 @@ function PathRow(props: {
   onCopy: (text: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
+    <div data-component="PathRow" className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
       <span className="w-24 shrink-0 text-ui-sm text-slate-400">{props.label}</span>
       <span
         className="min-w-0 flex-1 truncate font-mono text-ui-sm text-slate-600"

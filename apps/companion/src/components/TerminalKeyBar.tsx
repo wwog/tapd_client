@@ -27,6 +27,7 @@ function KeyButton(props: {
 }) {
   return (
     <button
+      data-component="KeyButton"
       type="button"
       aria-label={props.title}
       title={props.title}
@@ -57,7 +58,7 @@ const ARROWS: ReadonlyArray<{
 /** Soft-keyboard replacement row pinned under the terminal. */
 export function TerminalKeyBar(props: Props) {
   return (
-    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border bg-canvas px-2 py-1.5">
+    <div data-component="TerminalKeyBar" className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border bg-canvas px-2 py-1.5">
       <KeyButton
         label={t("mobile.terminal.keyEsc")}
         title={t("mobile.terminal.keyEsc")}

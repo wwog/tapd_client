@@ -113,7 +113,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
   };
 
   return (
-    <div className="space-y-4">
+    <div data-component="CapturesPage" className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
         <div className="relative min-w-[220px] flex-1">
           <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
@@ -121,14 +121,14 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("capture.searchUrl")}
-            className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:border-sky-400 focus:bg-surface focus:outline-2 focus:outline-sky-200"
+            className="w-full rounded-lg border border-border bg-slate-50 py-2 pl-9 pr-3 text-ui-caption text-slate-800 transition focus:bg-surface"
           />
         </div>
 
         <select
           value={method}
           onChange={(event) => setMethod(event.target.value)}
-          className="rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700 focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+          className="rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption text-slate-700"
         >
           <option value="ALL">{t("capture.allMethods")}</option>
           {methods.map((item) => (
@@ -199,15 +199,16 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
           <span className="hidden sm:inline">{t("capture.autoRefresh")}</span>
         </div>
 
-        {filtered.length === 0 ? (
+        {!loaded ? (
+          <div className="flex items-center gap-2 px-4 py-6 text-ui-sm text-slate-400">
+            <Loader2 size={14} className="animate-spin" />
+            {t("capture.loadingTitle")}
+          </div>
+        ) : filtered.length === 0 ? (
           <EmptyState
-            icon={loaded ? <Search size={22} /> : <Loader2 size={22} className="animate-spin" />}
-            title={loaded ? t("capture.emptyMatch") : t("capture.loadingTitle")}
-            description={
-              loaded
-                ? t("capture.emptyHint")
-                : t("capture.loadingHint")
-            }
+            icon={<Search size={22} />}
+            title={t("capture.emptyMatch")}
+            description={t("capture.emptyHint")}
           />
         ) : (
           <div className="max-h-[calc(100vh-280px)] overflow-auto">
@@ -358,7 +359,7 @@ function BodyPanel(props: {
   const { title, value, truncated, onCopy } = props;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+    <div data-component="BodyPanel" className="overflow-hidden rounded-xl border border-border bg-surface">
       <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-ui-sm text-slate-500">
         <span>
           {title}

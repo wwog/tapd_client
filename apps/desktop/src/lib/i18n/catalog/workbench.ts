@@ -2,80 +2,6 @@
 import type { Catalog } from "../types";
 
 export const workbench = {
-  // ---------------------------------------------------------- agentChat.ts
-  "chat.toolRead": ["读取文件", "Read file"],
-  "chat.toolWrite": ["写入文件", "Write file"],
-  "chat.toolEdit": ["修改文件", "Edit file"],
-  "chat.toolExec": ["执行命令", "Run command"],
-  "chat.toolWeb": ["联网", "Web"],
-  "chat.toolAgent": ["子 Agent", "Sub-agent"],
-  "chat.toolMcp": ["MCP 工具", "MCP tool"],
-  "chat.toolOther": ["工具", "Tools"],
-  "chat.thinking": ["思考", "Thinking"],
-  "chat.system": ["系统", "System"],
-  "chat.taskReceived": ["收到任务", "Task received"],
-  "chat.reply": ["回复", "Reply"],
-
-  // ------------------------------------------------------ AgentChatPane.tsx
-  "chat.truncatedNotice": [
-    "会话记录较长，仅显示最近 2000 条消息。",
-    "Long conversation - showing only the latest 2000 messages.",
-  ],
-  "chat.composerPlaceholder": ["输入要发送给 Agent 的消息…", "Message the agent…"],
-  "chat.composerDisabled": ["任务已结束，无法继续发送", "Task finished - sending is disabled"],
-  "chat.composerHint": [
-    "Enter 发送 · Shift+Enter 换行 · 写入当前终端",
-    "Enter to send · Shift+Enter for a new line · writes to the current terminal",
-  ],
-  "chat.reading": ["正在读取会话…", "Reading conversation…"],
-  "chat.waitingOutput": ["等待 Agent 输出…", "Waiting for agent output…"],
-  "chat.readyToChat": [
-    "会话已就绪，发送一条消息开始对话",
-    "Session ready - send a message to start the conversation",
-  ],
-  "chat.emptyConversation": ["没有可展示的会话记录", "No conversation to show"],
-  "chat.terminalAvailable": [
-    "终端仍然可用，可以在终端里继续查看和操作。",
-    "The terminal is still available if you want to keep watching or working there.",
-  ],
-  "chat.switchToTerminal": ["切换到终端", "Switch to terminal"],
-  "chat.parameters": ["参数", "Parameters"],
-  "chat.output": ["输出", "Output"],
-  "chat.unsent": ["未发送", "Not sent"],
-  "chat.undelivered": ["未确认送达", "Delivery unconfirmed"],
-  "chat.sending": ["发送中…", "Sending…"],
-  "chat.currentModel": ["当前模型", "Current model"],
-  "chat.waitingPermission": ["等待权限确认", "Waiting for permission"],
-  "chat.waitingAnswer": ["等待回答", "Waiting for an answer"],
-  "chat.awaitingConfirm": ["Agent 正在等待你的确认。", "The agent is waiting for your confirmation."],
-  "chat.answerInTerminal": ["该问题需要在 Agent 终端中回答。", "Answer this question in the agent terminal."],
-
-  // -------------------------------------------------- AgentComposeSheet.tsx
-  "chat.attachTitle": ["选择图片、视频或其他资源", "Choose images, videos or other resources"],
-  "chat.imagesAndVideos": ["图片与视频", "Images and videos"],
-  "chat.allFiles": ["所有文件", "All files"],
-  "chat.pickerFailed": ["打开文件选择器失败：{error}", "Could not open the file picker: {error}"],
-  "chat.pasteFailed": ["保存粘贴资源失败：{error}", "Could not save the pasted resource: {error}"],
-  "chat.addResource": ["添加资源", "Add resource"],
-  "chat.addResourceHint": ["添加资源（传本地路径）", "Add resource (passes a local path)"],
-  "chat.fixWithAgent": ["用 Agent 修复", "Fix with agent"],
-  "chat.contextPlaceholder": [
-    "补充说明（Markdown）…  可写复现步骤、期望行为、注意事项",
-    "Extra context (Markdown)…  steps to reproduce, expected behavior, notes",
-  ],
-  "chat.forThisTask": ["本次任务使用", "For this task"],
-  "chat.modelHint": [
-    "本次任务的模型；留空使用运行时的默认模型",
-    "Model for this task; leave empty to use the runtime default",
-  ],
-  "chat.defaultModel": ["默认模型", "Default model"],
-  "chat.permissionHint": ["本次任务的访问权限", "Access permission for this task"],
-  "chat.addToQueue": ["加入队列", "Add to queue"],
-  "chat.dropOrPaste": ["也可以拖入或粘贴截图", "You can also drop or paste screenshots"],
-  "chat.removeAttachment": ["移除 {name}", "Remove {name}"],
-  "chat.addMore": ["继续添加", "Add more"],
-  "chat.addImageVideo": ["添加图片 / 视频", "Add image / video"],
-
   // ------------------------------------------------------------ McpPage.tsx
   "mcp.configReadFailed": ["读取 MCP 配置失败：{error}", "Could not read the MCP config: {error}"],
   "mcp.settingsLoading": ["MCP 设置加载中…", "Loading MCP settings…"],
@@ -84,7 +10,6 @@ export const workbench = {
     "把 TAPD 缺陷接入 AI 客户端，支持查询、导出与修复后回写。",
     "Connect TAPD bugs to AI clients: query, export and write back after a fix.",
   ],
-  "mcp.enabled": ["已启用", "Enabled"],
   "mcp.readWrite": ["读写", "Read-write"],
   "mcp.readOnly": ["只读", "Read-only"],
   "mcp.transport": ["传输", "Transport"],
@@ -192,8 +117,8 @@ export const workbench = {
   // -------------------------------------------------------- CoworkerPage.tsx
   "coworker.pageTitle": ["找同事搭伙", "Find coworkers"],
   "coworker.pageIntro": [
-    "找同事一起干活吧，工作不是一个人的工作。",
-    "Grab a coworker and get to work - work is not a solo job.",
+    "选几位同事。团队协作关闭时名单写进提示词；开启后改由任务板分配工作。",
+    "Pick teammates. With team collaboration off they are written into the prompt; with it on, work is assigned on the board.",
   ],
   "coworker.nameSeparator": ["、", ", "],
   "coworker.currentNames": ["当前搭子：{names}", "Coworkers: {names}"],
@@ -202,15 +127,11 @@ export const workbench = {
     "{n} 条同事包告警",
     ({ n }) => `${n} coworker package warning${Number(n) === 1 ? "" : "s"}`,
   ],
-  "coworker.promptSection": ["将写入 Agent 提示词的内容", "What will be added to the agent prompt"],
-  "coworker.contribute": ["技能征集", "Contribute a skill"],
-  "coworker.contributeIntro": [
-    "你的独门手艺，也值得成为下一位同事。带上角色、头像和技能包来投。",
-    "Your own craft deserves to be the next coworker. Bring a role, an avatar and a skill package.",
+  "coworker.promptSection": [
+    "关闭团队协作时写入提示词的内容",
+    "Added to the prompt while team collaboration is off",
   ],
   "coworker.submissionGuide": ["投稿规范", "Submission guide"],
-  "coworker.forkProject": ["Fork 项目", "Fork project"],
-  "coworker.readmeRules": ["规范见 README；", "See the README for the rules;"],
 
   // ------------------------------------------------------ CoworkerPicker.tsx
   "coworker.reload": ["重新加载", "Reload"],
@@ -240,7 +161,6 @@ export const workbench = {
     "在 TAPD 中操作时，这里会记录接口请求。",
     "Requests are recorded here while you use TAPD.",
   ],
-  "capture.loadingHint": ["正在读取请求记录…", "Reading captured requests…"],
   "capture.time": ["时间", "Time"],
   "capture.method": ["方法", "Method"],
   "capture.size": ["大小", "Size"],
@@ -259,6 +179,7 @@ export const workbench = {
   "media.openWithApp": ["用本地应用打开", "Open with default app"],
   "media.openInBrowser": ["在浏览器中打开", "Open in browser"],
   "media.closePreview": ["关闭预览", "Close preview"],
+  "media.openPreview": ["点击预览", "Click to preview"],
   "media.notReady": [
     "预览服务尚未就绪，可用「在浏览器中打开」",
     'Preview is not ready yet - use "Open in browser"',

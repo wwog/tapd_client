@@ -26,7 +26,7 @@
 | `text-slate-500/400` | 次要文字、说明 |
 | `text-sky-*` / `bg-sky-50` | 选中、链接、焦点 |
 | `text-emerald/amber/rose-*` + 同色 `bg-*-50` | 状态、风险、结果 |
-| `bg-island` / `bg-island-hover` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转） |
+| `bg-island` | 顶部胶囊与通知卡的中性玻璃表面（浅色为浅灰、深色为石墨灰，不随 slate 反转；透明度由外观设置的 `--island-alpha` 决定，默认 0.82，没有 hover 变体） |
 | `border-island-line` | 胶囊描边 |
 | `text-island-ink` / `text-island-muted` | 胶囊主/次文字 |
 | `bg-island-soft` / `bg-island-soft-hover` | 胶囊内次级按钮、代码块、进度槽 |
@@ -43,6 +43,7 @@
 - 字体栈：系统 UI 字体，不打包字体文件。
 - 基准字号：`--ui-font-size`，默认 14px，设置页可在 12–17px 调整。
 - 所有字号走 `text-ui-*`，不要写 `text-[11px]`、`text-xs`、`text-sm`。
+- Agent 会话整体高一档：`.agent-type`（`styles.css`）把六档 token 各上移 1px，任务列表、对话、轨迹与输入框一起变，档位之间的层级不变；Agent 配置弹窗不在其中，仍按应用基准。
 
 | Class | 计算 | 典型用途 |
 | --- | --- | --- |
@@ -63,7 +64,7 @@
 
 - 边框：`border border-border`；需要强调时 `border-2 border-sky-400`，**最大 2px**。
 - 圆角：卡片 `rounded-xl` / `rounded-2xl`；输入框、按钮 `rounded-lg`；小标签 `rounded-md`。
-- 阴影：0。焦点用 `outline-2 outline-sky-200`，不要用 `ring` / `shadow`。
+- 阴影：0。文本输入框（`input` / `textarea` / `select` / `contenteditable`）聚焦时保持原边框、不加 outline，由 `styles.css` 全局兜底；按钮、开关等非文本控件焦点用 `outline-2 outline-sky-200`，不要用 `ring` / `shadow`。
 - 卡片嵌套不要超过两层边框：外层容器负责边框，内层用背景色或间距分组。
 
 文本选择：
@@ -82,11 +83,13 @@
 | 表格右侧固定操作列 | `z-30` | `th.sticky right-0` |
 | 行内浮层 / 下拉菜单 | `z-50` | 项目打开方式、右键菜单 |
 | 全屏媒体预览 | `z-60` | MediaPreview |
-| Agent 底部面板 | `z-65` | Compose sheet |
+| Agent 底部面板 | `z-65` | EnqueueSheet |
 | 文件夹选择器 | `z-70` | FolderPicker |
 | 通用弹窗 | `z-80` | Dialog |
 | 弹窗内的文件夹选择器 | `z-85` | FolderPicker `elevated`（项目创建 / 编辑弹窗） |
 | 首次引导 | `z-90` | Onboarding |
+| Agent 行内浮层遮罩 | `z-110` | SelectPicker、SessionModePicker、SessionModelPicker、usage Popover 的点击捕获层 |
+| Agent 行内浮卡 | `z-120` | 上述浮层的卡片、TaskHoverCard |
 
 模态框交互：
 
@@ -120,7 +123,7 @@
 卡片：
 
 ```tsx
-<section className="rounded-2xl border border-border bg-surface p-5">
+<section className="rounded-2xl border border-border bg-surface p-4">
   <h2 className="flex items-center gap-2 text-ui-base text-slate-900">标题</h2>
   {/* 内容 */}
 </section>
@@ -143,7 +146,7 @@
 
 ```tsx
 <input
-  className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition focus:border-sky-300 focus:outline-2 focus:outline-sky-200"
+  className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-ui-caption text-slate-700 transition"
 />
 ```
 
@@ -158,6 +161,11 @@
 
 - 单栏内容流交给 `Dialog` 自己滚（默认）。
 - 列表 + 详情两栏时传 `bodyScroll={false}`，两栏各自 `overflow-y-auto overscroll-contain`：滚动列表不会带走右侧内容，标题栏也始终固定。
+
+长文本：
+
+- 单行放不下的标题 / 名称 / 标签统一用 `ScrollingName`（`components/ScrollingName.tsx`），不要用 `title` 兜底：鼠标停留 0.5 秒后按固定速度横向滚到末尾，移开立刻归位，悬停打字或者扫过列表都不会触发。
+- 允许多行的文本（缺陷详情标题、轨迹摘要、错误原因）保留换行或 `line-clamp`，不要塞进 `ScrollingName`。
 
 浮层动效：
 
@@ -179,6 +187,9 @@ grep -rn "font-medium\|font-semibold\|font-bold" apps/desktop/src
 
 # 不允许 ring 伪装边框 / 焦点
 grep -rn "ring-" apps/desktop/src --include='*.tsx'
+
+# 输入框不允许彩色焦点边框 / outline（按钮的 focus-visible 除外）
+grep -rn "focus:border-\|focus:outline-" apps/desktop/src --include='*.tsx'
 
 # 边框最大 2px
 grep -rn "border-[3-9]\|border-\[[3-9]px\]" apps/desktop/src --include='*.tsx'

@@ -1,409 +1,550 @@
-/** agent catalogue: short semantic key -> [zh, en]. */
+/**
+ * Agent page catalogue: sessions, stream, runtime states and the agent's own
+ * configuration tab. Explanations live in `title`, so most entries are labels.
+ */
 import type { Catalog } from "../types";
 
 export const agent = {
-  // Task status labels.
-  "agent.status.queued": ["排队中", "Queued"],
-  "agent.status.queuedPosition": ["排队中 #{position}", "Queued #{position}"],
-  "agent.status.preparing": ["准备中", "Preparing"],
-  "agent.status.running": ["运行中", "Running"],
-  "agent.status.awaitingApproval": ["待审核", "Pending review"],
-  "agent.status.awaitingMerge": ["待合并", "Pending merge"],
-  "agent.status.merging": ["合并中", "Merging"],
-  "agent.status.succeeded": ["已完成", "Completed"],
-  "agent.status.canceled": ["已取消", "Canceled"],
-  "agent.status.fixing": ["修复中", "Fixing"],
-  "agent.status.desktop": ["桌面 Agent {status}", "Desktop agent {status}"],
+  // Settings dialog (opened from the task column footer).
+  "agent.tab.config": ["配置", "Configuration"],
 
-  // Elapsed time (lib/activity.ts).
-  "agent.elapsed.daysHours": ["{days}天 {hours}小时", "{days}d {hours}h"],
-  "agent.elapsed.days": ["{days}天", "{days}d"],
-  "agent.elapsed.hoursMinutes": ["{hours}小时 {minutes}分钟", "{hours}h {minutes}m"],
-  "agent.elapsed.hours": ["{hours}小时", "{hours}h"],
-  "agent.elapsed.minutesSeconds": ["{minutes}分钟 {seconds}秒", "{minutes}m {seconds}s"],
-  "agent.elapsed.seconds": ["{seconds}秒", "{seconds}s"],
-  "agent.activity.createdElapsed": [
-    "{time} 创建 · 已用 {elapsed}",
-    "Created {time}, elapsed {elapsed}",
+  // Task list.
+  "agent.session.delete": ["删除会话", "Delete conversation"],
+  "agent.session.deleteHint": [
+    "删除「{title}」及其对话记录？它自己的 worktree 会一起删掉（未提交的改动也会丢失），仓库不受影响。",
+    "Delete “{title}” and its history? Its own worktree is removed too (uncommitted changes are lost); the repository itself is untouched.",
+  ],
+  "agent.session.reveal": ["在 Finder 中打开", "Reveal in Finder"],
+  "agent.session.revealFailed": ["打不开这个目录：{error}", "Cannot open that folder: {error}"],
+
+  // Local files in answers: links, inline code and images open a viewer tab.
+  "agent.file.open": ["在文件查看器中打开", "Open in the file viewer"],
+  "agent.file.missing": ["找不到这个文件：{path}", "That file was not found: {path}"],
+  "agent.file.openFailed": ["打不开这个文件：{error}", "Cannot open that file: {error}"],
+  "agent.file.isDir": ["这是一个文件夹", "That path is a folder"],
+  "agent.file.sessionRoot": ["会话文件", "Session files"],
+  "agent.file.rootRoot": ["本机文件", "Files on this Mac"],
+
+  "agent.task.noProject": ["未关联项目", "No project"],
+  "agent.task.untitled": ["新会话", "New session"],
+  "agent.task.empty": ["还没有任务", "No tasks yet"],
+  "agent.task.emptyHint": [
+    "在缺陷页点「用 Agent 修复」，或在事项页点「交给 Agent」创建任务。",
+    "Use \"Fix with agent\" on a bug, or \"Hand to Agent\" on a work item.",
+  ],
+  "agent.task.loadFailed": ["任务列表读取失败", "Could not load tasks"],
+  "agent.task.newInProject": ["在「{name}」中新建会话", "New conversation in “{name}”"],
+  "agent.task.workflowQueued": ["排队中", "Queued"],
+  "agent.task.workflowRunning": ["进行中", "Running"],
+  "agent.task.workflowAwaitingReview": ["待审核", "In review"],
+  "agent.task.workflowFinalizing": ["收尾中", "Finishing"],
+  "agent.task.workflowDone": ["已完成", "Done"],
+  "agent.task.workflowFailed": ["失败", "Failed"],
+  "agent.task.workflowCanceled": ["已取消", "Canceled"],
+  "agent.task.live": ["运行中", "Running"],
+  "agent.task.needsInput": ["{count} 项待处理", "{count} waiting for you"],
+
+  // Task hover card (list row): facts plus the live session directory.
+  "agent.card.freeChat": ["自由会话", "Free chat"],
+  "agent.card.idle": ["空闲", "Idle"],
+  "agent.card.failed": ["已失败", "Failed"],
+  "agent.card.branch": ["分支", "Branch"],
+  "agent.card.model": ["模型", "Model"],
+  "agent.card.changes": ["变更", "Changes"],
+  "agent.card.pending": ["待处理", "Waiting"],
+  "agent.card.messages": ["消息", "Messages"],
+  "agent.card.created": ["创建", "Created"],
+  "agent.card.updated": ["更新", "Updated"],
+  "agent.card.dir": ["目录", "Directory"],
+  "agent.card.copyPath": ["复制路径", "Copy path"],
+  "agent.card.copied": ["已复制", "Copied"],
+  "agent.card.openDir": ["在资源管理器中打开", "Open in explorer"],
+
+  // Task actions.
+  "agent.task.changes": ["{files} 个文件", "{files} files"],
+  "agent.task.changesHint": ["相对任务起点的改动", "Changes since the task started"],
+  "agent.task.hideDiff": ["收起改动", "Hide changes"],
+  "agent.task.diffEmpty": ["没有改动", "No changes"],
+  "agent.task.diffTruncated": [
+    "改动过大，只显示前一部分。",
+    "The diff is too large; only the first part is shown.",
+  ],
+  "agent.task.stop": ["停止", "Stop"],
+  "agent.task.openExport": ["打开导出目录", "Open export folder"],
+
+  // Task pane: the workflow task's permanent record.
+  "agent.task.tabTask": ["任务", "Task"],
+  "agent.task.workspaceRepo": ["主仓库", "Main repository"],
+  "agent.task.directHint": [
+    "本轮直接在主仓库工作，审核与提交会包含仓库里已有的未提交改动。",
+    "This round works in the main repository; review and commit include its existing uncommitted changes.",
+  ],
+  "agent.task.approveDirectHint": [
+    "提交主仓库的改动，然后让 Agent 回写 TAPD（本轮没有合并步骤）。",
+    "Commits the main repository's changes, then has the agent write back to TAPD (no merge step this round).",
+  ],
+  "agent.task.cleanedHint": [
+    "worktree 已清理，继续会话在主仓库进行。",
+    "The worktree was cleaned up; continuing this session runs in the main repository.",
+  ],
+  "agent.task.gitStart": ["开始", "Start"],
+  "agent.task.gitCommit": ["提交", "Commit"],
+  "agent.task.gitMerge": ["合并", "Merge"],
+  "agent.task.writeback": ["TAPD 回写", "TAPD write-back"],
+  "agent.task.writebackComment": ["评论已写入", "Comment posted"],
+  "agent.task.writebackStatus": ["状态 {from} → {to}", "Status {from} → {to}"],
+  "agent.task.writebackPending": ["尚未回写", "Not written back yet"],
+  "agent.task.openBug": ["打开缺陷", "Open bug"],
+  "agent.task.openItem": ["打开事项", "Open item"],
+  "agent.task.doneTitle": ["任务已完成", "Task complete"],
+  "agent.task.doneDirectHint": [
+    "本轮直接在主仓库完成。",
+    "This round finished in the main repository.",
+  ],
+  "agent.task.doneCleanedHint": [
+    "worktree 已清理，继续会话在主仓库进行。",
+    "The worktree was cleaned up; continuing runs in the main repository.",
+  ],
+  "agent.task.doneKeptHint": [
+    "worktree 已保留。",
+    "The worktree was kept.",
+  ],
+  "agent.task.viewTask": ["查看任务", "View task"],
+
+  // Review surface (awaiting_review / finalizing).
+  "agent.review.projectDir": ["项目目录", "Project folder"],
+  "agent.review.openProject": ["打开项目目录：{path}", "Open the project folder: {path}"],
+  "agent.review.worktreeDir": ["Worktree", "Worktree"],
+  "agent.review.openWorktree": ["打开 worktree：{path}", "Open the worktree: {path}"],
+  "agent.review.branch": ["分支", "Branch"],
+  "agent.review.openFailed": ["打不开：{error}", "Cannot open that: {error}"],
+  "agent.review.noPath": ["无法确定「{path}」的绝对路径", "Cannot resolve “{path}” to an absolute path"],
+  "agent.review.summary": ["AI 摘要", "AI summary"],
+  "agent.review.verification": ["验证", "Verification"],
+  "agent.review.risks": ["风险", "Risks"],
+  "agent.review.files": ["改动文件", "Changed files"],
+  "agent.review.filesHint": [
+    "「应用内查看」在内置文件查看器中打开；点文件名展开逐行 diff；「IDE 打开」用保存的打开方式打开这个文件。",
+    "“View here” opens the built-in viewer; click the file name for the line diff; “Open in IDE” uses the saved app.",
+  ],
+  "agent.review.viewHereHint": [
+    "在内置文件查看器中打开这个文件。",
+    "Open this file in the built-in viewer.",
+  ],
+  "agent.review.filesLoadFailed": ["改动列表读取失败", "Could not load the changed files"],
+  "agent.review.viewHere": ["应用内查看", "View here"],
+  "agent.review.openIde": ["IDE 打开", "Open in IDE"],
+  "agent.review.binary": ["二进制", "Binary"],
+  "agent.review.truncated": [
+    "文件过多，只显示前一部分。",
+    "Too many files; only the first part is shown.",
+  ],
+  "agent.review.statusAdded": ["新增", "Added"],
+  "agent.review.statusModified": ["修改", "Modified"],
+  "agent.review.statusDeleted": ["删除", "Deleted"],
+  "agent.review.statusRenamed": ["重命名", "Renamed"],
+  "agent.review.statusUntracked": ["未跟踪", "Untracked"],
+  "agent.review.approve": ["通过并收尾", "Approve and finish"],
+  "agent.review.approveHint": [
+    "提交 worktree 的改动，合并回主仓库并清理，然后让 Agent 回写 TAPD。",
+    "Commits the worktree, merges it into the repository, cleans up, then has the agent write back to TAPD.",
+  ],
+  "agent.review.continue": ["继续修改", "Keep editing"],
+  "agent.review.continueHint": ["回到对话，让 Agent 继续修改。", "Go back to the conversation and let the agent keep editing."],
+  "agent.review.continuePlaceholder": [
+    "说明还要改什么…",
+    "Describe what still needs to change…",
+  ],
+  "agent.review.discard": ["放弃", "Discard"],
+  "agent.review.discardHint": [
+    "先储藏本轮改动，再取消任务。",
+    "Stashes this round's changes, then cancels the task.",
+  ],
+  "agent.review.finalize": ["收尾进度", "Finishing"],
+  "agent.review.finalizeHint": [
+    "提交 → 合并 → 清理 → 回写；失败的那一步可以重试。",
+    "Commit → merge → clean up → write back; a failed step can be retried.",
+  ],
+  "agent.review.stepCommit": ["提交", "Commit"],
+  "agent.review.stepMerge": ["合并", "Merge"],
+  "agent.review.stepCleanup": ["清理", "Clean up"],
+  "agent.review.stepWriteback": ["回写", "Write back"],
+  "agent.review.finalizing": ["正在收尾…", "Finishing…"],
+  "agent.review.retry": ["重试", "Retry"],
+  "agent.review.retryHint": [
+    "从失败的那一步继续收尾。",
+    "Continue finishing from the step that failed.",
   ],
 
-  // Shared labels.
-  "agent.untitled": ["（无标题）", "(Untitled)"],
-  "agent.noRepo": ["未配置仓库", "No repository configured"],
-  "agent.openBug": ["打开缺陷", "Open bug"],
-  "agent.view.chat": ["对话", "Chat"],
-  "agent.view.terminal": ["终端", "Terminal"],
+  // Team board (P5).
+  "agent.team.viewChat": ["会话", "Chat"],
+  "agent.team.viewBoard": ["任务板", "Board"],
+  "agent.team.lead": ["协调者", "Coordinator"],
+  "agent.team.colPending": ["待分配", "Pending"],
+  "agent.team.colInProgress": ["进行中", "In progress"],
+  "agent.team.colCompleted": ["已完成", "Done"],
+  "agent.team.unassigned": ["未分配", "Unassigned"],
+  "agent.team.blocked": ["{n} 项阻塞", "{n} blocked"],
+  "agent.team.ready": ["可开始", "Ready"],
+  "agent.team.moreScopes": ["+{n}", "+{n}"],
+  "agent.team.empty": ["任务板为空", "No board tasks"],
+  "agent.team.emptyHint": [
+    "团队协作开启后，主 Agent 会把可拆分的工作登记在这里。",
+    "With team mode on, the lead agent registers splittable work here.",
+  ],
+  "agent.team.loadFailed": ["任务板读取失败", "Could not load the board"],
 
-  // Queue pane and toolbar.
-  "agent.queue.title": ["执行队列", "Queue"],
-  "agent.queue.empty": ["队列为空", "Queue is empty"],
-  "agent.queue.emptyHint": [
-    "在缺陷详情点击「用 Agent 修复」后会排在这里",
-    'Tasks queued by "Fix with agent" in bug details appear here',
+  // Composer work bar: the two session-local choices, fixed once it starts.
+  "agent.chat.team": ["同事协作", "Coworkers"],
+  "agent.chat.teamHint": [
+    "会话开始时选择是否让同事一起干活；发送第一条消息后不可更改。",
+    "Choose whether coworkers join this session before it starts; the choice is fixed after the first message.",
   ],
-  "agent.queue.running": ["正在运行", "Running"],
-  "agent.queue.queuedCount": ["排队中 {count}", "Queued {count}"],
-  "agent.queue.position": ["排队第 {position} 位", "Queue position {position}"],
-  "agent.queue.enqueuedAt": ["入队 {time}", "Queued {time}"],
-  "agent.queue.cancel": ["取消排队", "Cancel queued task"],
-  "agent.queue.ahead": [
-    "前面还有 {count} 个任务；开始后 opencode 终端会显示在这里。",
-    ({ count }) =>
-      `${count} task${Number(count) === 1 ? "" : "s"} ahead; the opencode terminal appears here once it starts.`,
+  "agent.chat.worktree": ["Worktree", "Worktree"],
+  "agent.chat.worktreeHint": [
+    "会话开始时选择是否在自己的 git worktree 中工作；发送第一条消息后不可更改。",
+    "Choose whether this session works in its own git worktree before it starts; the choice is fixed after the first message.",
   ],
-  "agent.queue.next": [
-    "下一个就轮到它；开始后 opencode 终端会显示在这里。",
-    "It is next; the opencode terminal appears here once it starts.",
+  "agent.chat.lockedHint": [
+    "会话已经开始，同事协作与 worktree 不可再更改。",
+    "The session has started; coworkers and the worktree can no longer be changed.",
   ],
-  "agent.queue.pausedHint": [
-    "队列已暂停，点击右上角「继续队列」恢复执行。",
-    'The queue is paused; click "Resume queue" at the top right to continue.',
-  ],
-  "agent.queue.resume": ["继续队列", "Resume queue"],
-  "agent.queue.refresh": ["刷新任务状态", "Refresh task status"],
-
-  "agent.toolbar.expand": ["展开{name}", "Expand {name}"],
-  "agent.toolbar.collapse": ["收起{name}", "Collapse {name}"],
-  "agent.toolbar.expandAuto": [
-    "展开{name}（空间不足时会自动收起）",
-    "Expand {name} (auto-collapses when space runs out)",
-  ],
-  "agent.toolbar.collapseDetail": [
-    "收起{name}，把宽度留给{detail}",
-    "Collapse {name} to give {detail} the width",
-  ],
-  "agent.tab.run": ["运行", "Run"],
-  "agent.tab.pending": ["待处理", "Pending"],
-  "agent.tab.history": ["历史", "History"],
-  "agent.tab.config": ["配置", "Config"],
-  "agent.counts.running": [
-    "{active} 运行 · {queued} 排队 · {awaiting} 待处理",
-    "{active} running, {queued} queued, {awaiting} pending",
-  ],
-  "agent.counts.runningPaused": [
-    "{active} 运行 · {queued} 排队 · {awaiting} 待处理 · 队列已暂停",
-    "{active} running, {queued} queued, {awaiting} pending, queue paused",
+  "agent.chat.worktreeFailed": [
+    "切换 worktree 失败：{error}",
+    "Could not switch the worktree: {error}",
   ],
 
-  // Timeline.
-  "agent.timeline.title": ["执行流程", "Timeline"],
-  "agent.timeline.truncated": ["已截断", "Truncated"],
-  "agent.timeline.waiting": ["等待 Agent 输出…", "Waiting for agent output…"],
-  "agent.timeline.empty": ["暂无执行记录", "No execution records"],
+  // Enqueue sheet (bug footer, bug row, local item row).
+  "agent.enqueue.bugHint": ["导出缺陷并交给 Agent 修复", "Export the bug and let the agent fix it"],
+  "agent.enqueue.placeholder": [
+    "补充说明（可选）",
+    "Extra instructions (optional)",
+  ],
+  "agent.enqueue.hint": [
+    "说明会追加到任务提示词。",
+    "Appended to the task prompt.",
+  ],
+  "agent.enqueue.teamHint": [
+    "同事协作在任务创建后固定，AI 可与同事分工。",
+    "Team collaboration is fixed when the task is created; the agent can share work with coworkers.",
+  ],
 
-  // Agent page.
-  "agent.page.noRunning": ["当前没有运行中的任务", "No task is running"],
-  "agent.page.notStarted": ["任务尚未开始", "Task has not started"],
-  "agent.page.pendingCount": [
-    "有 {count} 个任务待处理",
-    ({ count }) => `${count} task${Number(count) === 1 ? "" : "s"} waiting`,
+  // Stream.
+  "agent.stream.noSession": ["还没有选择会话", "No session selected"],
+  "agent.stream.noSessionHint": [
+    "从左侧选择会话，或新建一个会话。",
+    "Pick a session on the left, or create one.",
   ],
-  "agent.page.emptyHint": [
-    "在缺陷详情点击「用 Agent 修复」后，任务会出现在这里；已结束的任务在「历史」里可以打开系统终端继续处理。",
-    'Tasks appear here after you click "Fix with agent" in bug details; finished tasks can be continued in a system terminal from History.',
+  "agent.stream.empty": ["还没有消息", "No messages yet"],
+  "agent.stream.emptyHint": [
+    "在下方输入任务，Enter 发送。",
+    "Describe the task below; Enter sends it.",
   ],
-  "agent.page.stdinHint": [
-    "任务开始后，opencode TUI 会直接显示在这里，可以像命令行一样操作。",
-    "Once the task starts, the opencode TUI shows here and works like a command line.",
-  ],
-  "agent.storage.warning": [
-    "任务变更会保留在内存中并在下次写入时重试，但重启前可能丢失。",
-    "Task changes stay in memory and are retried on the next write, but may be lost before a restart.",
-  ],
-  "agent.merge.commitFailed": [
-    "提交轮失败，请查看执行记录",
-    "Commit round failed, check the execution record",
-  ],
-  "agent.review.stoppedStashed": ["已停止并储藏改动", "Stopped and stashed changes"],
+  "agent.stream.loadFailed": ["会话记录读取失败", "Could not load the conversation"],
+  "agent.stream.jumpToLatest": ["跳到最新", "Jump to latest"],
+  "agent.stream.prompts": ["提示词", "Prompts"],
 
-  // Config pane.
-  "agent.config.defaultAgent": ["默认 Agent", "Default agent"],
-  "agent.config.defaultAgentHint": [
-    "缺陷详情的「用 Agent 修复」与修复队列默认使用这个运行时。",
-    '"Fix with agent" in bug details and the fix queue use this runtime by default.',
+  // Built-in plugin inventory (agent config → plugins).
+  "agent.plugins.loading": ["正在读取插件…", "Reading plugins…"],
+  "agent.plugins.search": ["搜索插件", "Search plugins"],
+  "agent.plugins.sessionTitle": ["会话插件", "Session plugins"],
+  "agent.plugins.sessionHint": ["按会话组成", "Composed per session"],
+  "agent.plugins.sessionEmpty": [
+    "本部署没有按会话组成的插件：引擎插件都在全局组成",
+    "No per-session plugins here: every engine plugin is composed globally",
   ],
-  "agent.config.lastChecked": ["上次检测 {time}", "Last checked {time}"],
-  "agent.config.neverChecked": ["尚未检测本机 Agent", "Local agents not checked yet"],
-  "agent.config.check": ["检测", "Check"],
-  "agent.config.readingRuntimes": ["正在读取运行时…", "Reading runtimes…"],
-  "agent.config.loadingRuntimes": ["读取 Agent 运行时…", "Reading agent runtimes…"],
-  "agent.config.notFound": [
-    "该 Agent 未在本机 PATH 中检测到。安装后点「刷新检测」，或把下方的可执行路径改成绝对路径。",
-    'This agent was not found on your PATH. Install it and click "Refresh check", or set the executable path below to an absolute path.',
+  "agent.plugins.globalTitle": ["全局插件", "Global plugins"],
+  "agent.plugins.globalHint": ["系统与所有会话共用", "Shared by the system and every session"],
+  "agent.plugins.empty": ["没有插件", "No plugins"],
+  "agent.plugins.emptySearch": ["没有匹配的插件", "No matching plugins"],
+  "agent.plugins.stateOff": ["已停用", "Disabled"],
+  "agent.plugins.statePending": ["等待依赖", "Waiting"],
+  "agent.plugins.stateLoading": ["加载中", "Loading"],
+  "agent.plugins.stateActive": ["运行中", "Running"],
+  "agent.plugins.stateFailed": ["启动失败", "Failed"],
+  "agent.plugins.stateUnloading": ["卸载中", "Unloading"],
+
+  // 集成: the tool registry a new session inherits.
+  "agent.tools.loading": ["正在读取工具", "Reading tools"],
+  "agent.tools.search": ["搜索工具", "Search tools"],
+  "agent.tools.readyTitle": ["已注入", "Injected"],
+  "agent.tools.readyHint": ["新会话启动即可调用", "Callable as soon as a session starts"],
+  "agent.tools.conditionalTitle": ["按需开启", "On demand"],
+  "agent.tools.conditionalHint": ["对应模式打开后可用", "Callable while their mode is on"],
+  "agent.tools.params": ["{n} 个参数", ({ n }) => `${n} params`],
+  "agent.tools.empty": ["运行时没有注册工具", "The runtime has no tools registered"],
+  "agent.tools.emptySearch": ["没有匹配的工具", "No matching tools"],
+
+  // Token usage.
+  "agent.usage.chip": ["用量 {tokens} tok", "Usage {tokens} tok"],
+  "agent.usage.hint": [
+    "这一条回复的用量；dsh 按消息上报，回复结束才更新。",
+    "What this reply cost; dsh reports it per message, so it settles when the reply ends.",
   ],
-  "agent.config.runtimeOptions": ["运行参数", "Run settings"],
-  "agent.config.runtimeOptionsHint": [
-    "默认模型与访问权限；提交任务时仍可按任务覆盖，留空表示用 CLI 默认值。",
-    "Default model and access level; per-task overrides still apply, and empty means the CLI default.",
+  "agent.usage.title": ["本轮用量", "This reply"],
+  "agent.usage.route": ["提供方 / 模型", "Provider / model"],
+  "agent.usage.cacheHit": ["缓存命中", "Cache hit"],
+  "agent.usage.input": ["未缓存输入", "Uncached input"],
+  "agent.usage.cacheRead": ["缓存读取", "Cache read"],
+  "agent.usage.output": ["输出", "Output"],
+  "agent.usage.total": ["合计", "Total"],
+  "agent.usage.tokens": ["{tokens} tok", "{tokens} tok"],
+  "agent.stats.turns": ["{turns} 轮 {steps} 步", "{turns} turns, {steps} steps"],
+  "agent.stats.turnsLabel": ["轮 / 步", "Turns / steps"],
+  "agent.stats.speed": ["{speed} tok/s", "{speed} tok/s"],
+  "agent.stats.tokens": ["{tokens} tok", "{tokens} tok"],
+  "agent.stats.cache": ["缓存命中 {percent}%", "cache {percent}%"],
+  "agent.stats.percent": ["{percent}%", "{percent}%"],
+  "agent.stats.title": ["会话统计", "Session stats"],
+  "agent.stats.modelTime": ["模型用时", "Model time"],
+  "agent.stats.ttft": ["首 token 平均", "Avg TTFT"],
+  "agent.stats.tps": ["输出速度", "Output speed"],
+  "agent.stats.seconds": ["{seconds} 秒", "{seconds}s"],
+  "agent.stats.minutes": [
+    "{minutes} 分 {seconds} 秒",
+    "{minutes}m {seconds}s",
   ],
-  "agent.config.model": ["默认模型", "Default model"],
-  "agent.config.modelPlaceholder": [
-    "留空使用运行时的默认模型",
-    "Leave empty for the runtime default",
+  "agent.stats.hint": [
+    "本会话累计：轮 / 步、上一段生成速度、总 token、输入缓存命中率、上下文占用。点开看明细。",
+    "Session totals: turns/steps, last generation speed, total tokens, cache hit rate, context used. Click for details.",
   ],
+
+  // Token usage of the whole session (the dock's second figure).
+  "agent.usage.sessionTitle": ["Token 用量", "Token usage"],
+
+  // Context composition (the dock's ring).
+  "agent.context.title": ["上下文", "Context"],
+  "agent.context.hint": [
+    "最近一次请求占用的上下文窗口，以及系统提示词、工具定义、对话消息各自的估算用量。",
+    "Context window used by the latest request, split into system prompt, tool definitions and messages.",
+  ],
+  "agent.context.used": ["上下文已用 {percent}%", "Context used {percent}%"],
+  "agent.context.window": ["{used} / {window}", "{used} / {window}"],
+  "agent.context.system": ["系统提示词", "System prompt"],
+  "agent.context.tools": ["工具定义", "Tool definitions"],
+  "agent.context.messages": ["对话消息", "Messages"],
+  "agent.context.pending": [
+    "等待运行时的用量统计…",
+    "Waiting for the runtime's meter…",
+  ],
+  "agent.context.unknown": ["待统计", "Not measured"],
+  // The split only exists for a live request; history keeps the totals.
+  "agent.context.splitPending": [
+    "这几项的占比在下一次请求后更新",
+    "The split updates with the next request",
+  ],
+
+  // Session mode picker (composer).
+  "agent.mode.title": ["会话模式", "Session mode"],
+  "agent.mode.plan": ["计划模式", "Plan mode"],
+  "agent.mode.planHint": [
+    "先出计划，批准后再动手",
+    "Plan first; act after approval",
+  ],
+
+  // Composer.
+  "agent.composer.placeholder": ["描述要做什么…", "Describe the task…"],
+  "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
+
+  // Runtime states (also used as the composer's disabled explanation).
+  "agent.runtime.stopped": ["正在准备运行时", "Preparing the runtime"],
+  "agent.runtime.starting": ["运行时启动中", "Runtime starting"],
+      "agent.runtime.stateFailed": ["运行时状态读取失败", "Could not read the runtime status"],
+  "agent.runtime.nodeMissing": ["未找到 Node.js", "Node.js not found"],
+  "agent.runtime.nodeMissingHint": [
+    "内置 Agent 需要系统安装 Node.js 24.9 或更高版本，应用不打包 Node。",
+    "The built-in agent needs Node.js 24.9 or newer installed; the app does not bundle Node.",
+  ],
+  "agent.runtime.modelMissing": ["未配置模型 API", "Model API is not configured"],
+  "agent.runtime.modelMissingHint": [
+    "在「配置」里填写 API 地址与模型后重新启动。",
+    "Set the API address and model in Configuration, then start again.",
+  ],
+  "agent.runtime.payloadMissing": ["运行时文件缺失", "Runtime files are missing"],
+  "agent.runtime.payloadMissingHint": [
+    "首次启动需要解压约 230 MB 的运行时文件，通常 6–25 秒。如果解压失败，请重新安装应用。",
+    "First launch unpacks about 230 MB of runtime files, usually 6-25 seconds. If unpacking fails, reinstall the app.",
+  ],
+  "agent.runtime.failed": ["运行时启动失败", "Runtime failed to start"],
+  "agent.runtime.prepare": ["解压运行时", "Unpack runtime"],
+  "agent.runtime.preparing": ["正在解压运行时 {seconds}s", "Unpacking runtime {seconds}s"],
+  "agent.runtime.preparingHint": [
+    "只解压一次；完成前不要退出应用。",
+    "This runs once; keep the app open until it finishes.",
+  ],
+  "agent.runtime.config": ["前往配置", "Open configuration"],
+
+  // Approvals and questions.
+  "agent.approval.title": ["需要确认", "Needs confirmation"],
+  "agent.approval.hint": [
+    "运行时请求执行一个工具；只有「允许一次」才会执行。",
+    "The runtime asks to run a tool; only Allow once executes it.",
+  ],
+  "agent.approval.allow": ["允许一次", "Allow once"],
+  "agent.approval.reject": ["拒绝", "Reject"],
+  "agent.question.step": ["问题 {index}/{total}", "Question {index} of {total}"],
+  "agent.question.skip": ["跳过本题", "Skip"],
+  "agent.question.skipHint": [
+    "跳过表示这一题不选择任何选项。",
+    "Skipping answers this question with no selection.",
+  ],
+  "agent.question.custom": ["其他答案", "Other answer"],
+  "agent.question.dismiss": ["取消提问", "Dismiss"],
+  "agent.question.dismissHint": [
+    "取消会结束这次提问，不等于同意。",
+    "Dismissing ends the request; it is not an approval.",
+  ],
+
+  // Configuration tab.
+  "agent.config.loadFailed": ["配置读取失败", "Could not load configuration"],
+  "agent.config.model": ["模型", "Model"],
   "agent.config.modelHint": [
-    "默认模型；留空使用运行时的默认模型",
-    "Default model; leave empty for the runtime default",
+    "每个供应商一套 API;改动即时保存,重启运行时后使用新的模型。",
+    "One API per provider; changes save as you type and apply after a runtime restart.",
   ],
-  "agent.config.permission": ["访问权限", "Access level"],
-  "agent.config.permissionPlaceholder": ["默认权限", "Default access level"],
-  "agent.models.loading": ["正在读取模型列表…", "Loading models…"],
-  "agent.models.error": [
-    "无法读取模型列表，可直接输入模型名",
-    "Could not load models; enter a model name manually",
+  "agent.config.baseUrl": ["Base URL", "Base URL"],
+  "agent.config.baseUrlHint": [
+    "网关基础地址，不含具体资源路径；Anthropic 与 Gemini 的地址形态不同。",
+    "Gateway base address without the resource path; Anthropic and Gemini gateways differ.",
   ],
-  "agent.config.lifecycle": ["生命周期", "Lifecycle"],
-  "agent.config.needsHuman": ["需人工", "Needs a human"],
-  "agent.config.terminalStage": ["终态", "Terminal"],
-  "agent.config.capabilities": ["能力声明", "Capabilities"],
-  "agent.config.interactiveTerminal": ["终端交互", "Terminal interaction"],
-  "agent.config.interactiveTerminalHint": [
-    "PTY 输出与键盘输入",
-    "PTY output and keyboard input",
-  ],
-  "agent.config.permissionPrompt": ["权限请求", "Permission prompts"],
-  "agent.config.permissionPromptHint": [
-    "运行时可暂停等待授权",
-    "The runtime can pause for approval",
-  ],
-  "agent.config.desktopReply": ["桌面回执", "Desktop replies"],
-  "agent.config.desktopReplyHint": [
-    "桌面/通知窗口的确认能被运行时接受",
-    "Confirmations from the desktop or notification window are accepted",
-  ],
-  "agent.config.commitReview": ["提交前审核", "Pre-commit review"],
-  "agent.config.commitReviewHint": [
-    "复杂改动可暂停等待审核",
-    "Complex changes can pause for review",
-  ],
-  "agent.config.limitations": ["互通限制", "Interop limits"],
-  "agent.config.fallback": ["无法互操作时", "When interop fails"],
-
-  // Runtime settings form.
-  "agent.settings.autoSave": ["{name} · 修改后自动保存", "{name} - saved automatically"],
-  "agent.settings.title": ["运行时参数", "Runtime settings"],
-  "agent.settings.detectVersion": ["检测版本", "Detect version"],
-  "agent.settings.binaryPath": ["{name} 可执行路径", "{name} executable path"],
-  "agent.settings.launch": ["启动方式", "Launch command"],
-  "agent.settings.promptPlaceholder": ["<提示词>", "<prompt>"],
-  "agent.settings.promptInjected": [
-    "（启动后注入提示词）",
-    "(prompt injected after launch)",
-  ],
-  "agent.settings.promptTemplate": ["提示词模板", "Prompt template"],
-  "agent.settings.promptVarsHint": [
-    "变量会替换为缺陷信息；{{coworker}} 来自同事页启用的同事（没有插槽时自动追加）。",
-    "Variables are replaced with bug data; {{coworker}} comes from the coworkers enabled on that page (appended when the template has no slot).",
-  ],
-  "agent.settings.variableSupport": [
-    "支持变量：{variables}",
-    "Supported variables: {variables}",
-  ],
-  "agent.settings.coworkersEnabled": [
-    "当前启用 {count} 位同事，任务开始时填入",
-    ({ count }) =>
-      `${count} coworker${Number(count) === 1 ? "" : "s"} enabled, filled in when a task starts`,
-  ],
-  "agent.settings.coworkerAutoAppend": [
-    "；模板没有该变量时自动追加。",
-    "; appended automatically when the template omits it",
-  ],
-  "agent.settings.advanced": ["高级", "Advanced"],
-  "agent.settings.readyQuiet": ["就绪静默（ms）", "Ready quiet (ms)"],
-  "agent.settings.readyQuietHint": [
-    "输出静默达到该时长后注入任务",
-    "Inject the task after output is quiet for this long",
-  ],
-  "agent.settings.readyTimeout": ["就绪超时（ms）", "Ready timeout (ms)"],
-  "agent.settings.readyTimeoutHint": ["超时后强制注入", "Inject anyway after the timeout"],
-  "agent.settings.idleComplete": ["静默完成（ms）", "Idle complete (ms)"],
-  "agent.settings.idleCompleteHint": [
-    "TUI 运行时输出静默多久视为本轮结束；0 表示关闭",
-    "How long TUI output silence ends the round; 0 disables it",
+  "agent.config.apiKey": ["API Key", "API Key"],
+  "agent.config.apiKeyHint": [
+    "保存在本机 agent.json（明文），只经环境变量传给运行时，不写进日志。",
+    "Stored locally in agent.json (plain text); passed to the runtime only through an environment variable and never logged.",
   ],
 
-  // Runtime picker.
-  "agent.picker.found": ["已检测到", "Detected"],
-  "agent.picker.missing": ["未检测到", "Not detected"],
-  "agent.picker.custom": ["自定义", "Custom"],
-  "agent.picker.select": ["选择 Agent", "Select agent"],
-  "agent.picker.hint": [
-    "运行时决定用哪个 Agent 修复缺陷",
-    "The runtime decides which agent fixes the bug",
+  // Model providers.
+  "agent.model.providers": ["供应商", "Providers"],
+  "agent.model.addProvider": ["添加供应商", "Add provider"],
+  "agent.model.newProvider": ["新供应商", "New provider"],
+  "agent.model.providerName": ["名称", "Name"],
+  "agent.model.enabled": ["启用", "Enabled"],
+  "agent.model.removeProvider": ["删除供应商", "Remove provider"],
+  "agent.model.removeProviderHint": [
+    "它下面的模型会一起删除。",
+    "Its models are removed with it.",
   ],
-  "agent.picker.close": ["关闭 Agent 选择", "Close agent picker"],
-  "agent.picker.search": ["搜索 Agent", "Search agents"],
-  "agent.picker.noMatch": ["没有匹配项", "No matches"],
+  "agent.model.apiFormat": ["API 格式", "API format"],
+  "agent.model.protocolCompletions": [
+    "Chat Completions (/chat/completions)",
+    "Chat Completions (/chat/completions)",
+  ],
+  "agent.model.protocolResponses": ["Responses (/responses)", "Responses (/responses)"],
+  "agent.model.protocolAnthropic": [
+    "Anthropic Messages (/v1/messages)",
+    "Anthropic Messages (/v1/messages)",
+  ],
+  "agent.model.protocolGoogle": ["Google Generative AI", "Google Generative AI"],
+  "agent.model.models": ["模型列表", "Models"],
+  "agent.model.addModel": ["添加模型", "Add model"],
+  "agent.model.editModel": ["编辑模型", "Edit model"],
+  "agent.model.removeModel": ["删除模型", "Remove model"],
+  "agent.model.noProviders": ["还没有供应商", "No providers yet"],
+  "agent.model.noModels": ["还没有模型", "No models yet"],
+  "agent.model.noModelsHint": [
+    "运行时至少需要一个启用的模型。",
+    "The runtime needs at least one enabled model.",
+  ],
+  "agent.model.default": ["默认", "Default"],
+  "agent.model.defaultModel": ["默认模型", "Default model"],
+  "agent.model.pick": ["选择模型", "Select model"],
+  "agent.model.pickTitle": ["模型", "Model"],
+  "agent.model.manage": ["管理模型", "Manage models"],
+  "agent.model.providerModels": ["{count} 个模型", "{count} models"],
+  "agent.model.noAvailable": ["还没有可用模型", "No model available yet"],
+  "agent.model.orderHint": [
+    "拖动调整顺序。第一个供应商的第一个启用模型是新会话默认；模型列表同理。",
+    "Drag to reorder. The first enabled model of the first enabled provider is the default for new sessions; the same rule applies inside one provider.",
+  ],
+  "agent.model.reasoningEffort": ["思考强度", "Reasoning effort"],
+  "agent.model.reasoningOff": ["关闭", "Off"],
+  "agent.model.fetchModels": ["获取模型", "Fetch models"],
+  "agent.model.fetching": ["获取中…", "Fetching…"],
+  "agent.model.fetchAdded": ["已添加 {count} 个模型", "Added {count} models"],
+  "agent.model.fetchNone": ["没有新模型", "No new models"],
+  "agent.model.fetchHint": [
+    "从供应商的模型列表接口读取，已有的模型不会被覆盖。",
+    "Reads the provider's model listing; existing entries are kept.",
+  ],
+  "agent.model.reorderHint": ["拖动调整顺序", "Drag to reorder"],
+  "agent.model.edit": ["编辑", "Edit"],
+  "agent.model.reasoning": ["推理", "Reasoning"],
+  "agent.model.inputText": ["文本", "Text"],
+  "agent.model.inputTextLocked": ["文本是必选输入。", "Text is always accepted."],
+  "agent.model.inputImage": ["图片", "Image"],
+  "agent.model.modelId": ["模型 ID", "Model ID"],
+  "agent.model.modelIdPlaceholder": ["模型 ID", "Model ID"],
+  "agent.model.idRequired": ["模型 ID 不能为空", "Model ID is required"],
+  "agent.model.idDuplicate": ["这个模型已经在列表里了", "That model is already listed"],
+  "agent.model.contextWindow": ["上下文窗口", "Context window"],
+  "agent.model.maxTokens": ["最大输出 Token", "Max output tokens"],
+  "agent.model.optional": ["可留空", "Optional"],
+  "agent.model.advanced": ["高级配置", "Advanced"],
+  "agent.model.inputTypes": ["输入类型", "Input types"],
+  "agent.model.reasoningLevels": ["推理等级", "Reasoning levels"],
+  "agent.model.reasoningMapping": ["推理参数映射", "Reasoning parameter mapping"],
+  "agent.model.addLevel": ["添加等级", "Add level"],
+  "agent.model.removeLevel": ["删除等级", "Remove level"],
+  "agent.model.wirePlaceholder": ["发到线上的参数值", "Value sent upstream"],
+  "agent.config.nav.models": ["模型", "Models"],
+  "agent.config.nav.rules": ["规则", "Rules"],
+  "agent.config.nav.general": ["常规", "General"],
+  "agent.config.nav.integrations": ["集成", "Integrations"],
+  "agent.config.nav.plugins": ["内置插件", "Built-in plugins"],
+  "agent.config.execution": ["执行", "Execution"],
+  "agent.config.prompt": ["提示词模板", "Prompt template"],
+  "agent.config.promptHint": [
+    "附加到每一次任务。",
+    "Appended to every task.",
+  ],
+  "agent.config.units": ["并行任务数", "Parallel tasks"],
+  "agent.config.unitsHint": [
+    "同时运行的工作流任务数，1–8；超出的任务排队等待。",
+    "How many workflow tasks may run at once, 1-8; the rest wait in the queue.",
+  ],
+  "agent.config.permission": ["默认权限模式", "Default permission mode"],
+  "agent.config.permissionHint": [
+    "新会话和未单独设置的会话使用；在每个会话的输入框下方可单独调整，立即生效。",
+    "Used by new sessions and sessions without their own choice; each session can override it from its composer, effective immediately.",
+  ],
+  "agent.config.permissionAuto": ["自主", "Autonomous"],
+  "agent.config.permissionAutoHint": [
+    "只有风险操作才询问。",
+    "Only risky operations ask for approval.",
+  ],
+  "agent.config.permissionNotify": ["变更前通知", "Notify before changes"],
+  "agent.config.permissionNotifyHint": [
+    "全部放行，执行前推一条通知。",
+    "Everything is allowed; a notice is sent before it runs.",
+  ],
+  "agent.config.permissionFull": ["完全访问", "Full access"],
+  "agent.config.permissionFullHint": [
+    "除硬黑名单外全部放行。",
+    "Everything except the hard blocklist is allowed.",
+  ],
+  "agent.config.restartRequired": [
+    "运行时没有应用最新配置，重启后生效",
+    "The runtime could not adopt the latest settings; restart to apply them",
+  ],
+  "agent.config.restartRuntime": ["重启运行时", "Restart runtime"],
+  "agent.config.restartBusy": [
+    "重启会中断正在运行的会话，之后需要重新发送。确定继续？",
+    "Restarting interrupts running conversations; you will need to resend. Continue?",
+  ],
+  "agent.config.team": ["团队协作", "Team collaboration"],
+  "agent.config.teamHint": [
+    "新任务会话默认进入任务板，主 Agent 可把工作派给同事子 agent；提示词不再写同事名单。自由会话默认关闭，可在输入框上方单独开启。",
+    "New task sessions start on the team board, where the lead can hand work to coworker subagents; the coworker roster stays out of the prompt. Free chats start off and can opt in above the composer.",
+  ],
+  "agent.config.runtime": ["运行时", "Runtime"],
+  "agent.config.runtimeHint": ["只读的运行时信息。", "Read-only runtime facts."],
+  "agent.config.payloadVersion": ["Payload 版本", "Payload version"],
+  "agent.config.node": ["Node", "Node"],
+  "agent.config.nodePath": ["Node 路径", "Node path"],
+  "agent.config.provider": ["Provider", "Provider"],
+  "agent.config.currentModel": ["当前模型", "Current model"],
 
-  // Execution card.
-  "agent.exec.title": ["Agent 执行", "Agent execution"],
-  "agent.exec.hint": [
-    "控制本地 Agent 任务的并行方式与代码隔离。",
-    "Controls parallelism and code isolation for local agent tasks.",
-  ],
-  "agent.exec.reading": ["正在读取配置…", "Reading config…"],
-  "agent.exec.worktreeHint": [
-    "每个任务在独立 git worktree 中运行，完成后保留提交分支。",
-    "Each task runs in its own git worktree and keeps its commit branch.",
-  ],
-  "agent.exec.worktree": ["Worktree 隔离", "Worktree isolation"],
-  "agent.exec.worktreeOnHint": [
-    "允许 1–8 个任务并行，默认 2。",
-    "Run 1-8 tasks in parallel, 2 by default.",
-  ],
-  "agent.exec.worktreeOffHint": ["关闭 Worktree 时固定为 1。", "Fixed at 1 when worktree is off."],
-  "agent.exec.units": ["执行单元", "Execution units"],
-  "agent.exec.restoreHint": [
-    "客户端重启后，之前排队的任务自动继续；关闭则保留队列但暂停，等你手动继续。",
-    "Queued tasks resume after a restart; when off, the queue is kept but paused until you resume it.",
-  ],
-  "agent.exec.restore": ["启动恢复排队", "Resume queue on launch"],
-  "agent.exec.queueBusy": [
-    "队列中有任务，完成后才能切换 Worktree。",
-    "Tasks are queued; finish them before switching worktree.",
-  ],
-
-  // Task header.
-  "agent.header.startedAt": ["开始于 {time}", "Started {time}"],
-  "agent.header.selectionHint": ["Option+拖动选中文本", "Option+drag to select text"],
-  "agent.header.subagents": [
-    "{count} 个子 Agent",
-    ({ count }) => `${count} subagent${Number(count) === 1 ? "" : "s"}`,
-  ],
-  "agent.header.stop": ["中断", "Stop"],
-  "agent.header.openExport": ["打开导出目录", "Open export folder"],
-
-  // Task changes (TaskChangesPanel, header badge, history).
-  "agent.changes.title": ["变更", "Changes"],
-  "agent.changes.files": [
-    "{count} 个文件",
-    ({ count }) => `${count} file${Number(count) === 1 ? "" : "s"}`,
-  ],
-  "agent.changes.added": ["新增", "Added"],
-  "agent.changes.modified": ["修改", "Modified"],
-  "agent.changes.deleted": ["删除", "Deleted"],
-  "agent.changes.binary": ["二进制", "Binary"],
-  "agent.changes.loading": ["正在读取变更…", "Reading changes…"],
-  "agent.changes.empty": ["暂无变更", "No changes"],
-  "agent.changes.truncated": [
-    "仅列出前 {count} 个",
-    "Showing the first {count}",
-  ],
-  "agent.changes.refresh": ["刷新变更", "Refresh changes"],
-  "agent.changes.toggle": ["显示或隐藏变更", "Show or hide changes"],
-  "agent.changes.readingDiff": ["正在读取差异…", "Reading diff…"],
-  "agent.changes.noDiff": ["该文件没有差异", "No diff for this file"],
-  "agent.changes.diffTruncated": ["差异已截断", "Diff truncated"],
-  "agent.changes.copied": ["已复制", "Copied"],
-  "agent.changes.copyHash": ["复制完整 hash", "Copy full hash"],
-  "agent.changes.commit": ["提交", "Commit"],
-  "agent.changes.mergedCommit": ["合并提交", "Merge commit"],
-  "agent.changes.openWorktree": ["打开 worktree", "Open worktree"],
-
-  // Approval queue.
-  "agent.approval.list": ["待处理列表", "Pending list"],
-  "agent.approval.detail": ["处理详情", "Pending details"],
-  "agent.approval.banner": [
-    "有待处理任务。Worktree 任务不会阻塞新任务；停止审核会储藏改动并暂停队列。",
-    "Tasks are pending. Worktree tasks do not block new tasks; stopping a review stashes changes and pauses the queue.",
-  ],
-  "agent.approval.pausedHint": [
-    "队列已暂停：审核任务不会自动继续。处理完后可手动恢复。",
-    "Queue paused: reviews do not resume automatically. Resume manually when done.",
-  ],
-  "agent.approval.title": ["待处理任务", "Pending tasks"],
-  "agent.approval.count": ["{count} 个", "{count}"],
-  "agent.approval.empty": ["没有待处理的任务", "No pending tasks"],
-  "agent.approval.files": [
-    "{count} 个文件",
-    ({ count }) => `${count} file${Number(count) === 1 ? "" : "s"}`,
-  ],
-  "agent.approval.emptyHint": [
-    "Worktree 任务的改动会在这里等待审核，通过后再确认合并；停止会把本次涉及的文件储藏到 git stash 并暂停队列，代码不会丢。",
-    "Worktree changes wait here for review, then for merge confirmation; stopping stashes the files in git stash and pauses the queue, so no code is lost.",
-  ],
-  "agent.approval.hideDiff": ["收起改动", "Hide changes"],
-  "agent.approval.viewDiff": ["查看改动", "View changes"],
-  "agent.approval.exportDir": ["导出目录", "Export folder"],
-  "agent.approval.reviewSummaryWorktree": [
-    "Agent 已完成修改，等待审核后合并。",
-    "The agent finished its changes and waits for review before merging.",
-  ],
-  "agent.approval.reviewSummary": [
-    "Agent 已暂停，等待确认后提交。",
-    "The agent is paused, waiting for confirmation to commit.",
-  ],
-  "agent.approval.risk": ["风险：{risk}", "Risk: {risk}"],
-  "agent.approval.approveHintWorktree": [
-    "通过后进入合并确认，再用原 Agent 合并回主仓库；停止会取消任务，未提交改动存入 git stash，已提交分支保留。",
-    "Approving moves to merge confirmation, then the original agent merges into the main repo; stopping cancels the task, stashes uncommitted changes in git stash and keeps the committed branch.",
-  ],
-  "agent.approval.approveHint": [
-    "通过会重新入队，Agent 只做核对、提交与 TAPD 回写；停止会把本次涉及的文件储藏到 git stash 并暂停队列。",
-    "Approving requeues the task so the agent only verifies, commits and writes back to TAPD; stopping stashes the files in git stash and pauses the queue.",
-  ],
-  "agent.approval.approveMerge": ["通过并进入合并", "Approve and merge"],
-  "agent.approval.approveCommit": ["通过并提交", "Approve and commit"],
-  "agent.approval.stopTask": ["停止任务", "Stop task"],
-  "agent.approval.stopStash": ["停止并储藏", "Stop and stash"],
-  "agent.approval.mergeSummary": [
-    "审核已通过。确认后会使用原 Agent 把分支合并到主仓库；合并成功才算完成。",
-    "Review passed. Confirming merges the branch into the main repo with the original agent; the task is done only after a successful merge.",
-  ],
-  "agent.approval.mergeSteps": ["手动合并步骤", "Manual merge steps"],
-  "agent.approval.mergeHint": [
-    "合并由原 Agent 在主仓库执行；分支尚未合并时可用「我已手动合并」校验。",
-    'The original agent merges in the main repo; use "I merged manually" to verify when the branch is not merged yet.',
-  ],
-  "agent.approval.mergeWithAgent": ["用原 Agent 合并", "Merge with original agent"],
-  "agent.approval.mergedManually": ["我已手动合并", "I merged manually"],
-  "agent.approval.cancelTask": ["取消任务", "Cancel task"],
-
-  // History.
-  "agent.history.list": ["执行记录列表", "History list"],
-  "agent.history.detail": ["记录详情", "Record details"],
-  "agent.history.filterWorkspace": ["按工作区筛选", "Filter by workspace"],
-  "agent.history.allWorkspaces": ["全部工作区", "All workspaces"],
-  "agent.history.filterStatus": ["按状态筛选", "Filter by status"],
-  "agent.history.allStatuses": ["全部状态", "All statuses"],
-  "agent.history.search": ["搜索标题或缺陷 ID", "Search title or bug ID"],
-  "agent.history.recordCount": [
-    "{count} 条记录",
-    ({ count }) => `${count} record${Number(count) === 1 ? "" : "s"}`,
-  ],
-  "agent.history.empty": ["没有匹配的执行记录", "No matching execution records"],
-  "agent.history.loadMore": [
-    "加载更多（已显示 {shown} / {total}）",
-    "Load more ({shown} of {total} shown)",
-  ],
-  "agent.history.selectHint": [
-    "选择左侧记录查看详情",
-    "Select a record on the left to see details",
-  ],
-  "agent.history.workspace": ["工作区", "Workspace"],
-  "agent.history.bugId": ["缺陷 ID", "Bug ID"],
-  "agent.history.source": ["来源", "Source"],
-  "agent.history.startedAt": ["开始时间", "Started"],
-  "agent.history.finishedAt": ["结束时间", "Finished"],
-  "agent.history.exitCode": ["退出码", "Exit code"],
-  "agent.history.workdir": ["工作目录", "Working directory"],
-  "agent.history.repo": ["仓库", "Repository"],
-  "agent.history.branch": ["分支", "Branch"],
-  "agent.history.error": ["错误", "Error"],
-  "agent.history.prompt": ["提示词", "Prompt"],
-  "agent.history.emptyValue": ["（空）", "(Empty)"],
-  "agent.history.chatTitle": ["对话 · {title}", "Chat: {title}"],
-  "agent.history.deleteTitle": ["删除执行记录", "Delete execution record"],
-  "agent.history.deleteConfirm": [
-    "将删除「{title}」的本地执行记录，删除后无法恢复。",
-    'This deletes the local execution record for "{title}" and cannot be undone.',
-  ],
-  "agent.history.deleteHint": [
-    "只删除本地记录，不影响导出目录、缺陷内容和已提交的代码。",
-    "Only the local record is deleted; the export folder, bug content and committed code are untouched.",
-  ],
-  "agent.history.openTerminal": ["打开系统终端", "Open system terminal"],
-  "agent.history.viewChat": ["查看对话", "View chat"],
-  "agent.history.actions": ["执行记录快捷操作", "Execution record actions"],
-  "agent.history.deleteRecord": ["删除记录", "Delete record"],
+  // Trajectory panel: the conversation's second view.
+  "agent.traj.viewChat": ["对话", "Chat"],
+  "agent.traj.viewTrajectory": ["轨迹", "Trajectory"],
 } as const satisfies Catalog;

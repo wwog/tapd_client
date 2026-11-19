@@ -19,7 +19,6 @@ import {
   type WorkspaceMember,
 } from "../lib/api";
 import { bugRef, bugTitle, isMyBug } from "../lib/bug";
-import { agentBugKey, type AgentInFlight } from "../lib/agent";
 import { copyText } from "../lib/desktop";
 import { t, useLocale } from "../lib/i18n";
 import { showToast } from "../lib/toast";
@@ -49,13 +48,6 @@ type Props = {
   onOpenWeb: (url: string) => void;
   onCopy: (text: string) => void;
   onExport: (detail: BugDetail) => void;
-  onAgentFix: (detail: BugDetail) => void;
-  /** Launch with a prompt/resources from the compose sheet. */
-  onAgentCompose: (detail: BugDetail) => void;
-  /** In-flight agent tasks keyed by workspace + bug. */
-  agentInFlight?: Map<string, AgentInFlight>;
-  /** Jump to an already queued/running task instead of enqueuing again. */
-  onOpenAgentTask?: (taskId: string) => void;
   onOpenPath: (path: string) => void;
   onOpenMedia: (
     url: string,
@@ -92,10 +84,6 @@ function BugDetailDrawerImpl(props: Props) {
     onOpenWeb,
     onCopy,
     onExport,
-    onAgentFix,
-    onAgentCompose,
-    agentInFlight,
-    onOpenAgentTask,
     onOpenPath,
     onOpenMedia,
     me,
@@ -111,11 +99,6 @@ function BugDetailDrawerImpl(props: Props) {
   const [, bumpMedia] = useState(0);
   /** Lets the resource preview own its index without the drawer closing too. */
   const previewOpenRef = useRef(false);
-
-  /** Live agent task for this bug: re-clicking must focus it, not enqueue. */
-  const agentInfo = detail
-    ? agentInFlight?.get(agentBugKey(detail.workspaceId, detail.id)) ?? null
-    : null;
 
   /** The single write action currently in flight (claim/comment/field/status). */
   const [busy, setBusy] = useState<string | null>(null);
@@ -249,6 +232,7 @@ function BugDetailDrawerImpl(props: Props) {
 
   return (
     <aside
+      data-component="BugDetailDrawer"
       aria-hidden={!open}
         className={clsx(
           "flex h-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface  border border-border",
@@ -289,18 +273,22 @@ function BugDetailDrawerImpl(props: Props) {
                   <Badge tone={STATUS_TONES[detail.status] ?? "neutral"}>
                     {detail.statusLabel || detail.status}
                   </Badge>
-                  <Badge tone={PRIORITY_TONES[detail.priority] ?? "neutral"}>
-                    {detail.priorityLabel || detail.priority || "—"}
-                  </Badge>
-                  <Badge tone={SEVERITY_TONES[detail.severity] ?? "neutral"} dot>
-                    {detail.severityLabel || detail.severity || "—"}
-                  </Badge>
+                  {detail.priorityLabel || detail.priority ? (
+                    <Badge tone={PRIORITY_TONES[detail.priority] ?? "neutral"}>
+                      {detail.priorityLabel || detail.priority}
+                    </Badge>
+                  ) : null}
+                  {detail.severityLabel || detail.severity ? (
+                    <Badge tone={SEVERITY_TONES[detail.severity] ?? "neutral"} dot>
+                      {detail.severityLabel || detail.severity}
+                    </Badge>
+                  ) : null}
                 </>
               ) : null}
             </div>
             {detail ? (
               <div className="mt-2 flex items-start gap-1.5">
-                <h2 className="select-text min-w-0 flex-1 text-base font-normal leading-6 text-slate-900">
+                <h2 className="select-text min-w-0 flex-1 text-ui-base font-normal leading-6 text-slate-900">
                   {bugTitle(detail.title)}
                 </h2>
                 <button
@@ -316,7 +304,7 @@ function BugDetailDrawerImpl(props: Props) {
             ) : loading ? (
               <SkeletonBlock className="mt-3 h-4 w-3/4 rounded" />
             ) : (
-              <h2 className="mt-2 text-base font-normal leading-6 text-slate-900">
+              <h2 className="mt-2 text-ui-base font-normal leading-6 text-slate-900">
                 {t("bugs.detailTitle")}
               </h2>
             )}
@@ -458,15 +446,10 @@ function BugDetailDrawerImpl(props: Props) {
             mine={mine}
             busy={busy}
             exporting={exporting}
-            loading={loading}
             lastExport={lastExport}
-            agentInfo={agentInfo}
             onOpenPath={onOpenPath}
             onCopy={onCopy}
             onClaim={() => void runClaim()}
-            onAgentFix={onAgentFix}
-            onAgentCompose={onAgentCompose}
-            onOpenAgentTask={onOpenAgentTask}
             onExport={onExport}
           />
         ) : null}
@@ -499,7 +482,7 @@ export const BugDetailDrawer = memo(BugDetailDrawerImpl);
  */
 function DetailSkeleton() {
   return (
-    <div role="status" aria-busy="true" className="space-y-5">
+    <div data-component="DetailSkeleton" role="status" aria-busy="true" className="space-y-5">
       <span className="sr-only">{t("bugs.loadingDetail")}</span>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-100 bg-surface p-3 sm:grid-cols-4">

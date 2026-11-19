@@ -26,18 +26,20 @@ export function BugMetaGrid(props: {
     onRefreshMembers,
   } = props;
 
-  const items: Array<[string, string]> = [
-    [t("common.creator"), detail.creator || "—"],
-    [t("common.created"), detail.created || "—"],
-    [t("bugs.lastModified"), detail.modified || "—"],
-    [t("bugs.foundVersionLabel"), detail.versionReport || "—"],
-    [t("bugs.iteration"), detail.iterationName || "—"],
-    [t("bugs.module"), detail.module || "—"],
-    [t("bugs.fixer"), detail.fixer || "—"],
-  ];
+  const items = (
+    [
+      [t("common.creator"), detail.creator],
+      [t("common.created"), detail.created],
+      [t("bugs.lastModified"), detail.modified],
+      [t("bugs.foundVersionLabel"), detail.versionReport],
+      [t("bugs.iteration"), detail.iterationName],
+      [t("bugs.module"), detail.module],
+      [t("bugs.fixer"), detail.fixer],
+    ] as Array<[string, string]>
+  ).filter(([, value]) => value.trim().length > 0);
 
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-3">
+    <dl data-component="BugMetaGrid" className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-3">
       <UserField
         label={t("common.owner")}
         field="current_owner"
@@ -89,7 +91,7 @@ export function BugCustomFields(props: { detail: BugDetail; open: boolean }) {
   if (customFields.length === 0) return null;
 
   return (
-    <section>
+    <section data-component="BugCustomFields">
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}
@@ -143,10 +145,10 @@ function UserField(props: {
 
   if (!mine) {
     return (
-      <div className="min-w-0">
+      <div data-component="UserField" className="min-w-0">
         <dt className="text-ui-xs text-slate-400">{label}</dt>
-        <dd className="mt-0.5 truncate text-slate-700" title={current || "—"}>
-          {current || "—"}
+        <dd className="mt-0.5 truncate text-slate-700" title={current || undefined}>
+          {current}
         </dd>
       </div>
     );
@@ -161,7 +163,7 @@ function UserField(props: {
   );
 
   return (
-    <div className="min-w-0">
+    <div data-component="UserField" className="min-w-0">
       <dt className="flex items-center gap-1 text-ui-xs text-slate-400">
         {label}
         {saving ? <Loader2 size={9} className="animate-spin" /> : null}
@@ -175,7 +177,7 @@ function UserField(props: {
             if (members.length === 0 && !membersLoading) onRefreshMembers();
           }}
           title={t("bugs.chooseFromMembers")}
-          className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition focus:border-sky-400 focus:outline-2 focus:outline-sky-200 disabled:opacity-60"
+          className="w-full min-w-0 truncate rounded-md border border-border bg-surface px-1 py-0.5 text-ui-caption text-slate-700 transition disabled:opacity-60"
         >
           {!current ? (
             <option value="">

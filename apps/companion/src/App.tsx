@@ -1,23 +1,18 @@
 import { useEffect } from "react";
-import { Bot, Bug, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
+import { Bug, Bot, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
-import {
-  refreshAgentTasks,
-  setAgentPollMode,
-  useAgentTasks,
-} from "./lib/agentTasks";
+import { useAgentFeed, useAgentFeedPolling } from "./lib/dsh";
 import { startHeartbeat } from "./lib/heartbeat";
 import { t, type MessageKey } from "./lib/i18n";
 import { navigate, useRoute, type Route } from "./lib/router";
 import { getSession } from "./lib/session";
 import { NotificationBanner } from "./components/NotificationBanner";
 import { PairPage } from "./pages/PairPage";
+import { AgentPage } from "./pages/AgentPage";
+import { AgentSessionPage } from "./pages/AgentSessionPage";
 import { BugsPage } from "./pages/BugsPage";
 import { BugDetailPage } from "./pages/BugDetailPage";
-import { AgentPage } from "./pages/AgentPage";
-import { AgentHistoryPage } from "./pages/AgentHistoryPage";
-import { AgentTaskPage } from "./pages/AgentTaskPage";
 import { CoworkersPage } from "./pages/CoworkersPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -29,7 +24,7 @@ import { TerminalSessionPage } from "./pages/TerminalSessionPage";
 /** Full-screen gate: one-line title, explanation folded into `title`. */
 function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   return (
-    <div className="grid h-full place-items-center p-6" title={props.hint}>
+    <div data-component="GateScreen" className="grid h-full place-items-center p-6" title={props.hint}>
       <div className="text-center">
         <h1 className="text-ui-lg text-slate-900">{props.title}</h1>
         {props.retry ? (
@@ -47,13 +42,13 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "local" | "agent" | "files" | "terminal" | "settings";
+type TabKey = "bugs" | "agent" | "local" | "files" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
-  { key: "local", label: "mobile.local.title", hash: "#/local" },
   { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
+  { key: "local", label: "mobile.local.title", hash: "#/local" },
   { key: "files", label: "mobile.files.title", hash: "#/files" },
   { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
   { key: "settings", label: "common.settings", hash: "#/settings" },
@@ -65,13 +60,13 @@ const tabOf = (route: Route): TabKey => {
     case "bugs":
     case "bug":
       return "bugs";
+    case "agent":
+    case "agent-session":
+      return "agent";
     case "local":
       return "local";
-    case "agent":
-    case "agent-history":
-    case "agent-task":
     case "coworkers":
-      return "agent";
+      return "settings";
     case "files":
     case "file":
       return "files";
@@ -85,15 +80,17 @@ const tabOf = (route: Route): TabKey => {
   }
 };
 
-function TabBar(props: { active: TabKey; badge: number }) {
+function TabBar(props: { active: TabKey; agentBadge: number }) {
   return (
     <nav
+      data-component="TabBar"
       aria-label={t("mobile.nav.main")}
       className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-canvas"
     >
       <div className="flex h-14 items-stretch">
         {TABS.map((tab) => {
           const active = tab.key === props.active;
+          const badge = tab.key === "agent" ? props.agentBadge : 0;
           return (
             <button
               key={tab.key}
@@ -106,17 +103,17 @@ function TabBar(props: { active: TabKey; badge: number }) {
             >
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
-                {tab.key === "local" ? <ListChecks size={18} /> : null}
                 {tab.key === "agent" ? <Bot size={18} /> : null}
+                {tab.key === "local" ? <ListChecks size={18} /> : null}
                 {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
-                {tab.key === "agent" && props.badge > 0 ? (
+                {badge > 0 ? (
                   <span
-                    aria-label={t("mobile.nav.pendingTasks", { n: props.badge })}
-                    className="absolute -top-1.5 -right-2.5 min-w-4 rounded-full bg-rose-500 px-1 py-px text-center text-ui-2xs leading-3.5 text-white"
+                    title={t("mobile.agent.badgeHint", { n: badge })}
+                    className="absolute -top-1.5 -right-2 grid h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[10px] leading-none text-white"
                   >
-                    {props.badge > 99 ? "99+" : props.badge}
+                    {badge > 99 ? "99+" : badge}
                   </span>
                 ) : null}
               </span>
@@ -133,24 +130,19 @@ export default function App() {
   const route = useRoute();
   const connection = useConnection();
   const session = getSession();
-  const { state: agentState } = useAgentTasks();
-
-  // Agent feed cadence follows the visible tab: 8s on Agent pages (live
-  // phases), 30s elsewhere where only the badge consumes the feed.
-  useEffect(() => {
-    setAgentPollMode(tabOf(route) === "agent" ? "active" : "idle");
-  }, [route]);
-
+  // The task/approval feed is polled here once: the badge is part of the tab
+  // bar, so the loop must live above the pages that consume the snapshot.
+  const feed = useAgentFeed();
+  useAgentFeedPolling(Boolean(session));
+  const agentBadge =
+    feed.pending.length +
+    (feed.tasks ?? []).filter(
+      (task) => task.workflow === "awaiting_review" || task.workflow === "finalizing",
+    ).length;
   // Presence handshake: the desktop marks this device online while beats
   // arrive, and the settings page renders the same state locally.
   useEffect(() => {
     if (session) startHeartbeat();
-  }, [session]);
-
-  // The agent feed is mounted before pairing but skips requests without a
-  // session; fetch immediately once the pair handshake succeeds.
-  useEffect(() => {
-    if (session) void refreshAgentTasks();
   }, [session]);
 
   // Pairing is the only entry. Never rewrite the URL while there is no
@@ -165,7 +157,7 @@ export default function App() {
 
   if (!session) {
     return (
-      <div className="flex h-full flex-col">
+      <div data-component="App" className="flex h-full flex-col">
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <PairPage />
         </main>
@@ -182,9 +174,11 @@ export default function App() {
       />
     );
   }
-  if (connection.kind === "not_logged_in" && route.name !== "local") {
-    // Local projects and their items live on the desktop and never call TAPD,
-    // so that tab stays usable before the desktop signs in.
+  // Local projects/items and the built-in dsh runtime never call TAPD, so
+  // those pages stay usable before the desktop signs in.
+  const worksWithoutLogin =
+    route.name === "local" || route.name === "agent" || route.name === "agent-session";
+  if (connection.kind === "not_logged_in" && !worksWithoutLogin) {
     // The hidden poller keeps running, so this clears itself once the
     // desktop logs back in.
     return (
@@ -195,20 +189,14 @@ export default function App() {
     );
   }
 
-  // awaiting_approval wins over queued for the Agent tab badge.
-  const awaiting = agentState
-    ? agentState.awaitingApprovalCount ??
-      agentState.tasks.filter((task) => task.status === "awaiting_approval").length
-    : 0;
-  const queued = agentState
-    ? agentState.queuedCount ?? agentState.tasks.filter((task) => task.status === "queued").length
-    : 0;
-  const badge = awaiting > 0 ? awaiting : queued;
   // Terminal sessions take the whole screen: the key bar replaces the tab bar.
   const fullBleed = route.name === "terminal-session";
+  // The session page scrolls its transcript on its own, so `main` must not
+  // scroll too: two nested scrollers made the composer float over the rows.
+  const ownScroll = route.name === "agent-session";
 
   return (
-    <div className="flex h-full flex-col">
+    <div data-component="App" className="flex h-full flex-col">
       {/* Mounted behind the gates too: its poll requests are what detect
           recovery (desktop back online / logged back in). */}
       {route.name !== "pair" ? <NotificationBanner /> : null}
@@ -216,18 +204,23 @@ export default function App() {
         className={
           fullBleed
             ? "min-h-0 flex-1 overflow-hidden"
-            : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
+            : ownScroll
+              ? "min-h-0 flex-1 overflow-hidden pb-14"
+              : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14"
         }
       >
         {route.name === "pair" ? <PairPage /> : null}
         {route.name === "bugs" ? <BugsPage /> : null}
+        {route.name === "agent" ? <AgentPage /> : null}
+        {route.name === "agent-session" ? (
+          // One instance per session: transcript, draft and poll state must
+          // not leak from the previous session when the route id changes.
+          <AgentSessionPage key={route.id} id={route.id} />
+        ) : null}
         {route.name === "local" ? <LocalPage projectId={route.projectId} /> : null}
         {route.name === "bug" ? (
           <BugDetailPage id={route.id} workspaceId={route.workspaceId} />
         ) : null}
-        {route.name === "agent" ? <AgentPage /> : null}
-        {route.name === "agent-history" ? <AgentHistoryPage /> : null}
-        {route.name === "agent-task" ? <AgentTaskPage id={route.id} /> : null}
         {route.name === "coworkers" ? <CoworkersPage /> : null}
         {route.name === "files" ? (
           <FilesPage workspaceId={route.workspaceId} path={route.path} />
@@ -249,7 +242,7 @@ export default function App() {
         {route.name === "settings" ? <SettingsPage /> : null}
       </main>
       {route.name !== "pair" && !fullBleed ? (
-        <TabBar active={tabOf(route)} badge={badge} />
+        <TabBar active={tabOf(route)} agentBadge={agentBadge} />
       ) : null}
     </div>
   );

@@ -130,12 +130,12 @@ export function McpToolDocs(props: {
 function ParamTree(props: { schema: JsonSchema; depth: number }) {
   const entries = Object.entries(props.schema.properties ?? {});
   if (entries.length === 0) {
-    return <p className="mt-2 text-ui-xs text-slate-400">{t("mcp.noParameters")}</p>;
+    return <p data-component="ParamTree" className="mt-2 text-ui-xs text-slate-400">{t("mcp.noParameters")}</p>;
   }
   const required = new Set(props.schema.required ?? []);
 
   return (
-    <div className="mt-1 divide-y divide-slate-100 border-t border-slate-100">
+    <div data-component="ParamTree" className="mt-1 divide-y divide-slate-100 border-t border-slate-100">
       {entries.map(([name, child]) => (
         <ParamRow
           key={name}
@@ -167,7 +167,7 @@ function ParamRow(props: {
   const constraints = constraintLabels(schema);
 
   return (
-    <div className="py-2.5">
+    <div data-component="ParamRow" className="py-2.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="select-text font-mono text-ui-sm text-slate-700">{props.name}</span>
         <span className="font-mono text-ui-2xs text-slate-400">{typeLabel(schema)}</span>
