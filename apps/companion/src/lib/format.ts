@@ -20,7 +20,7 @@ export const absoluteTime = (iso: string): string => {
   return new Date(timestamp).toLocaleString(localeTag(), { hour12: false });
 };
 
-/** TAPD titles come from testers and usually carry full-width punctuation. */
+/** TAPD titles (and the sessions derived from them) carry full-width punctuation. */
 const TITLE_PUNCTUATION: Record<string, string> = {
   "【": "[",
   "】": "]",
@@ -46,11 +46,11 @@ const TITLE_PUNCTUATION: Record<string, string> = {
 };
 
 /**
- * Render a bug title with ASCII punctuation so it matches the rest of the UI.
+ * Render a title with ASCII punctuation so it matches the rest of the UI.
  * Bracketed ranges are kept apart from the surrounding text (`[x]y` → `[x] y`,
  * `a[x]` → `a [x]`), while a bracket at the very start stays flush.
  */
-export const bugTitle = (value: string | null | undefined): string =>
+export const plainTitle = (value: string | null | undefined): string =>
   (value ?? "")
     .replace(/…+/g, "...")
     .replace(/[【】「」『』（）《》，。：；、？！—～％　]/g, (char) => TITLE_PUNCTUATION[char])

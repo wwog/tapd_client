@@ -13,7 +13,8 @@ import {
   type BugListPage,
   type BugSummary,
 } from "../lib/api";
-import { bugRef, bugTitle, isMyBug } from "../lib/bug";
+import { bugRef, isMyBug } from "../lib/bug";
+import { plainTitle } from "../lib/title";
 import { t } from "../lib/i18n";
 import { EnqueueSheet } from "../agent/EnqueueSheet";
 import { ScrollingName } from "./ScrollingName";
@@ -286,7 +287,7 @@ export function BugTable(props: Props) {
                     BUG
                   </span>
                   <ScrollingName
-                    text={bugTitle(bug.title)}
+                    text={plainTitle(bug.title)}
                     className="min-w-0 flex-1 font-normal text-slate-800"
                   />
                 </div>

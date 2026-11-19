@@ -23,7 +23,7 @@ import {
 import { applyExternalAppearance, useAppearance, type Appearance } from "../lib/appearance";
 import { ScrollingName } from "../components/ScrollingName";
 import { formatBytes } from "../lib/format";
-import { bugTitle } from "../lib/bug";
+import { plainTitle } from "../lib/title";
 import {
   formatNotificationTime,
   NOTIFICATION_KIND_LABELS,
@@ -382,9 +382,9 @@ export function IslandWindow() {
 
               <h2
                 className="mt-1 line-clamp-2 text-ui-base font-normal leading-5 text-island-ink"
-                title={bugTitle(item.title)}
+                title={plainTitle(item.title)}
               >
-                {bugTitle(item.title)}
+                {plainTitle(item.title)}
               </h2>
 
               <div className="mt-1 flex items-center gap-1.5 text-ui-xs text-island-muted">

@@ -18,7 +18,8 @@ import {
   type OpenMediaMode,
   type WorkspaceMember,
 } from "../lib/api";
-import { bugRef, bugTitle, isMyBug } from "../lib/bug";
+import { bugRef, isMyBug } from "../lib/bug";
+import { plainTitle } from "../lib/title";
 import { copyText } from "../lib/desktop";
 import { t, useLocale } from "../lib/i18n";
 import { showToast } from "../lib/toast";
@@ -289,7 +290,7 @@ function BugDetailDrawerImpl(props: Props) {
             {detail ? (
               <div className="mt-2 flex items-start gap-1.5">
                 <h2 className="select-text min-w-0 flex-1 text-ui-base font-normal leading-6 text-slate-900">
-                  {bugTitle(detail.title)}
+                  {plainTitle(detail.title)}
                 </h2>
                 <button
                   type="button"

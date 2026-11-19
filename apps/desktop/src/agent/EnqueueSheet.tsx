@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import clsx from "clsx";
 import { Sparkles, X } from "lucide-react";
 
-import { bugTitle } from "../lib/bug";
+import { plainTitle } from "../lib/title";
 import {
   defaultSelection,
   type ModelSelection,
@@ -64,7 +64,7 @@ export function EnqueueSheet({ target, onClose }: Props) {
 
   const heading =
     target.kind === "bug" ? t("bugs.fixWithAgent") : t("local.items.toAgent");
-  const title = target.kind === "bug" ? bugTitle(target.title) : target.title;
+  const title = plainTitle(target.title);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

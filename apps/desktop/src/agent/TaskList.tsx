@@ -13,6 +13,7 @@ import {
 
 import { api, relativeTime } from "../lib/api";
 import { t } from "../lib/i18n";
+import { plainTitle } from "../lib/title";
 import { showToast } from "../lib/toast";
 import type {
   DshProject,
@@ -270,7 +271,7 @@ export function TaskList() {
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          label={menu.task.title || t("agent.task.untitled")}
+          label={plainTitle(menu.task.title) || t("agent.task.untitled")}
           onClose={() => setMenu(null)}
         >
           {(close) => (
@@ -300,7 +301,7 @@ export function TaskList() {
         <ConfirmDialog
           title={t("agent.session.delete")}
           message={t("agent.session.deleteHint", {
-            title: deleting.title || t("agent.task.untitled"),
+            title: plainTitle(deleting.title) || t("agent.task.untitled"),
           })}
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
@@ -406,7 +407,7 @@ function TaskRow({
           ) : null}
         </span>
         <span
-          className="pl-1 grid shrink-0 place-items-center"
+          className="pl-1 px-1.5 grid shrink-0 place-items-center"
           title={isWorkflowTask(task) ? t(workflow.label) : undefined}
         >
           {isWorkflowTask(task) ? (
@@ -414,7 +415,7 @@ function TaskRow({
           ) : null}
         </span>
         <ScrollingName
-          text={task.title || t("agent.task.untitled")}
+          text={plainTitle(task.title) || t("agent.task.untitled")}
           className="min-w-0 flex-1 text-ui-caption text-slate-800"
         />
         {updatedAt ? (

@@ -12,6 +12,7 @@ import { Check, Copy, FolderTree, Workflow } from "lucide-react";
 
 import { relativeTime } from "../lib/api";
 import { formatDateTime } from "../lib/format";
+import { plainTitle } from "../lib/title";
 import { SESSION_WORKSPACE_PREFIX } from "../lib/fs";
 import {
   dshTaskApi,
@@ -133,7 +134,7 @@ export function TaskHoverCard({
       data-component="TaskHoverCard"
       ref={cardRef}
       role="dialog"
-      aria-label={task.title || t("agent.task.untitled")}
+      aria-label={plainTitle(task.title) || t("agent.task.untitled")}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       style={{
@@ -146,7 +147,7 @@ export function TaskHoverCard({
     >
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0 truncate text-ui-sm text-slate-700">
-          {task.title || t("agent.task.untitled")}
+          {plainTitle(task.title) || t("agent.task.untitled")}
         </span>
         <span
           className={clsx(

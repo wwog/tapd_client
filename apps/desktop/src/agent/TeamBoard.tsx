@@ -4,6 +4,7 @@ import { Button, Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import type { DshTeam, DshTeamTask, DshTeamTaskStatus } from "../lib/dsh";
 import { t, type MessageKey } from "../lib/i18n";
+import { plainTitle } from "../lib/title";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { agentActions, agentStore } from "./store";
@@ -103,7 +104,7 @@ function Board(props: { team: DshTeam; title: string }) {
       <div className="flex items-center gap-2 text-ui-xs text-slate-500">
         <span className="shrink-0">{t("agent.team.lead")}</span>
         <ScrollingName
-          text={title || t("agent.task.untitled")}
+          text={plainTitle(title) || t("agent.task.untitled")}
           className="min-w-0 flex-1 text-ui-caption text-slate-800"
         />
       </div>

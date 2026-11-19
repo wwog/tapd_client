@@ -229,9 +229,13 @@ export function AgentWorkspace({
             {board ? <TeamBoard key={`board:${state.selectedId}`} /> : null}
             <div className="shrink-0">
               <RuntimeNotice />
-              {/* While the host commits and merges, input is closed: the task
-                  pane owns the retry decision. */}
-              {selected?.workflow === "finalizing" ? null : <Composer />}
+              {/* The input (and its status line) belongs to the conversation:
+                  the task record and the ledger are read-only ledgers, so they
+                  get the full height instead. While the host commits and
+                  merges input is closed too: the task pane owns retry. */}
+              {paneView !== "chat" || selected?.workflow === "finalizing" ? null : (
+                <Composer />
+              )}
             </div>
           </div>
         </div>

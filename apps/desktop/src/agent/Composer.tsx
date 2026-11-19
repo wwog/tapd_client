@@ -37,6 +37,10 @@ const NEW_SESSION_KEY = "__new";
  * One compact control in the composer's work bar. It reads as text until it is
  * active; the only border in the composer is the card's own, so a row of these
  * never turns into a second toolbar.
+ *
+ * A locked control (the session already started, or a workflow task) drops
+ * every hover variant: it is a plain state label, so hovering must not suggest
+ * it could be toggled.
  */
 function WorkBarButton(props: {
   icon: LucideIcon;
@@ -58,12 +62,14 @@ function WorkBarButton(props: {
       onClick={props.onClick}
       className={clsx(
         "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-ui-2xs transition",
+        props.disabled && "cursor-default",
         props.active
           ? "bg-sky-50 text-sky-700"
-          : "text-slate-500 hover:bg-overlay-soft hover:text-slate-700",
+          : "text-slate-500",
+        !props.disabled &&
+          !props.active &&
+          "hover:bg-overlay-soft hover:text-slate-700",
         props.error && "text-rose-600",
-        props.disabled &&
-          "cursor-default opacity-50 hover:bg-transparent hover:text-slate-500",
       )}
     >
       <Icon size={11} />

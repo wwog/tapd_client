@@ -12,7 +12,7 @@ import {
   type DshTaskProject,
   type DshWorkflow,
 } from "../lib/dsh";
-import { relativeTime } from "../lib/format";
+import { plainTitle, relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { isPageHidden, onPageVisibilityChange } from "../lib/visibility";
@@ -151,7 +151,7 @@ function TaskRow(props: { task: DshTask }) {
           />
         ) : null}
         <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
-          {task.title || t("mobile.agent.untitledSession")}
+          {plainTitle(task.title) || t("mobile.agent.untitledSession")}
         </span>
       </span>
       <span className="mt-1 flex items-center gap-2">
