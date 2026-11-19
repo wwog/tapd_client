@@ -41,10 +41,15 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
-      # `cargo check/test` compiles two JS-generated inputs: the MCP sidecar
-      # (tauri's build script validates `externalBin`) and the companion SPA
-      # (`RustEmbed` fails to compile without `dist-companion/`). The root
-      # check/test scripts build both first, so no separate step is needed.
+      # `cargo check/test` compiles three JS-generated inputs: the MCP sidecar
+      # (tauri's build script validates `externalBin`), the companion SPA
+      # (`RustEmbed` fails to compile without `dist-companion/`) and the
+      # built-in agent payload (the desktop crate's build script fails when
+      # `resources/dsh` is missing). The root check/test scripts build the
+      # first two; the payload is gitignored, so prepare it here.
+      - name: Build built-in agent payload
+        run: pnpm prepare:dsh
+
       - name: Check Rust workspace
         run: pnpm check:rust
 

@@ -111,13 +111,15 @@ jobs:
         # fallback to disk).
         run: pnpm build:companion
 
-      - name: Test Rust workspace
-        run: pnpm test:rust
-
       - name: Build built-in agent payload
         # `apps/desktop/src-tauri/resources/dsh` is gitignored and produced only
         # by prepare.mjs; the bundler embeds it, so a fresh runner must build it.
+        # Ordered before every cargo step: the desktop crate's build script
+        # fails when the resource directory is missing.
         run: pnpm prepare:dsh
+
+      - name: Test Rust workspace
+        run: pnpm test:rust
 
       - name: Verify built-in agent payload
         # Boots the prepared tree against the pinned dsh version and fails on
