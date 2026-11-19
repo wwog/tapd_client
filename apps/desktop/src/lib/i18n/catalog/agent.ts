@@ -42,6 +42,9 @@ export const agent = {
   "agent.task.workflowFailed": ["失败", "Failed"],
   "agent.task.workflowCanceled": ["已取消", "Canceled"],
   "agent.task.live": ["运行中", "Running"],
+  // Stand-in for the row time while the session works: the live timestamp
+  // restarts on every event, so a ticking "1 秒前" would only be noise.
+  "agent.task.working": ["忙得飞起", "Busy as a bee"],
   "agent.task.needsInput": ["{count} 项待处理", "{count} waiting for you"],
   "agent.task.collapseList": ["收起会话列表", "Collapse conversation list"],
   "agent.task.expandList": ["展开会话列表", "Expand conversation list"],

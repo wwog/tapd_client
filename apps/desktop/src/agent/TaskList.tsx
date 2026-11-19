@@ -442,7 +442,9 @@ function TaskRow({
         />
         {updatedAt ? (
           <span className="ml-1.5 shrink-0 text-ui-2xs tabular-nums text-slate-400 transition group-hover:opacity-0">
-            {relativeTime(updatedAt)}
+            {status === "running" && pending === 0
+              ? t("agent.task.working")
+              : relativeTime(updatedAt)}
           </span>
         ) : null}
       </button>
