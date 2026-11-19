@@ -39,8 +39,8 @@ export type WorkspacePaneBridge = {
 };
 
 export type WorkspaceDataOptions = {
-  view: View;
-  setView: (view: View) => void;
+  /** Active page view; `null` while the welcome page is showing. */
+  view: View | null;
   /** Opens a TAPD project's page tab (notification jumps carry their own id). */
   openWorkspacePage: (workspaceId: string) => void;
   showToast: ToastFn;
@@ -54,7 +54,6 @@ export type WorkspaceDataOptions = {
  */
 export function useWorkspaceData({
   view,
-  setView,
   openWorkspacePage,
   showToast,
   pane,
@@ -315,7 +314,8 @@ export function useWorkspaceData({
         setContext(null);
         setWorkspaceId("");
         pane.current.closeDetail();
-        setView("bugs");
+        // `performLogout` already closed the session's project tabs; whatever
+        // remains (global pages, or the welcome page) stays as the user left it.
         await refreshBase();
       } catch (error) {
         showToast("error", String(error));

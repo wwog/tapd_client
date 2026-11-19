@@ -12,8 +12,8 @@ use std::{
 
 use crate::media;
 
-fn icon_cache() -> &'static Mutex<BTreeMap<String, Option<String>>> {
-    static CACHE: Mutex<BTreeMap<String, Option<String>>> = Mutex::new(BTreeMap::new());
+fn icon_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    static CACHE: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
     &CACHE
 }
 
@@ -21,11 +21,14 @@ fn icon_cache() -> &'static Mutex<BTreeMap<String, Option<String>>> {
 pub(super) fn icon_for(app: &Path, cache_dir: &Path) -> Option<String> {
     let key = app.to_string_lossy().to_string();
     if let Some(cached) = icon_cache().lock().ok()?.get(&key) {
-        return cached.clone();
+        return Some(cached.clone());
     }
 
     let icon = extract_icon(app, cache_dir);
-    if let Ok(mut cache) = icon_cache().lock() {
+    // Only successes are memoized. A failure here is often transient (sips
+    // still warming up right after launch, a bundle being replaced), and
+    // caching it would keep the icon missing until the app restarts.
+    if let (Some(icon), Ok(mut cache)) = (&icon, icon_cache().lock()) {
         cache.insert(key, icon.clone());
     }
     icon
@@ -34,22 +37,32 @@ pub(super) fn icon_for(app: &Path, cache_dir: &Path) -> Option<String> {
 fn extract_icon(app: &Path, cache_dir: &Path) -> Option<String> {
     let png_path = cache_dir.join(format!("{:016x}.png", path_hash(app)));
     let bytes = match std::fs::read(&png_path) {
-        Ok(bytes) => bytes,
-        Err(_) => {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        _ => {
             std::fs::create_dir_all(cache_dir).ok()?;
             let icns = find_icns(app)?;
+            // Convert into a per-process temp file and rename it into place:
+            // a concurrent request for the same app must never read (and
+            // memoize) a half-written PNG.
+            let temp_path = cache_dir.join(format!(
+                "{:016x}.{}.tmp.png",
+                path_hash(app),
+                std::process::id()
+            ));
             let status = Command::new("sips")
                 .args(["-s", "format", "png", "-Z", "64"])
                 .arg(&icns)
                 .arg("--out")
-                .arg(&png_path)
+                .arg(&temp_path)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .ok()?;
             if !status.success() {
+                let _ = std::fs::remove_file(&temp_path);
                 return None;
             }
+            std::fs::rename(&temp_path, &png_path).ok()?;
             std::fs::read(&png_path).ok()?
         }
     };

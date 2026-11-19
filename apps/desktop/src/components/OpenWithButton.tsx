@@ -91,7 +91,7 @@ export function OpenWithButton({ kind, path, onOpen, onError }: Props) {
 
   return (
     <div data-component="OpenWithButton" ref={rootRef} className="relative shrink-0">
-      <div className="inline-flex items-stretch overflow-hidden rounded-lg border border-border bg-surface text-ui-sm text-slate-600">
+      <div className="inline-flex h-7 items-stretch overflow-hidden rounded-lg border border-border bg-surface text-ui-sm text-slate-600">
         <button
           type="button"
           onClick={() => void open()}
@@ -100,7 +100,7 @@ export function OpenWithButton({ kind, path, onOpen, onError }: Props) {
             app: selected?.label ?? t("app.open.defaultApp"),
             path,
           })}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 px-2.5 transition hover:bg-slate-50 disabled:opacity-60"
         >
           {busy ? (
             <Loader2 size={13} className="shrink-0 animate-spin" />
@@ -114,7 +114,7 @@ export function OpenWithButton({ kind, path, onOpen, onError }: Props) {
           aria-label={t("app.open.chooseAppFor")}
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((current) => !current)}
-          className="border-l border-border px-1 transition hover:bg-slate-50"
+          className="inline-flex items-center border-l border-border px-1 transition hover:bg-slate-50"
         >
           <ChevronDown size={11} />
         </button>

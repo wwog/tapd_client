@@ -68,10 +68,7 @@ export type PanelDefinition = {
   title: (panel: PanelRef) => string;
   icon: (panel: PanelRef) => ReactNode;
   minSize: PanelSize;
-  /**
-   * Global page tabs are permanent; project pages (`bugs` / `local` with a
-   * project id) and every other kind can be closed.
-   */
+  /** Every tab can close; an emptied primary dock shows the welcome page. */
   closable: (panel: PanelRef) => boolean;
   /**
    * `id`: one tab per resource (files, terminals, pages).
@@ -90,8 +87,7 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     icon: (panel) =>
       panel.resource.type === "page" ? PAGE_ICONS[panel.resource.view] : PAGE_ICONS.bugs,
     minSize: PANEL_MIN_SIZE.page,
-    closable: (panel) =>
-      panel.resource.type === "page" && Boolean(panel.resource.projectId),
+    closable: () => true,
     singleton: "id",
     render: (props) => <PagePanel {...props} />,
   },

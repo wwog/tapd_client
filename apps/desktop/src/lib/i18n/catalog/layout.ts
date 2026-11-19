@@ -39,4 +39,13 @@ export const layout = {
   ],
   "layout.logoutAnyway": ["仍要退出登录", "Sign out anyway"],
   "layout.quitAnyway": ["仍要退出", "Quit anyway"],
+
+  // ---------------------------------------------------------- welcome page
+  "welcome.hint": [
+    "选择一个项目开始，标签都可以关闭。",
+    "Pick a project to start. Every tab can be closed.",
+  ],
+  "welcome.openProject": ["打开 {name}", "Open {name}"],
+  "welcome.manageProjects": ["项目管理", "Manage projects"],
+  "welcome.openTerminal": ["打开终端", "Open terminal"],
 } as const satisfies Catalog;

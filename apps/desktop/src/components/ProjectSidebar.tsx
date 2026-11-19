@@ -34,7 +34,8 @@ type Props = {
   /** Local (non-TAPD) projects; `localProjectId` clears the TAPD selection. */
   localProjects: LocalProject[];
   localProjectId: string | null;
-  view: View;
+  /** `null` while the welcome page is showing (no page tab is open). */
+  view: View | null;
   account: {
     meAvatar: string | null;
     name: string | null;
@@ -106,17 +107,15 @@ export function ProjectSidebar({
         style={{ width }}
       >
         <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
+          {/* Same geometry as the "local projects" group header below, so both
+              group titles and their first row share one rhythm. */}
           <div
-            className="flex h-9 shrink-0 items-center justify-between pr-2"
+            className="flex shrink-0 items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
             data-tauri-drag-region
           >
-            <span className="min-w-0 flex-1 truncate px-2 text-ui-base font-normal text-slate-800">
-              {t("common.projects")}
-            </span>
+            <span className="min-w-0 flex-1 truncate">{t("common.projects")}</span>
             {visibleWorkspaces.length ? (
-              <span className="shrink-0 text-ui-sm tabular-nums text-slate-400">
-                {visibleWorkspaces.length}
-              </span>
+              <span className="shrink-0 tabular-nums">{visibleWorkspaces.length}</span>
             ) : null}
           </div>
 

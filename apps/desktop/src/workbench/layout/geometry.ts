@@ -5,6 +5,7 @@
  * Nothing here touches React or mutates a layout; `ops.ts` owns tree
  * transforms and the view layer only measures DOM rectangles.
  */
+import { groupHasBody } from "./defaults.ts";
 import type {
   GroupNode,
   LayoutNode,
@@ -145,9 +146,12 @@ export function dragPair(
   return clampPair(out, index, totalPx, minPx);
 }
 
-/** Whether a subtree renders any panel (empty canonical docks do not count). */
+/**
+ * Whether a subtree renders a body (panels, or the welcome page of an empty
+ * primary dock). Empty side docks do not count.
+ */
 export function hasContent(node: LayoutNode): boolean {
-  if (node.kind === "group") return node.panels.length > 0;
+  if (node.kind === "group") return groupHasBody(node);
   return node.children.some(hasContent);
 }
 

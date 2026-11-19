@@ -4,12 +4,13 @@
  * the persisted fractions plus per-node minimum sizes.
  *
  * Pixel conversion comes from the layout core (`geometry.ts`). Children with
- * no content (empty canonical docks) contribute no minimum and collapse to
- * 0px; the remaining children share the container by their relative fractions.
+ * no content (empty side docks) contribute no minimum and collapse to 0px; the
+ * remaining children share the container by their relative fractions. The
+ * primary dock always renders, showing the welcome page when it has no tabs.
  */
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
-import { GROUP_GAP, SASH_HIT, groupMinSize } from "../layout/defaults";
+import { GROUP_GAP, SASH_HIT, groupHasBody, groupMinSize } from "../layout/defaults";
 import {
   hasContent,
   minSizesPx,
@@ -294,7 +295,9 @@ function walk(
     out.groups.push({
       group: node,
       rect,
-      empty: node.panels.length === 0,
+      // The primary dock keeps its card so the welcome page has somewhere to
+      // render; only empty side docks collapse.
+      empty: !groupHasBody(node),
     });
     return;
   }

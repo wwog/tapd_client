@@ -247,8 +247,7 @@ test("the main view keeps one fixed page tab and openPage switches it", () => {
 });
 
 test("project pages open as tabs beside each other; global pages share one", () => {
-  let layout = defaultLayout();
-  layout = retargetPage(layout, "bugs", "ws-1");
+  let layout = openPage(defaultLayout(), "bugs", "ws-1");
   let primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
 
@@ -268,51 +267,56 @@ test("project pages open as tabs beside each other; global pages share one", () 
   assert.equal(primary.panels.length, 3);
   assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-1" });
 
-  // Global navigation only ever owns one tab.
+  // Global navigation only ever owns one tab, and it coexists with projects.
   layout = openPage(layout, "settings");
   layout = openPage(layout, "coworker");
   primary = findRoleGroup(layout.root, "primary")!;
-  const globals = primary.panels.filter(
-    (panel) => panel.resource.type === "page" && !panel.resource.projectId,
-  );
-  assert.deepEqual(globals.map((panel) => panel.id), ["page:coworker"]);
+  assert.deepEqual(primary.panels.map((panel) => panel.id), [
+    "page:local:local-1",
+    "page:bugs:ws-1",
+    "page:bugs:ws-2",
+    "page:coworker",
+  ]);
 
-  // Project tabs are closable; the global navigation tab is not.
+  // Every tab is closable, project pages and the navigation tab alike.
   layout = closePanel(layout, panelId.page("bugs", "ws-2"));
   assert.equal(findPanel(layout.root, panelId.page("bugs", "ws-2")), null);
-  assert.equal(closePanel(layout, panelId.page("coworker")), layout);
+  layout = closePanel(layout, panelId.page("coworker"));
+  assert.equal(findPanel(layout.root, panelId.page("coworker")), null);
 });
 
-test("a project page in front keeps no shared navigation tab", () => {
-  // Opening a project drops the navigation tab it was launched from.
+test("project pages and the shared navigation tab coexist", () => {
+  // Opening a project from the projects page keeps both tabs.
   let layout = openPage(defaultLayout(), "projects");
   layout = openPage(layout, "bugs", "ws-1");
   let primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:bugs:ws-1"],
+    ["page:projects", "page:bugs:ws-1"],
   );
 
-  // A navigation page still gets its single tab while it is visible.
+  // Switching the navigation tab retargets it in place, project tab stays.
   layout = openPage(layout, "coworker");
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:bugs:ws-1", "page:coworker"],
+    ["page:coworker", "page:bugs:ws-1"],
   );
 
-  // Going back to the project tab drops it again.
+  // Focusing the project tab no longer drops the navigation tab.
   layout = activatePanel(layout, panelId.page("bugs", "ws-1"));
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:bugs:ws-1"],
+    ["page:coworker", "page:bugs:ws-1"],
   );
+  assert.equal(primary.activePanelId, panelId.page("bugs", "ws-1"));
 });
 
 test("retargetPage adopts a generic page and drops a duplicate", () => {
   // No project tab yet: the generic tab is renamed in place.
-  let layout = retargetPage(defaultLayout(), "bugs", "ws-9");
+  let layout = openPage(defaultLayout(), "bugs");
+  layout = retargetPage(layout, "bugs", "ws-9");
   let primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-9"]);
   assert.deepEqual(activePage(layout), { view: "bugs", projectId: "ws-9" });
@@ -320,6 +324,7 @@ test("retargetPage adopts a generic page and drops a duplicate", () => {
   // A project tab already exists: the generic leftover is dropped and the
   // project tab wins the focus.
   layout = openPage(defaultLayout(), "bugs", "ws-1");
+  layout = openPage(layout, "bugs");
   layout = retargetPage(layout, "bugs", "ws-1");
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
@@ -363,11 +368,11 @@ test("normalize keeps every project page in primary and one global page", () => 
   );
 });
 
-test("activeView falls back from the active tab to primary's first page", () => {
+test("activeView follows the active tab and is null on an empty primary", () => {
   let layout = defaultLayout();
   layout = open(layout, bug("1"));
   assert.equal(layout.activeGroupId, GROUP_ID.secondary);
-  assert.equal(activeView(layout), "bugs");
+  assert.equal(activeView(layout), null);
 
   layout = activateGroup(layout, GROUP_ID.primary);
   layout = openPage(layout, "projects");
@@ -377,6 +382,17 @@ test("activeView falls back from the active tab to primary's first page", () => 
 // ---------------------------------------------------------------------------
 // Close
 // ---------------------------------------------------------------------------
+
+test("closing the last page tab leaves the primary dock on the welcome page", () => {
+  let layout = openPage(defaultLayout(), "settings");
+  layout = closePanel(layout, panelId.page("settings"));
+  const primary = findRoleGroup(layout.root, "primary")!;
+  assert.equal(primary.panels.length, 0);
+  assert.equal(primary.activePanelId, null);
+  assert.equal(activePage(layout), null);
+  assert.equal(activeView(layout), null);
+  assert.deepEqual(normalize(layout).root, layout.root, "normalize is a fixpoint");
+});
 
 test("closing the last tab in a non-role group removes the group", () => {
   let layout = defaultLayout();
@@ -431,10 +447,7 @@ test("movePanel moves tabs across groups and reorders within one", () => {
 
   layout = movePanel(layout, "file:ws:a.ts", GROUP_ID.primary, 1);
   const primary = findRoleGroup(layout.root, "primary")!;
-  assert.deepEqual(primary.panels.map((panel) => panel.id), [
-    "page:bugs",
-    "file:ws:a.ts",
-  ]);
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["file:ws:a.ts"]);
   assert.equal(primary.activePanelId, "file:ws:a.ts");
   assert.equal(layout.activeGroupId, GROUP_ID.primary);
   assert.deepEqual(
@@ -446,10 +459,10 @@ test("movePanel moves tabs across groups and reorders within one", () => {
   assert.equal(movePanel(layout, "file:ws:a.ts", GROUP_ID.primary, 1), layout);
 
   layout = movePanel(layout, "file:ws:b.ts", GROUP_ID.primary, 2);
-  assert.deepEqual(primaryIds(layout), ["page:bugs", "file:ws:a.ts", "file:ws:b.ts"]);
+  assert.deepEqual(primaryIds(layout), ["file:ws:a.ts", "file:ws:b.ts"]);
 
   layout = movePanel(layout, "file:ws:a.ts", GROUP_ID.primary, 3);
-  assert.deepEqual(primaryIds(layout), ["page:bugs", "file:ws:b.ts", "file:ws:a.ts"]);
+  assert.deepEqual(primaryIds(layout), ["file:ws:b.ts", "file:ws:a.ts"]);
   assert.equal(findRoleGroup(layout.root, "secondary")!.panels.length, 0);
 });
 
@@ -607,7 +620,9 @@ test("ensureRoleGroup recreates secondary and bottom in their canonical position
   };
   const withPrimary = ensureRoleGroup(only, "primary");
   const primary = findRoleGroup(withPrimary.root, "primary")!;
-  assert.ok(primary.panels.some((panel) => panel.kind === "page"));
+  // A fresh primary dock starts on the welcome page (no seeded tab).
+  assert.equal(primary.panels.length, 0);
+  assert.equal(primary.activePanelId, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -663,7 +678,9 @@ test("normalize creates a primary dock when it is missing", () => {
   const next = normalize(layout);
   const primary = findRoleGroup(next.root, "primary")!;
   assert.ok(primary);
-  assert.ok(primary.panels.some((panel) => panel.id === panelId.page("bugs")));
+  // No page is seeded; the new primary dock shows the welcome page.
+  assert.equal(primary.panels.length, 0);
+  assert.equal(primary.activePanelId, null);
   assert.ok(findPanel(next.root, "file:ws:a.ts"));
   assert.equal(next.activeGroupId, GROUP_ID.secondary);
 });
@@ -741,7 +758,8 @@ test("normalize repairs active pointers and size arrays", () => {
   layout.activeGroupId = "missing";
 
   const next = normalize(layout);
-  assert.equal(findRoleGroup(next.root, "primary")!.activePanelId, panelId.page("bugs"));
+  // An empty primary dock has no active tab to repair; it shows the welcome.
+  assert.equal(findRoleGroup(next.root, "primary")!.activePanelId, null);
   assert.equal(next.activeGroupId, GROUP_ID.primary);
   const nextRoot = next.root as SplitNode;
   assert.equal(nextRoot.sizes.length, nextRoot.children.length);

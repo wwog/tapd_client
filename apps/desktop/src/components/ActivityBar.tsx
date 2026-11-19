@@ -2,7 +2,6 @@ import clsx from "clsx";
 import type { ReactNode } from "react";
 import {
   Bot,
-  Bug,
   FolderGit2,
   ListTodo,
   Plug,
@@ -27,7 +26,6 @@ export type View =
   | "account";
 
 const RAIL_ANIM: Record<string, string> = {
-  bugs: "rail-bug-jump",
   queue: "rail-bug-jump",
   agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
@@ -40,16 +38,16 @@ const RAIL_ANIM: Record<string, string> = {
 /**
  * Activity-bar tabs. Labels are catalogue keys rendered with `t()` at render
  * time, so a language switch never keeps the startup language.
+ *
+ * 缺陷 has no rail entry: TAPD and local projects both open their own page tab
+ * from the project column, which is the single entry point.
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
-  { id: "bugs", label: "common.bugs", icon: <Bug size={15} /> },
-  // Global workflow queue, next to the bug list. It spans every project and is
-  // where an interrupted task is continued.
-  { id: "queue", label: "app.nav.queue", icon: <ListTodo size={15} /> },
-  // 事项 has no rail entry: local projects open their own tab from the project
-  // column (and the projects page), like TAPD projects do.
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
+  // Global workflow queue: it spans every project and is where an interrupted
+  // task is continued.
+  { id: "queue", label: "app.nav.queue", icon: <ListTodo size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
   { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
@@ -58,7 +56,8 @@ const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
 export type RailAnimation = { id: string; token: number } | null;
 
 type Props = {
-  view: View;
+  /** `null` while the welcome page is showing (no page tab is open). */
+  view: View | null;
   railAnim: RailAnimation;
   /** Queue activity mark: yellow while running, green until its report is read. */
   queueBadge: "running" | "done" | null;
@@ -94,11 +93,11 @@ export function ActivityBar({
 }: Props) {
   const accountAnim = railAnim?.id === "account" ? railAnim : null;
   /**
-   * Local projects have no rail entry of their own; their items page is the
-   * local counterpart of the bug list, so the 缺陷 entry carries the focus
-   * while one is open.
+   * Project pages (缺陷 / 事项) are opened from the project list, not the rail,
+   * so no entry carries their focus; the highlighted project row does.
    */
-  const railView: View = view === "local" ? "bugs" : view;
+  const railView: View | null =
+    view === "bugs" || view === "local" ? null : view;
 
   return (
     <div data-component="ActivityBar" className="flex w-[52px] shrink-0 flex-col items-center pb-2">

@@ -123,7 +123,7 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       findRoleGroup(prefs.layout.root, "primary") ??
       groups[0] ??
       // Unreachable after `normalize`; a safe fallback keeps the API total.
-      createGroup("primary", [makePanel({ type: "page", view: "bugs" })])
+      createGroup("primary")
     );
   }, [prefs.layout, groups]);
 

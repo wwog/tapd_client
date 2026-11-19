@@ -107,19 +107,15 @@ export default function App() {
   /** Latest TAPD selection, readable from stable callbacks. */
   const workspaceIdRef = useRef("");
   const active = activePage(layoutApi.layout);
-  const view = active.view;
-  const activeProjectId = active.projectId ?? null;
+  const view = active?.view ?? null;
+  const activeProjectId = active?.projectId ?? null;
   const setView = useCallback(
     (next: View) => {
       // Switching pages must reveal the primary dock even if another group was
       // maximized (notification jumps, activity-bar clicks).
       if (layoutApi.layout.maximizedGroupId) layoutApi.maximizeGroup(null);
-      // 缺陷 is a project page now: the rail entry opens the current project's
-      // tab instead of a generic one.
-      if (next === "bugs" && workspaceIdRef.current) {
-        layoutApi.openPage("bugs", workspaceIdRef.current);
-        return;
-      }
+      // Global pages share one tab; project pages are opened from the project
+      // list, which targets a project id instead.
       layoutApi.openPage(next);
     },
     [layoutApi.maximizeGroup, layoutApi.openPage, layoutApi.layout.maximizedGroupId],
@@ -216,7 +212,6 @@ export default function App() {
     handleLogout,
   } = useWorkspaceData({
     view,
-    setView,
     showToast,
     pane: paneBridgeRef,
     openWorkspacePage,
@@ -785,22 +780,20 @@ export default function App() {
   /** Sign out after the unsaved-edit confirmation (if any). */
   const performLogout = () => {
     // Clear the selection *before* closing panels: closing a project page
-    // re-renders App, and a still-set workspaceId would immediately retarget
-    // the fresh `page:bugs` back to the ended session's project (and persist
-    // that tab for the next account).
+    // re-renders App, and a still-set workspaceId would immediately reopen the
+    // ended session's project tab (and persist it for the next account).
     workspaceIdRef.current = "";
     setWorkspaceId("");
     const panels = layoutRef.current.groups.flatMap((group) => group.panels);
     for (const panel of panels) {
-      // Project pages belong to the ended session; the global navigation tab
-      // stays and turns back into the pre-login bugs page.
+      // Project pages belong to the ended session; global pages (设置 / Agent…)
+      // stay open. With nothing left the primary dock shows the welcome page.
       const projectPage =
         panel.resource.type === "page" && Boolean(panel.resource.projectId);
       if (panel.kind !== "page" || projectPage) {
         layoutRef.current.closePanel(panel.id);
       }
     }
-    layoutRef.current.openPage("bugs");
     handleLogout();
     setUnsavedExit(null);
   };
@@ -838,6 +831,18 @@ export default function App() {
     onCancelAgentTask: cancelAgentTask,
     onOpenLocalItem: openLocalItem,
     onOpenQueue: openQueue,
+    onOpenView: (target) => {
+      if (layoutRef.current.layout.maximizedGroupId) {
+        layoutRef.current.maximizeGroup(null);
+      }
+      layoutRef.current.openPage(target);
+    },
+    onOpenProject: (projectId, label) => {
+      if (layoutRef.current.layout.maximizedGroupId) {
+        layoutRef.current.maximizeGroup(null);
+      }
+      layoutRef.current.openPage("bugs", projectId, label);
+    },
     onOpenWeb: openPath,
     onOpenPath: openPath,
     onCopy: copy,

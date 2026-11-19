@@ -9,6 +9,7 @@ import {
   MAIN_SPLIT_ID,
   createGroup,
   defaultLayout,
+  groupHasBody,
   groupMinSize,
 } from "./defaults.ts";
 import {
@@ -211,7 +212,7 @@ test("corner drag combines a row and a column clamp from independent snapshots",
 // Sashes
 // ---------------------------------------------------------------------------
 
-test("hasContent only counts groups with panels, recursively", () => {
+test("hasContent counts groups with a body, recursively", () => {
   assert.equal(hasContent(emptyGroup()), false);
   assert.equal(hasContent(pageGroup()), true);
   const split: SplitNode = {
@@ -222,6 +223,17 @@ test("hasContent only counts groups with panels, recursively", () => {
     sizes: [0.5, 0.5],
   };
   assert.equal(hasContent(split), true);
+});
+
+test("an empty primary dock keeps its body and the page minimum", () => {
+  const primary = createGroup("primary");
+  // The welcome page is the only content, so the dock never collapses.
+  assert.equal(groupHasBody(primary), true);
+  assert.equal(hasContent(primary), true);
+  assert.deepEqual(groupMinSize(primary), { width: 460, height: 320 });
+
+  assert.equal(groupHasBody(emptyGroup()), false);
+  assert.deepEqual(groupMinSize(emptyGroup()), { width: 0, height: 0 });
 });
 
 test("sashPositions uses cumulative pixels and skips boundaries with an empty side", () => {

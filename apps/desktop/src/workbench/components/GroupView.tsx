@@ -17,6 +17,7 @@ import {
 
 import { ContextMenu, ContextMenuItem, ContextMenuSeparator } from "../../components/ContextMenu";
 import { t } from "../../lib/i18n";
+import { WelcomeView } from "./WelcomeView";
 import { PANEL_DEFINITIONS } from "../panels/registry";
 import { usePanelServices } from "../panels/context";
 import { usePanelDirty } from "../panels/dirty";
@@ -54,26 +55,16 @@ type GroupViewProps = {
 
 type TabMenu = { panel: PanelRef; x: number; y: number };
 
-/**
- * Closable check with one layout-wide exception: the last page tab must stay.
- * `normalize` recreates a page for the main view when every page is closed, so
- * offering a close button there would look like it does nothing.
- */
-function canClosePanel(api: WorkbenchLayoutApi, panel: PanelRef): boolean {
-  if (!PANEL_DEFINITIONS[panel.kind].closable(panel)) return false;
-  if (panel.kind !== "page") return true;
-  const pages = api.groups.reduce(
-    (count, group) =>
-      count + group.panels.filter((item) => item.kind === "page").length,
-    0,
-  );
-  return pages > 1;
+/** Every tab can close; the primary dock falls back to the welcome page. */
+function canClosePanel(panel: PanelRef): boolean {
+  return PANEL_DEFINITIONS[panel.kind].closable(panel);
 }
 
 /**
  * One group: an absolutely placed cell, the card chrome, the tab strip and the
- * body the panel portals land in. Empty canonical docks keep their cell (so a
- * drag can find them) but render no chrome and take 0px.
+ * body the panel portals land in. Empty side docks keep their cell (so a drag
+ * can find them) but render no chrome and take 0px; an empty primary dock keeps
+ * its card and shows the welcome page.
  */
 export function GroupView({
   api,
@@ -164,7 +155,7 @@ export function GroupView({
                     setMenu({ panel, x: event.clientX, y: event.clientY });
                   }}
                   onPin={() => services.pinPanel(panel.id)}
-                  closable={canClosePanel(api, panel)}
+                  closable={canClosePanel(panel)}
                 />
               ))}
             </div>
@@ -192,7 +183,11 @@ export function GroupView({
             data-workbench-group={group.id}
             data-workbench-group-body="true"
             className="relative min-h-0 flex-1 overflow-hidden"
-          />
+          >
+            {group.role === "primary" && group.panels.length === 0 ? (
+              <WelcomeView onOpenTerminal={onSpawnTerminal} />
+            ) : null}
+          </div>
         </div>
       )}
 
@@ -224,7 +219,7 @@ function TabMenuView({
 }) {
   const services = usePanelServices();
   const closableOthers = group.panels.filter(
-    (panel) => panel.id !== menu.panel.id && canClosePanel(api, panel),
+    (panel) => panel.id !== menu.panel.id && canClosePanel(panel),
   );
   const isMaximized = api.layout.maximizedGroupId === group.id;
   const title = PANEL_DEFINITIONS[menu.panel.kind].title(menu.panel);
@@ -233,7 +228,7 @@ function TabMenuView({
     <ContextMenu x={menu.x} y={menu.y} label={title} onClose={onClose}>
       {(requestClose) => (
         <>
-          {canClosePanel(api, menu.panel) ? (
+          {canClosePanel(menu.panel) ? (
             <ContextMenuItem
               icon={<X size={13} />}
               label={t("layout.closeTab")}

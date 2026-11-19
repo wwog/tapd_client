@@ -16,6 +16,7 @@ import type { ToastFn } from "../../lib/feature";
 import type { FileTabTarget } from "../../lib/fs";
 import type { LocalProject } from "../../lib/local";
 import type { BugScope } from "../../components/bugListPrefs";
+import type { PageView } from "../layout/types";
 
 export type PageHostServices = {
   info: AppInfo;
@@ -52,6 +53,10 @@ export type PageHostServices = {
   ) => void;
   /** Brings the global workflow queue page to the front. */
   onOpenQueue: () => void;
+  /** Opens/focuses a global page tab (welcome shortcuts, cross-page links). */
+  onOpenView: (view: PageView) => void;
+  /** Opens a TAPD project's page tab by id (welcome page, single-project mode). */
+  onOpenProject: (projectId: string, label?: string) => void;
   /** Cancels a queued/running task (the row reports failures as a toast). */
   onCancelAgentTask: (sessionId: string) => Promise<void>;
   /** Opens a URL outside the app (TAPD links, media). */

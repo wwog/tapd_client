@@ -149,11 +149,14 @@ function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
   return a.every((value, index) => Math.abs(value - (b[index] ?? 0)) < 1e-12);
 }
 
-/** Creates a canonical role group, avoiding a duplicate canonical id. */
+/**
+ * Creates a canonical role group, avoiding a duplicate canonical id.
+ *
+ * No page is seeded: the primary dock starts on the welcome page, and pages
+ * are opened from the side bar / activity bar.
+ */
 function freshRoleGroup(root: LayoutNode | null, role: GroupRole): GroupNode {
-  const panels =
-    role === "primary" ? [makePanel({ type: "page", view: "bugs" })] : [];
-  const group = createGroup(role, panels);
+  const group = createGroup(role);
   if (root && findGroup(root, group.id)) group.id = randomId("group");
   return group;
 }
@@ -397,28 +400,6 @@ function isProjectPage(panel: PanelRef): boolean {
   );
 }
 
-/** A navigation page (设置 / Agent / …) that is not tied to a project. */
-function isNavigationPage(panel: PanelRef): boolean {
-  return (
-    panel.kind === "page" &&
-    panel.resource.type === "page" &&
-    !panel.resource.projectId
-  );
-}
-
-/**
- * Drops the shared navigation tab once a project page is the visible tab.
- * While a project is in front the strip only carries project tabs; the
- * activity bar recreates the navigation tab on demand.
- */
-function pruneNavigationPages(primary: GroupNode): void {
-  const activePanel = primary.panels.find(
-    (panel) => panel.id === primary.activePanelId,
-  );
-  if (!activePanel || !isProjectPage(activePanel)) return;
-  primary.panels = primary.panels.filter((panel) => !isNavigationPage(panel));
-}
-
 /**
  * Ensures exactly one primary group exists and that every page tab lives there.
  *
@@ -427,8 +408,8 @@ function pruneNavigationPages(primary: GroupNode): void {
  * Global pages (`settings`, `agent`, …) share a single navigation tab: extra
  * globals collapse into the preferred one (the primary's active global, else
  * its first global, else the first global), so handing a stale layout to
- * `normalize` cannot leave two 设置 tabs. A global page only lives while it is
- * the visible page; activating a project tab drops it.
+ * `normalize` cannot leave two 设置 tabs. Project and navigation tabs coexist:
+ * opening or focusing a project tab never closes the navigation tab.
  */
 function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode } {
   const seenRoles = new Set<GroupRole>();
@@ -448,12 +429,6 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
   let primary = findRoleGroup(root, "primary");
   if (!primary) {
     primary = freshRoleGroup(root, "primary");
-    // `freshRoleGroup` seeds `page:bugs`. When the tree already carries that
-    // page it is moved into the new primary below, so the seed would become a
-    // second copy of the same panel id.
-    if (pages.some((page) => page.panel.id === "page:bugs")) {
-      removePanelFromGroup(primary, "page:bugs");
-    }
     root = insertPrimary(root, primary);
   }
 
@@ -496,17 +471,6 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
     primary.panels = [...localPages, ...rest];
   }
 
-  // A project page in front makes the shared navigation tab stale.
-  pruneNavigationPages(primary);
-
-  if (pages.length === dropped.size) {
-    primary.panels.push(makePanel({ type: "page", view: "bugs" }));
-    if (primary.activePanelId === null) {
-      primary.activePanelId = primary.panels[0]?.id ?? null;
-    }
-    return { root, primary };
-  }
-
   if (
     primary.activePanelId === null ||
     !primary.panels.some((panel) => panel.id === primary.activePanelId)
@@ -520,7 +484,8 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
 /**
  * Repairs any layout, persisted or hand-built: drops unknown/invalid panels,
  * removes empty non-role groups, collapses single-child splits, fixes sizes,
- * restores the primary dock with a page tab, and repairs active pointers.
+ * restores the primary dock (empty is fine — it renders the welcome page), and
+ * repairs active pointers.
  */
 export function normalize(layout: LayoutState): LayoutState {
   const seenPanels = new Set<string>();
@@ -788,20 +753,14 @@ export function retargetPage(
 }
 
 /**
- * Closes a closable tab. Project page tabs can close; the global navigation
- * tab is permanent. The neighbor to the right (else the left) becomes active;
- * when the group empties, focus falls back to the primary dock and non-role
- * groups are removed by `normalize`.
+ * Closes a tab. Every tab can close, including the shared navigation tab; the
+ * primary dock then shows the welcome page. The neighbor to the right (else the
+ * left) becomes active; when the group empties, focus falls back to the primary
+ * dock and non-role groups are removed by `normalize`.
  */
 export function closePanel(layout: LayoutState, panelIdToClose: string): LayoutState {
   const hit = findPanel(layout.root, panelIdToClose);
   if (!hit) return layout;
-  if (
-    hit.panel.kind === "page" &&
-    (hit.panel.resource.type !== "page" || !hit.panel.resource.projectId)
-  ) {
-    return layout;
-  }
 
   const next = cloneLayout(layout);
   const current = findPanel(next.root, panelIdToClose);
@@ -867,10 +826,6 @@ export function activatePanel(layout: LayoutState, panelIdToActivate: string): L
   if (!current) return layout;
   current.group.activePanelId = panelIdToActivate;
   next.activeGroupId = current.group.id;
-  // Activation does not run a full `normalize`, so the navigation-tab prune
-  // has to be applied here as well (clicking a project tab must drop 项目/设置).
-  const primary = findRoleGroup(next.root, "primary");
-  if (primary) pruneNavigationPages(primary);
   return next;
 }
 
@@ -1246,10 +1201,10 @@ export type ActivePage = { view: PageView; projectId?: string };
 
 /**
  * The page the user is looking at: the active tab when it is a page, else the
- * primary dock's active page, else its first page. Falls back to the generic
- * bugs page when the layout has no page at all.
+ * primary dock's active page, else its first page. Returns `null` when no page
+ * tab is open at all — the primary dock then shows the welcome page.
  */
-export function activePage(layout: LayoutState): ActivePage {
+export function activePage(layout: LayoutState): ActivePage | null {
   const activeGroup = findGroup(layout.root, layout.activeGroupId);
   const activePanel = activeGroup?.panels.find(
     (panel) => panel.id === activeGroup.activePanelId,
@@ -1267,10 +1222,10 @@ export function activePage(layout: LayoutState): ActivePage {
       ...(panel.resource.projectId ? { projectId: panel.resource.projectId } : {}),
     };
   }
-  return { view: "bugs" };
+  return null;
 }
 
-/** Active page view; falls back to the primary dock's first page, else "bugs". */
-export function activeView(layout: LayoutState): PageView {
-  return activePage(layout).view;
+/** Active page view, or `null` when the welcome page is showing. */
+export function activeView(layout: LayoutState): PageView | null {
+  return activePage(layout)?.view ?? null;
 }

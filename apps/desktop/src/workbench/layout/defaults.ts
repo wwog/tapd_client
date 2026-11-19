@@ -58,9 +58,25 @@ export const PANEL_MIN_SIZE: Record<PanelKind, PanelSize> = {
   terminal: { width: 280, height: 140 },
 };
 
-/** Empty docks reserve nothing; they collapse to a point until a tab arrives. */
+/**
+ * Whether a group renders a card with a body.
+ *
+ * The primary dock always renders: with no tabs it shows the welcome page
+ * instead of collapsing to 0×0 like an empty side dock.
+ */
+export function groupHasBody(group: GroupNode): boolean {
+  return group.panels.length > 0 || group.role === "primary";
+}
+
+/** Empty side docks reserve nothing; they collapse to a point until a tab arrives. */
 export function groupMinSize(group: GroupNode): PanelSize {
-  if (group.panels.length === 0) return { width: 0, height: 0 };
+  if (group.panels.length === 0) {
+    // The welcome page is the only content of an empty primary dock, so it
+    // keeps the page minimum instead of collapsing.
+    return group.role === "primary"
+      ? { ...PANEL_MIN_SIZE.page }
+      : { width: 0, height: 0 };
+  }
   return group.panels.reduce<PanelSize>(
     (size, panel) => {
       const min = PANEL_MIN_SIZE[panel.kind];
@@ -121,10 +137,12 @@ export function createGroup(role: GroupRole, panels: PanelRef[] = []): GroupNode
  * the VS Code arrangement, and the closest match to the old "terminal spans
  * the window" behaviour.
  *
- * Empty docks keep their fraction; only the filled ones take space, so the
- * first open restores the intended size without any animation bookkeeping.
+ * The primary dock starts empty: projects are opened from the side bar, and a
+ * dock with no tabs shows the welcome page. Empty docks keep their fraction;
+ * only the filled ones take space, so the first open restores the intended
+ * size without any animation bookkeeping.
  */
-export function defaultLayout(view: PageView = "bugs"): LayoutState {
+export function defaultLayout(): LayoutState {
   return {
     version: 1,
     root: {
@@ -138,17 +156,7 @@ export function defaultLayout(view: PageView = "bugs"): LayoutState {
           id: MAIN_SPLIT_ID,
           direction: "row",
           sizes: [1 - ROLE_DEFAULT_SIZE.secondary, ROLE_DEFAULT_SIZE.secondary],
-          children: [
-            createGroup("primary", [
-              {
-                id: `page:${view}`,
-                kind: "page",
-                resource: { type: "page", view },
-                preview: false,
-              },
-            ]),
-            createGroup("secondary"),
-          ],
+          children: [createGroup("primary"), createGroup("secondary")],
         },
         createGroup("bottom"),
       ],
