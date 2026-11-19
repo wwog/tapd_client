@@ -177,6 +177,11 @@ export const shell = {
   "mobile.bugDetail.updated": ["更新", "Updated"],
   "mobile.bugDetail.copyLink": ["复制链接", "Copy link"],
   "mobile.bugDetail.claim": ["认领", "Claim"],
+  "mobile.bugDetail.transferOwner": ["转移处理人", "Transfer owner"],
+  "mobile.bugDetail.transferFailed": ["转移失败", "Couldn't transfer the owner"],
+  "mobile.bugDetail.membersLoadFailed": ["读取成员失败", "Couldn't load the member list"],
+  "mobile.bugDetail.noMembers": ["没有可选成员", "No members to pick"],
+  "mobile.bugDetail.currentOwnerTag": ["当前", "Current"],
   "mobile.bugDetail.changeStatus": ["状态流转", "Change status"],
   "mobile.bugDetail.comment": ["评论", "Comment"],
   "mobile.bugDetail.actionErrorHint": [

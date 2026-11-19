@@ -1,12 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ChevronLeft,
+  CircleCheck,
   GitBranch,
   Link2,
   LoaderCircle,
   MessageSquare,
   Sparkles,
   UserPlus,
+  Users,
 } from "lucide-react";
 
 import { EnqueueSheet, type EnqueueTarget } from "../components/EnqueueSheet";
@@ -16,10 +18,12 @@ import {
   type BugDetail,
   type BugTransitionInfo,
   type Comment,
+  type WorkspaceMember,
 } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { absoluteTime, bugRef, plainTitle, ownerNames, relativeTime } from "../lib/format";
 import { t } from "../lib/i18n";
+import { loadMembers } from "../lib/members";
 import {
   bugDetailKey,
   cached,
@@ -122,6 +126,12 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
   const [actionError, setActionError] = useState<string | null>(null);
 
   const [transitionsOpen, setTransitionsOpen] = useState(false);
+  /** 转移处理人 sheet：成员目录 + 逐行 busy。 */
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [members, setMembers] = useState<WorkspaceMember[] | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [transferBusyNick, setTransferBusyNick] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const [transitions, setTransitions] = useState<BugTransitionInfo | null>(null);
   const [transitionsError, setTransitionsError] = useState<string | null>(null);
   const [transitionBusy, setTransitionBusy] = useState<string | null>(null);
@@ -222,6 +232,26 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
     };
   }, [transitionsOpen, workspaceId, id]);
 
+  // 转移 sheet 打开时读取成员目录（lib/members 缓存 30min，服务端另有 2h）。
+  useEffect(() => {
+    if (!transferOpen || !workspaceId) return;
+    let cancelled = false;
+    setMembersError(null);
+    void loadMembers(workspaceId)
+      .then((rows) => {
+        if (!cancelled) {
+          setMembers(rows);
+          setMembersError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setMembersError(asApiError(err).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [transferOpen, workspaceId]);
+
   const back = () => {
     if (window.history.length > 1) window.history.back();
     else navigate("#/bugs");
@@ -256,6 +286,23 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       setActionError(asApiError(err).message);
     } finally {
       setClaimBusy(false);
+    }
+  };
+
+  /** 转移处理人：owner 字段写纯昵称（TAPD inline_update 的要求），成功后
+   *  失效详情/列表缓存并收起 sheet。 */
+  const transferTo = async (member: WorkspaceMember) => {
+    if (!workspaceId || !detail || transferBusyNick) return;
+    setTransferBusyNick(member.nick);
+    setTransferError(null);
+    try {
+      await api.bugUpdateField(workspaceId, detail.id, "owner", member.nick);
+      afterWrite();
+      setTransferOpen(false);
+    } catch (err) {
+      setTransferError(asApiError(err).message);
+    } finally {
+      setTransferBusyNick(null);
     }
   };
 
@@ -363,6 +410,14 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
               onClick={() => {
                 setTransitionError(null);
                 setTransitionsOpen(true);
+              }}
+            />
+            <ActionButton
+              icon={<Users size={13} />}
+              label={t("mobile.bugDetail.transferOwner")}
+              onClick={() => {
+                setTransferError(null);
+                setTransferOpen(true);
               }}
             />
             <ActionButton
@@ -487,6 +542,71 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       </BottomSheet>
 
       {/* -- 评论 sheet：textarea + 发送 ---------------------------------- */}
+
+      {/* -- 转移处理人 sheet：成员目录点选即转移（owner 写纯昵称） -------- */}
+      <BottomSheet
+        open={transferOpen}
+        title={t("mobile.bugDetail.transferOwner")}
+        onClose={() => setTransferOpen(false)}
+      >
+        {membersError ? (
+          <p
+            className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
+            title={t("mobile.bugDetail.membersLoadFailed")}
+          >
+            {membersError}
+          </p>
+        ) : null}
+        {!members && !membersError ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-ui-caption text-slate-400">
+            <LoaderCircle size={14} className="animate-spin" />
+            {t("common.reading")}
+          </div>
+        ) : null}
+        {members && members.length === 0 && !membersError ? (
+          <p className="py-2 text-ui-caption text-slate-400">{t("mobile.bugDetail.noMembers")}</p>
+        ) : null}
+        {members ? (
+          <div className="space-y-2">
+            {members.map((member) => {
+              const current = ownerList.includes(member.nick);
+              const busy = transferBusyNick === member.nick;
+              return (
+                <button
+                  key={member.userId || member.nick}
+                  type="button"
+                  disabled={transferBusyNick !== null}
+                  onClick={() => void transferTo(member)}
+                  className="flex min-h-11 w-full items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-left transition active:bg-overlay-soft disabled:opacity-50"
+                >
+                  <span className="min-w-0 flex-1 truncate text-ui-caption text-slate-700">
+                    {member.nick}
+                    {member.name && member.name !== member.nick ? (
+                      <span className="ml-1.5 text-ui-xs text-slate-400">{member.name}</span>
+                    ) : null}
+                  </span>
+                  {current ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 text-ui-2xs text-emerald-700">
+                      <CircleCheck size={12} />
+                      {t("mobile.bugDetail.currentOwnerTag")}
+                    </span>
+                  ) : null}
+                  {busy ? <LoaderCircle size={13} className="shrink-0 animate-spin text-slate-400" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {transferError ? (
+          <p
+            className="mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700"
+            title={t("mobile.bugDetail.transferFailed")}
+          >
+            {transferError}
+          </p>
+        ) : null}
+      </BottomSheet>
+
       <BottomSheet
         open={commentOpen}
         title={t("mobile.bugDetail.comment")}
