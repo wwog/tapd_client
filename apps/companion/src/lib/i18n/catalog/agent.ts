@@ -89,6 +89,9 @@ export const agent = {
     "Could not load the changed files",
   ],
   "mobile.agent.reviewTruncated": ["已截断", "Truncated"],
+  "mobile.agent.diffEmpty": ["没有差异内容", "No diff content"],
+  "mobile.agent.diffFailed": ["读取差异失败", "Couldn't load the diff"],
+  "mobile.agent.viewFile": ["查看文件", "View file"],
   "mobile.agent.fileAdded": ["新增", "Added"],
   "mobile.agent.fileModified": ["修改", "Modified"],
   "mobile.agent.fileDeleted": ["删除", "Deleted"],
@@ -107,6 +110,15 @@ export const agent = {
   "mobile.agent.abandon": ["放弃", "Discard"],
   "mobile.agent.stop": ["停止", "Stop"],
   "mobile.agent.resumeFailed": ["恢复会话失败", "Couldn't resume the session"],
+  "mobile.agent.retryFailed": ["重试失败", "Couldn't retry the turn"],
+
+  /* -- Delete a session (task list rows) ---------------------------------- */
+  "mobile.agent.deleteTitle": ["删除会话", "Delete session"],
+  "mobile.agent.deleteHint": [
+    "删除「{title}」及其对话记录？它自己的 worktree 会一起删掉（未提交的改动也会丢失），仓库不受影响。",
+    "Delete “{title}” and its history? Its own worktree is removed too (uncommitted changes are lost); the repository itself is untouched.",
+  ],
+  "mobile.agent.deleteFailed": ["删除失败", "Couldn't delete the session"],
 
   /* -- Approvals ---------------------------------------------------------- */
   "mobile.agent.approvalRequest": ["授权请求", "Approval request"],
@@ -228,9 +240,12 @@ export const agent = {
 
   /* -- Task pane ---------------------------------------------------------- */
   "mobile.agent.taskBranch": ["分支", "Branch"],
+  "mobile.agent.taskModel": ["模型", "Model"],
   "mobile.agent.taskWorkingDir": ["工作目录", "Working dir"],
   "mobile.agent.taskDirect": ["主仓库直接运行", "Runs in the main checkout"],
   "mobile.agent.taskBug": ["缺陷", "Bug"],
+  "mobile.agent.openBug": ["打开缺陷", "Open bug"],
+  "mobile.agent.openItem": ["打开事项", "Open item"],
   "mobile.agent.taskChanges": ["{files} 个文件", "{files} files"],
   "mobile.agent.taskRevisions": ["修订", "Revisions"],
   "mobile.agent.taskGitStart": ["开始", "Start"],

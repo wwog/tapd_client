@@ -4,6 +4,8 @@ import {
   ArrowUp,
   CheckCircle2,
   ChevronLeft,
+  ExternalLink,
+  FileText,
   FolderGit2,
   GitBranch,
   LayoutGrid,
@@ -164,11 +166,12 @@ function ReviewField(props: { label: string; text: string }) {
 
 /**
  * Review / finishing screen for a workflow task (docs/AGENT_TASK_FLOW.md §7).
- * The model's own summary and the changed files (tapping one opens the
- * built-in file viewer scoped to the session's worktree). Finishing shows the
- * commit → merge → cleanup → writeback pipeline and the failure detail; the
- * approve/discard/retry gate itself sits in the sticky composer area so it
- * never scrolls away.
+ * The model's own summary and the changed files: tapping a file expands its
+ * diff in place (the desktop review parity), the trailing button opens the
+ * file itself in the built-in viewer scoped to the session's worktree.
+ * Finishing shows the commit → merge → cleanup → writeback pipeline and the
+ * failure detail; the approve/discard/retry gate itself sits in the sticky
+ * composer area so it never scrolls away.
  */
 function ReviewPanel(props: {
   task: DshTask;
@@ -187,6 +190,36 @@ function ReviewPanel(props: {
     : -1;
   const changes = props.task.changes;
 
+  /** The one expanded diff; content is fetched once per path. */
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [diffs, setDiffs] = useState<
+    Record<string, { loading?: boolean; text?: string; truncated?: boolean; error?: string }>
+  >({});
+
+  const toggleDiff = (file: DshTaskFile) => {
+    if (expanded === file.path) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(file.path);
+    if (diffs[file.path]) return;
+    setDiffs((current) => ({ ...current, [file.path]: { loading: true } }));
+    void dshApi
+      .taskDiff(props.sessionId, file.path)
+      .then((result) => {
+        setDiffs((current) => ({
+          ...current,
+          [file.path]: { text: result.diff, truncated: result.truncated },
+        }));
+      })
+      .catch((err) => {
+        setDiffs((current) => ({
+          ...current,
+          [file.path]: { error: asApiError(err).message },
+        }));
+      });
+  };
+
   return (
     <section data-component="ReviewPanel" className="border-b border-border bg-canvas">
       <div className="flex items-center gap-2 px-4 pt-2.5 pb-1">
@@ -203,7 +236,11 @@ function ReviewPanel(props: {
           type="button"
           aria-label={t("common.refresh")}
           title={t("common.refresh")}
-          onClick={props.onRefresh}
+          onClick={() => {
+            setExpanded(null);
+            setDiffs({});
+            props.onRefresh();
+          }}
           className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft"
         >
           <RefreshCw size={13} className={props.filesLoading ? "animate-spin" : undefined} />
@@ -275,32 +312,71 @@ function ReviewPanel(props: {
         </p>
       ) : null}
 
-      {props.files?.map((file) => (
-        <button
-          key={file.path}
-          type="button"
-          onClick={() =>
-            navigate(fileHash(`__session__:${props.sessionId}`, file.path))
-          }
-          className="flex min-h-11 w-full items-center gap-2 border-t border-border px-4 py-2 text-left transition active:bg-overlay-soft"
-        >
-          <span
-            className="min-w-0 flex-1 truncate font-mono text-ui-xs text-slate-700"
-            title={file.path}
-          >
-            {file.path}
-          </span>
-          <span className="shrink-0 rounded-md border border-border px-1 text-ui-2xs text-slate-500">
-            {t(FILE_STATUS_LABELS[file.status])}
-          </span>
-          {file.binary ? null : (
-            <span className="shrink-0 font-mono text-ui-2xs">
-              <span className="text-emerald-600">+{file.additions}</span>
-              <span className="ml-1 text-rose-600">−{file.deletions}</span>
-            </span>
-          )}
-        </button>
-      ))}
+      {props.files?.map((file) => {
+        const open = expanded === file.path;
+        const diff = diffs[file.path];
+        return (
+          <div key={file.path} className="border-t border-border">
+            <div className="flex min-h-11 items-center gap-2 px-4 py-2">
+              <button
+                type="button"
+                onClick={() => toggleDiff(file)}
+                title={file.path}
+                className="min-w-0 flex-1 text-left"
+              >
+                <span className="block truncate font-mono text-ui-xs text-slate-700">
+                  {file.path}
+                </span>
+              </button>
+              <span className="shrink-0 rounded-md border border-border px-1 text-ui-2xs text-slate-500">
+                {t(FILE_STATUS_LABELS[file.status])}
+              </span>
+              {file.binary ? null : (
+                <span className="shrink-0 font-mono text-ui-2xs">
+                  <span className="text-emerald-600">+{file.additions}</span>
+                  <span className="ml-1 text-rose-600">−{file.deletions}</span>
+                </span>
+              )}
+              <button
+                type="button"
+                aria-label={t("mobile.agent.viewFile")}
+                title={t("mobile.agent.viewFile")}
+                onClick={() =>
+                  navigate(fileHash(`__session__:${props.sessionId}`, file.path))
+                }
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-400 transition active:bg-overlay-soft"
+              >
+                <FileText size={13} />
+              </button>
+            </div>
+            {open ? (
+              <div className="px-4 pb-2">
+                {diff?.loading ? (
+                  <p className="py-1 text-ui-xs text-slate-400">{t("common.reading")}</p>
+                ) : diff?.error ? (
+                  <p
+                    className="py-1 text-ui-xs leading-5 text-rose-600"
+                    title={t("mobile.agent.diffFailed")}
+                  >
+                    {diff.error}
+                  </p>
+                ) : diff ? (
+                  <>
+                    <pre className="max-h-72 select-text overflow-auto overscroll-contain whitespace-pre rounded-lg border border-border bg-slate-50 px-3 py-2 font-mono text-ui-2xs leading-5 text-slate-700">
+                      {diff.text || t("mobile.agent.diffEmpty")}
+                    </pre>
+                    {diff.truncated ? (
+                      <p className="mt-1 text-ui-2xs text-amber-700">
+                        {t("mobile.agent.reviewTruncated")}
+                      </p>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
 
       {props.files && props.files.length === 0 && !props.filesError ? (
         <p className="px-4 py-2 text-ui-xs text-slate-400">
@@ -853,9 +929,10 @@ function TaskFact(props: { label: string; value: string; mono?: boolean }) {
 }
 
 /**
- * The task pane: the facts of this round (state, branch, working directory,
- * revisions, write-back, review summary). Actions stay in the composer gate, so
- * there is one place to approve, retry or abandon.
+ * The task pane: the facts of this round (state, branch, model, working
+ * directory, revisions, write-back, review summary) plus the record link the
+ * round came from (desktop parity: 打开缺陷 / 打开事项). Actions stay in the
+ * composer gate, so there is one place to approve, retry or abandon.
  */
 function TaskPane(props: { task: DshTask }) {
   const { task } = props;
@@ -868,11 +945,38 @@ function TaskPane(props: { task: DshTask }) {
     ? t("mobile.agent.taskDirect")
     : task.worktreePath || task.repoPath || "";
 
+  /**
+   * Where this round's record lives. A bug task links the TAPD detail page
+   * (the task stores the long entity id, the same id the detail route uses);
+   * a local task links its project's item page. Captured first so the route
+   * closures keep the narrowed values.
+   */
+  const bugRef =
+    task.kind === "bug" && task.bugId && task.project
+      ? { bugId: task.bugId, workspaceId: task.project.id }
+      : null;
+  const localProjectId =
+    task.kind === "local_item" && task.project ? task.project.id : null;
+  const detailLink = bugRef
+    ? {
+        label: t("mobile.agent.openBug"),
+        go: () =>
+          navigate(
+            `#/bug/${encodeURIComponent(bugRef.bugId)}?w=${encodeURIComponent(bugRef.workspaceId)}`,
+          ),
+      }
+    : localProjectId
+      ? {
+          label: t("mobile.agent.openItem"),
+          go: () => navigate(`#/local?p=${encodeURIComponent(localProjectId)}`),
+        }
+      : null;
+
   return (
     <div data-component="TaskPane" className="flex flex-col gap-3 px-4 py-3">
       <section className="rounded-xl border border-border bg-surface p-3">
         <div className="flex items-center gap-2">
-          <WorkflowChip workflow={task.workflow} />
+          <WorkflowChip workflow={task.workflow} interrupted={task.interrupted} />
           {changes ? (
             <span className="ml-auto shrink-0 text-ui-xs text-slate-500">
               {t("mobile.agent.taskChanges", { files: changes.files })}
@@ -885,6 +989,9 @@ function TaskPane(props: { task: DshTask }) {
           {task.branch ? (
             <TaskFact label={t("mobile.agent.taskBranch")} value={task.branch} mono />
           ) : null}
+          {task.model ? (
+            <TaskFact label={t("mobile.agent.taskModel")} value={task.model} mono />
+          ) : null}
           {workDir ? (
             <TaskFact label={t("mobile.agent.taskWorkingDir")} value={workDir} mono />
           ) : null}
@@ -892,6 +999,16 @@ function TaskPane(props: { task: DshTask }) {
             <TaskFact label={t("mobile.agent.taskBug")} value={task.bugId} mono />
           ) : null}
         </div>
+        {detailLink ? (
+          <button
+            type="button"
+            onClick={detailLink.go}
+            className="mt-2 inline-flex min-h-8 items-center gap-1.5 text-ui-xs text-sky-700 transition active:opacity-60"
+          >
+            <ExternalLink size={11} />
+            {detailLink.label}
+          </button>
+        ) : null}
       </section>
 
       {hashes.length > 0 ? (
@@ -1584,6 +1701,24 @@ export function AgentSessionPage(props: { id: string }) {
   };
 
   /**
+   * Failed-turn retry (the shared turn block's 重试 button). The engine re-runs
+   * the turn from its own log — no prompt is sent again. Failures are swallowed
+   * here on purpose: the shared button only clears its spinner on resolve, so
+   * the error surfaces through the composer line instead of an unhandled
+   * rejection.
+   */
+  const retryTurn = useCallback(async () => {
+    try {
+      await dshApi.retryTurn(id);
+      void loadEntries(true);
+    } catch (err) {
+      if (alive.current) {
+        setComposerError({ text: asApiError(err).message, label: "mobile.agent.retryFailed" });
+      }
+    }
+  }, [id, loadEntries]);
+
+  /**
    * One session-local route write, with rollback on failure. The write counter
    * mirrors the desktop's `modeWrites` guard: a slow older failure must not
    * roll back a newer pick that already owns the screen.
@@ -1883,6 +2018,7 @@ export function AgentSessionPage(props: { id: string }) {
                 childError={childError}
                 openSubagentIds={openChildren}
                 onToggleSubagent={toggleChild}
+                onRetry={retryTurn}
               />
             ) : null}
 

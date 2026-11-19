@@ -46,6 +46,9 @@ export type TurnStackProps = {
   openSubagentIds: ReadonlySet<string>;
   /** A child fold toggled; the host lazy-loads on open and stops polling on close. */
   onToggleSubagent: (sessionId: string) => void;
+  /** Failed-turn retry for this stack's own session; child turns get none,
+   *  matching the desktop (only the root transcript offers it). */
+  onRetry?: () => Promise<void> | void;
   depth?: number;
 };
 
@@ -60,6 +63,7 @@ export function TurnStack({
   childError,
   openSubagentIds,
   onToggleSubagent,
+  onRetry,
   depth = 0,
 }: TurnStackProps) {
   // Grouping is pure, but the poll re-renders the stack every few seconds:
@@ -132,6 +136,7 @@ export function TurnStack({
             renderTurns={renderChildTurns}
             openSubagentIds={openSubagentIds}
             onToggleSubagent={onToggleSubagent}
+            onRetry={onRetry}
           />
         );
       })}

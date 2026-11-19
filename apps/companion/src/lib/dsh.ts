@@ -185,6 +185,10 @@ export type DshTask = {
   writeback: DshTaskWriteback;
   /** This round works directly in the repository (no worktree, no merge). */
   direct: boolean;
+  /** Model route chosen at hand-over; the engine's usage wins once running. */
+  model?: string;
+  /** The local work item a local task came from (task pane navigation). */
+  localItemId?: string;
 };
 
 export type DshTaskGit = {
@@ -526,6 +530,12 @@ export const dshApi = {
   /** Reattaches a task's persisted dsh session after a desktop restart. */
   taskResume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
+  /** Removes the task, its transcript and its worktree; rejected while running. */
+  taskDelete: (sessionId: string) =>
+    feature<{ sessionId: string }>("dsh_task_delete", { sessionId }),
+  /** Re-runs the last failed turn from the engine's own log (no new prompt). */
+  retryTurn: (sessionId: string) =>
+    feature<{ sessionId: string; ok: true }>("dsh_session_retry", { sessionId }),
 
   /** Every configured project (TAPD + local) so empty groups still render. */
   projects: () => feature<{ projects: DshProjectOption[] }>("dsh_projects"),

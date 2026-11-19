@@ -57,6 +57,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     "dsh_prompt",
     // 停止当前回合：发送键的停止态（工作流取消仍走 dsh_task_cancel）
     "dsh_session_cancel",
+    // 失败回合重试：共享 TurnBlock 的失败行重试按钮
+    "dsh_session_retry",
     "dsh_select_model",
     "dsh_session_mode_get",
     "dsh_session_mode_set",
@@ -72,6 +74,8 @@ const ALLOWED_FEATURES: &[&str] = &[
     "dsh_task_changes",
     "dsh_task_diff",
     "dsh_task_resume",
+    // 删除任务/会话（连带 worktree 与本地事项回退；运行中被后端拒绝）
+    "dsh_task_delete",
     // 会话列表分组：所有已配置项目（空分组也要渲染头）
     "dsh_projects",
     // 自由会话的 worktree 开关（输入框上方）
@@ -220,6 +224,7 @@ mod tests {
     "dsh_new_session",
     "dsh_prompt",
     "dsh_session_cancel",
+    "dsh_session_retry",
     "dsh_select_model",
     "dsh_session_mode_get",
     "dsh_session_mode_set",
@@ -234,6 +239,7 @@ mod tests {
     "dsh_task_changes",
     "dsh_task_diff",
     "dsh_task_resume",
+    "dsh_task_delete",
     "dsh_projects",
     "dsh_chat_worktree",
     "dsh_policy_get",

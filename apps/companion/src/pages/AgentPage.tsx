@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ListTodo, LoaderCircle, Play, Plus, RefreshCw, X } from "lucide-react";
+import { ListTodo, LoaderCircle, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 
 import { asApiError } from "../lib/api";
 import { Badge, type BadgeTone } from "../components/Badge";
+import { BottomSheet } from "../components/BottomSheet";
 import {
   dshApi,
   refreshAgentFeed,
@@ -146,35 +147,46 @@ function groupTasks(tasks: DshTask[], projects: DshProjectOption[]): TaskGroup[]
   return list;
 }
 
-function TaskRow(props: { task: DshTask }) {
+/** One list row: tap opens the session, the trailing button asks to delete. */
+function TaskRow(props: { task: DshTask; onDelete: (task: DshTask) => void }) {
   const task = props.task;
   return (
-    <button
-      data-component="TaskRow"
-      type="button"
-      onClick={() => navigate(`#/agent/session/${encodeURIComponent(task.id)}`)}
-      className="flex min-h-11 w-full flex-col border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
-    >
-      <span className="flex items-start gap-2">
-        {task.status === "running" && task.kind === "chat" ? (
-          <span
-            title={t("mobile.agent.workflowRunning")}
-            className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
-          />
-        ) : null}
-        <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
-          {plainTitle(task.title) || t("mobile.agent.untitledSession")}
+    <div data-component="TaskRow" className="flex items-stretch border-b border-border">
+      <button
+        type="button"
+        onClick={() => navigate(`#/agent/session/${encodeURIComponent(task.id)}`)}
+        className="flex min-h-11 min-w-0 flex-1 flex-col px-4 py-3 text-left transition active:bg-overlay-soft"
+      >
+        <span className="flex items-start gap-2">
+          {task.status === "running" && task.kind === "chat" ? (
+            <span
+              title={t("mobile.agent.workflowRunning")}
+              className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
+            />
+          ) : null}
+          <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
+            {plainTitle(task.title) || t("mobile.agent.untitledSession")}
+          </span>
         </span>
-      </span>
-      <span className="mt-1 flex items-center gap-2">
-        {task.kind === "chat" ? null : (
-          <WorkflowChip workflow={task.workflow} interrupted={isInterrupted(task)} />
-        )}
-        <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
-          {relativeTime(task.updatedAt)}
+        <span className="mt-1 flex items-center gap-2">
+          {task.kind === "chat" ? null : (
+            <WorkflowChip workflow={task.workflow} interrupted={isInterrupted(task)} />
+          )}
+          <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
+            {relativeTime(task.updatedAt)}
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      <button
+        type="button"
+        aria-label={t("mobile.agent.deleteTitle")}
+        title={t("mobile.agent.deleteTitle")}
+        onClick={() => props.onDelete(task)}
+        className="grid w-11 shrink-0 place-items-center text-slate-400 transition active:bg-rose-50 active:text-rose-600"
+      >
+        <Trash2 size={14} />
+      </button>
+    </div>
   );
 }
 
@@ -278,6 +290,26 @@ export function AgentPage() {
   const [view, setView] = useState<"tasks" | "queue">("tasks");
   /** Queue rows whose continue/cancel request is in flight. */
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+
+  /** Delete flow: the tapped row opens the confirm sheet; failures stay in it. */
+  const [deleting, setDeleting] = useState<DshTask | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const deleteTask = async () => {
+    if (!deleting || deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await dshApi.taskDelete(deleting.id);
+      setDeleting(null);
+      void refreshAgentFeed();
+    } catch (err) {
+      setDeleteError(asApiError(err).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   const alive = useRef(true);
   useEffect(() => {
@@ -621,7 +653,7 @@ export function AgentPage() {
                   </button>
                 </div>
                 {group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
+                  <TaskRow key={task.id} task={task} onDelete={setDeleting} />
                 ))}
                 {group.project === null &&
                 group.tasks.length === 0 &&
@@ -673,6 +705,55 @@ export function AgentPage() {
           </QueueSection>
         </div>
       )}
+
+      <BottomSheet
+        open={deleting !== null}
+        title={t("mobile.agent.deleteTitle")}
+        onClose={() => {
+          if (!deleteBusy) setDeleting(null);
+        }}
+        footer={
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={() => setDeleting(null)}
+              className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+            >
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={() => void deleteTask()}
+              className="min-h-11 min-w-0 flex-1 rounded-lg border border-rose-200 bg-rose-50 px-3 text-ui-sm text-rose-700 transition active:bg-overlay-soft disabled:opacity-40"
+            >
+              {deleteBusy ? <LoaderCircle size={13} className="mx-auto animate-spin" /> : t("common.delete")}
+            </button>
+          </div>
+        }
+      >
+        {deleting ? (
+          <>
+            <p className="text-ui-caption text-slate-900">
+              {plainTitle(deleting.title) || t("mobile.agent.untitledSession")}
+            </p>
+            <p className="mt-2 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-sm leading-5 text-rose-700">
+              {t("mobile.agent.deleteHint", {
+                title: plainTitle(deleting.title) || t("mobile.agent.untitledSession"),
+              })}
+            </p>
+            {deleteError ? (
+              <p
+                className="mt-2 text-ui-sm leading-5 text-rose-600"
+                title={t("mobile.agent.deleteFailed")}
+              >
+                {deleteError}
+              </p>
+            ) : null}
+          </>
+        ) : null}
+      </BottomSheet>
     </div>
   );
 }

@@ -208,14 +208,16 @@
 
 - **Agent tab = 统一任务列表 + 队列视图**：顶部「任务 / 队列」切换。「任务」按项目分组
   （TAPD / 本地 / 未关联），每行是 workflow chip（`queued` / `running` / `awaiting_review` /
-  `finalizing` / `done` / `failed` / `canceled`）+ 实时运行点；动作在任务条上直接给：
+  `finalizing` / `done` / `failed` / `canceled`）+ 实时运行点 + 行尾删除（bottom sheet 二次确认，
+  走 `dsh_task_delete`，运行中被后端拒绝）；动作在任务条上直接给：
   通过（`dsh_task_approve`，之后的提交 / 合并 / 清理 / 回写由桌面 finalizing 链自动完成）、
   重试收尾（`dsh_task_retry_finalize`）、取消（`dsh_task_cancel`，可选 stash）、
-  查看文件（`dsh_task_changes`）与 diff（`dsh_task_diff`）。
+  查看文件（`dsh_task_changes`）与 diff（`dsh_task_diff`，文件行点击就地展开，行尾按钮跳内置查看器）。
   「队列」与桌面工作流队列同构：执行中 / 已中断 / 排队中 / 待审核 / 收尾中分组，已中断可「继续」
   （`dsh_task_resume` + 续跑提示词），排队中 / 执行中可取消；入队走 `dsh_task_enqueue_bug` /
   `dsh_task_enqueue_local`（缺陷详情与本地事项的「交给 Agent」bottom sheet：补充说明 + 模型），
-  恢复旧会话走 `dsh_task_resume`。
+  恢复旧会话走 `dsh_task_resume`。失败回合与桌面一样可以重试（`dsh_session_retry`，
+  引擎从自己的日志重跑，不重复发提示词）；任务页有「打开缺陷 / 打开事项」跳转与模型信息。
 - **审批与提问可在手机上回答**：`dsh_pending` 返回所有阻塞请求（approval / question），
   `dsh_approval_answer` / `dsh_question_answer` 直接回执；桌面先登记再发事件，所以手机轮询
   拿到的快照与实时事件一致。Agent tab 角标显示待处理数量。
