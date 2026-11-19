@@ -3,6 +3,10 @@ import clsx from "clsx";
 import { Sparkles, X } from "lucide-react";
 
 import { bugTitle } from "../lib/bug";
+import {
+  defaultSelection,
+  type ModelSelection,
+} from "../lib/agentSettings";
 import { dshTaskApi } from "../lib/dsh";
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
@@ -10,6 +14,7 @@ import { useLayerClose } from "../hooks/useLayerClose";
 import { usePanelServices } from "../workbench/panels/context";
 import { Button, ModalDragStrip, Switch } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
+import { ModelPicker } from "./ModelPicker";
 import { agentActions, agentStore } from "./store";
 
 /** A bug or a local work item; the sheet has no other targets. */
@@ -37,6 +42,12 @@ export function EnqueueSheet({ target, onClose }: Props) {
   // mount: subscribing would re-render the sheet on every stream delta.
   const [team, setTeam] = useState(
     () => agentStore.get().config?.teamEnabled ?? false,
+  );
+  // The route this task starts on. It begins at the last choice (which is the
+  // default for new sessions) and the task keeps its own copy once created.
+  const models = agentStore.get().config?.dshModels ?? null;
+  const [model, setModel] = useState<ModelSelection | null>(() =>
+    defaultSelection(models),
   );
 
   const heading =
@@ -66,6 +77,7 @@ export function EnqueueSheet({ target, onClose }: Props) {
               extraPrompt,
               undefined,
               team,
+              model ?? undefined,
             )
           : await dshTaskApi.enqueueLocal(
               target.projectId,
@@ -73,8 +85,12 @@ export function EnqueueSheet({ target, onClose }: Props) {
               extraPrompt,
               undefined,
               team,
+              model ?? undefined,
             );
       agentActions.adoptTask(task);
+      // The pick is the default for the sessions that start next; this task
+      // already carries its own copy from the enqueue payload.
+      if (model) void agentActions.rememberModelDefault(model);
       // The backend emits the new list; one refetch keeps a dropped event from
       // leaving the sidebar stale.
       void agentActions.refreshTasks();
@@ -102,7 +118,7 @@ export function EnqueueSheet({ target, onClose }: Props) {
         aria-modal="true"
         aria-label={heading}
         className={clsx(
-          "agent-sheet-up absolute inset-x-0 bottom-0 flex max-h-[min(56vh,400px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface",
+          "agent-sheet-up absolute inset-x-0 bottom-0 flex max-h-[min(64vh,460px)] flex-col overflow-hidden rounded-t-2xl border-t border-border bg-surface",
           closing && "modal-sheet-out",
         )}
       >
@@ -131,17 +147,29 @@ export function EnqueueSheet({ target, onClose }: Props) {
         </header>
 
         <div className="min-h-0 flex-1 px-5 py-3">
-          <div
-            className="mb-2 flex w-fit items-center gap-2 text-ui-xs text-slate-500"
-            title={t("agent.enqueue.teamHint")}
-          >
-            <Switch
-              checked={team}
-              onChange={setTeam}
-              disabled={submitting}
-              label={t("agent.chat.team")}
-            />
-            {t("agent.chat.team")}
+          <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-ui-xs text-slate-500">
+            <span className="flex items-center gap-2" title={t("agent.enqueue.teamHint")}>
+              <Switch
+                checked={team}
+                onChange={setTeam}
+                disabled={submitting}
+                label={t("agent.chat.team")}
+              />
+              {t("agent.chat.team")}
+            </span>
+            {/* Route and effort for this task's first turn; fixed once it runs. */}
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="shrink-0 text-slate-400">
+                {t("agent.model.pickTitle")}
+              </span>
+              <ModelPicker
+                models={models}
+                value={model}
+                onChange={setModel}
+                disabled={submitting}
+                placement="up"
+              />
+            </span>
           </div>
           <textarea
             autoFocus

@@ -17,6 +17,7 @@ import { TaskList } from "./TaskList";
 import { TaskPanel } from "./TaskPanel";
 import { TeamBoard } from "./TeamBoard";
 import { openAgentPath, resolveAgentImage } from "./localOpen";
+import { AGENT_COLUMN } from "./layout";
 import { installAgentPerf, recordAgentCommit } from "./perf";
 import { MessageUsageChip } from "./usage/MessageUsageChip";
 import { TrajectoryView } from "./trajectory/TrajectoryView";
@@ -152,7 +153,7 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
           <div className="flex min-w-0 flex-1 flex-col">
             {state.selectedId ? (
               <div className="relative shrink-0 px-6 py-2">
-                <div className="mx-auto flex max-w-[46rem] items-center justify-center">
+                <div className={`${AGENT_COLUMN} flex items-center justify-center`}>
                   {workflowTask ? (
                     <Segmented
                       value={view}

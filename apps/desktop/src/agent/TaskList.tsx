@@ -167,12 +167,14 @@ export function TaskList() {
             const rows = folded ? [] : group.tasks;
             return (
               <section key={group.key} className="mt-1 first:mt-0">
-                <div className="flex items-center gap-0.5">
+                {/* Hover and highlight belong to the whole group row: the
+                    「+」is part of the header, not a second hit target. */}
+                <div className="group/grp flex items-center gap-0.5 rounded px-1 py-1 transition hover:bg-overlay-soft">
                   <button
                     type="button"
                     aria-expanded={!folded}
                     onClick={() => toggleGroup(group.key)}
-                    className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left text-ui-xs text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left text-ui-xs text-slate-400 transition group-hover/grp:text-slate-600"
                   >
                     <ChevronRight
                       size={11}
@@ -194,15 +196,16 @@ export function TaskList() {
                       if (collapsed.has(group.key)) toggleGroup(group.key);
                       void agentActions.newSession(group.project ?? undefined);
                     }}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition group-hover/grp:text-slate-600 hover:text-slate-800"
                   >
                     <Plus size={12} />
                   </button>
                 </div>
                 {rows.length > 0 ? (
-                  // Indented under the header's name with a hairline guide,
-                  // so the group → session hierarchy reads without borders.
-                  <div className="ml-[15px] flex flex-col gap-0.5 border-l border-border pl-2">
+                  // No guide line: the status glyph owns the left gutter, so
+                  // the row text still lines up with the project name and a
+                  // running spinner never shifts the title.
+                  <div className="flex flex-col gap-0.5">
                     {rows.map((task) => (
                       <TaskRow
                         key={task.id}
@@ -341,23 +344,10 @@ function TaskRow({
       onMouseEnter={openHover}
       onMouseLeave={closeHover}
     >
-      <button
-        type="button"
-        aria-current={selected}
-        onClick={() => agentActions.selectSession(task.id)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          onMenu(task, event.clientX, event.clientY);
-        }}
-        className={clsx(
-          "flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left transition",
-          selected
-            ? "border-sky-200 bg-sky-50"
-            : "border-transparent hover:bg-slate-50",
-        )}
-      >
-        {/* Front slot: blocked on a person wins over running, because the
-            spinner would mean the opposite of what is happening. */}
+      {/* Left gutter: blocked on a person wins over running, because the
+          spinner would mean the opposite of what is happening. The workflow
+          mark sits beside it; both stay out of the title's flow. */}
+      <span className="pointer-events-none absolute left-1 top-1/2 flex -translate-y-1/2 items-center gap-1">
         {pending > 0 ? (
           <span
             className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 px-1 text-ui-2xs tabular-nums text-amber-700"
@@ -370,13 +360,29 @@ function TaskRow({
             <Loader2 size={12} className="animate-spin text-slate-400" />
           </span>
         ) : null}
-        {/* Only workflow tasks carry a mark, right of the spinner slot: the
-            icon's color is the deliverable state. Chats are just a chat. */}
         {isWorkflowTask(task) ? (
           <span className="shrink-0" title={t(workflow.label)}>
             <Workflow size={11} className={mark} />
           </span>
         ) : null}
+      </span>
+      <button
+        type="button"
+        aria-current={selected}
+        onClick={() => agentActions.selectSession(task.id)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onMenu(task, event.clientX, event.clientY);
+        }}
+        className={clsx(
+          // The status glyph lives in the left gutter, so the title starts at
+          // the same x as the project name whether or not it is spinning.
+          "flex w-full items-center gap-1.5 rounded-lg border py-1.5 pl-9 pr-2 text-left transition",
+          selected
+            ? "border-sky-200 bg-sky-50"
+            : "border-transparent hover:bg-slate-50",
+        )}
+      >
         <ScrollingName
           text={task.title || t("agent.task.untitled")}
           className="min-w-0 flex-1 text-ui-caption text-slate-800"

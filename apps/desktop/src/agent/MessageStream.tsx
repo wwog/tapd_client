@@ -25,6 +25,7 @@ import { buildPromptItems, type PromptNavItem } from "./promptNav";
 import { TurnBlock } from "./TurnBlock";
 import { groupTurns } from "./turns";
 import { assembleSessionSubagents, isPendingChild } from "./subagents";
+import { AGENT_COLUMN } from "./layout";
 import { agentActions, agentStore, isSessionRunning } from "./store";
 
 const EMPTY_ITEMS: DshEntry[] = [];
@@ -394,7 +395,8 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       >
         <div
           className={clsx(
-            "mx-auto flex w-full max-w-[46rem] flex-col gap-5",
+            "flex flex-col gap-5",
+            AGENT_COLUMN,
             (quiet || loading || failed) && "min-h-full justify-center",
           )}
         >

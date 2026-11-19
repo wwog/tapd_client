@@ -287,7 +287,7 @@ export const LeafRow = memo(function LeafRow({
         type="button"
         aria-expanded={open}
         onClick={toggle}
-        className="group/leaf-row -ml-1 flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:text-slate-700"
+        className="group/leaf-row -ml-1 flex w-fit max-w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:text-slate-700"
       >
         <ActionIcon action={action} failed={failed} />
         <span
@@ -330,7 +330,7 @@ export const LeafRow = memo(function LeafRow({
       </button>
 
       <Collapse open={open}>
-        <div className="mt-1 flex flex-col gap-1.5">
+        <div className="mt-1 flex flex-col gap-1.5 pl-3">
           <ResizableDetail
             label={
               input.meta

@@ -359,7 +359,7 @@ function ApprovalCard(props: { request: ApprovalPending }) {
           <span className="shrink-0 text-ui-2xs text-slate-400">
             {t("mobile.agent.approvalTarget")}
           </span>
-          <span className="min-w-0 flex-1 select-text break-words whitespace-pre-wrap text-ui-xs leading-5 text-slate-600">
+          <span className="min-w-0 flex-1 select-text wrap-break-word whitespace-pre-wrap text-ui-xs leading-5 text-slate-600">
             {approval.reason}
           </span>
         </p>
@@ -1958,7 +1958,7 @@ export function AgentSessionPage(props: { id: string }) {
           </div>
         ) : null}
         {task?.workflow === "done" && task.finalize?.notice ? (
-          <p className="mb-1 select-text break-words px-1 text-ui-2xs leading-5 text-amber-700">
+          <p className="mb-1 select-text wrap-break-word px-1 text-ui-2xs leading-5 text-amber-700">
             {task.finalize.notice}
           </p>
         ) : null}

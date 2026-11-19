@@ -15,6 +15,7 @@ import { showToast } from "../lib/toast";
 import { Badge, Button, Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { HashValue } from "./HashValue";
+import { AGENT_COLUMN } from "./layout";
 import { TaskDiffSection } from "./TaskDiffSection";
 import {
   agentActions,
@@ -134,7 +135,7 @@ export function TaskPanel({ task }: { task: DshTask }) {
       ref={rootRef}
       className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-3"
     >
-      <div className="mx-auto flex max-w-[46rem] flex-col gap-3 pb-3">
+      <div className={`${AGENT_COLUMN} flex flex-col gap-3 pb-3`}>
         {/* What the task is and where it works. */}
         <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">

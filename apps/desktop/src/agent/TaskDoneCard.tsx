@@ -26,16 +26,16 @@ export function TaskDoneCard({ task }: { task: DshTask }) {
       : t("agent.task.doneCleanedHint");
 
   return (
-    <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
+    <section className="rounded-xl border border-border bg-surface px-3 py-2.5" data-component="TaskDoneCard">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <CheckCircle2 size={14} className="shrink-0 text-emerald-600" />
         <span className="text-ui-caption text-slate-800">
           {t("agent.task.doneTitle")}
         </span>
         {task.branch ? (
-          <span className="inline-flex min-w-0 items-center gap-1 text-ui-xs text-slate-500">
+          <span className="inline-flex min-w-0 items-center gap-1 text-ui-xs text-slate-500 select-text">
             <GitBranch size={11} className="shrink-0 text-slate-400" />
-            <ScrollingName text={task.branch} className="max-w-[14rem]" />
+            <ScrollingName text={task.branch} className="max-w-56" />
           </span>
         ) : null}
         {task.changes ? (

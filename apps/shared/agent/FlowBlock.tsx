@@ -281,7 +281,6 @@ function StepHeader({
       expandable={expandable}
       locale={locale}
       onToggle={onToggle}
-      full
     >
       {icon}
       <span
@@ -323,21 +322,18 @@ function HeaderButton({
   expandable,
   locale,
   onToggle,
-  full = false,
   children,
 }: {
   open: boolean;
   expandable: boolean;
   locale: AgentLocale;
   onToggle: () => void;
-  /** The latest-step line needs a bounded width for its truncating target. */
-  full?: boolean;
   children: ReactNode;
 }) {
-  const className = clsx(
-    "group/flow -ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700",
-    full ? "w-full" : "self-start",
-  );
+  // Fit-content, clamped by the column: the chevron trails the content instead
+  // of sitting at the far right, while a long target still truncates.
+  const className =
+    "group/flow -ml-1 flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700";
   if (!expandable) {
     return <span className={className}>{children}</span>;
   }

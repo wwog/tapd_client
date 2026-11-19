@@ -15,6 +15,7 @@ import {
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { ScrollingName } from "../components/ScrollingName";
+import { AGENT_COLUMN } from "./layout";
 import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModePicker } from "./SessionModePicker";
 import { SessionModelPicker } from "./SessionModelPicker";
@@ -184,7 +185,7 @@ export function Composer() {
 
   return (
     <div className="px-6 pb-3 pt-2">
-      <div className="mx-auto max-w-[46rem]">
+      <div className={AGENT_COLUMN}>
         <div className="rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
           {project ? (
             <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
