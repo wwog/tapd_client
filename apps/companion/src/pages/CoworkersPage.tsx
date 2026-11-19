@@ -116,7 +116,7 @@ export function CoworkersPage() {
       ) : null}
 
       {!loading && coworkers.length > 0 ? (
-        <div className="space-y-3 px-3 py-3">
+        <div className="space-y-3 px-4 py-3">
           {coworkers.map((coworker) => {
             const selected = draft.includes(coworker.id);
             const accent = coworker.accent || "";
@@ -128,7 +128,7 @@ export function CoworkersPage() {
                 aria-pressed={selected}
                 disabled={saving}
                 onClick={() => toggle(coworker.id)}
-                className={`block w-full rounded-2xl border-2 p-4 text-left transition active:bg-overlay-soft disabled:opacity-70 ${
+                className={`block w-full rounded-2xl border p-3 text-left transition active:bg-overlay-soft disabled:opacity-70 ${
                   selected ? "border-sky-300 bg-sky-50" : "border-border bg-surface"
                 }`}
               >
@@ -213,13 +213,13 @@ export function CoworkersPage() {
       ) : null}
 
       {coworkers.length > 0 ? (
-        <div className="sticky bottom-14 z-10 border-t border-border bg-canvas px-3 py-2.5">
+        <div className="sticky bottom-14 z-10 border-t border-border bg-canvas px-4 py-2">
           <button
             type="button"
             disabled={saving}
             title={t("magent.saveHint")}
             onClick={() => void save()}
-            className="w-full rounded-lg bg-primary px-3 py-2 text-ui-caption text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
+            className="min-h-11 w-full rounded-lg bg-primary px-3 text-ui-caption text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
           >
             {saving ? t("magent.saving") : t("common.save")}
           </button>

@@ -318,12 +318,12 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
       ) : null}
 
       {!loading && detail ? (
-        <div className="pb-6">
+        <div className="pb-4">
           <h1 className="px-4 pt-3 text-ui-base leading-6 text-slate-900">
             {plainTitle(detail.title)}
           </h1>
 
-          <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
+          <section className="mx-4 mt-3 rounded-2xl border border-border bg-surface px-3 py-1">
             <InfoRow label={t("common.status")}>
               <Badge tone={STATUS_TONES[detail.status] ?? "neutral"}>
                 {detail.statusLabel || detail.status}
@@ -342,7 +342,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             <InfoRow label={t("mobile.bugDetail.updated")}>{relativeTime(detail.modified)}</InfoRow>
           </section>
 
-          <section className="mx-3 mt-3 flex flex-wrap items-center gap-2">
+          <section className="mx-4 mt-3 flex flex-wrap items-center gap-2">
             <ActionButton
               icon={<Link2 size={13} />}
               label={copied ? t("common.copied") : t("mobile.bugDetail.copyLink")}
@@ -399,7 +399,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             ) : null}
           </section>
 
-          <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
+          <section className="mx-4 mt-3 rounded-2xl border border-border bg-surface p-3">
             <h2 className="text-ui-sm text-slate-500">{t("mobile.bugDetail.description")}</h2>
             {detail.descriptionHtml.trim() ? (
               <div
@@ -411,7 +411,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             )}
           </section>
 
-          <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
+          <section className="mx-4 mt-3 rounded-2xl border border-border bg-surface p-3">
             <h2 className="text-ui-sm text-slate-500">
               {t("mobile.bugDetail.comments", { n: detail.comments.length })}
             </h2>
@@ -467,7 +467,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
                 type="button"
                 disabled={transitionBusy !== null}
                 onClick={() => void doTransition(choice.key)}
-                className="flex w-full items-center justify-between rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
+                className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft disabled:opacity-50"
               >
                 <span>{choice.label}</span>
                 {transitionBusy === choice.key ? (
@@ -497,7 +497,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
             type="button"
             disabled={commentBusy || !commentDraft.trim()}
             onClick={() => void submitComment()}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
+            className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover disabled:opacity-50"
           >
             {commentBusy ? <LoaderCircle size={13} className="animate-spin" /> : null}
             {commentBusy ? t("mobile.bugDetail.sending") : t("common.send")}

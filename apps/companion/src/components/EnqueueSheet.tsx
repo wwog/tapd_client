@@ -147,7 +147,7 @@ export function EnqueueSheet({ target, onClose, onDone }: Props) {
           title={t("mobile.enqueue.noteHint")}
           placeholder={t("mobile.enqueue.note")}
           onChange={(event) => setNote(event.target.value)}
-          className="mt-3 w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-ui-caption leading-6 text-slate-700 transition placeholder:text-slate-400"
+          className="mt-3 w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400"
         />
 
         {error ? (

@@ -303,7 +303,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   };
 
   const renderBinary = (item: FsContent) => (
-    <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface p-4">
+    <section className="mx-4 mt-3 rounded-2xl border border-border bg-surface p-3">
       <p className="text-ui-caption text-slate-700">{t("mobile.files.noPreview")}</p>
       <p
         className="mt-1 text-ui-xs text-slate-400"
@@ -416,7 +416,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
       </header>
 
       {conflict ? (
-        <div className="mx-3 mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-xs leading-5 text-amber-700">
+        <div className="mx-4 mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-ui-xs leading-5 text-amber-700">
           <p>{t("mobile.files.conflict")}</p>
           <p className="mt-1 text-amber-600">{t("mobile.files.conflictHint")}</p>
           <div className="mt-2 flex gap-2">
@@ -439,7 +439,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
       ) : null}
 
       {saveError ? (
-        <p className="mx-3 mt-2 text-ui-xs text-rose-600">
+        <p className="mx-4 mt-2 text-ui-xs text-rose-600">
           {t("mobile.files.saveFailed", { error: saveError })}
         </p>
       ) : null}

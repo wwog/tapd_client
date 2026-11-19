@@ -518,10 +518,10 @@ export function LocalPage(props: { projectId: string | null }) {
 
       {projects && projects.length === 0 ? (
         <div
-          className="grid place-items-center px-6 py-16 text-center"
+          className="grid place-items-center px-6 py-12 text-center"
           title={t("mobile.local.noProjectsHint")}
         >
-          <p className="text-ui-lg text-slate-400">{t("mobile.local.noProjects")}</p>
+          <p className="text-ui-base text-slate-400">{t("mobile.local.noProjects")}</p>
         </div>
       ) : null}
 

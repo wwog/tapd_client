@@ -52,8 +52,20 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  /* The page never scrolls itself (fixed chrome + inner scrollers), so the
+     document-level rubber band only smears the fixed bars behind. */
+  overscroll-behavior: none;
   background: var(--color-canvas);
   color: var(--color-slate-900);
+}
+
+/* iOS Safari paints a grey flash over every tapped element; the per-row
+   active: states are the only press feedback, as on iOS. */
+button,
+a,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
 }
 
 ::selection {
@@ -81,6 +93,15 @@ body {
 .tab-bar,
 .sheet-safe {
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* iOS-style tab bar: the content scrolls under a translucent, blurred bar
+   separated only by a hairline (no shadow — the design contract keeps
+   structure in borders). */
+.tab-bar {
+  background: color-mix(in srgb, var(--color-canvas) 86%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
 }
 
 /* Bottom sheet motion: scrim fades, panel slides up. No shadows anywhere. */

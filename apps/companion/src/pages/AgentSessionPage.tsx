@@ -422,7 +422,7 @@ function ApprovalCard(props: { request: ApprovalPending }) {
   };
 
   return (
-    <div data-component="ApprovalCard" className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+    <div data-component="ApprovalCard" className="mx-4 mt-3 rounded-xl border border-border bg-surface px-3 py-3">
       <p className="text-ui-xs text-slate-500">{t("mobile.agent.approvalRequest")}</p>
       <p className="mt-1.5 flex items-baseline gap-2">
         <span className="shrink-0 text-ui-2xs text-slate-400">
@@ -477,7 +477,7 @@ function ApprovalCard(props: { request: ApprovalPending }) {
 function QuestionCard(props: { request: QuestionPending; onAnswer: () => void }) {
   const first = props.request.request.questions[0];
   return (
-    <div data-component="QuestionCard" className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+    <div data-component="QuestionCard" className="mx-4 mt-3 rounded-xl border border-border bg-surface px-3 py-3">
       <p className="text-ui-xs text-slate-500">{t("mobile.agent.questionRequest")}</p>
       <p className="mt-1 line-clamp-3 select-text text-ui-caption leading-5 text-slate-900">
         {first?.question ?? t("common.empty")}
@@ -679,7 +679,7 @@ function QuestionSheet(props: { pending: QuestionPending; onClose: () => void })
           ) : null}
           {singleSelect && hasOptions ? null : (
             <label className="mt-3 block">
-              <span className="text-ui-sm text-slate-500">
+              <span className="text-ui-caption text-slate-500">
                 {t("mobile.agent.questionCustom")}
               </span>
               <input
@@ -791,7 +791,7 @@ function TeamCard(props: { task: DshTeamTask }) {
   const scopes = task.writeScopes.slice(0, MAX_SCOPES);
   const hidden = task.writeScopes.length - scopes.length;
   return (
-    <article data-component="TeamCard" className="rounded-lg border border-border bg-surface px-3 py-2">
+    <article data-component="TeamCard" className="rounded-xl border border-border bg-surface px-3 py-2">
       <p
         className="line-clamp-2 text-ui-caption leading-5 text-slate-900"
         title={task.description || undefined}
@@ -851,7 +851,7 @@ function TeamBoard(props: { team: DshTeam | null; error: string | null }) {
   }
 
   return (
-    <div data-component="TeamBoard">
+    <div data-component="TeamBoard" className="flex flex-col gap-3">
       {team.failure ? (
         <p
           className="mx-4 mt-2 select-text truncate text-ui-xs leading-5 text-amber-700"
@@ -874,7 +874,7 @@ function TeamBoard(props: { team: DshTeam | null; error: string | null }) {
           if (tasks.length === 0) return null;
           return (
             <section key={column.status}>
-              <h2 className="mt-3 border-y border-border bg-overlay-soft px-4 py-1.5 text-ui-2xs text-slate-500">
+              <h2 className="border-b border-border bg-overlay-soft px-4 py-1 text-ui-2xs text-slate-500">
                 {t(column.label)}
               </h2>
               <div className="space-y-2 px-4 py-2">
@@ -1917,7 +1917,7 @@ export function AgentSessionPage(props: { id: string }) {
       </div>
 
       {resuming ? (
-        <p className="px-4 text-ui-2xs leading-5 text-slate-400">
+        <p className="px-4 py-1.5 text-ui-2xs leading-5 text-slate-400">
           {t("mobile.agent.resuming")}
         </p>
       ) : null}
@@ -1941,14 +1941,14 @@ export function AgentSessionPage(props: { id: string }) {
       ) : null}
 
       {feed.tasksError ? (
-        <p className="px-4 pb-1 text-ui-xs text-rose-600" title={t("mobile.agent.loadFailed")}>
+        <p className="px-4 py-2 text-ui-xs text-rose-600" title={t("mobile.agent.loadFailed")}>
           {feed.tasksError}
         </p>
       ) : null}
 
       {feed.pendingError && feed.pendingError !== feed.tasksError ? (
         <p
-          className="px-4 pb-1 text-ui-xs text-rose-600"
+          className="px-4 py-2 text-ui-xs text-rose-600"
           title={t("mobile.agent.pendingLoadFailed")}
         >
           {feed.pendingError}
@@ -1956,7 +1956,7 @@ export function AgentSessionPage(props: { id: string }) {
       ) : null}
 
       {resumeError ? (
-        <p className="px-4 pb-1 text-ui-xs text-rose-600" title={t("mobile.agent.resumeFailed")}>
+        <p className="px-4 py-2 text-ui-xs text-rose-600" title={t("mobile.agent.resumeFailed")}>
           {resumeError}
         </p>
       ) : null}
@@ -2002,7 +2002,7 @@ export function AgentSessionPage(props: { id: string }) {
         </>
       ) : (
         <>
-          <div className="flex flex-col gap-4 px-4 py-3">
+          <div className="flex flex-col gap-3 px-4 py-3">
             {/* The session's standing plan sits above the turns it guides. */}
             {todos.length > 0 ? <TodoCard todos={todos} locale={agentLocale} /> : null}
 
@@ -2027,7 +2027,7 @@ export function AgentSessionPage(props: { id: string }) {
             ) : null}
 
             {sorted && sorted.length === 0 && todos.length === 0 ? (
-              <div className="grid place-items-center px-6 py-16 text-center">
+              <div className="grid place-items-center px-6 py-12 text-center">
                 <p
                   className="text-ui-base text-slate-400"
                   title={t("mobile.agent.emptyTranscriptHint")}
@@ -2050,7 +2050,7 @@ export function AgentSessionPage(props: { id: string }) {
           its bottom row — the last flex child, directly above the tab bar.
           While the session runs the primary button is the stop state of send,
           not a separate control. */}
-      <div className="shrink-0 border-t border-border bg-canvas px-3 pb-2 pt-2">
+      <div className="shrink-0 border-t border-border bg-canvas px-4 pb-2 pt-2">
         {/* The workflow gate: approve/discard while in review, retry while the
             host is finishing. It stays above the composer so a long file list
             never hides the primary action. */}

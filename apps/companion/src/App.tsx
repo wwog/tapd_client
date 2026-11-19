@@ -85,7 +85,7 @@ function TabBar(props: { active: TabKey; agentBadge: number }) {
     <nav
       data-component="TabBar"
       aria-label={t("mobile.nav.main")}
-      className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-canvas"
+      className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border"
     >
       <div className="flex h-14 items-stretch">
         {TABS.map((tab) => {

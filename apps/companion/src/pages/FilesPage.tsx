@@ -387,7 +387,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
   return (
     <div data-component="FilesPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
-        <div className="flex items-center gap-2 px-4 pt-3 pb-1">
+        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
           <h1 className="text-ui-base text-slate-900">{t("mobile.files.title")}</h1>
           <button
             type="button"
@@ -455,7 +455,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
             {t("mobile.files.showHidden")}
           </button>
         </div>
-        <div className="flex items-center gap-0.5 overflow-x-auto overscroll-x-contain px-3 pb-1">
+        <div className="flex items-center gap-0.5 overflow-x-auto overscroll-x-contain px-4 pb-1">
           <button
             type="button"
             aria-label={t("mobile.files.parent")}
@@ -521,7 +521,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
       {selectedId && loading && !visibleListing && !error ? <ListSkeleton /> : null}
 
       {error && noFolder ? (
-        <div className="px-4 py-10 text-center">
+        <div className="px-4 py-8 text-center">
           <p
             className="text-ui-base text-slate-500"
             title={t("mobile.files.noFolderHint")}
@@ -573,7 +573,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
             <button
               type="button"
               onClick={() => openEntry(entry)}
-              className="flex min-h-11 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left transition active:bg-overlay-soft"
+              className="flex min-h-11 min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition active:bg-overlay-soft"
             >
               <Icon size={18} className="shrink-0 text-slate-400" />
               <span className="min-w-0 flex-1">

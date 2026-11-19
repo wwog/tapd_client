@@ -117,7 +117,7 @@ export function ModeSheet(props: {
               type="button"
               aria-pressed={selected}
               onClick={() => props.onPick(option.value)}
-              className={`flex min-h-14 w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition ${
+              className={`flex min-h-12 w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition ${
                 selected
                   ? "border-sky-300 bg-sky-50"
                   : "border-border bg-surface active:bg-overlay-soft"
@@ -201,7 +201,7 @@ export function ModelSheet(props: {
               {t("mobile.agent.modelNoAvailable")}
             </p>
           ) : (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {groups.map(({ provider, models }) => {
                 const current = props.route?.provider.id === provider.id;
                 return (
@@ -261,7 +261,7 @@ export function ModelSheet(props: {
             <ChevronLeft size={14} className="shrink-0" />
             {t("common.back")}
           </button>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             {(currentGroup?.models ?? []).map((model) => {
               const selected =
                 props.chosen?.provider === currentGroup?.provider.id &&

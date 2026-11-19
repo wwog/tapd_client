@@ -100,7 +100,7 @@ export function TerminalPage() {
       </header>
 
       {error ? (
-        <p className="px-4 py-3 text-ui-caption text-rose-600" title={t("mobile.terminal.loadFailed")}>
+        <p className="px-4 pt-3 pb-2 text-ui-caption text-rose-600" title={t("mobile.terminal.loadFailed")}>
           {error}
         </p>
       ) : null}

@@ -4,18 +4,15 @@
  * come straight back in — the desktop only accepts re-pairing, and a
  * consumed link used to strand the device on the invalid-code page.
  *
- * This widens the earlier "tab-lifetime only" decision on purpose: the
- * device keeps the session until the desktop unpairs it or a re-pairing
- * rotates the token. Reads fall back to `sessionStorage` first so a tab
- * that paired under the old scheme keeps working, and every write moves
- * the value to `localStorage` and drops the legacy copy.
+ * The device keeps the session until the desktop unpairs it or a re-pairing
+ * rotates the token.
  */
 const KEY = "companion.session";
 const MEDIA_KEY = "companion.mediaToken";
 
 export const getSession = (): string | null => {
   try {
-    return localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY);
+    return localStorage.getItem(KEY);
   } catch {
     return null;
   }
@@ -24,7 +21,6 @@ export const getSession = (): string | null => {
 export const setSession = (token: string): void => {
   try {
     localStorage.setItem(KEY, token);
-    sessionStorage.removeItem(KEY);
   } catch {
     // Storage blocked (private browsing): pairing will not survive a reload.
   }
@@ -33,9 +29,7 @@ export const setSession = (token: string): void => {
 export const clearSession = (): void => {
   try {
     localStorage.removeItem(KEY);
-    sessionStorage.removeItem(KEY);
     localStorage.removeItem(MEDIA_KEY);
-    sessionStorage.removeItem(MEDIA_KEY);
   } catch {
     // Ignore.
   }
@@ -76,7 +70,6 @@ export const getMediaToken = (): string | null => {
 export const setMediaToken = (token: string): void => {
   try {
     localStorage.setItem(MEDIA_KEY, token);
-    sessionStorage.removeItem(MEDIA_KEY);
   } catch {
     // Ignore.
   }

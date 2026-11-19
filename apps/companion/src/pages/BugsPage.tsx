@@ -441,7 +441,7 @@ export function BugsPage() {
               aria-label={t("common.projects")}
               value={workspaceId ?? ""}
               onChange={(event) => setWorkspaceId(event.target.value)}
-              className="max-w-[36%] shrink-0 rounded-lg border border-border bg-surface px-2 py-1.5 text-ui-sm text-slate-700"
+              className="flex max-w-[36%] shrink-0 items-center rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700"
             >
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>
@@ -472,7 +472,7 @@ export function BugsPage() {
             type="button"
             aria-pressed={onlyOpen}
             onClick={() => setOnlyOpen((value) => !value)}
-            className={`rounded-md border px-2 py-1 text-ui-sm transition ${
+            className={`rounded-md border px-2.5 py-1 text-ui-sm transition ${
               onlyOpen ? "border-sky-200 bg-sky-50 text-sky-700" : "border-border text-slate-500"
             }`}
           >
@@ -482,7 +482,7 @@ export function BugsPage() {
             type="button"
             onClick={openFilter}
             aria-haspopup="dialog"
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-ui-sm transition ${
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-ui-sm transition ${
               activeFilterCount > 0
                 ? "border-sky-200 bg-sky-50 text-sky-700"
                 : "border-border text-slate-500"
@@ -507,7 +507,7 @@ export function BugsPage() {
                 });
               }
             }}
-            className="ml-auto shrink-0 rounded-lg border border-border bg-surface px-2 py-1 text-ui-sm text-slate-700"
+            className="ml-auto flex shrink-0 items-center rounded-lg border border-border bg-surface px-3 py-1.5 text-ui-sm text-slate-700"
           >
             {SORT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -544,7 +544,7 @@ export function BugsPage() {
                 <span className="line-clamp-2 block text-ui-caption text-slate-900">
                   {plainTitle(bug.title)}
                 </span>
-                <span className="mt-1.5 flex items-center gap-2 text-ui-xs text-slate-500">
+                <span className="mt-1 flex items-center gap-2 text-ui-xs text-slate-500">
                   <Badge tone={STATUS_TONES[bug.status] ?? "neutral"}>
                     {bug.statusLabel || bug.status}
                   </Badge>
@@ -603,7 +603,7 @@ export function BugsPage() {
             <button
               type="button"
               onClick={() => setFilterDraft(EMPTY_FILTER)}
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
+              className="min-h-11 rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
             >
               {t("common.reset")}
             </button>
@@ -613,7 +613,7 @@ export function BugsPage() {
                 applyFilter(filterDraft);
                 setFilterOpen(false);
               }}
-              className="min-w-0 flex-1 rounded-lg bg-primary px-3 py-2 text-ui-sm text-primary-foreground transition active:bg-primary-hover"
+              className="min-h-11 min-w-0 flex-1 rounded-lg bg-primary px-3 text-ui-sm text-primary-foreground transition active:bg-primary-hover"
             >
               {t("mobile.bugs.apply")}
             </button>
@@ -753,7 +753,7 @@ export function BugsPage() {
                     navigate(`#/bug/${target.id}?w=${encodeURIComponent(workspaceId)}`);
                   }
                 }}
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft"
+                className="flex min-h-11 w-full items-center rounded-lg border border-border bg-surface px-3 text-left text-ui-caption text-slate-700 transition active:bg-overlay-soft"
               >
                 {t("mobile.bugs.viewDetail")}
               </button>

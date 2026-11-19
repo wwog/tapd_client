@@ -25,7 +25,10 @@ export function BottomSheet(props: {
         onClick={props.onClose}
       />
       <div className="sheet-panel sheet-safe absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-surface">
-        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-2.5">
+        {/* iOS sheet grabber: the drag affordance doubles as the visual cue
+            that this panel is a sheet; the X stays for the actual close. */}
+        <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-slate-300" />
+        <header className="flex shrink-0 items-center justify-between gap-2 px-4 pb-2 pt-1.5">
           <h2 className="min-w-0 truncate text-ui-caption text-slate-900">{props.title}</h2>
           <button
             type="button"
@@ -40,7 +43,7 @@ export function BottomSheet(props: {
           {props.children}
         </div>
         {props.footer ? (
-          <div className="shrink-0 border-t border-border px-4 py-3">{props.footer}</div>
+          <div className="shrink-0 border-t border-border px-4 pb-3 pt-2">{props.footer}</div>
         ) : null}
       </div>
     </div>,

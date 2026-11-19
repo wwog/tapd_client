@@ -99,7 +99,7 @@ export function TerminalFolderSheet(props: {
       title={t("mobile.terminal.chooseFolder")}
       onClose={props.onClose}
     >
-      <div className="-mx-4 -my-3">
+      <div className="-mx-4 -my-3 [&>*:last-child]:border-b-0">
         {props.error ? (
           <p
             className="border-b border-border px-4 py-2 text-ui-caption text-rose-600"

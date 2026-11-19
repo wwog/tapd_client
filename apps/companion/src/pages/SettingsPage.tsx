@@ -38,7 +38,7 @@ function Segmented<T extends string>(props: {
       data-component="Segmented"
       role="tablist"
       aria-label={props.label}
-      className="inline-flex rounded-lg border border-border bg-slate-50 p-0.5"
+      className="inline-flex rounded-lg border border-border bg-surface p-0.5"
     >
       {props.options.map((option) => {
         const active = option.value === props.value;
@@ -170,7 +170,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
     return (
       <p
         data-component="DeskStatus"
-        className="border-b border-border py-2.5 text-ui-sm leading-5 text-rose-600 last:border-b-0"
+        className="border-b border-border px-4 py-2.5 text-ui-sm leading-5 text-rose-600 last:border-b-0"
         title={t("mobile.settings.loadErrorHint")}
       >
         {props.error}
@@ -179,7 +179,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   }
   if (props.loading) {
     return (
-      <p data-component="DeskStatus" className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
+      <p data-component="DeskStatus" className="border-b border-border px-4 py-2.5 text-ui-caption text-slate-400 last:border-b-0">
         {t("mobile.settings.loadingDesktop")}
       </p>
     );
@@ -459,7 +459,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div data-component="SettingsPage" className="pb-6">
+    <div data-component="SettingsPage" className="pb-4">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"
@@ -472,7 +472,7 @@ export function SettingsPage() {
         <span className="text-ui-caption text-slate-900">{t("common.settings")}</span>
       </header>
 
-      <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
+      <section className="mx-4 mt-4 rounded-2xl border border-border bg-surface px-3 py-1">
         <SettingRow label={t("mobile.settings.device")}>
           <span className="text-ui-caption text-slate-700">
             {presence.deviceName ?? "—"}
@@ -492,7 +492,7 @@ export function SettingsPage() {
           <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
             {t("mobile.settings.devices")}
           </h2>
-          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+          <section className="mx-4 mt-2 rounded-2xl border border-border bg-surface px-3 py-1">
             <SettingRow label={t("mobile.settings.host")}>
               <span className="flex items-center gap-1.5 text-ui-caption text-slate-700">
                 <span
@@ -528,12 +528,12 @@ export function SettingsPage() {
               </div>
             </div>
             {linkError ? (
-              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+              <p className="border-b border-border py-2 text-ui-xs leading-5 text-rose-600">
                 {linkError}
               </p>
             ) : null}
             {devicesError ? (
-              <p className="border-b border-border py-2 text-ui-xs leading-4 text-rose-600">
+              <p className="border-b border-border py-2 text-ui-xs leading-5 text-rose-600">
                 {devicesError}
               </p>
             ) : null}
@@ -613,7 +613,7 @@ export function SettingsPage() {
           <h2 className="mx-4 mt-4 text-ui-sm text-slate-500">
             {t("mobile.settings.fileEditing")}
           </h2>
-          <section className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1">
+          <section className="mx-4 mt-2 rounded-2xl border border-border bg-surface px-3 py-1">
             <SwitchRow
               label={t("mobile.settings.fileWrite")}
               title={t("mobile.settings.fileWriteHint")}
@@ -622,13 +622,13 @@ export function SettingsPage() {
               onChange={(value) => void toggleFileWrite(value)}
             />
             {fileWriteError ? (
-              <p className="pb-2 text-ui-xs text-rose-600">{fileWriteError}</p>
+              <p className="px-4 pb-2 text-ui-xs text-rose-600">{fileWriteError}</p>
             ) : null}
           </section>
         </>
       ) : null}
 
-      <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
+      <section className="mx-4 mt-4 rounded-2xl border border-border bg-surface px-3 py-1">
         <SettingRow label={t("common.language")}>
           <Segmented<LocaleMode>
             label={t("common.language")}
@@ -670,7 +670,7 @@ export function SettingsPage() {
       <DeskStatus error={deskError} loading={pendingLoads > 0 && !agentConfig && !notif} />
 
       <section
-        className="mx-3 mt-2 rounded-2xl border border-border bg-surface px-4 py-1"
+        className="mx-4 mt-2 rounded-2xl border border-border bg-surface px-3 py-1"
         title={t("mobile.settings.writeBackHint")}
       >
         <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.agentExecution")}</h3>
@@ -686,7 +686,7 @@ export function SettingsPage() {
         </SettingRow>
       </section>
 
-      <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
+      <section className="mx-4 mt-4 rounded-2xl border border-border bg-surface px-3 py-1">
         <h3 className="border-b border-border py-2 text-ui-sm text-slate-500">{t("mobile.settings.newBugNotifications")}</h3>
         <SwitchRow
           label={t("mobile.settings.enableNotifications")}
@@ -768,7 +768,7 @@ export function SettingsPage() {
         </SettingRow>
       </section>
 
-      <div className="mx-3 mt-3">
+      <div className="mx-4 mt-4">
         <button
           type="button"
           onClick={unpair}
@@ -779,7 +779,7 @@ export function SettingsPage() {
         </button>
       </div>
 
-      <div className="mx-3 mt-4 pb-2 text-center">
+      <div className="mx-4 mt-4 pb-2 text-center">
         <a
           href={PROJECT_URL}
           target="_blank"

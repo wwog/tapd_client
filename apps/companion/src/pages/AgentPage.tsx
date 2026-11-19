@@ -80,6 +80,7 @@ function ListSkeleton() {
       {[0, 1, 2, 3].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-2/3 animate-pulse rounded bg-overlay-soft" />
+          <div className="mt-2 h-3 w-1/3 animate-pulse rounded bg-overlay-soft" />
         </div>
       ))}
     </div>
@@ -582,7 +583,7 @@ export function AgentPage() {
       <div
         role="tablist"
         aria-label={t("mobile.tab.agent")}
-        className="mx-4 mt-3 flex items-center rounded-lg border border-border bg-surface p-0.5"
+        className="mx-4 mt-2 flex items-center rounded-lg border border-border bg-surface p-0.5"
       >
         {[
           { key: "tasks" as const, label: t("mobile.agent.viewTasks"), count: feed.tasks?.length ?? 0 },
@@ -613,7 +614,7 @@ export function AgentPage() {
 
       {actionError ? (
         <p
-          className="px-4 py-3 text-ui-caption text-rose-600"
+          className="px-4 py-2 text-ui-xs text-rose-600"
           title={t("common.actionFailed")}
         >
           {actionError}
@@ -622,7 +623,7 @@ export function AgentPage() {
 
       {feed.tasksError ? (
         <p
-          className="px-4 py-3 text-ui-caption text-rose-600"
+          className="px-4 py-2 text-ui-xs text-rose-600"
           title={t("mobile.agent.loadFailed")}
         >
           {feed.tasksError}
@@ -631,7 +632,7 @@ export function AgentPage() {
 
       {feed.pendingError && feed.pendingError !== feed.tasksError ? (
         <p
-          className="px-4 py-3 text-ui-caption text-rose-600"
+          className="px-4 py-2 text-ui-xs text-rose-600"
           title={t("mobile.agent.pendingLoadFailed")}
         >
           {feed.pendingError}
@@ -704,7 +705,7 @@ export function AgentPage() {
       ) : feed.tasks === null && !feed.tasksError ? (
         <ListSkeleton />
       ) : queue.total === 0 ? (
-        <div className="px-4 py-12 text-center" title={t("mobile.agent.queueEmptyHint")}>
+        <div className="px-4 py-10 text-center" title={t("mobile.agent.queueEmptyHint")}>
           <ListTodo size={22} className="mx-auto text-slate-300" />
           <p className="mt-2 text-ui-base text-slate-400">{t("mobile.agent.queueEmpty")}</p>
         </div>
