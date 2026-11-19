@@ -36,6 +36,7 @@ import {
   applyAgentTask,
   applyAgentTeam,
   dshApi,
+  isAgentSessionCreated,
   refreshAgentFeed,
   useAgentFeed,
   watchAgentTeam,
@@ -1900,7 +1901,7 @@ export function AgentSessionPage(props: { id: string }) {
   const title = plainTitle(task?.title) || t("mobile.agent.untitledSession");
   /** The task was deleted from the list while this page sat in the back
    *  stack: one line and a way back, not a pile of load failures. */
-  if (feed.tasks !== null && task === null) {
+  if (feed.tasks !== null && task === null && !isAgentSessionCreated(id)) {
     return (
       <div data-component="AgentSessionPage" className="grid h-full place-items-center p-6">
         <div className="text-center">
@@ -2227,7 +2228,7 @@ export function AgentSessionPage(props: { id: string }) {
                   </span>
                 </>
               ) : null}
-              <span className="ml-auto flex shrink-0 items-center gap-1">
+              <span className="ml-auto flex min-w-0 items-center gap-1">
                 {teamEnabled ? (
                   <WorkPill
                     icon={boardView ? MessageSquare : LayoutGrid}
@@ -2294,7 +2295,7 @@ export function AgentSessionPage(props: { id: string }) {
           />
           <div className="flex items-center gap-1 px-1 pb-1 pt-0.5">
             <ModeChip value={modeValue} onClick={() => setModeSheetOpen(true)} />
-            <span className="ml-auto flex shrink-0 items-center gap-1">
+            <span className="ml-auto flex min-w-0 items-center gap-1">
               <ModelChip label={modelChipLabel} onClick={() => setModelSheetOpen(true)} />
               <button
                 type="button"

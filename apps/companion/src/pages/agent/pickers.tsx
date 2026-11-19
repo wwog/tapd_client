@@ -92,7 +92,7 @@ export function ModelChip(props: { label: string; onClick: () => void }) {
       type="button"
       aria-haspopup="dialog"
       onClick={props.onClick}
-      className="inline-flex min-h-9 min-w-0 max-w-[46%] shrink-0 items-center gap-1 rounded-lg px-1.5 text-ui-xs text-slate-500 transition active:bg-overlay-soft"
+      className="inline-flex min-h-9 min-w-0 items-center gap-1 rounded-lg px-1.5 text-ui-xs text-slate-500 transition active:bg-overlay-soft"
     >
       <span className="min-w-0 truncate">{props.label}</span>
     </button>

@@ -7,6 +7,7 @@ import { BottomSheet } from "../components/BottomSheet";
 import {
   applyAgentTask,
   dshApi,
+  markAgentSessionCreated,
   refreshAgentFeed,
   useAgentFeed,
   type DshProjectOption,
@@ -424,6 +425,11 @@ export function AgentPage() {
       const { sessionId } = await dshApi.newSession(
         project ? { kind: project.kind, id: project.id } : undefined,
       );
+      // The feed carries the new row only after its next round; mark it so
+      // the session page's deleted-gate does not fire on that window, and
+      // start the round now.
+      markAgentSessionCreated(sessionId);
+      void refreshAgentFeed();
       navigate(`#/agent/session/${encodeURIComponent(sessionId)}`);
     } catch (err) {
       if (alive.current) setActionError(asApiError(err).message);

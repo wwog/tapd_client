@@ -593,6 +593,21 @@ let queue: Promise<void> = Promise.resolve();
 let refreshQueued: Promise<void> | null = null;
 
 /**
+ * Sessions created on this phone during this app run, until the task list
+ * first carries them. The list only updates on the feed's cadence, so a
+ * fresh id briefly exists in the route while `feed.tasks` has no row for it
+ * — the session page's "deleted" gate must not fire on that window.
+ */
+const createdSessionIds = new Set<string>();
+
+export const markAgentSessionCreated = (sessionId: string): void => {
+  createdSessionIds.add(sessionId);
+};
+
+export const isAgentSessionCreated = (sessionId: string): boolean =>
+  createdSessionIds.has(sessionId);
+
+/**
  * The session whose board the poller refreshes. The task page registers it on
  * open, so the app keeps one polling loop instead of one per board.
  */
@@ -610,6 +625,14 @@ const fetchFeed = async (): Promise<void> => {
     dshApi.pending(),
     watched ? dshApi.teamGet(watched) : Promise.resolve(null),
   ]);
+
+  // A session created in this app run stops needing its "newly created" mark
+  // the moment the list carries it.
+  if (tasks.status === "fulfilled") {
+    for (const id of createdSessionIds) {
+      if (tasks.value.tasks.some((task) => task.id === id)) createdSessionIds.delete(id);
+    }
+  }
 
   const teamError = team.status === "rejected" ? asApiError(team.reason).message : null;
   publish({
