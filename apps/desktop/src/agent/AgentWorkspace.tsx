@@ -27,6 +27,7 @@ import {
   agentTeamView,
   isSessionRunning,
 } from "./store";
+import { isWorkflowTask } from "./workflow";
 
 type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
@@ -130,7 +131,7 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
   // The board replaces the transcript for any session that chose it; a chat
   // keeps its transcript unless the reader explicitly opens the board. The
   // team/worktree choices themselves live in the composer's work bar.
-  const workflowTask = selected !== null && selected.kind !== "chat";
+  const workflowTask = isWorkflowTask(selected);
   const paneView = view;
   const board =
     paneView === "chat" && agentTeamView(state, state.selectedId) === "board";

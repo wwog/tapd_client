@@ -181,7 +181,6 @@ export function useDetailPane({
           currentUser,
           true,
         );
-        showToast("ok", t("app.claim.done"));
         bumpList();
         const open = detailRef.current;
         if (open?.id === bugId && open.workspaceId === targetWorkspaceId) {
@@ -209,7 +208,6 @@ export function useDetailPane({
     async (target: BugDetail, comment: string) => {
       try {
         await api.bugAddComment(target.workspaceId, target.id, comment);
-        showToast("ok", t("app.comment.posted"));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -224,10 +222,6 @@ export function useDetailPane({
     async (target: BugDetail, field: string, value: string) => {
       try {
         await api.bugUpdateField(target.workspaceId, target.id, field, value);
-        showToast(
-          "ok",
-          field === "de" ? t("app.detail.developerUpdated") : t("app.detail.ownerUpdated"),
-        );
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -245,13 +239,12 @@ export function useDetailPane({
       fields?: Record<string, string>,
     ) => {
       try {
-        const result = await api.bugTransition(
+        await api.bugTransition(
           target.workspaceId,
           target.id,
           status,
           fields,
         );
-        showToast("ok", t("app.detail.statusChanged", { label: result.label }));
         bumpList();
         await reloadBugDetail(target.workspaceId, target.id);
       } catch (error) {
@@ -259,7 +252,7 @@ export function useDetailPane({
         throw error;
       }
     },
-    [bumpList, reloadBugDetail, showToast],
+    [bumpList, reloadBugDetail],
   );
 
   const refreshDetailMembers = useCallback(() => {

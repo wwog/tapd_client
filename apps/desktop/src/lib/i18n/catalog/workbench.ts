@@ -10,7 +10,6 @@ export const workbench = {
     "把 TAPD 缺陷接入 AI 客户端，支持查询、导出与修复后回写。",
     "Connect TAPD bugs to AI clients: query, export and write back after a fix.",
   ],
-  "mcp.enabled": ["已启用", "Enabled"],
   "mcp.readWrite": ["读写", "Read-write"],
   "mcp.readOnly": ["只读", "Read-only"],
   "mcp.transport": ["传输", "Transport"],
@@ -132,14 +131,7 @@ export const workbench = {
     "关闭团队协作时写入提示词的内容",
     "Added to the prompt while team collaboration is off",
   ],
-  "coworker.contribute": ["技能征集", "Contribute a skill"],
-  "coworker.contributeIntro": [
-    "你的独门手艺，也值得成为下一位同事。带上角色、头像和技能包来投。",
-    "Your own craft deserves to be the next coworker. Bring a role, an avatar and a skill package.",
-  ],
   "coworker.submissionGuide": ["投稿规范", "Submission guide"],
-  "coworker.forkProject": ["Fork 项目", "Fork project"],
-  "coworker.readmeRules": ["规范见 README；", "See the README for the rules;"],
 
   // ------------------------------------------------------ CoworkerPicker.tsx
   "coworker.reload": ["重新加载", "Reload"],
@@ -169,7 +161,6 @@ export const workbench = {
     "在 TAPD 中操作时，这里会记录接口请求。",
     "Requests are recorded here while you use TAPD.",
   ],
-  "capture.loadingHint": ["正在读取请求记录…", "Reading captured requests…"],
   "capture.time": ["时间", "Time"],
   "capture.method": ["方法", "Method"],
   "capture.size": ["大小", "Size"],

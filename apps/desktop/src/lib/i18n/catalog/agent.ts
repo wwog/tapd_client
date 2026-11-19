@@ -63,7 +63,6 @@ export const agent = {
   "agent.card.listTruncated": ["仅显示前 {n} 项", "First {n} shown"],
 
   // Task actions.
-  "agent.task.fix": ["修复", "Fix"],
   "agent.task.changes": ["{files} 个文件", "{files} files"],
   "agent.task.changesHint": ["相对任务起点的改动", "Changes since the task started"],
   "agent.task.hideDiff": ["收起改动", "Hide changes"],

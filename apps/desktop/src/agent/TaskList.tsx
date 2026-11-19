@@ -19,7 +19,6 @@ import type {
   DshSessionStatus,
   DshTask,
   DshTaskProject,
-  DshTaskWorkflow,
 } from "../lib/dsh";
 import { dshTaskApi } from "../lib/dsh";
 import { readPref, writePref } from "../lib/uiPrefs";
@@ -29,7 +28,7 @@ import { ContextMenu, ContextMenuItem } from "../components/ContextMenu";
 import { ScrollingName } from "../components/ScrollingName";
 import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./store";
 import { TaskHoverCard } from "./TaskHoverCard";
-import { WORKFLOW, WORKFLOW_MARK } from "./workflow";
+import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
 
 /** Which project groups are folded shut, by group key. */
 const COLLAPSED_PREF = "agent.collapsed-projects.v1";
@@ -303,13 +302,8 @@ function TaskRow({
   onDelete: (task: DshTask) => void;
   onMenu: (task: DshTask, x: number, y: number) => void;
 }) {
-  // A row written by a build that still used `awaiting_merge` must not blank
-  // the whole list; it reads as the finalize stage it migrated into.
-  const workflow =
-    (WORKFLOW as Record<string, (typeof WORKFLOW)[DshTaskWorkflow]>)[task.workflow] ??
-    WORKFLOW.finalizing;
-  const mark =
-    (WORKFLOW_MARK as Record<string, string>)[task.workflow] ?? "text-slate-300";
+  const workflow = WORKFLOW[task.workflow];
+  const mark = WORKFLOW_MARK[task.workflow];
 
   // The hover card opens after a short dwell and closes after a short grace
   // period, so the pointer can travel onto the card through the gap.
@@ -378,7 +372,7 @@ function TaskRow({
         ) : null}
         {/* Only workflow tasks carry a mark, right of the spinner slot: the
             icon's color is the deliverable state. Chats are just a chat. */}
-        {task.kind !== "chat" ? (
+        {isWorkflowTask(task) ? (
           <span className="shrink-0" title={t(workflow.label)}>
             <Workflow size={11} className={mark} />
           </span>

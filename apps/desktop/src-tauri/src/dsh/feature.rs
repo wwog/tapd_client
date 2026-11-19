@@ -42,17 +42,7 @@ pub fn status(app: &AppHandle) -> Result<DshStatus, String> {
 
 pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
     let status = runtime(app)?.ensure_ready(app).await?;
-    // App restart: queued tasks are rescheduled against the live sessions the
-    // new runtime has. A row persisted as running without a live session does
-    // not hold a slot and waits for the user to open it.
-    if let Err(error) = super::tasks::schedule(app).await {
-        tracing::warn!(%error, "queued dsh tasks were not scheduled");
-    }
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        super::tasks::recover_finalizing(&handle).await;
-    });
+    after_runtime_up(app).await;
     Ok(status)
 }
 
@@ -61,16 +51,25 @@ pub async fn start(app: &AppHandle) -> Result<DshStatus, String> {
 /// while the process is alive.
 pub async fn restart(app: &AppHandle) -> Result<DshStatus, String> {
     let status = runtime(app)?.restart(app).await?;
-    // The old process owned every live session; the queue has to be rebuilt.
+    after_runtime_up(app).await;
+    Ok(status)
+}
+
+/// Post-start work shared by `start` and `restart`: re-arm the queue against
+/// the live sessions, then recover tasks the previous process left mid-merge.
+///
+/// App restart semantics: queued tasks are rescheduled against the live
+/// sessions the new runtime has. A row persisted as running without a live
+/// session does not hold a slot and waits for the user to open it.
+async fn after_runtime_up(app: &AppHandle) {
     if let Err(error) = super::tasks::schedule(app).await {
-        tracing::warn!(%error, "queued dsh tasks were not scheduled after a restart");
+        tracing::warn!(%error, "queued dsh tasks were not scheduled");
     }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         super::tasks::recover_finalizing(&handle).await;
     });
-    Ok(status)
 }
 
 /// Stops the current turn of one session without ending the task. `turn/end`
@@ -184,12 +183,6 @@ fn unknown_session(session_id: &str) -> Value {
 /// Where dsh keeps its own session logs (`$DSH_HOME/sessions`).
 fn dsh_sessions_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     super::session_log::dir(app)
-}
-
-/// Allocates an id and its (empty) registry row. The runtime creates the real
-/// session on the first prompt.
-pub async fn new_session(app: &AppHandle) -> Result<Value, String> {
-    new_session_in(app, None).await
 }
 
 /// A manual session is always a free chat; the optional project only groups it

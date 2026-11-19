@@ -371,6 +371,7 @@ function BugListViewImpl(props: Props) {
           setKeyword(value);
         }}
         activeFilterCount={activeFilterCount}
+        hasResults={Boolean(page && page.bugs.length > 0)}
         onClearFilters={clearFilters}
         columns={columns}
         onColumnsChange={setColumns}

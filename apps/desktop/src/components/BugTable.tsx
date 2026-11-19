@@ -343,13 +343,12 @@ export function BugTable(props: Props) {
                   <div className="flex items-center justify-center">
                     <button
                       type="button"
-                      title={t("agent.enqueue.bugHint")}
+                      title={t("bugs.fixWithAgent")}
                       aria-label={t("bugs.fixWithAgent")}
                       onClick={() => setFixTarget(bug)}
-                      className="inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                      className="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-border bg-surface px-2.5 py-1 text-ui-sm font-normal text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
                     >
                       <Sparkles size={12} />
-                      {t("agent.task.fix")}
                     </button>
                   </div>
                 )}

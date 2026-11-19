@@ -35,9 +35,7 @@ pub mod test_agent;
 
 
 /// Tauri event names. The frontend subscribes to these; the payload stays local.
-pub const EVENT_READY: &str = "dsh://ready";
 pub const EVENT_STATUS: &str = "dsh://status";
-pub const EVENT_SESSION_EVENT: &str = "dsh://session-event";
 pub const EVENT_APPROVAL: &str = "dsh://approval";
 pub const EVENT_QUESTION: &str = "dsh://question";
 /// A request was answered (or its runtime went away), whichever surface did it.

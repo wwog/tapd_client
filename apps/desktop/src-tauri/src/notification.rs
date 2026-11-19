@@ -60,6 +60,18 @@ const MAX_AI_ITEMS: usize = 20;
 const MAX_AI_BLOCKS: usize = 8;
 const MAX_AI_ACTIONS: usize = 4;
 const MAX_AI_ACTION_DESC_CHARS: usize = 120;
+
+/// Caps text at `max` chars, ending in `…` when it had to cut. Shared by the
+/// card builders so their limits stay comparable.
+pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// Longest free-text answer a card accepts from its answer field.
 const MAX_AI_ANSWER_CHARS: usize = 500;
 const MAX_AI_TITLE_CHARS: usize = 140;

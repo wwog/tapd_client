@@ -28,9 +28,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use super::{
-    bridge, payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_READY, EVENT_STATUS,
-};
+use super::{bridge, payload, EVENT_APPROVAL, EVENT_ERROR, EVENT_QUESTION, EVENT_STATUS};
 use crate::agent_settings::{self, AgentConfig, DshModelsConfig, DshProvider, PermissionMode};
 use crate::shell_path;
 use tapd_i18n::{tr, tr_args};
@@ -807,7 +805,6 @@ impl RuntimeState {
         // into the managed document before the first request.
         self.refresh_credentials(app, &config.dsh_models).await;
         let status = self.set_status(app, status);
-        let _ = app.emit(EVENT_READY, &status);
         Ok(status)
     }
 
@@ -1505,7 +1502,6 @@ fn forward_notification(app: &AppHandle, method: &str, params: Value) {
     match method {
         rpc::METHOD_SESSION_EVENT => {
             ingest_session_event(app, &params);
-            let _ = app.emit(super::EVENT_SESSION_EVENT, params);
         }
         rpc::METHOD_SESSION_STATUS => {
             apply_session_status(app, &params);
@@ -1515,9 +1511,10 @@ fn forward_notification(app: &AppHandle, method: &str, params: Value) {
                 json!({ "method": method, "params": params }),
             );
         }
-        rpc::METHOD_SESSION_QUERY_COMPLETED => {
-            let _ = app.emit("dsh://query-completed", params);
-        }
+        // Nothing to forward: the query result is already in the ingested
+        // transcript, and falling through to `other` would broadcast it as a
+        // generic notification.
+        rpc::METHOD_SESSION_QUERY_COMPLETED => {}
         rpc::METHOD_USER_QUESTION_CANCELLED => {
             settle_cancelled(app, &params);
             let _ = app.emit(

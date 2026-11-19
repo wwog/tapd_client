@@ -35,7 +35,7 @@ const COPY_BUTTON =
 
 /**
  * MCP tab: server status, policy/audit, and per-client one-click import
- * (opencode / Claude Code / Cursor / Codex) with manual project-level config.
+ * (opencode / ZCode / Claude Code / Cursor) with manual project-level config.
  */
 export function McpPage({ workspaces, onCopy, toast }: Props) {
   const [mcp, setMcp] = useState<McpConfigInfo | null>(null);
@@ -201,12 +201,6 @@ export function McpPage({ workspaces, onCopy, toast }: Props) {
             </h2>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Badge tone="green" dot>
-              {t("mcp.enabled")}
-            </Badge>
-            <Badge tone={writable ? "blue" : "neutral"}>
-              {writable ? t("mcp.readWrite") : t("mcp.readOnly")}
-            </Badge>
             <Button
               size="sm"
               onClick={() => {

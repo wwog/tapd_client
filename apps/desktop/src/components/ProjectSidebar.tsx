@@ -166,12 +166,7 @@ export function ProjectSidebar({
                   <div key={item.id} className="group relative">
                     <button
                       type="button"
-                      onClick={() => {
-                        // Clicking the already-selected project is the shortcut
-                        // to its explorer; the first click only selects it.
-                        if (active && onBrowseFiles) onBrowseFiles(item.id);
-                        else onSelectWorkspace(item.id);
-                      }}
+                      onClick={() => onSelectWorkspace(item.id)}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         onOpenProjectMenu({
@@ -193,9 +188,6 @@ export function ProjectSidebar({
                         style={{ backgroundColor: item.logoColor || "#0ea5e9" }}
                       />
                       <ScrollingName text={item.name} className="flex-1" />
-                      {active ? (
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
-                      ) : null}
                     </button>
                     {onBrowseFiles ? (
                       <button
@@ -254,9 +246,6 @@ export function ProjectSidebar({
                             )}
                           />
                           <ScrollingName text={project.name} className="flex-1" />
-                          {active ? (
-                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 group-hover:opacity-0" />
-                          ) : null}
                         </button>
                         {onBrowseFiles ? (
                           <button

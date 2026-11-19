@@ -108,15 +108,6 @@ export function pushLocaleToBackend(): void {
   void invoke("set_locale", { locale: current }).catch(() => undefined);
 }
 
-/** True when a catalogue entry exists; used by the coverage checker. */
-export function hasMessage(key: string): boolean {
-  return ZH.has(key);
-}
-
-export function messageKeys(): string[] {
-  return Object.keys(CATALOG);
-}
-
 function interpolate(template: string, vars?: MsgVars): string {
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (match, name: string) =>

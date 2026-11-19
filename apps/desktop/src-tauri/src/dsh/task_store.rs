@@ -1,4 +1,5 @@
-//! SQLite persistence for [`TaskRecord`] (table `dsh_tasks`, schema v9).
+//! SQLite persistence for [`TaskRecord`] (table `dsh_tasks`; schema version
+//! lives in `cache/migrate.rs`).
 //!
 //! The row is the single source of truth for the task list: `tasks.rs` keeps no
 //! in-memory registry, so every read sees the same rows a restart will. The

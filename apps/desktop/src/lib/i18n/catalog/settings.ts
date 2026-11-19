@@ -446,8 +446,6 @@ export const settings = {
 
   // Account
   "settings.account.title": ["账户与会话", "Account & sessions"],
-  "settings.account.signedIn": ["已登录", "Signed in"],
-  "settings.account.signedOut": ["未登录", "Signed out"],
   "settings.account.refreshTooltip": [
     "重新读取当前用户与会话状态",
     "Re-read the current user and session",

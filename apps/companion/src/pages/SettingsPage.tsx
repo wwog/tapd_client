@@ -470,29 +470,9 @@ export function SettingsPage() {
       </header>
 
       <section className="mx-3 mt-3 rounded-2xl border border-border bg-surface px-4 py-1">
-        <SettingRow label={t("mobile.settings.desktop")}>
-          <span
-            className="flex items-center gap-1.5 text-ui-caption text-slate-700"
-            title={t("mobile.settings.heartbeatHint")}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                presence.online ? "bg-emerald-500" : "bg-slate-300"
-              }`}
-            />
-            {presence.online
-              ? t("mobile.settings.presenceOnline")
-              : t("mobile.settings.presenceOffline")}
-          </span>
-        </SettingRow>
         <SettingRow label={t("mobile.settings.device")}>
           <span className="text-ui-caption text-slate-700">
             {presence.deviceName ?? "—"}
-          </span>
-        </SettingRow>
-        <SettingRow label={t("mobile.settings.desktopVersion")}>
-          <span className="text-ui-caption text-slate-700">
-            {presence.version ? `v${presence.version}` : "—"}
           </span>
         </SettingRow>
         <SettingRow label={t("mobile.settings.lastSync")}>

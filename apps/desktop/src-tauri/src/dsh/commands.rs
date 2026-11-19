@@ -46,15 +46,6 @@ fn report(status: PayloadStatus, manifest: &dsh_host::payload::PayloadManifest) 
     }
 }
 
-/// Payload state without extracting anything (`extracted: false` means the
-/// first start still has to unpack ~230 MB).
-#[tauri::command]
-pub async fn dsh_payload_status(app: AppHandle) -> Result<PayloadReport, String> {
-    let (manifest, _, _) = payload::read_manifest(&app)?;
-    let status = payload::status(&app)?;
-    Ok(report(status, &manifest))
-}
-
 /// Extracts the payload ahead of the first prompt (the settings page can call
 /// this while showing progress).
 #[tauri::command]
@@ -116,13 +107,6 @@ pub async fn dsh_file_target(
     path: String,
 ) -> Result<super::files::FileTarget, String> {
     super::files::resolve(&app, &session_id, &path)
-}
-
-/// Allocates a session id and its registry row. The runtime creates the real
-/// session on the first prompt.
-#[tauri::command]
-pub async fn dsh_new_session(app: AppHandle) -> Result<Value, String> {
-    feature::new_session(&app).await
 }
 
 /// Queues one user message on a session.

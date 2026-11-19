@@ -5,7 +5,7 @@ import { t } from "../lib/i18n";
 import { PROJECT_LABEL, PROJECT_URL } from "../lib/links";
 import { Avatar } from "./Avatar";
 import { UpdatePanel } from "./UpdatePanel";
-import { Badge, Button } from "./ui";
+import { Button } from "./ui";
 
 type Props = {
   info: AppInfo | null;
@@ -25,17 +25,14 @@ export function AccountPage({
   onRefresh,
   toast,
 }: Props) {
-  const nick = context?.user.nick || info?.me || t("settings.account.signedIn");
-  const company = context?.user.company || "—";
-  const userId = context?.user.userId || "—";
+  const nick = context?.user.nick || info?.me || null;
+  const company = context?.user.company || null;
+  const userId = context?.user.userId || null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-3">
-      <section className="relative overflow-hidden rounded-2xl border border-border bg-surface p-6 ">
-        <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-sky-100/70 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-28 left-1/3 h-48 w-48 rounded-full bg-emerald-100/60 blur-3xl" />
-
-        <div className="relative flex flex-wrap items-center gap-4">
+      <section className="rounded-2xl border border-border bg-surface p-6 ">
+        <div className="flex flex-wrap items-center gap-4">
           <Avatar
             src={avatarSrc(info?.meAvatar)}
             name={nick}
@@ -45,17 +42,20 @@ export function AccountPage({
 
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate text-lg font-normal tracking-tight text-slate-900">
-                {nick}
-              </h2>
-              <Badge tone={info?.loggedIn ? "green" : "amber"} dot>
-                {info?.loggedIn ? t("settings.account.signedIn") : t("settings.account.signedOut")}
-              </Badge>
+              {nick ? (
+                <h2 className="truncate text-lg font-normal tracking-tight text-slate-900">
+                  {nick}
+                </h2>
+              ) : null}
             </div>
-            <p className="mt-0.5 truncate text-ui-caption text-slate-500">{company}</p>
-            <p className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
-              ID {userId}
-            </p>
+            {company ? (
+              <p className="mt-0.5 truncate text-ui-caption text-slate-500">{company}</p>
+            ) : null}
+            {userId ? (
+              <p className="mt-0.5 truncate font-mono text-ui-xs text-slate-400">
+                ID {userId}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto bg-transparent">

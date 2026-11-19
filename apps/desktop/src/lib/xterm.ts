@@ -72,16 +72,6 @@ export const TERMINAL_THEMES: Record<"light" | "dark", ITheme> = {
 };
 
 /**
- * The agent console keeps its original near-black surface; only the shell
- * terminal follows the app theme, because it sits inside a themed card.
- */
-export const AGENT_TERMINAL_THEME: ITheme = {
-  ...TERMINAL_THEMES.dark,
-  background: "#09090b",
-  cursorAccent: "#09090b",
-};
-
-/**
  * GPU-backed renderer. Without it xterm repaints cell by cell through the DOM,
  * which cannot keep up with a TUI that redraws the screen ~60 times a second.
  * Returns null when the webview has no usable WebGL context; the DOM renderer

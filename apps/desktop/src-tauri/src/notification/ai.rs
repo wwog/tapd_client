@@ -18,20 +18,12 @@ use super::{
         NotificationKind, NotificationSource, NotificationState,
     },
     rules::format_tapd_time,
-    service, NotificationService, DEFAULT_NOTIFY_WAIT_SECS, MAX_AI_ACTION_DESC_CHARS,
+    service, truncate_chars, NotificationService, DEFAULT_NOTIFY_WAIT_SECS,
+    MAX_AI_ACTION_DESC_CHARS,
     MAX_AI_ACTIONS, MAX_AI_BLOCKS,
     MAX_AI_CODE_CHARS, MAX_AI_ITEMS, MAX_AI_TAG_CHARS, MAX_AI_TEXT_CHARS, MAX_AI_TITLE_CHARS,
     MAX_NOTIFY_WAIT_SECS, NOT_FOUND,
 };
-
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
-    truncated.push('…');
-    truncated
-}
 
 fn required_text(value: Option<&Value>, path: &str, max: usize) -> Result<String, String> {
     value

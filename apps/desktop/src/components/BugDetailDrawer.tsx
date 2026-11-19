@@ -272,18 +272,22 @@ function BugDetailDrawerImpl(props: Props) {
                   <Badge tone={STATUS_TONES[detail.status] ?? "neutral"}>
                     {detail.statusLabel || detail.status}
                   </Badge>
-                  <Badge tone={PRIORITY_TONES[detail.priority] ?? "neutral"}>
-                    {detail.priorityLabel || detail.priority || "—"}
-                  </Badge>
-                  <Badge tone={SEVERITY_TONES[detail.severity] ?? "neutral"} dot>
-                    {detail.severityLabel || detail.severity || "—"}
-                  </Badge>
+                  {detail.priorityLabel || detail.priority ? (
+                    <Badge tone={PRIORITY_TONES[detail.priority] ?? "neutral"}>
+                      {detail.priorityLabel || detail.priority}
+                    </Badge>
+                  ) : null}
+                  {detail.severityLabel || detail.severity ? (
+                    <Badge tone={SEVERITY_TONES[detail.severity] ?? "neutral"} dot>
+                      {detail.severityLabel || detail.severity}
+                    </Badge>
+                  ) : null}
                 </>
               ) : null}
             </div>
             {detail ? (
               <div className="mt-2 flex items-start gap-1.5">
-                <h2 className="select-text min-w-0 flex-1 text-base font-normal leading-6 text-slate-900">
+                <h2 className="select-text min-w-0 flex-1 text-ui-base font-normal leading-6 text-slate-900">
                   {bugTitle(detail.title)}
                 </h2>
                 <button
@@ -299,7 +303,7 @@ function BugDetailDrawerImpl(props: Props) {
             ) : loading ? (
               <SkeletonBlock className="mt-3 h-4 w-3/4 rounded" />
             ) : (
-              <h2 className="mt-2 text-base font-normal leading-6 text-slate-900">
+              <h2 className="mt-2 text-ui-base font-normal leading-6 text-slate-900">
                 {t("bugs.detailTitle")}
               </h2>
             )}

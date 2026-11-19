@@ -27,7 +27,7 @@ use tapd_i18n::{tr, tr_args};
 
 use super::{
     model::{AiAction, AiBlock, AiField, AiPayload, AiTone},
-    service, MAX_AI_ACTION_DESC_CHARS,
+    service, truncate_chars, MAX_AI_ACTION_DESC_CHARS,
 };
 use crate::dsh::{EVENT_APPROVAL, EVENT_QUESTION};
 
@@ -240,7 +240,7 @@ fn question_title(question: &Question) -> String {
         .map(str::trim)
         .filter(|header| !header.is_empty())
         .unwrap_or(question.question.trim());
-    truncate(title, 140)
+    truncate_chars(title, 140)
 }
 
 fn option_card(question: &Question) -> AiPayload {
@@ -262,7 +262,7 @@ fn option_card(question: &Question) -> AiPayload {
         .join("\n");
     if !text.is_empty() {
         blocks.push(AiBlock::Text {
-            text: truncate(&text, 400),
+            text: truncate_chars(&text, 400),
         });
     }
     AiPayload {
@@ -285,7 +285,7 @@ fn option_card(question: &Question) -> AiPayload {
                     .as_deref()
                     .map(str::trim)
                     .filter(|text| !text.is_empty())
-                    .map(|text| truncate(text, MAX_AI_ACTION_DESC_CHARS)),
+                    .map(|text| truncate_chars(text, MAX_AI_ACTION_DESC_CHARS)),
             })
             .collect(),
         stack_actions: true,
@@ -339,7 +339,7 @@ pub fn notice(tool: &str, target: &str, risk: &str) {
             Vec::new()
         } else {
             vec![AiBlock::Text {
-                text: truncate(target, 400),
+                text: truncate_chars(target, 400),
             }]
         },
         actions: Vec::new(),
@@ -588,15 +588,6 @@ fn text(value: &Value, key: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
-    truncated.push('…');
-    truncated
 }
 
 #[cfg(test)]

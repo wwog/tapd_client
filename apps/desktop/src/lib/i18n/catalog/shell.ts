@@ -53,11 +53,6 @@ export const shell = {
     "未能识别当前用户，无法认领",
     "Cannot identify the current user, so the bug cannot be claimed",
   ],
-  "app.claim.done": ["已认领", "Claimed"],
-  "app.comment.posted": ["评论已发表", "Comment posted"],
-  "app.detail.developerUpdated": ["开发人员已更新", "Developer updated"],
-  "app.detail.ownerUpdated": ["处理人已更新", "Owner updated"],
-  "app.detail.statusChanged": ["状态已流转为「{label}」", 'Status changed to "{label}"'],
 
   // Native dialogs
   "app.export.chooseDir": ["选择导出目录", "Choose export folder"],

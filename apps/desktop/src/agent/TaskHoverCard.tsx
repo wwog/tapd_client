@@ -17,12 +17,11 @@ import {
   dshTaskApi,
   type DshSessionStatus,
   type DshTask,
-  type DshTaskWorkflow,
 } from "../lib/dsh";
 import { t } from "../lib/i18n";
 import { useDismiss } from "../hooks/useDismiss";
 import { Spinner } from "../components/ui";
-import { WORKFLOW, WORKFLOW_MARK } from "./workflow";
+import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
 
 /** Fixed card width; the row anchor only decides the side. */
 const WIDTH = 320;
@@ -67,16 +66,10 @@ export function TaskHoverCard({
   const cardRef = useRef<HTMLDivElement>(null);
   useDismiss(true, cardRef, onClose, { scroll: true, resize: true });
 
-  // A row written by a build that still used `awaiting_merge` must not blank
-  // the card; it reads as the finalize stage it migrated into.
-  const workflow =
-    (WORKFLOW as Record<string, (typeof WORKFLOW)[DshTaskWorkflow]>)[
-      task.workflow
-    ] ?? WORKFLOW.finalizing;
-  const mark =
-    (WORKFLOW_MARK as Record<string, string>)[task.workflow] ?? "text-slate-300";
+  const workflow = WORKFLOW[task.workflow];
+  const mark = WORKFLOW_MARK[task.workflow];
   const statusText =
-    task.kind !== "chat"
+    isWorkflowTask(task)
       ? t(workflow.label)
       : status === "running"
         ? t("agent.task.live")
@@ -176,10 +169,10 @@ export function TaskHoverCard({
         <span
           className={clsx(
             "inline-flex shrink-0 items-center gap-1 text-ui-xs",
-            task.kind !== "chat" ? mark : "text-slate-400",
+            isWorkflowTask(task) ? mark : "text-slate-400",
           )}
         >
-          {task.kind !== "chat" ? (
+          {isWorkflowTask(task) ? (
             <>
               <Workflow size={11} />
               {statusText}
@@ -195,9 +188,11 @@ export function TaskHoverCard({
       </div>
 
       <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1">
-        <FactRow label={t("agent.card.branch")} value={task.branch || "—"} />
+        {task.branch ? (
+          <FactRow label={t("agent.card.branch")} value={task.branch} />
+        ) : null}
         {model ? <FactRow label={t("agent.card.model")} value={model} /> : null}
-        {task.kind !== "chat" && task.changes ? (
+        {isWorkflowTask(task) && task.changes ? (
           <FactRow
             label={t("agent.card.changes")}
             value={

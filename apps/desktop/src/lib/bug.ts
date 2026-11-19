@@ -39,10 +39,6 @@ export const isMyBug = (
   return names.includes(myName);
 };
 
-/** The first owner, for compact labels and the claim hint. */
-export const primaryOwner = (owner: string | null | undefined): string =>
-  ownerNames(owner)[0] ?? "";
-
 /** TAPD titles come from testers and usually carry full-width punctuation. */
 const TITLE_PUNCTUATION: Record<string, string> = {
   "【": "[",

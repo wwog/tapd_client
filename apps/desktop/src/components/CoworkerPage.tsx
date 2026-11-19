@@ -1,9 +1,8 @@
-import clsx from "clsx";
-import { ArrowRight, GitBranch, Sparkles, Users } from "lucide-react";
+import { Users } from "lucide-react";
 
 import { api } from "../lib/api";
 import { t } from "../lib/i18n";
-import { COWORKER_FORK_URL, COWORKER_GUIDE_URL } from "../lib/links";
+import { COWORKER_GUIDE_URL } from "../lib/links";
 import { CoworkerGrid, useCoworkers } from "./CoworkerPicker";
 import { Button } from "./ui";
 
@@ -28,15 +27,18 @@ export function CoworkerPage({ toast }: Props) {
       <div className="mx-auto max-w-5xl">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="flex items-center gap-1.5 text-ui-lg text-slate-900">
+            <h2
+              className="flex items-center gap-1.5 text-ui-lg text-slate-900"
+              title={t("coworker.pageIntro")}
+            >
               <Users size={16} className="text-slate-400" />
               {t("coworker.pageTitle")}
             </h2>
-            <p className="mt-1 text-ui-sm text-slate-500">
-              {t("coworker.pageIntro")}
-            </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => openLink(COWORKER_GUIDE_URL)}>
+              {t("coworker.submissionGuide")}
+            </Button>
             <span
               className="max-w-[260px] truncate text-ui-xs text-slate-400"
               title={selected.map((coworker) => coworker.name).join(t("coworker.nameSeparator"))}
@@ -97,58 +99,7 @@ export function CoworkerPage({ toast }: Props) {
           onRetry={() => void selection.reload()}
           onToggle={selection.toggle}
         />
-
-        <section className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="flex items-center gap-1.5 text-ui-base text-slate-800">
-                <Sparkles size={14} className="text-amber-500" />
-                {t("coworker.contribute")}
-              </h3>
-              <p className="mt-1 max-w-2xl text-ui-sm leading-5 text-slate-500">
-                {t("coworker.contributeIntro")}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button size="sm" onClick={() => openLink(COWORKER_GUIDE_URL)}>
-                {t("coworker.submissionGuide")}
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                icon={<GitBranch size={13} />}
-                onClick={() => openLink(COWORKER_FORK_URL)}
-              >
-                {t("coworker.forkProject")}
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-1.5 text-ui-xs text-slate-500">
-            <Step label="fork" />
-            <ArrowRight size={11} className="text-slate-300" />
-            <Step label="assets/coworker/<id>/" mono />
-            <ArrowRight size={11} className="text-slate-300" />
-            <Step label="PR" />
-            <span className="ml-1 text-slate-400">
-              {t("coworker.readmeRules")}
-            </span>
-          </div>
-        </section>
       </div>
     </div>
-  );
-}
-
-function Step({ label, mono = false }: { label: string; mono?: boolean }) {
-  return (
-    <span
-      className={clsx(
-        "rounded-md border border-slate-200 bg-surface px-2 py-0.5 text-slate-600",
-        mono && "font-mono",
-      )}
-    >
-      {label}
-    </span>
   );
 }

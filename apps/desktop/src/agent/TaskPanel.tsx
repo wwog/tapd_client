@@ -16,8 +16,14 @@ import { Badge, Button, Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { HashValue } from "./HashValue";
 import { TaskDiffSection } from "./TaskDiffSection";
-import { agentActions, agentStore, isSessionRunning, taskReviewable } from "./store";
-import { WORKFLOW } from "./workflow";
+import {
+  agentActions,
+  agentStore,
+  isSessionRunning,
+  taskActivityAt,
+  taskReviewable,
+} from "./store";
+import { WORKFLOW, taskHashes } from "./workflow";
 
 const STEP_ORDER: DshFinalizeStep[] = ["commit", "merge", "cleanup", "writeback"];
 
@@ -61,20 +67,14 @@ export function TaskPanel({ task }: { task: DshTask }) {
   const changes = task.changes ?? null;
   const worktreePath = task.worktreePath ?? "";
   const repoPath = task.repoPath ?? "";
-  // A row written by a build that still used `awaiting_merge` must not blank
-  // the pane; it reads as the finalize stage it migrated into.
-  const workflow = WORKFLOW[task.workflow] ?? WORKFLOW.finalizing;
+  const workflow = WORKFLOW[task.workflow];
 
   const steps = task.direct
     ? STEP_ORDER.filter((step) => step !== "merge" && step !== "cleanup")
     : STEP_ORDER;
   const stepIndex = finalize?.step ? steps.indexOf(finalize.step) : -1;
 
-  const hashes = [
-    { label: t("agent.task.gitStart"), value: task.git.start },
-    { label: t("agent.task.gitCommit"), value: task.git.commit },
-    { label: t("agent.task.gitMerge"), value: task.git.merge },
-  ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+  const hashes = taskHashes(task);
 
   const hint = task.direct
     ? t("agent.task.directHint")
@@ -413,7 +413,7 @@ export function TaskPanel({ task }: { task: DshTask }) {
             </Button>
           ) : null}
           <span className="ml-auto text-ui-2xs text-slate-300">
-            {relativeTime(task.updatedAt)}
+            {relativeTime(taskActivityAt(state, task))}
           </span>
         </div>
       </div>

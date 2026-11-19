@@ -7,8 +7,6 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppInfo } from "./api";
-
 /**
  * Workspace id prefix that scopes a file panel to one agent session's working
  * directory (`__session__:<sessionId>`). Mirrors `fs.rs`, which resolves the
@@ -117,16 +115,6 @@ let fileBase: string | null = null;
 
 const buildFileBase = (port: number, token: string): string =>
   `http://127.0.0.1:${port}/file?token=${encodeURIComponent(token)}`;
-
-/** Remembered next to `setMediaEndpoint`; both come from `app_info`. */
-export const setFileEndpoint = (
-  info: Pick<AppInfo, "mediaPort" | "mediaToken">,
-): void => {
-  fileBase =
-    info.mediaPort && info.mediaToken
-      ? buildFileBase(info.mediaPort, info.mediaToken)
-      : null;
-};
 
 /** Late fallback for the first paint: the loopback server may still be starting. */
 export const ensureFileEndpoint = async (): Promise<void> => {

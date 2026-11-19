@@ -25,7 +25,6 @@ import {
 } from "react";
 
 import { ProjectOpenButton } from "../../components/ProjectOpenButton";
-import { ScrollingName } from "../../components/ScrollingName";
 import { dirname, fsApi, type FsEntry } from "../../lib/fs";
 import { t } from "../../lib/i18n";
 import { Breadcrumb } from "../explorer/Breadcrumb";
@@ -275,11 +274,8 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
         return (
           <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
             <FolderTree size={20} className="text-slate-300" />
-            <p className="text-ui-caption text-slate-600">
+            <p className="text-ui-caption text-slate-600" title={t("explorer.noFolderHint")}>
               {t("explorer.noFolder")}
-            </p>
-            <p className="text-ui-xs leading-5 text-slate-400">
-              {t("explorer.noFolderHint")}
             </p>
           </div>
         );
@@ -324,16 +320,12 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
         className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2"
         data-workbench-explorer="header"
       >
-        <ScrollingName
-          text={projectName}
-          className="min-w-0 flex-1 text-ui-sm text-slate-700"
-        />
         <button
           type="button"
           aria-label={t("explorer.refresh")}
           title={t("explorer.refresh")}
           onClick={refreshTree}
-          className="rounded-md p-1 text-slate-500 transition hover:bg-overlay hover:text-slate-700"
+          className="ml-auto rounded-md p-1 text-slate-500 transition hover:bg-overlay hover:text-slate-700"
         >
           <RefreshCw size={12} />
         </button>

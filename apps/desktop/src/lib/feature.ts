@@ -1,56 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * Every command handled by `feature_router::dispatch`.
+ * Commands routed through `feature_router::dispatch`.
  *
  * Kept as a literal union so a typo fails at compile time; the Rust side has a
  * matching arm per name.
  */
 export type FeatureCommandName =
-  | "agent_chat"
-  | "agent_config_get"
-  | "agent_config_set"
-  | "agent_detect"
-  | "agent_enqueue_bug"
-  | "agent_enter_system"
-  | "agent_input"
-  | "agent_merge_start"
-  | "agent_merge_verify"
-  | "agent_models"
-  | "agent_open_task"
-  | "agent_open_terminal"
-  | "agent_prompt_answer"
-  | "agent_queue_resume"
-  | "agent_resize"
-  | "agent_review_approve"
-  | "agent_review_stop"
-  | "agent_runtimes"
-  | "agent_scan"
-  | "agent_save_resource"
-  | "agent_send_message"
-  | "agent_summary"
-  | "agent_task_cancel"
-  | "agent_task_changes"
-  | "agent_task_delete"
-  | "agent_task_diff"
-  | "agent_task_retry"
-  | "agent_tasks_history"
-  | "agent_tasks_list"
   | "cache_bug_detail"
   | "cache_bug_list"
   | "cache_workspace_context"
   | "cache_workspace_members"
-  | "chat_delete"
-  | "chat_resume"
-  | "chat_search"
-  | "chat_sessions"
-  | "chat_start"
-  | "chat_stop"
   | "coworker_list"
   | "coworker_select"
   | "local_item_create"
   | "local_item_delete"
-  | "local_item_enqueue"
   | "local_item_update"
   | "local_items_list"
   | "local_project_create"

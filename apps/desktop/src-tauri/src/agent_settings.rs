@@ -48,8 +48,9 @@ pub struct AgentConfig {
     /// TAPD workspace id -> repository path + project rules.
     pub projects: BTreeMap<String, ProjectAgentConfig>,
     pub prompt_template: String,
-    /// Enabled coworkers from the bundled registry, in selection order. This is
-    /// now the collaboration roster: it is not written into any prompt.
+    /// Enabled coworkers from the bundled registry, in selection order. With
+    /// team mode on it is only the roster (no prompt section); with it off the
+    /// selection reaches the prompt through `{{coworker}}`.
     pub coworker_ids: Vec<String>,
     /// 团队协作：开启后新会话默认进入 Agent Team（任务板），工作由 lead 分配。
     #[serde(default)]

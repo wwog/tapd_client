@@ -19,7 +19,7 @@
 //! /test ask        only the user question
 //! /test error      a tool that fails, to see the error path
 //! /test long       a long reply, for scrolling and performance
-//! /test ping       the TAPD bridge tool
+//! /test ping       the only TAPD task tool: `task_submit`
 //! ```
 //!
 //! A second turn (the request ends with tool results) always answers with a

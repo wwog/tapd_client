@@ -26,15 +26,17 @@ export function BugMetaGrid(props: {
     onRefreshMembers,
   } = props;
 
-  const items: Array<[string, string]> = [
-    [t("common.creator"), detail.creator || "—"],
-    [t("common.created"), detail.created || "—"],
-    [t("bugs.lastModified"), detail.modified || "—"],
-    [t("bugs.foundVersionLabel"), detail.versionReport || "—"],
-    [t("bugs.iteration"), detail.iterationName || "—"],
-    [t("bugs.module"), detail.module || "—"],
-    [t("bugs.fixer"), detail.fixer || "—"],
-  ];
+  const items = (
+    [
+      [t("common.creator"), detail.creator],
+      [t("common.created"), detail.created],
+      [t("bugs.lastModified"), detail.modified],
+      [t("bugs.foundVersionLabel"), detail.versionReport],
+      [t("bugs.iteration"), detail.iterationName],
+      [t("bugs.module"), detail.module],
+      [t("bugs.fixer"), detail.fixer],
+    ] as Array<[string, string]>
+  ).filter(([, value]) => value.trim().length > 0);
 
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-slate-100 bg-surface p-3 text-ui-caption sm:grid-cols-3">
@@ -145,8 +147,8 @@ function UserField(props: {
     return (
       <div className="min-w-0">
         <dt className="text-ui-xs text-slate-400">{label}</dt>
-        <dd className="mt-0.5 truncate text-slate-700" title={current || "—"}>
-          {current || "—"}
+        <dd className="mt-0.5 truncate text-slate-700" title={current || undefined}>
+          {current}
         </dd>
       </div>
     );

@@ -27,6 +27,7 @@ import {
   isSessionRunning,
   taskReviewable,
 } from "./store";
+import { isWorkflowTask } from "./workflow";
 
 /** Draft key before any session exists; the text follows the first one. */
 const NEW_SESSION_KEY = "__new";
@@ -92,7 +93,7 @@ export function Composer() {
   const block = runtimeBlock(state);
   const running = isSessionRunning(state, state.selectedId);
   const task = state.tasks?.find((item) => item.id === state.selectedId);
-  const chat = !task || task.kind === "chat";
+  const chat = !isWorkflowTask(task);
   const reviewing = taskReviewable(task);
   const project = task?.project ?? null;
   const branch = task?.branch ?? null;
@@ -103,7 +104,7 @@ export function Composer() {
   // read-only (the controls stay visible so the state is still legible).
   const started =
     task != null &&
-    (task.kind !== "chat" ||
+    (isWorkflowTask(task) ||
       task.messageCount > 0 ||
       (state.pendingPrompts[task.id]?.length ?? 0) > 0 ||
       task.status === "running");
@@ -116,6 +117,7 @@ export function Composer() {
   const teamBusy = task ? Boolean(state.teamBusy[task.id]) : false;
   const teamError = task ? state.teamErrors[task.id] : null;
   const teamView = task ? agentTeamView(state, task.id) : "chat";
+  const paneView = agentTaskView(state, state.selectedId);
 
   // 「继续修改」in the review pane switches back here and asks for the caret.
   const focusAt = state.composerFocusAt;
@@ -129,7 +131,7 @@ export function Composer() {
     // From the task pane (or the review section) a message means "keep
     // editing": show the transcript first, so the reply lands where the reader
     // can follow it.
-    if (task && (reviewing || agentTaskView(state, task.id) === "task")) {
+    if (task && (reviewing || paneView === "task")) {
       agentActions.setTaskView(task.id, "chat");
     }
     setSending(true);
@@ -186,17 +188,20 @@ export function Composer() {
         <div className="rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
           {project ? (
             <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-              <span className="flex min-w-0 items-center gap-1.5 text-ui-xs text-slate-500">
-                <FolderGit2 size={12} className="shrink-0" />
-                <ScrollingName text={project.name} className="max-w-[12rem]" />
-                {branch ? (
-                  <>
-                    <span className="shrink-0 text-slate-300">·</span>
-                    <GitBranch size={12} className="shrink-0" />
-                    <ScrollingName text={branch} className="max-w-[14rem]" />
-                  </>
-                ) : null}
-              </span>
+              {/* The task pane above already names the project and branch. */}
+              {paneView === "task" ? null : (
+                <span className="flex min-w-0 items-center gap-1.5 text-ui-xs text-slate-500">
+                  <FolderGit2 size={12} className="shrink-0" />
+                  <ScrollingName text={project.name} className="max-w-[12rem]" />
+                  {branch ? (
+                    <>
+                      <span className="shrink-0 text-slate-300">·</span>
+                      <GitBranch size={12} className="shrink-0" />
+                      <ScrollingName text={branch} className="max-w-[14rem]" />
+                    </>
+                  ) : null}
+                </span>
+              )}
               <span className="ml-auto flex shrink-0 items-center gap-1">
                 {teamEnabled ? (
                   <WorkBarButton

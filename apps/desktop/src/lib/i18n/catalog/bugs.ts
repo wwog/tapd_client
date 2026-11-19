@@ -68,7 +68,6 @@ export const bugs = {
   "bugs.sortAscending": ["按 {label} 升序", "Sort {label} ascending"],
   "bugs.sortBy": ["按 {label} 排序", "Sort by {label}"],
   "bugs.filterBy": ["筛选 {label}", "Filter {label}"],
-  "bugs.collapseFilter": ["收起 {label} 筛选", "Collapse {label} filter"],
   "bugs.closeFilter": ["关闭筛选", "Close filter"],
   "bugs.matchLabel": ["匹配 {label}", "Match {label}"],
   "bugs.noMatches": ["没有匹配项", "No matches"],

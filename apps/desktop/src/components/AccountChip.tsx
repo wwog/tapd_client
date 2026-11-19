@@ -43,7 +43,7 @@ export function AccountChip({
         title={t("settings.account.title")}
         aria-label={t("settings.account.title")}
         onClick={onClick}
-        className="relative h-8 w-8 rounded-full transition hover:brightness-105"
+        className="h-8 w-8 rounded-full transition hover:brightness-105"
       >
         <span
           key={animToken ?? "idle"}
@@ -55,7 +55,6 @@ export function AccountChip({
             className="h-8 w-8 text-ui-sm"
           />
         </span>
-        <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-canvas bg-emerald-500" />
       </button>
     );
   }
@@ -70,13 +69,12 @@ export function AccountChip({
         active ? "bg-overlay" : "hover:bg-overlay-soft",
       )}
     >
-      <span className="relative shrink-0">
+      <span className="shrink-0">
         <Avatar
           src={avatarSrc(meAvatar)}
           name={name}
           className="h-7 w-7 text-ui-xs "
         />
-        <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-canvas bg-emerald-500" />
       </span>
       <span className="min-w-0 flex-1">
         <ScrollingName text={name ?? ""} className="text-ui-caption font-normal text-slate-700" />

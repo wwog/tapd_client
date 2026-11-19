@@ -199,15 +199,16 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
           <span className="hidden sm:inline">{t("capture.autoRefresh")}</span>
         </div>
 
-        {filtered.length === 0 ? (
+        {!loaded ? (
+          <div className="flex items-center gap-2 px-4 py-6 text-ui-sm text-slate-400">
+            <Loader2 size={14} className="animate-spin" />
+            {t("capture.loadingTitle")}
+          </div>
+        ) : filtered.length === 0 ? (
           <EmptyState
-            icon={loaded ? <Search size={22} /> : <Loader2 size={22} className="animate-spin" />}
-            title={loaded ? t("capture.emptyMatch") : t("capture.loadingTitle")}
-            description={
-              loaded
-                ? t("capture.emptyHint")
-                : t("capture.loadingHint")
-            }
+            icon={<Search size={22} />}
+            title={t("capture.emptyMatch")}
+            description={t("capture.emptyHint")}
           />
         ) : (
           <div className="max-h-[calc(100vh-280px)] overflow-auto">

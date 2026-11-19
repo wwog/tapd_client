@@ -1,6 +1,6 @@
 import type { BadgeTone } from "../components/ui";
-import type { DshTaskWorkflow } from "../lib/dsh";
-import type { MessageKey } from "../lib/i18n";
+import type { DshTask, DshTaskWorkflow } from "../lib/dsh";
+import { t, type MessageKey } from "../lib/i18n";
 
 /** The chip every task surface paints for a workflow value (list, task pane). */
 export const WORKFLOW: Record<
@@ -29,3 +29,17 @@ export const WORKFLOW_MARK: Record<DshTaskWorkflow, string> = {
   failed: "text-rose-600",
   canceled: "text-slate-300",
 };
+
+/** A workflow task (bug or local item) rather than a free chat. */
+export const isWorkflowTask = (task?: { kind: string } | null): boolean =>
+  !!task && task.kind !== "chat";
+
+/** Start/commit/merge revisions, for the task pane and the done receipt. */
+export const taskHashes = (task: DshTask): { label: string; value: string }[] =>
+  [
+    { label: t("agent.task.gitStart"), value: task.git.start },
+    { label: t("agent.task.gitCommit"), value: task.git.commit },
+    { label: t("agent.task.gitMerge"), value: task.git.merge },
+  ].filter(
+    (row): row is { label: string; value: string } => Boolean(row.value),
+  );

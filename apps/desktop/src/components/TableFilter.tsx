@@ -138,6 +138,16 @@ export function TableFilter(props: Props) {
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500" />
             )
           ) : null}
+          <ChevronDown
+            size={12}
+            className={clsx(
+              "ml-0.5 shrink-0 transition",
+              open || active
+                ? "text-sky-600"
+                : "text-slate-400 opacity-0 group-hover/head:opacity-100",
+              open && "rotate-180",
+            )}
+          />
         </button>
 
         {sort ? (
@@ -168,29 +178,6 @@ export function TableFilter(props: Props) {
             )}
           </button>
         ) : null}
-
-        <button
-          type="button"
-          title={
-            open
-              ? t("bugs.collapseFilter", { label })
-              : t("bugs.filterBy", { label })
-          }
-          aria-hidden="true"
-          tabIndex={-1}
-          onClick={() => (open ? close() : openMenu())}
-          className={clsx(
-            "ml-0.5 grid h-5 w-4 shrink-0 place-items-center rounded transition focus-visible:opacity-100",
-            open || active
-              ? "text-sky-600"
-              : "text-slate-400 opacity-0 group-hover/head:opacity-100",
-          )}
-        >
-          <ChevronDown
-            size={12}
-            className={clsx("transition", open && "rotate-180")}
-          />
-        </button>
       </div>
 
       {open && position

@@ -27,12 +27,12 @@
  * GET  /companion/api/file          打开文件预览 / 重试                     仅用户操作，不轮询
  * GET  /companion/api/notifications 30s 轮询（全页面，兼掉线探针）           30s，隐藏暂停
  * POST /companion/api/feature
- *      agent_tasks_list             Agent 页/任务详情 8s；其他页面 30s       隐藏暂停；恢复可见立即补一轮
- *                                   （角标）                                （lib/agentTasks.ts）
+ *      dsh_tasks / dsh_pending       Agent 页与任务详情（单一定时器）          8s，隐藏暂停；
+ *                                                                          恢复可见立即补一轮
  * POST /companion/api/bug/comment   仅用户点击触发                          成功后失效详情 + 该项目列表键
  * POST /companion/api/bug/update-field / transition / claim  同上          同上
  * POST /companion/api/feature
- *      agent_enqueue_bug            仅用户点击「入队」触发                  成功后失效该项目列表键
+ *      dsh_task_enqueue_bug / dsh_task_enqueue_local  仅用户点击「入队」触发 成功后失效该项目列表键
  *
  * 其他：搜索输入 300ms 防抖保持；不做下拉刷新，列表新鲜度完全依赖 SWR 过期后台刷新。
  * -------------------------------------------------------------------------

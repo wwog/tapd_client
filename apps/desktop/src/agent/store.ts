@@ -41,6 +41,7 @@ import {
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
 import { agentSettingsApi, defaultSelection } from "../lib/agentSettings";
+import { isWorkflowTask } from "./workflow";
 
 export type AgentTeamView = "chat" | "board";
 
@@ -514,7 +515,7 @@ export function agentTeamView(state: AgentState, sessionId: string | null): Agen
   const explicit = state.teamViews[sessionId];
   if (explicit) return explicit;
   const task = (state.tasks ?? []).find((item) => item.id === sessionId);
-  const chat = !task || task.kind === "chat";
+  const chat = !isWorkflowTask(task);
   return !chat && state.team[sessionId]?.enabled ? "board" : "chat";
 }
 
@@ -524,7 +525,7 @@ export function agentTaskView(state: AgentState, sessionId: string | null): Agen
   if (!sessionId) return "chat";
   const explicit = state.taskViews[sessionId];
   const task = (state.tasks ?? []).find((item) => item.id === sessionId);
-  const workflowTask = task !== undefined && task.kind !== "chat";
+  const workflowTask = isWorkflowTask(task);
   if (!workflowTask) {
     return explicit === "trajectory" ? "trajectory" : "chat";
   }

@@ -143,7 +143,7 @@ function TaskRow(props: { task: DshTask }) {
       className="flex min-h-11 w-full flex-col border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
     >
       <span className="flex items-start gap-2">
-        {task.status === "running" ? (
+        {task.status === "running" && task.kind === "chat" ? (
           <span
             title={t("mobile.agent.workflowRunning")}
             className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"

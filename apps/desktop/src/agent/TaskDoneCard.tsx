@@ -6,6 +6,7 @@ import { Button } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { HashValue } from "./HashValue";
 import { agentActions } from "./store";
+import { taskHashes } from "./workflow";
 
 /**
  * The end-of-transcript receipt of a task that went through review and
@@ -14,11 +15,7 @@ import { agentActions } from "./store";
  * changes, TAPD result) the user can trust.
  */
 export function TaskDoneCard({ task }: { task: DshTask }) {
-  const hashes = [
-    { label: t("agent.task.gitStart"), value: task.git.start },
-    { label: t("agent.task.gitCommit"), value: task.git.commit },
-    { label: t("agent.task.gitMerge"), value: task.git.merge },
-  ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+  const hashes = taskHashes(task);
 
   const writeback = task.writeback;
   const wroteStatus = Boolean(writeback.statusFrom || writeback.statusTo);

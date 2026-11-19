@@ -288,8 +288,6 @@ pub(super) struct TaskMeta {
     /// Status the item had before `attach_task` moved it to in_progress; a
     /// canceled or failed launch puts it back here.
     pub local_previous_status: Option<String>,
-    /// Package directory holding `bug.json` / `quest.json`.
-    pub export_dir: Option<String>,
     /// Prompt waiting for an execution slot. Cleared once the session starts.
     pub pending_prompt: Option<String>,
     /// Commit the finishing chain created in the worktree.
@@ -860,7 +858,7 @@ async fn finish_turn(
     push_phase(app, &record);
     emit(app);
     if next == Workflow::AwaitingReview {
-        crate::notification::review::raise(app, &record.task);
+        crate::notification::review::raise(&record.task);
     }
     // A turn leaving `running` frees its execution slot.
     reschedule(app);
@@ -897,7 +895,7 @@ async fn refresh_review(
     let expected = record.task.workflow;
     if save_record(app, record.clone(), expected).await? {
         emit(app);
-        crate::notification::review::raise(app, &record.task);
+        crate::notification::review::raise(&record.task);
     }
     Ok(())
 }
@@ -1249,7 +1247,7 @@ pub async fn reopen_for_input(app: &AppHandle, session_id: &str) -> Result<(), S
     if saved {
         emit(app);
         if left_review {
-            crate::notification::review::settle(app, session_id);
+            crate::notification::review::settle(session_id);
         }
     }
     Ok(())
@@ -1429,7 +1427,6 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
             start: Some(work_dir.baseline),
             worktree: true,
             team: request.team,
-            export_dir: Some(export.dir),
             pending_prompt: Some(prompt),
             ..TaskMeta::default()
         },
@@ -1526,12 +1523,6 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
             local_project_id: Some(project.id.clone()),
             local_item_id: Some(item.id.clone()),
             local_previous_status: Some(item.status.as_str().to_string()),
-            export_dir: Some(
-                std::path::Path::new(&json_path)
-                    .parent()
-                    .map(|parent| parent.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            ),
             pending_prompt: Some(prompt),
             ..TaskMeta::default()
         },
@@ -1936,7 +1927,7 @@ async fn approve(app: &AppHandle, request: SessionRequest) -> Result<Value, Stri
         return Err(tr("dsh.task.busy").to_string());
     }
     emit(app);
-    crate::notification::review::settle(app, &request.session_id);
+    crate::notification::review::settle(&request.session_id);
     let task = run_finalize(app, &request.session_id).await?;
     // The chain writes meta (commit/merge); reload so the reply and
     // the following event carry the same view.
@@ -2871,7 +2862,7 @@ async fn cancel(app: &AppHandle, request: CancelRequest) -> Result<Value, String
     }
     push_phase(app, &record);
     emit(app);
-    crate::notification::review::settle(app, &record.task.id);
+    crate::notification::review::settle(&record.task.id);
     // A canceled running task frees its slot.
     reschedule(app);
     Ok(task_value(app, &record))
@@ -3630,7 +3621,7 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         );
     }
 
-    crate::notification::review::settle(app, &request.session_id);
+    crate::notification::review::settle(&request.session_id);
     emit(app);
     reschedule(app);
     Ok(json!({ "sessionId": request.session_id }))
@@ -3854,6 +3845,34 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    /// The enum, its `as_str` table, `parse` and serde must agree. Adding a
+    /// variant without updating all four breaks this test instead of producing
+    /// rows that can never be read back.
+    #[test]
+    fn every_workflow_round_trips() {
+        const ALL: [Workflow; 7] = [
+            Workflow::Queued,
+            Workflow::Running,
+            Workflow::AwaitingReview,
+            Workflow::Finalizing,
+            Workflow::Done,
+            Workflow::Failed,
+            Workflow::Canceled,
+        ];
+        for workflow in ALL {
+            let raw = workflow.as_str();
+            assert_eq!(Workflow::parse(raw), Some(workflow), "{raw}");
+            let json = serde_json::to_string(&workflow).expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<Workflow>(&json).expect("deserialize"),
+                workflow,
+                "{json}"
+            );
+        }
+        // The pre-finalizing name is gone; old rows are skipped, not remapped.
+        assert_eq!(Workflow::parse("awaiting_merge"), None);
+    }
 
     fn record(workflow: Workflow) -> TaskRecord {
         TaskRecord {

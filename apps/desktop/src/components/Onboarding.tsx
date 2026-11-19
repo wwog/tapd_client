@@ -318,7 +318,7 @@ export function Onboarding({ info, onDone }: Props) {
           />
         </div>
         <div className="pointer-events-none min-w-0 flex-1">
-          <div className="text-ui-2xs uppercase tracking-[0.16em] text-sky-600/70">
+          <div className="text-ui-2xs text-sky-600/70">
             TAPD Client · V{info.version}
           </div>
           <h1 className="truncate text-[19px] font-normal tracking-tight text-slate-900">

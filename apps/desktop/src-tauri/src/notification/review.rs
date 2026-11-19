@@ -17,11 +17,10 @@
 
 use serde_json::Value;
 use tapd_i18n::{tr, tr_args};
-use tauri::AppHandle;
 
 use super::{
     model::{AiAction, AiBlock, AiField, AiPayload, AiTone},
-    service,
+    service, truncate_chars,
 };
 use crate::dsh::tasks::DshTask;
 
@@ -35,15 +34,6 @@ const MAX_TITLE_CHARS: usize = 80;
 const MAX_SUMMARY_CHARS: usize = 360;
 /// Field values are rendered one line each; the UI scrolls long values.
 const MAX_FIELD_CHARS: usize = 120;
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(max.saturating_sub(1)).collect();
-    truncated.push('…');
-    truncated
-}
 
 /// The tag that identifies a session's review card.
 pub(super) fn tag_for(session_id: &str) -> String {
@@ -71,7 +61,7 @@ fn change_stats(changes: &crate::dsh::tasks::TaskChanges) -> String {
 fn card(task: &DshTask) -> (String, AiPayload) {
     let title = tr_args(
         "notify.review.title",
-        &[&truncate(&task.title, MAX_TITLE_CHARS)],
+        &[&truncate_chars(&task.title, MAX_TITLE_CHARS)],
     );
 
     let mut fields: Vec<AiField> = Vec::new();
@@ -82,7 +72,7 @@ fn card(task: &DshTask) -> (String, AiPayload) {
     {
         fields.push(AiField {
             label: tr("notify.review.project").to_string(),
-            value: truncate(project.name.trim(), MAX_FIELD_CHARS),
+            value: truncate_chars(project.name.trim(), MAX_FIELD_CHARS),
         });
     }
     if let Some(branch) = task
@@ -93,7 +83,7 @@ fn card(task: &DshTask) -> (String, AiPayload) {
     {
         fields.push(AiField {
             label: tr("notify.review.branch").to_string(),
-            value: truncate(branch, MAX_FIELD_CHARS),
+            value: truncate_chars(branch, MAX_FIELD_CHARS),
         });
     }
     if let Some(changes) = task.changes.as_ref() {
@@ -114,7 +104,7 @@ fn card(task: &DshTask) -> (String, AiPayload) {
         .filter(|summary| !summary.is_empty());
     if let Some(summary) = summary {
         blocks.push(AiBlock::Text {
-            text: truncate(summary, MAX_SUMMARY_CHARS),
+            text: truncate_chars(summary, MAX_SUMMARY_CHARS),
         });
     }
 
@@ -158,10 +148,7 @@ fn card(task: &DshTask) -> (String, AiPayload) {
 /// Call from the boundary that moved the task to `awaiting_review`. Repeated
 /// calls for the same session replace the pending card in place, so a refreshed
 /// change count does not stack cards.
-pub fn raise(app: &AppHandle, task: &DshTask) {
-    // Kept for symmetry with `settle` and a stable call site; the notification
-    // service owns the window, so there is nothing to do with the handle here.
-    let _ = app;
+pub fn raise(task: &DshTask) {
     let Ok(service) = service() else {
         return;
     };
@@ -177,8 +164,7 @@ pub fn raise(app: &AppHandle, task: &DshTask) {
 /// Call when the review stops being pending: approved, canceled, or reopened
 /// for another turn. Cards already acted on are left untouched (`finish_ai`
 /// keeps the first decision).
-pub fn settle(app: &AppHandle, session_id: &str) {
-    let _ = app;
+pub fn settle(session_id: &str) {
     let Ok(service) = service() else {
         return;
     };

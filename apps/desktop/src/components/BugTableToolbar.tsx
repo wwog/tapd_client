@@ -47,6 +47,8 @@ type Props = {
   keyword: string;
   onKeywordChange: (value: string) => void;
   activeFilterCount: number;
+  /** The empty state owns the clear-filters action; the header only adds it above results. */
+  hasResults: boolean;
   onClearFilters: () => void;
   columns: ColumnPref[];
   onColumnsChange: Dispatch<SetStateAction<ColumnPref[]>>;
@@ -62,6 +64,7 @@ export function BugTableToolbar(props: Props) {
     keyword,
     onKeywordChange,
     activeFilterCount,
+    hasResults,
     onClearFilters,
     columns,
     onColumnsChange,
@@ -237,7 +240,7 @@ export function BugTableToolbar(props: Props) {
           </span>
         ) : null}
 
-        {activeFilterCount > 0 ? (
+        {activeFilterCount > 0 && hasResults ? (
           <button
             type="button"
             onClick={onClearFilters}
