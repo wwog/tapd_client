@@ -58,9 +58,7 @@ export const agent = {
   "agent.card.dir": ["目录", "Directory"],
   "agent.card.copyPath": ["复制路径", "Copy path"],
   "agent.card.copied": ["已复制", "Copied"],
-  "agent.card.emptyDir": ["空目录", "Empty folder"],
-  "agent.card.dirError": ["目录读取失败", "Could not list folder"],
-  "agent.card.listTruncated": ["仅显示前 {n} 项", "First {n} shown"],
+  "agent.card.openDir": ["在资源管理器中打开", "Open in explorer"],
 
   // Task actions.
   "agent.task.changes": ["{files} 个文件", "{files} files"],
