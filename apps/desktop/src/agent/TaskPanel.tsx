@@ -232,7 +232,7 @@ export function TaskPanel({
             <div className="mt-1.5 text-ui-xs leading-5 text-slate-500">{hint}</div>
           ) : null}
           {notice ? (
-            <div className="mt-1.5 select-text whitespace-pre-wrap break-words text-ui-xs leading-5 text-amber-700">
+            <div className="mt-1.5 select-text whitespace-pre-wrap wrap-break-word text-ui-xs leading-5 text-amber-700">
               {notice}
             </div>
           ) : null}
@@ -243,7 +243,7 @@ export function TaskPanel({
         {review ? (
           <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
             <h2 className="text-ui-sm text-slate-900">{t("agent.review.summary")}</h2>
-            <p className="mt-1.5 select-text whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-700">
+            <p className="mt-1.5 select-text whitespace-pre-wrap wrap-break-wordword text-ui-caption leading-6 text-slate-700">
               {review.summary}
             </p>
             {review.verification ? (
@@ -251,7 +251,7 @@ export function TaskPanel({
                 <span className="w-14 shrink-0 text-ui-xs text-slate-400">
                   {t("agent.review.verification")}
                 </span>
-                <span className="min-w-0 flex-1 select-text whitespace-pre-wrap break-words text-ui-caption leading-6 text-slate-600">
+                <span className="min-w-0 flex-1 select-text whitespace-pre-wrap wrap-break-word text-ui-caption leading-6 text-slate-600">
                   {review.verification}
                 </span>
               </div>
@@ -261,7 +261,7 @@ export function TaskPanel({
                 <span className="w-14 shrink-0 text-ui-xs text-slate-400">
                   {t("agent.review.risks")}
                 </span>
-                <span className="min-w-0 flex-1 select-text whitespace-pre-wrap break-words text-ui-caption leading-6 text-amber-700">
+                <span className="min-w-0 flex-1 select-text whitespace-pre-wrap wrap-break-word text-ui-caption leading-6 text-amber-700">
                   {review.risks}
                 </span>
               </div>
@@ -304,17 +304,17 @@ export function TaskPanel({
               })}
             </div>
             {finalize?.error ? (
-              <div className="mt-2 select-text whitespace-pre-wrap break-words text-ui-xs text-rose-600">
+              <div className="mt-2 select-text whitespace-pre-wrap wrap-break-word text-ui-xs text-rose-600">
                 {finalize.error}
               </div>
             ) : null}
             {finalize?.instructions ? (
-              <div className="mt-1.5 select-text whitespace-pre-wrap break-words text-ui-xs text-amber-700">
+              <div className="mt-1.5 select-text whitespace-pre-wrap wrap-break-word text-ui-xs text-amber-700">
                 {finalize.instructions}
               </div>
             ) : null}
             {finalize?.notice ? (
-              <div className="mt-1.5 select-text whitespace-pre-wrap break-words text-ui-xs text-slate-500">
+              <div className="mt-1.5 select-text whitespace-pre-wrap wrap-break-word text-ui-xs text-slate-500">
                 {finalize.notice}
               </div>
             ) : null}
@@ -426,9 +426,9 @@ export function TaskPanel({
               {t("agent.task.openExport")}
             </Button>
           ) : null}
-          <span className="ml-auto text-ui-2xs text-slate-300">
+          {/* <span className="ml-auto text-ui-2xs text-slate-300">
             {relativeTime(taskActivityAt(state, task))}
-          </span>
+          </span> */}
         </div>
       </div>
     </div>
