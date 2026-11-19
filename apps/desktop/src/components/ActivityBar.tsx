@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import {
   Bot,
   FolderGit2,
-  ListTodo,
   Plug,
   Settings as SettingsIcon,
   Smartphone,
@@ -26,7 +25,6 @@ export type View =
   | "account";
 
 const RAIL_ANIM: Record<string, string> = {
-  queue: "rail-bug-jump",
   agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
   coworker: "rail-users-wave",
@@ -40,14 +38,12 @@ const RAIL_ANIM: Record<string, string> = {
  * time, so a language switch never keeps the startup language.
  *
  * 缺陷 has no rail entry: TAPD and local projects both open their own page tab
- * from the project column, which is the single entry point.
+ * from the project column, which is the single entry point. The workflow queue
+ * lives in the title bar, next to the update icon.
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
-  // Global workflow queue: it spans every project and is where an interrupted
-  // task is continued.
-  { id: "queue", label: "app.nav.queue", icon: <ListTodo size={15} /> },
   { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
   { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
@@ -59,8 +55,6 @@ type Props = {
   /** `null` while the welcome page is showing (no page tab is open). */
   view: View | null;
   railAnim: RailAnimation;
-  /** Queue activity mark: yellow while running, green until its report is read. */
-  queueBadge: "running" | "done" | null;
   /** The project column is out of layout, so the chip eases into the rail. */
   sidebarHidden: boolean;
   meAvatar: string | null;
@@ -80,7 +74,6 @@ type Props = {
 export function ActivityBar({
   view,
   railAnim,
-  queueBadge,
   sidebarHidden,
   meAvatar,
   name,
@@ -124,16 +117,6 @@ export function ActivityBar({
               )}
             >
               {item.icon}
-              {item.id === "queue" && queueBadge ? (
-                <span
-                  aria-hidden="true"
-                  data-queue-badge={queueBadge}
-                  className={clsx(
-                    "absolute -right-1.5 -top-1 h-2 w-2 rounded-full border-2 border-canvas",
-                    queueBadge === "running" ? "bg-amber-400" : "bg-emerald-500",
-                  )}
-                />
-              ) : null}
             </span>
           </button>
         ))}

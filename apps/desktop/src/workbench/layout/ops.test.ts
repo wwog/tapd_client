@@ -35,7 +35,6 @@ import {
   resetSizes,
   setPanelLabel,
   setSizes,
-  splitPanel,
   syncTerminalPanels,
 } from "./ops.ts";
 import {
@@ -55,12 +54,10 @@ import {
 import { writePref } from "../../lib/uiPrefs.ts";
 import type {
   GroupNode,
-  LayoutNode,
   LayoutState,
   PanelOpenSpec,
   PanelRef,
   PanelResource,
-  SplitEdge,
   SplitNode,
 } from "./types.ts";
 
@@ -112,25 +109,6 @@ function countPanels(layout: LayoutState): number {
     (count, group) => count + group.panels.length,
     0,
   );
-}
-
-type GroupLocation = { group: GroupNode; parent: SplitNode | null; index: number };
-
-/** Mirrors the private locator in ops.ts so tests can assert tree position. */
-function locate(
-  node: LayoutNode,
-  id: string,
-  parent: SplitNode | null = null,
-): GroupLocation | null {
-  if (node.kind === "group") {
-    if (node.id !== id) return null;
-    return { group: node, parent, index: parent ? parent.children.indexOf(node) : -1 };
-  }
-  for (const child of node.children) {
-    const hit = locate(child, id, node);
-    if (hit) return hit;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +291,129 @@ test("project pages and the shared navigation tab coexist", () => {
   assert.equal(primary.activePanelId, panelId.page("bugs", "ws-1"));
 });
 
+test("the queue page owns a singleton tab in the secondary dock", () => {
+  // The queue opens beside the navigation tab, in the right-hand dock.
+  let layout = openPage(defaultLayout(), "settings");
+  layout = openPage(layout, "queue");
+  let secondary = findRoleGroup(layout.root, "secondary")!;
+  let primary = findRoleGroup(layout.root, "primary")!;
+  assert.deepEqual(secondary.panels.map((panel) => panel.id), ["page:queue"]);
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:settings"]);
+  assert.equal(layout.activeGroupId, GROUP_ID.secondary);
+  assert.equal(secondary.activePanelId, "page:queue");
+  assert.equal(activePage(layout)?.view, "queue");
+
+  // Repeated opens only select the existing tab.
+  assert.equal(openPage(layout, "queue"), layout);
+
+  // Focusing another dock and reopening selects it again.
+  layout = activateGroup(layout, GROUP_ID.primary);
+  assert.notEqual(openPage(layout, "queue"), layout);
+
+  // Other global views retarget the navigation tab without touching the queue.
+  const retargeted = openPage(layout, "agent");
+  primary = findRoleGroup(retargeted.root, "primary")!;
+  secondary = findRoleGroup(retargeted.root, "secondary")!;
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:agent"]);
+  assert.deepEqual(secondary.panels.map((panel) => panel.id), ["page:queue"]);
+
+  // Closing the singleton and reopening lands it back in the secondary dock.
+  layout = closePanel(retargeted, panelId.page("queue"));
+  assert.equal(findPanel(layout.root, panelId.page("queue")), null);
+  const reopened = openPage(layout, "queue");
+  assert.deepEqual(
+    findRoleGroup(reopened.root, "secondary")!.panels.map((panel) => panel.id),
+    ["page:queue"],
+  );
+});
+
+test("a migrated queue tab in the primary stays put and refocuses in place", () => {
+  // Layouts persisted before the queue owned its tab can carry `page:queue`
+  // as the shared navigation tab; it keeps working where it is, and opening
+  // the queue again must not resurrect an empty secondary dock.
+  // Normalize first so the refocus path's fixpoint can be asserted (normalize
+  // collapses the raw input's single-child split).
+  const inPrimary = normalize({
+    version: 1,
+    root: {
+      kind: "split",
+      id: "root",
+      direction: "row",
+      children: [
+        createGroup("primary", [makePanel({ type: "page", view: "queue" })]),
+      ],
+      sizes: [1],
+    },
+    activeGroupId: GROUP_ID.primary,
+    maximizedGroupId: null,
+  });
+
+  // Refocus is in place; no secondary dock is created.
+  const refocused = openPage(inPrimary, "queue");
+  assert.equal(refocused.activeGroupId, GROUP_ID.primary);
+  assert.equal(findRoleGroup(refocused.root, "secondary"), null);
+  assert.deepEqual(normalize(refocused).root, refocused.root, "fixpoint");
+
+  // Global navigation pages coexist with the migrated queue tab.
+  const withSettings = openPage(inPrimary, "settings");
+  const primaryPanels = findRoleGroup(withSettings.root, "primary")!.panels.map(
+    (panel) => panel.id,
+  );
+  assert.ok(primaryPanels.includes("page:queue"));
+  assert.ok(primaryPanels.includes("page:settings"));
+});
+
+test("normalize keeps the queue page in its dock beside the navigation tab", () => {
+  const layout: LayoutState = {
+    version: 1,
+    root: {
+      kind: "split",
+      id: "root",
+      direction: "row",
+      children: [
+        createGroup("primary", [makePanel({ type: "page", view: "settings" })]),
+        createGroup("secondary", [makePanel({ type: "page", view: "queue" })]),
+      ],
+      sizes: [0.66, 0.34],
+    },
+    activeGroupId: GROUP_ID.secondary,
+    maximizedGroupId: null,
+  };
+
+  const next = normalize(layout);
+  assert.deepEqual(
+    findRoleGroup(next.root, "primary")!.panels.map((panel) => panel.id),
+    ["page:settings"],
+  );
+  assert.deepEqual(
+    findRoleGroup(next.root, "secondary")!.panels.map((panel) => panel.id),
+    ["page:queue"],
+  );
+  assert.deepEqual(normalize(next).root, next.root, "normalize is a fixpoint");
+});
+
+test("a project page dragged into another dock stays and refocuses there", () => {
+  let layout = openPage(defaultLayout(), "bugs", "ws-1");
+  layout = openPage(layout, "bugs", "ws-2");
+  layout = movePanel(layout, panelId.page("bugs", "ws-1"), GROUP_ID.secondary, 0);
+
+  // normalize does not pull the tab back into the primary.
+  const secondary = findRoleGroup(layout.root, "secondary")!;
+  assert.deepEqual(secondary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
+  assert.equal(secondary.activePanelId, "page:bugs:ws-1");
+  assert.deepEqual(primaryIds(layout), ["page:bugs:ws-2"]);
+
+  // Reopening the project focuses the tab in place instead of moving it back.
+  layout = activateGroup(layout, GROUP_ID.primary);
+  layout = openPage(layout, "bugs", "ws-1");
+  assert.equal(layout.activeGroupId, GROUP_ID.secondary);
+  assert.equal(
+    findPanel(layout.root, panelId.page("bugs", "ws-1"))!.group.id,
+    GROUP_ID.secondary,
+  );
+  assert.deepEqual(primaryIds(layout), ["page:bugs:ws-2"]);
+});
+
 test("retargetPage adopts a generic page and drops a duplicate", () => {
   // No project tab yet: the generic tab is renamed in place.
   let layout = openPage(defaultLayout(), "bugs");
@@ -329,9 +430,21 @@ test("retargetPage adopts a generic page and drops a duplicate", () => {
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:bugs:ws-1"]);
   assert.equal(findPanel(layout.root, panelId.page("bugs")), null);
+
+  // The project tab may live outside the primary (dragged there); adoption
+  // focuses it where it is instead of writing a dangling active pointer.
+  let dragged = openPage(defaultLayout(), "bugs", "ws-2");
+  dragged = movePanel(dragged, panelId.page("bugs", "ws-2"), GROUP_ID.secondary, 0);
+  dragged = openPage(dragged, "bugs");
+  dragged = retargetPage(dragged, "bugs", "ws-2");
+  const hit = findPanel(dragged.root, panelId.page("bugs", "ws-2"))!;
+  assert.equal(hit.group.id, GROUP_ID.secondary);
+  assert.equal(dragged.activeGroupId, GROUP_ID.secondary);
+  assert.equal(hit.group.activePanelId, panelId.page("bugs", "ws-2"));
+  assert.deepEqual(normalize(dragged).root, dragged.root, "fixpoint");
 });
 
-test("normalize keeps every project page in primary and one global page", () => {
+test("normalize keeps one global page in primary and project pages where they are", () => {
   const projectA = makePanel({ type: "page", view: "bugs", projectId: "ws-1" });
   const settings = makePanel({ type: "page", view: "settings" });
   const projectB = makePanel({ type: "page", view: "local", projectId: "local-1" });
@@ -356,16 +469,17 @@ test("normalize keeps every project page in primary and one global page", () => 
   const next = normalize(layout);
   const primary = findRoleGroup(next.root, "primary")!;
   const secondary = findRoleGroup(next.root, "secondary")!;
-  // Local project page first, then the TAPD project page, then the global tab.
-  assert.deepEqual(primary.panels.map((panel) => panel.id), [
-    "page:local:local-1",
+  // Global pages consolidate into one navigation tab in the primary; the
+  // project pages stay in the dock the user put them in.
+  assert.deepEqual(primary.panels.map((panel) => panel.id), ["page:settings"]);
+  assert.deepEqual(secondary.panels.map((panel) => panel.id), [
     "page:bugs:ws-1",
-    "page:settings",
+    "page:local:local-1",
   ]);
-  assert.equal(secondary.panels.length, 0);
   assert.ok(
     primary.panels.some((panel) => panel.id === primary.activePanelId),
   );
+  assert.deepEqual(normalize(next).root, next.root, "normalize is a fixpoint");
 });
 
 test("activeView follows the active tab and is null on an empty primary", () => {
@@ -395,19 +509,31 @@ test("closing the last page tab leaves the primary dock on the welcome page", ()
 });
 
 test("closing the last tab in a non-role group removes the group", () => {
-  let layout = defaultLayout();
-  layout = open(layout, explorer);
-  layout = splitPanel(layout, "explorer:ws", GROUP_ID.secondary, "right");
-
-  const newGroup = findPanel(layout.root, "explorer:ws")!.group;
-  assert.equal(newGroup.role, undefined);
+  // A role-less group only survives from a hand-built (persisted) tree now
+  // that dragging cannot create one.
+  const layout: LayoutState = {
+    version: 1,
+    root: {
+      kind: "split",
+      id: "root",
+      direction: "row",
+      children: [
+        createGroup("primary"),
+        createGroup("secondary"),
+        { kind: "group", id: "group:leftover", panels: [makePanel(explorer)], activePanelId: "explorer:ws" },
+      ],
+      sizes: [0.6, 0.2, 0.2],
+    },
+    activeGroupId: "group:leftover",
+    maximizedGroupId: null,
+  };
   const before = listGroups(layout.root).length;
 
-  layout = closePanel(layout, "explorer:ws");
-  assert.equal(listGroups(layout.root).length, before - 1);
-  assert.equal(findPanel(layout.root, "explorer:ws"), null);
-  assert.equal(findRoleGroup(layout.root, "secondary")!.panels.length, 0);
-  assert.equal(layout.activeGroupId, GROUP_ID.primary);
+  const next = closePanel(layout, "explorer:ws");
+  assert.equal(listGroups(next.root).length, before - 1);
+  assert.equal(findPanel(next.root, "explorer:ws"), null);
+  assert.equal(findRoleGroup(next.root, "secondary")!.panels.length, 0);
+  assert.equal(next.activeGroupId, GROUP_ID.primary);
 });
 
 test("closing the last tab in a role group keeps the dock and refocuses primary", () => {
@@ -470,49 +596,6 @@ function primaryIds(layout: LayoutState): string[] {
   return findRoleGroup(layout.root, "primary")!.panels.map((panel) => panel.id);
 }
 
-const EDGES: readonly SplitEdge[] = ["left", "right", "top", "bottom"];
-
-for (const edge of EDGES) {
-  test(`splitPanel creates the new group on the ${edge} edge`, () => {
-    let layout = defaultLayout();
-    layout = open(layout, explorer);
-    const next = splitPanel(layout, "explorer:ws", GROUP_ID.secondary, edge);
-
-    const hit = findPanel(next.root, "explorer:ws")!;
-    const newLocation = locate(next.root, hit.group.id)!;
-    const targetLocation = locate(next.root, GROUP_ID.secondary)!;
-
-    assert.equal(hit.group.role, undefined);
-    assert.match(hit.group.id, /^group:/);
-    assert.equal(next.activeGroupId, hit.group.id);
-    assert.ok(newLocation.parent);
-    assert.equal(newLocation.parent, targetLocation.parent);
-
-    const isRow = edge === "left" || edge === "right";
-    const before = edge === "left" || edge === "top";
-    assert.equal(newLocation.parent!.direction, isRow ? "row" : "column");
-    assert.equal(
-      before
-        ? newLocation.index < targetLocation.index
-        : newLocation.index > targetLocation.index,
-      true,
-    );
-
-    const parent = newLocation.parent!;
-    approx(parent.sizes.reduce((sum, value) => sum + value, 0), 1);
-    if (isRow) {
-      // `split-main` is [0.66, 0.34]; the new sibling gets 34% of the target.
-      approx(parent.sizes[newLocation.index]!, 0.34 * 0.34);
-      approx(parent.sizes[targetLocation.index]!, 0.34 * 0.66);
-    } else {
-      // The target is wrapped in a new column split with the default ratio.
-      assert.equal(parent.children.length, 2);
-      approx(parent.sizes[0]!, before ? 0.32 : 0.68);
-      approx(parent.sizes[1]!, before ? 0.68 : 0.32);
-    }
-  });
-}
-
 test("setSizes and resetSizes repair ratios", () => {
   let layout = defaultLayout();
   const set = setSizes(layout, MAIN_SPLIT_ID, [0.5, 0.5]);
@@ -522,11 +605,24 @@ test("setSizes and resetSizes repair ratios", () => {
   const reset = resetSizes(set, MAIN_SPLIT_ID);
   approxArray(findSplit(reset.root, MAIN_SPLIT_ID)!.sizes, [0.66, 0.34]);
 
-  layout = open(layout, explorer);
-  layout = splitPanel(layout, "explorer:ws", GROUP_ID.secondary, "right");
-  const three = findSplit(layout.root, MAIN_SPLIT_ID)!;
-  assert.equal(three.children.length, 3);
-  const even = resetSizes(layout, MAIN_SPLIT_ID);
+  // A three-way split (e.g. restored from an older layout) resets evenly.
+  const three: LayoutState = {
+    version: 1,
+    root: {
+      kind: "split",
+      id: MAIN_SPLIT_ID,
+      direction: "row",
+      children: [
+        createGroup("primary"),
+        createGroup("secondary", [makePanel(explorer)]),
+        { kind: "group", id: "group:third", panels: [makePanel(file("a.ts"))], activePanelId: "file:ws:a.ts" },
+      ],
+      sizes: [0.5, 0.3, 0.2],
+    },
+    activeGroupId: GROUP_ID.primary,
+    maximizedGroupId: null,
+  };
+  const even = resetSizes(three, MAIN_SPLIT_ID);
   for (const size of findSplit(even.root, MAIN_SPLIT_ID)!.sizes) {
     approx(size, 1 / 3);
   }

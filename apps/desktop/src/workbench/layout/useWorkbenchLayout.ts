@@ -35,7 +35,6 @@ import {
   resetSizes as resetSizesOp,
   setPanelLabel as setPanelLabelOp,
   setSizes as setSizesOp,
-  splitPanel as splitPanelOp,
   syncTerminalPanels as syncTerminalPanelsOp,
 } from "./ops.ts";
 import { initialPrefs, loadPrefs, savePrefs } from "./persist.ts";
@@ -52,7 +51,6 @@ import type {
   LayoutState,
   PageView,
   PanelOpenSpec,
-  SplitEdge,
   WorkbenchLayoutApi,
 } from "./types.ts";
 
@@ -191,13 +189,6 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
   const movePanel = useCallback(
     (panelId: string, groupId: string, index: number) => {
       commit((layout) => movePanelOp(layout, panelId, groupId, index));
-    },
-    [commit],
-  );
-
-  const splitPanel = useCallback(
-    (panelId: string, groupId: string, edge: SplitEdge) => {
-      commit((layout) => splitPanelOp(layout, panelId, groupId, edge));
     },
     [commit],
   );
@@ -400,7 +391,6 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       pinPanel,
       setPanelLabel,
       movePanel,
-      splitPanel,
       setSizes,
       beginSashDrag,
       beginCornerDrag,
@@ -429,7 +419,6 @@ export function useWorkbenchLayout(): WorkbenchLayoutApi {
       pinPanel,
       setPanelLabel,
       movePanel,
-      splitPanel,
       setSizes,
       beginSashDrag,
       beginCornerDrag,

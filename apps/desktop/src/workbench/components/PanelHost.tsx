@@ -17,9 +17,18 @@ import { PANEL_DEFINITIONS } from "../panels/registry";
 type PanelHostProps = {
   groups: GroupNode[];
   bodies: Record<string, HTMLElement | null | undefined>;
+  /** The focused group; a tab only counts as visible inside it. */
+  activeGroupId: string;
+  /** While set, every other group is hidden behind the maximized one. */
+  maximizedGroupId: string | null;
 };
 
-export function PanelHost({ groups, bodies }: PanelHostProps) {
+export function PanelHost({
+  groups,
+  bodies,
+  activeGroupId,
+  maximizedGroupId,
+}: PanelHostProps) {
   return (
     <>
       {groups.flatMap((group) =>
@@ -28,6 +37,11 @@ export function PanelHost({ groups, bodies }: PanelHostProps) {
             key={panel.id}
             panel={panel}
             active={group.activePanelId === panel.id}
+            visible={
+              group.activePanelId === panel.id &&
+              group.id === activeGroupId &&
+              (maximizedGroupId === null || maximizedGroupId === group.id)
+            }
             body={bodies[group.id] ?? null}
           />
         )),
@@ -39,10 +53,12 @@ export function PanelHost({ groups, bodies }: PanelHostProps) {
 function PanelSurface({
   panel,
   active,
+  visible,
   body,
 }: {
   panel: PanelRef;
   active: boolean;
+  visible: boolean;
   body: HTMLElement | null;
 }) {
   const [surface] = useState(() => {
@@ -83,7 +99,7 @@ function PanelSurface({
         !active && "invisible pointer-events-none",
       )}
     >
-      {PANEL_DEFINITIONS[panel.kind].render({ panel, active })}
+      {PANEL_DEFINITIONS[panel.kind].render({ panel, active, visible })}
     </div>,
     surface,
   );

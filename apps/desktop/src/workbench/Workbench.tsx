@@ -21,7 +21,6 @@ import { t } from "../lib/i18n";
 import { Button } from "../components/ui";
 import { Dialog } from "../components/Dialog";
 import {
-  type DropZone,
   type PanelRef,
   type WorkbenchLayoutApi,
 } from "./layout/types";
@@ -201,12 +200,8 @@ export function Workbench({
   const applyDrop = useCallback(
     (panel: PanelRef, fromGroupId: string, drop: TabDrop | null, x: number) => {
       if (!drop) return;
-      // A split or cross-group move while maximized would land in a hidden
-      // group; restore the tree first.
-      if (
-        api.layout.maximizedGroupId &&
-        (drop.groupId !== fromGroupId || drop.zone !== "center")
-      ) {
+      // Moving a tab into a hidden group would be invisible; restore first.
+      if (api.layout.maximizedGroupId && drop.groupId !== fromGroupId) {
         api.maximizeGroup(null);
       }
       if (drop.groupId === fromGroupId) {
@@ -221,15 +216,22 @@ export function Workbench({
         api.movePanel(panel.id, drop.groupId, targetIndex);
         return;
       }
-      if (drop.zone === "center") {
-        const target = api.groups.find((group) => group.id === drop.groupId);
-        api.movePanel(panel.id, drop.groupId, target?.panels.length ?? 0);
-        return;
-      }
-      api.splitPanel(panel.id, drop.groupId, drop.zone);
+      const target = api.groups.find((group) => group.id === drop.groupId);
+      api.movePanel(panel.id, drop.groupId, target?.panels.length ?? 0);
     },
     [api],
   );
+
+  /**
+   * Nav-created pages (the shared navigation tab and the queue singleton) are
+   * fixed to their dock; every other tab can be dragged into another group.
+   */
+  const canDragTab = (panel: PanelRef): boolean =>
+    !(
+      panel.kind === "page" &&
+      panel.resource.type === "page" &&
+      !panel.resource.projectId
+    );
 
   const startTabDrag = useCallback(
     (
@@ -239,12 +241,16 @@ export function Workbench({
     ) => {
       if (event.button !== 0 || !event.isPrimary) return;
 
-      // Catch pointerup even when the pointer leaves the window mid-drag.
+      // Capture even for tabs that cannot drag: it keeps clicks and double
+      // clicks targeting the tab itself (a stray second press that lands on
+      // the strip must not toggle maximize).
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
       } catch {
         // Synthetic pointers (tests, older WebViews) may reject capture.
       }
+
+      if (!canDragTab(panel)) return;
 
       const origin: DragOrigin = {
         panel,
@@ -362,7 +368,12 @@ export function Workbench({
           <SplitView layout={api} renderGroup={renderGroup} />
         </div>
 
-        <PanelHost groups={api.groups} bodies={bodies} />
+        <PanelHost
+          groups={api.groups}
+          bodies={bodies}
+          activeGroupId={api.activeGroup.id}
+          maximizedGroupId={api.layout.maximizedGroupId}
+        />
 
         {drag ? (
           <>
@@ -410,7 +421,7 @@ export function Workbench({
   );
 }
 
-/** Finds the group cell under the pointer and derives the drop zone. */
+/** Finds the group cell under the pointer; a drop moves the tab into it. */
 function findDropTarget(x: number, y: number): TabDrop | null {
   // Empty canonical docks collapse to 0px; check their boundary strip first so
   // they can still receive a drop (otherwise the filled sibling covers them).
@@ -430,7 +441,6 @@ function findDropTarget(x: number, y: number): TabDrop | null {
     ) {
       return {
         groupId,
-        zone: "center",
         left: rect.left - pad,
         top: rect.top - pad,
         width: Math.max(rect.width, 0) + pad * 2,
@@ -448,7 +458,6 @@ function findDropTarget(x: number, y: number): TabDrop | null {
     const rect = cell.getBoundingClientRect();
     return {
       groupId,
-      zone: zoneFor(rect, x, y),
       left: rect.left,
       top: rect.top,
       width: rect.width,
@@ -457,18 +466,6 @@ function findDropTarget(x: number, y: number): TabDrop | null {
   }
 
   return null;
-}
-
-function zoneFor(rect: DOMRect, x: number, y: number): DropZone {
-  if (rect.width <= 0 || rect.height <= 0) return "center";
-  const rx = (x - rect.left) / rect.width;
-  const ry = (y - rect.top) / rect.height;
-  const edge = 0.25;
-  if (rx < edge) return "left";
-  if (rx > 1 - edge) return "right";
-  if (ry < edge) return "top";
-  if (ry > 1 - edge) return "bottom";
-  return "center";
 }
 
 /** Final tab index after removing the dragged tab from its group. */

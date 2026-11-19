@@ -36,8 +36,9 @@ export type PanelKind =
  *
  * A page is either global (`settings`, `agent`, …) or project-scoped: `bugs`
  * carries a TAPD workspace id, `local` a local project id. Project pages are
- * one per project and can be closed; global pages share a single navigation
- * tab (see `openPage`).
+ * one per project and can be closed; other global pages share a single
+ * navigation tab (see `openPage`) — except `queue`, which owns a singleton tab
+ * that defaults to the secondary dock.
  */
 export type PanelResource =
   | { type: "page"; view: PageView; projectId?: string }
@@ -96,10 +97,6 @@ export type LayoutState = {
   maximizedGroupId: string | null;
 };
 
-/** Drop zone geometry: center = tabs, edges = split the target group. */
-export type DropZone = "center" | "left" | "right" | "top" | "bottom";
-export type SplitEdge = Exclude<DropZone, "center">;
-
 export type PanelSize = { width: number; height: number };
 
 /** Where an open request lands; `active` follows the last focused group. */
@@ -142,9 +139,11 @@ export type WorkbenchLayoutApi = {
   /** Opens or focuses a panel; returns its id. */
   open: (spec: PanelOpenSpec) => string;
   /**
-   * Opens or focuses a page tab in the primary group. With `projectId` the tab
-   * belongs to that project (one per project); without it the single global
-   * page tab is retargeted to `view`, like the old navigation behaviour.
+   * Opens or focuses a page tab. With `projectId` the tab belongs to that
+   * project (one per project), activated wherever the user dragged it; `queue`
+   * owns a singleton tab that defaults to the secondary dock; every other
+   * global view shares one navigation tab in the primary, retargeted to
+   * `view` like the old navigation behaviour.
    */
   openPage: (view: PageView, projectId?: string, label?: string) => void;
   /**
@@ -158,10 +157,8 @@ export type WorkbenchLayoutApi = {
   /** Turns a preview tab into a permanent one. */
   pinPanel: (panelId: string) => void;
   setPanelLabel: (panelId: string, label: string) => void;
-  /** Center drop: move a tab into `groupId` at `index`. */
+  /** Drop into `groupId`: move a tab there at `index` (same group reorders). */
   movePanel: (panelId: string, groupId: string, index: number) => void;
-  /** Edge drop: split `groupId` in `edge` direction and put the tab there. */
-  splitPanel: (panelId: string, groupId: string, edge: SplitEdge) => void;
   setSizes: (splitId: string, sizes: number[]) => void;
   /** Pixel delta from the drag origin; container is the split's main axis. */
   beginSashDrag: (

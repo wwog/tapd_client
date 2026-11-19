@@ -84,4 +84,11 @@ export type PanelProps = {
   panel: PanelRef;
   /** Its tab is the visible one in its group. */
   active: boolean;
+  /**
+   * The user is actually looking at it: the tab is active *and* its group is
+   * the focused one and not hidden by a maximized sibling. Panels that react
+   * to "being seen" (e.g. retiring a badge) must use this, not `active` —
+   * a stacked or hidden tab still has `active === true`.
+   */
+  visible: boolean;
 };

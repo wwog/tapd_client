@@ -33,7 +33,7 @@ import { plainTitle } from "../lib/title";
 import { showToast } from "../lib/toast";
 
 type Props = {
-  /** The queue tab is the focused panel; used to retire the green badge. */
+  /** The queue page is what the user is looking at; retires the green badge. */
   active: boolean;
   /** Selects the task and opens the Agent page on it. */
   onOpenTask: (sessionId: string) => void;
@@ -102,9 +102,11 @@ export function QueuePage({
     finalizing.length;
   const report = batch.report;
 
-  // Entering the view reads the report; the green badge retires here. Only
-  // retire it once the task feed actually rendered the report (a skeleton or
-  // a failed task read must not swallow the badge).
+  // Being seen reads the report; the green badge retires here. `active` is
+  // the panel host's `visible` (tab active, group focused, not maximized
+  // away) — a stacked or hidden tab must not swallow the badge. Only retire
+  // it once the task feed actually rendered the report (a skeleton or a
+  // failed task read must not swallow the badge either).
   useEffect(() => {
     if (active && report && feed.loaded) markQueueReportSeen();
   }, [active, report, feed.loaded]);

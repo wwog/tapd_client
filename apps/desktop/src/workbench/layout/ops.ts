@@ -32,7 +32,6 @@ import type {
   PanelRef,
   PanelResource,
   SplitDirection,
-  SplitEdge,
   SplitNode,
 } from "./types.ts";
 
@@ -401,15 +400,31 @@ function isProjectPage(panel: PanelRef): boolean {
 }
 
 /**
- * Ensures exactly one primary group exists and that every page tab lives there.
+ * The workflow queue page. Unlike the other global pages it owns a tab of its
+ * own (opened into the secondary dock from the title bar) instead of sharing
+ * the navigation tab, so it is exempt from the global-tab consolidation.
+ */
+function isQueuePage(panel: PanelRef): boolean {
+  return (
+    panel.kind === "page" &&
+    panel.resource.type === "page" &&
+    panel.resource.view === "queue"
+  );
+}
+
+/**
+ * Ensures exactly one primary group exists and that every global navigation
+ * page lives there.
  *
  * Project pages (`bugs` / `local` carrying a project id) are one tab per
- * project and stay open until closed; local project tabs are ordered first.
- * Global pages (`settings`, `agent`, …) share a single navigation tab: extra
- * globals collapse into the preferred one (the primary's active global, else
- * its first global, else the first global), so handing a stale layout to
- * `normalize` cannot leave two 设置 tabs. Project and navigation tabs coexist:
- * opening or focusing a project tab never closes the navigation tab.
+ * project and may live in any dock — the user can drag one beside a file tab
+ * without it snapping back. Global pages (`settings`, `agent`, …) share a
+ * single navigation tab in the primary: extra globals collapse into the
+ * preferred one (the primary's active global, else its first global, else the
+ * first global), so handing a stale layout to `normalize` cannot leave two
+ * 设置 tabs. The queue page owns its tab and stays wherever it was opened.
+ * Project and navigation tabs coexist: opening or focusing a project tab
+ * never closes the navigation tab.
  */
 function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode } {
   const seenRoles = new Set<GroupRole>();
@@ -432,7 +447,9 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
     root = insertPrimary(root, primary);
   }
 
-  const globals = pages.filter((page) => !isProjectPage(page.panel));
+  const globals = pages.filter(
+    (page) => !isProjectPage(page.panel) && !isQueuePage(page.panel),
+  );
   const keepGlobal =
     globals.find(
       (page) => page.group.id === primary.id && page.panel.id === primary.activePanelId,
@@ -447,6 +464,9 @@ function ensurePrimary(root: LayoutNode): { root: LayoutNode; primary: GroupNode
   );
 
   for (const page of pages) {
+    // The queue singleton and project pages keep their dock; only the shared
+    // navigation tab is pinned to the primary.
+    if (isQueuePage(page.panel) || isProjectPage(page.panel)) continue;
     if (dropped.has(page.panel.id)) {
       removePanelFromGroup(page.group, page.panel.id);
       continue;
@@ -610,12 +630,16 @@ export function openPanel(
 }
 
 /**
- * Opens or focuses a page tab in the primary group.
+ * Opens or focuses a page tab.
  *
  * - With `projectId` the tab is project-scoped (`bugs` / `local`): one per
- *   project, appended next to the other project tabs and focused.
- * - Without it the single global navigation tab is retargeted to `view`, so
- *   clicking the activity bar never accumulates 设置 / Agent tabs.
+ *   project, created in the primary group and focused; an existing tab is
+ *   activated wherever the user dragged it.
+ * - `queue` owns a singleton tab that defaults to the secondary (right) dock;
+ *   repeated opens only select it.
+ * - Without it, every other global view shares a single navigation tab in the
+ *   primary group, retargeted in place, so clicking the activity bar never
+ *   accumulates 设置 / Agent tabs.
  */
 export function openPage(
   layout: LayoutState,
@@ -630,36 +654,51 @@ export function openPage(
 
   const id = panelId.page(view, projectId);
   const hit = findPanel(base.root, id);
-  if (
-    hit &&
-    hit.group.id === primary.id &&
-    primary.activePanelId === id &&
-    base.activeGroupId === primary.id
-  ) {
+  if (hit && hit.group.activePanelId === id && base.activeGroupId === hit.group.id) {
     return label && hit.panel.label !== label ? setPanelLabel(base, id, label) : base;
   }
 
   const next = cloneLayout(base);
   const nextPrimary = findRoleGroup(next.root, "primary")!;
 
+  // The workflow queue is a singleton outside the shared navigation tab: it
+  // keeps its own tab in the dock it was opened into (default: the secondary).
+  // The dock is only ensured on the create path — refocusing an existing tab
+  // (e.g. a migrated tab still in the primary) must not resurrect an empty
+  // dock in the persisted tree.
+  if (view === "queue") {
+    const current = findPanel(next.root, id);
+    if (current) {
+      current.group.activePanelId = current.panel.id;
+      next.activeGroupId = current.group.id;
+      return normalize(next);
+    }
+    const work = findRoleGroup(next.root, "secondary")
+      ? next
+      : ensureRoleGroup(next, "secondary");
+    const secondary = findRoleGroup(work.root, "secondary");
+    if (!secondary) return normalize(work);
+    const panel = makePanel({ type: "page", view }, label ? { label } : {});
+    secondary.panels.push(panel);
+    secondary.activePanelId = panel.id;
+    work.activeGroupId = secondary.id;
+    return normalize(work);
+  }
+
   if (projectId) {
     const current = findPanel(next.root, id);
     if (current) {
-      if (current.group.id !== nextPrimary.id) {
-        removePanelFromGroup(current.group, id);
-        nextPrimary.panels.push(current.panel);
-      }
+      // Respect where the user parked the tab; just focus it.
       if (label) current.panel.label = label;
+      current.group.activePanelId = id;
+      next.activeGroupId = current.group.id;
     } else {
       nextPrimary.panels.push(
-        makePanel(
-          { type: "page", view, projectId },
-          label ? { label } : {},
-        ),
+        makePanel({ type: "page", view, projectId }, label ? { label } : {}),
       );
+      nextPrimary.activePanelId = id;
+      next.activeGroupId = nextPrimary.id;
     }
-    nextPrimary.activePanelId = id;
-    next.activeGroupId = nextPrimary.id;
     return normalize(next);
   }
 
@@ -670,7 +709,8 @@ export function openPage(
       if (
         panel.kind === "page" &&
         panel.resource.type === "page" &&
-        !panel.resource.projectId
+        !panel.resource.projectId &&
+        panel.resource.view !== "queue"
       ) {
         globals.push({ panel, group });
       }
@@ -699,9 +739,7 @@ export function openPage(
       nextPrimary.panels.push(nextPanel);
     }
   } else {
-    nextPrimary.panels.push(
-      makePanel({ type: "page", view }, label ? { label } : {}),
-    );
+    nextPrimary.panels.push(makePanel({ type: "page", view }, label ? { label } : {}));
   }
   nextPrimary.activePanelId = id;
   next.activeGroupId = nextPrimary.id;
@@ -743,11 +781,13 @@ export function retargetPage(
     next.activeGroupId = group.id;
   }
 
-  const primary = findRoleGroup(next.root, "primary");
+  // Focus the adopted tab wherever it lives (a project page may have been
+  // dragged out of the primary); writing `primary.activePanelId` blindly would
+  // leave a dangling pointer when the tab sits in another dock.
   const scoped = findPanel(next.root, scopedId);
-  if (primary && scoped) {
-    primary.activePanelId = scopedId;
-    next.activeGroupId = primary.id;
+  if (scoped) {
+    scoped.group.activePanelId = scopedId;
+    next.activeGroupId = scoped.group.id;
   }
   return normalize(next);
 }
@@ -896,85 +936,6 @@ export function movePanel(
   }
   destination.activePanelId = current.panel.id;
   next.activeGroupId = destination.id;
-  return normalize(next);
-}
-
-/**
- * Edge drop: splits `groupId` in the direction of `edge` and puts the panel
- * into the new group. A matching parent split hosts the new sibling directly;
- * otherwise the target group is wrapped in a fresh split. The new group gets
- * `defaultSplitSizes(direction)[1]` of the target's share, the target keeps
- * the remaining `[0]` share.
- */
-export function splitPanel(
-  layout: LayoutState,
-  panelIdToSplit: string,
-  groupId: string,
-  edge: SplitEdge,
-): LayoutState {
-  const direction: SplitDirection | null =
-    edge === "left" || edge === "right"
-      ? "row"
-      : edge === "top" || edge === "bottom"
-        ? "column"
-        : null;
-  if (!direction) return layout;
-  const before = edge === "left" || edge === "top";
-
-  const hit = findPanel(layout.root, panelIdToSplit);
-  if (!hit || !findGroup(layout.root, groupId)) return layout;
-
-  const next = cloneLayout(layout);
-  const current = findPanel(next.root, panelIdToSplit);
-  if (!current) return layout;
-
-  const source = current.group;
-  source.panels.splice(current.index, 1);
-  source.activePanelId =
-    source.panels.length === 0
-      ? null
-      : source.panels[Math.min(current.index, source.panels.length - 1)]!.id;
-
-  const newGroup: GroupNode = {
-    kind: "group",
-    id: randomId("group"),
-    panels: [current.panel],
-    activePanelId: current.panel.id,
-  };
-  const location = locateGroup(next.root, groupId);
-  if (!location) return layout;
-
-  const defaults = defaultSplitSizes(direction);
-  const targetShare = defaults[0]!;
-  const newShare = defaults[1]!;
-  const parent = location.parent;
-
-  if (parent && parent.direction === direction) {
-    const share = isFiniteNumber(parent.sizes[location.index])
-      ? parent.sizes[location.index]!
-      : 1 / parent.children.length;
-    const keep = share * targetShare;
-    const added = share * newShare;
-    if (before) {
-      parent.children.splice(location.index, 0, newGroup);
-      parent.sizes.splice(location.index, 1, added, keep);
-    } else {
-      parent.children.splice(location.index + 1, 0, newGroup);
-      parent.sizes[location.index] = keep;
-      parent.sizes.splice(location.index + 1, 0, added);
-    }
-  } else {
-    const split: SplitNode = {
-      kind: "split",
-      id: randomId("split"),
-      direction,
-      children: before ? [newGroup, location.group] : [location.group, newGroup],
-      sizes: before ? [newShare, targetShare] : [targetShare, newShare],
-    };
-    next.root = replaceGroupNode(next.root, groupId, split);
-  }
-
-  next.activeGroupId = newGroup.id;
   return normalize(next);
 }
 

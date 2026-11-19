@@ -18,10 +18,6 @@ export const layout = {
 
   // ------------------------------------------------------------- tab drag
   "layout.dropCenter": ["放入标签栏", "Add to tab strip"],
-  "layout.dropLeft": ["向左分屏", "Split left"],
-  "layout.dropRight": ["向右分屏", "Split right"],
-  "layout.dropTop": ["向上分屏", "Split up"],
-  "layout.dropBottom": ["向下分屏", "Split down"],
   "layout.unsavedTitle": ["未保存的修改", "Unsaved changes"],
   "layout.unsavedBody": [
     "{name} 有未保存的修改，关闭后会丢失。",

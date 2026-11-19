@@ -20,7 +20,7 @@ import { usePageHost } from "../components/pageContext";
  * Hosts one full page view. App no longer has a global `view` switch; every
  * page tab renders its own view from the panel resource.
  */
-export function PagePanel({ panel, active }: PanelProps) {
+export function PagePanel({ panel, visible }: PanelProps) {
   const host = usePageHost();
   const resource = panel.resource.type === "page" ? panel.resource : null;
   const view: PageView = resource?.view ?? "bugs";
@@ -65,8 +65,10 @@ export function PagePanel({ panel, active }: PanelProps) {
     case "queue":
       return (
         <div data-component="PagePanel" className="flex h-full min-h-0 flex-col">
+          {/* `visible`, not `active`: the tab may sit in an unfocused dock or
+              behind a maximized group, and the badge must not retire unseen. */}
           <QueuePage
-            active={active}
+            active={visible}
             onOpenTask={host.onOpenAgentTask}
             onOpenBug={host.onOpenBugById}
             onOpenLocalItem={host.onOpenLocalItem}

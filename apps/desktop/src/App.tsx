@@ -97,7 +97,7 @@ function layoutContentMinWidth(layout: WorkbenchLayoutApi): number {
 export default function App() {
   const [scope, setScope] = useState<BugScope>("mine");
   // The workflow feed is global: the bug list paints queued tasks and the
-  // activity bar's queue page works without the Agent page ever being opened.
+  // title bar's queue button works without the Agent page ever being opened.
   useTaskFeedRuntime();
   useQueueBatchRuntime();
   const queueBadge = useQueueBadge();
@@ -560,6 +560,10 @@ export default function App() {
   const selectLocalProject = (id: string) => {
     local.select(id);
     const name = local.projects.find((project) => project.id === id)?.name;
+    // The tab may live in another dock (dragged out of the primary): reveal it.
+    if (layoutRef.current.layout.maximizedGroupId) {
+      layoutRef.current.maximizeGroup(null);
+    }
     layoutRef.current.openPage("local", id, name);
     // The bug detail belongs to TAPD; the local page has no such panel.
     detailPane.closeDetail();
@@ -604,7 +608,7 @@ export default function App() {
     [],
   );
 
-  /** Brings the global queue forward (empty-state links, report rows). */
+  /** Opens the workflow queue tab (title-bar button, bug-list empty state). */
   const openQueue = useCallback(() => {
     if (layoutRef.current.layout.maximizedGroupId) {
       layoutRef.current.maximizeGroup(null);
@@ -930,13 +934,16 @@ export default function App() {
         sidebar.resizing && "select-none",
       )}
     >
-      <TitleBar onOpenAccount={() => activateView("account")} />
+      <TitleBar
+        onOpenAccount={() => activateView("account")}
+        onOpenQueue={openQueue}
+        queueBadge={queueBadge}
+      />
 
       <div className="flex min-h-0 flex-1">
         <ActivityBar
           view={view}
           railAnim={railAnim}
-          queueBadge={queueBadge}
           sidebarHidden={sidebar.hidden}
           meAvatar={info.meAvatar}
           name={context?.user.nick || info.me}
@@ -1090,6 +1097,9 @@ export default function App() {
             });
             // The new project is the one the user wants to work in.
             local.select(project.id);
+            if (layoutRef.current.layout.maximizedGroupId) {
+              layoutRef.current.maximizeGroup(null);
+            }
             layoutRef.current.openPage("local", project.id, project.name);
           }}
         />
