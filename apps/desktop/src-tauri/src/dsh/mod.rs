@@ -18,6 +18,7 @@
 
 pub mod bridge;
 pub mod commands;
+mod discovery;
 pub mod feature;
 mod files;
 mod meter_store;

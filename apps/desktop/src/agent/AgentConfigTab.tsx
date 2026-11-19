@@ -390,12 +390,27 @@ export function AgentConfigTab({ toast, onClose }: Props) {
                         {t("agent.runtime.starting")}
                       </div>
                     ) : state.status.phase === "failed" ? (
-                      <div
-                        className="break-all text-ui-caption text-rose-600"
-                        title={state.status.errorCode}
-                      >
-                        {state.status.error ?? t("agent.runtime.failed")}
-                      </div>
+                      state.status.errorCode === "model_missing" ? (
+                        <div className="flex items-center gap-3 text-ui-caption text-slate-500">
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />
+                          <span className="min-w-0 flex-1 truncate">
+                            {t("agent.runtime.modelMissing")}
+                          </span>
+                          <Button
+                            size="sm"
+                            onClick={() => agentActions.openConfig("models")}
+                          >
+                            {t("agent.runtime.config")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div
+                          className="break-all text-ui-caption text-rose-600"
+                          title={state.status.errorCode}
+                        >
+                          {state.status.error ?? t("agent.runtime.failed")}
+                        </div>
+                      )
                     ) : (
                       <div className="flex flex-col gap-1.5">
                         {state.status.payloadVersion ? (
@@ -434,11 +449,13 @@ export function AgentConfigTab({ toast, onClose }: Props) {
                     )}
                   </div>
                   {state.status?.phase === "failed" ? (
-                    <div className="mt-3 flex justify-end">
-                      <Button size="sm" onClick={() => void agentActions.startRuntime()}>
-                        {t("common.retry")}
-                      </Button>
-                    </div>
+                    state.status.errorCode === "model_missing" ? null : (
+                      <div className="mt-3 flex justify-end">
+                        <Button size="sm" onClick={() => void agentActions.startRuntime()}>
+                          {t("common.retry")}
+                        </Button>
+                      </div>
+                    )
                   ) : state.status?.phase === "ready" ? (
                     <div className="mt-3 flex items-center justify-end gap-3">
                       {state.status.restartRequired ? (

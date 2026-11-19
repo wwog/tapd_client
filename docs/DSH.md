@@ -108,6 +108,12 @@ Typert 生成式 RPC）确实有 `assistant/live-chunk`，但那是内部生成�
 调试期有一个只读驱动：`POST /dev/dsh`（`{"action":"payload|prepare|start|stop|status|prompt"}`），
 用 `_dev` 数据目录里的 token 鉴权，可以在不打开 UI 的情况下走完整条链路。
 
+**启动条件与模型发现**：运行时只在**已配置可用模型**时才启动：应用打开后 `setup` 里的守卫
+异步拉起（最多 3 次，间隔 2 秒）；没有模型时记为 `model_missing` 终态，界面显示「待配置模型」，
+在应用内保存模型后宿主会立即再拉一次，不需要手动重试。`dsh_models_discover` 由宿主 Rust 直接请求
+供应商端点（协议/端点/鉴权与 dsh `llm-pi-ai` 的 discovery 一致，20 秒超时、4 MB 上限），
+因此「获取模型」在运行时未启动、启动中或失败时都能用，不再依赖运行时就绪。
+
 ### 3.2 两个容易踩的坑（已修）
 
 1. **裁剪不能删 `build/src`**：`@opentelemetry/api-logs`、`human-signals` 的运行时入口就在
@@ -651,7 +657,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
-| `dsh_models_discover` | `{ provider, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens?, inputModalities? }] }`；读端点的模型列表（catalog 路由由引擎目录直接作答），运行时要先就绪 |
+| `dsh_models_discover` | `{ provider?, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens? }] }`；宿主直接 `GET` 端点列表，**不依赖运行时**（openai-completions / openai-responses / anthropic-messages / google-generative-ai） |
 | `dsh_worktrees` | — | `{ root, worktrees: [{ sessionId, path, updatedAt, title, project, repoPath, orphan }] }`；磁盘上残留 / 使用中的 worktree |
 | `dsh_worktree_remove` | `{ path }` | `{ path }`；只接受应用 worktree 根内的路径 |
 | `dsh_plugins` | — | `{ entries }`；运行时 Loader 实际组成的插件（会先确保运行时就绪） |

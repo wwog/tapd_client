@@ -613,6 +613,28 @@ pub async fn agent_settings_set(
         if let Err(error) = state.sync_catalog(&app, &saved).await {
             tracing::warn!(%error, "model catalog was not applied to the running runtime");
         }
+        // A model saved while the runtime was down (it refuses to start
+        // without one) brings it up now instead of asking for another Retry.
+        // `ensure_ready` serialises with the boot guard, so a start already in
+        // flight is awaited rather than duplicated. A terminal environment
+        // failure (Node or payload missing) is left to its own notice: retrying
+        // it on every settings save would only repeat the same error.
+        let status = state.status();
+        let needs_start = match status.phase {
+            crate::dsh::runtime::Phase::Stopped | crate::dsh::runtime::Phase::Starting => true,
+            crate::dsh::runtime::Phase::Failed => {
+                status.error_code.as_deref() == Some("model_missing")
+            }
+            crate::dsh::runtime::Phase::Ready => false,
+        };
+        if saved.dsh_models.is_configured() && needs_start {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::dsh::feature::start(&app).await {
+                    tracing::warn!(%error, "runtime was not started after the model was saved");
+                }
+            });
+        }
     }
     // Raising the cap should start queued work immediately, not wait for the
     // next enqueue. Lowering it never interrupts a running task.

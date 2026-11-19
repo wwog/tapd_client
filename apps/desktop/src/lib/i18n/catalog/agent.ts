@@ -405,10 +405,10 @@ export const agent = {
     "内置 Agent 需要系统安装 Node.js 24.9 或更高版本，应用不打包 Node。",
     "The built-in agent needs Node.js 24.9 or newer installed; the app does not bundle Node.",
   ],
-  "agent.runtime.modelMissing": ["未配置模型 API", "Model API is not configured"],
+  "agent.runtime.modelMissing": ["待配置模型", "Model not configured"],
   "agent.runtime.modelMissingHint": [
-    "在「配置」里填写 API 地址与模型后重新启动。",
-    "Set the API address and model in Configuration, then start again.",
+    "保存模型后会自动启动运行时。",
+    "Saving a model starts the runtime automatically.",
   ],
   "agent.runtime.payloadMissing": ["运行时文件缺失", "Runtime files are missing"],
   "agent.runtime.payloadMissingHint": [

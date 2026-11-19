@@ -413,29 +413,6 @@ impl RuntimeState {
         }
     }
 
-    /// Asks the running engine which models a draft endpoint advertises.
-    /// Reusing the engine keeps catalog routes answered from the installed
-    /// catalog and everything else from the endpoint's own listing.
-    pub async fn discover_models(
-        &self,
-        app: &AppHandle,
-        provider: &str,
-        base_url: &str,
-        api: &str,
-        api_key: Option<&str>,
-    ) -> Result<Value, String> {
-        if self.status().phase != Phase::Ready {
-            return Err(tr("dsh.runtime.notStarted").to_string());
-        }
-        let Some(bridge) = app.try_state::<Arc<bridge::BridgeState>>() else {
-            return Err("agent bridge unavailable".to_string());
-        };
-        let models = bridge
-            .discover_models(provider, base_url, api, api_key)
-            .await?;
-        Ok(json!({ "models": models }))
-    }
-
     /// Claims a generation before spawning a reader. Called under `start_lock`.
     fn next_run_id(&self) -> u64 {
         self.run_id.fetch_add(1, Ordering::SeqCst) + 1

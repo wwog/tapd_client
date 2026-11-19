@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -14,7 +14,10 @@ import {
 } from "lucide-react";
 
 import appIcon from "../assets/app-icon.png";
+import { ModelSettings } from "../agent/ModelSettings";
 import { api, type AppInfo } from "../lib/api";
+import { dshSettingsApi, type DshAgentConfig } from "../lib/dsh";
+import type { DshModelsConfig } from "../lib/agentSettings";
 import { copyText } from "../lib/desktop";
 import { t, type MessageKey } from "../lib/i18n";
 import { ThemePicker } from "./AppearanceCard";
@@ -261,6 +264,7 @@ const STEP_HEADINGS: Array<{ title: MessageKey; copy: MessageKey }> = [
   { title: "onboard.step.welcome", copy: "onboard.step.welcomeCopy" },
   { title: "onboard.step.setup", copy: "onboard.step.setupCopy" },
   { title: "onboard.step.coworkers", copy: "onboard.step.coworkersCopy" },
+  { title: "onboard.step.models", copy: "onboard.step.modelsCopy" },
 ];
 
 export function Onboarding({ info, onDone }: Props) {
@@ -269,6 +273,10 @@ export function Onboarding({ info, onDone }: Props) {
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(
     null,
   );
+  /** The full stored config, so a model edit does not overwrite other settings. */
+  const configRef = useRef<DshAgentConfig | null>(null);
+  const [models, setModels] = useState<DshModelsConfig | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
   const showNotice = (kind: "ok" | "error", text: string) => {
     setNotice({ kind, text });
@@ -280,12 +288,33 @@ export function Onboarding({ info, onDone }: Props) {
     }
   };
 
+  const loadModels = useCallback(async () => {
+    setModelsError(null);
+    try {
+      const config = await dshSettingsApi.get();
+      configRef.current = config;
+      setModels(config.dshModels);
+    } catch (error) {
+      setModelsError(String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadModels();
+  }, [loadModels]);
+
   const coworkers = useCoworkers(showNotice);
 
   const finish = async () => {
     setBusy(true);
     setNotice(null);
     try {
+      // The model page edits a local draft; persist it before the flag flips so
+      // a configured model starts the runtime on the same launch.
+      const config = configRef.current;
+      if (config && models && models !== config.dshModels) {
+        configRef.current = await dshSettingsApi.save({ ...config, dshModels: models });
+      }
       await api.completeOnboarding();
       onDone();
     } catch (cause) {
@@ -301,7 +330,7 @@ export function Onboarding({ info, onDone }: Props) {
   };
 
   const heading = STEP_HEADINGS[step];
-  const last = step === 2;
+  const last = step === STEP_HEADINGS.length - 1;
 
   return (
     <div data-component="Onboarding" className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-canvas text-slate-900">
@@ -327,7 +356,7 @@ export function Onboarding({ info, onDone }: Props) {
           <p className="truncate text-ui-sm text-slate-500">{t(heading.copy)}</p>
         </div>
         <span className="pointer-events-none shrink-0 text-ui-xs tabular-nums text-slate-400">
-          {step + 1} / 3
+          {step + 1} / {STEP_HEADINGS.length}
         </span>
       </header>
 
@@ -385,6 +414,30 @@ export function Onboarding({ info, onDone }: Props) {
               onRetry={() => void coworkers.reload()}
               onToggle={coworkers.toggle}
             />
+          ) : null}
+
+          {step === 3 ? (
+            <div className="mx-auto w-full max-w-4xl">
+              {models ? (
+                <ModelSettings value={models} onChange={setModels} />
+              ) : modelsError ? (
+                <section className={cardClass}>
+                  <div className="flex items-center gap-3 text-ui-caption text-slate-500">
+                    <span className="min-w-0 flex-1 truncate" title={modelsError}>
+                      {t("agent.config.loadFailed")}
+                    </span>
+                    <Button size="sm" onClick={() => void loadModels()}>
+                      {t("common.retry")}
+                    </Button>
+                  </div>
+                </section>
+              ) : (
+                <div className="flex items-center justify-center gap-2 py-10 text-ui-caption text-slate-400">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300" />
+                  {t("common.loading")}
+                </div>
+              )}
+            </div>
           ) : null}
         </div>
       </div>

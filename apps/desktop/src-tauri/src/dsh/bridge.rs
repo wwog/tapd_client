@@ -372,29 +372,6 @@ impl BridgeState {
             .unwrap_or_else(|| json!([])))
     }
 
-    /// Asks the runtime which models a draft provider endpoint advertises.
-    /// The engine answers from its installed catalog for routes it ships and
-    /// from the endpoint itself otherwise, exactly like its own Models page.
-    pub async fn discover_models(
-        &self,
-        provider: &str,
-        base_url: &str,
-        api: &str,
-        api_key: Option<&str>,
-    ) -> Result<Value, String> {
-        let mut frame = json!({
-            "type": "discover-models",
-            "provider": provider,
-            "baseURL": base_url,
-            "api": api,
-        });
-        if let Some(key) = api_key.filter(|key| !key.is_empty()) {
-            frame["apiKey"] = json!(key);
-        }
-        let reply = self.request(frame, REPLY_TIMEOUT).await?;
-        Ok(reply.get("models").cloned().unwrap_or_else(|| json!([])))
-    }
-
     /// Points one session at a model route and queues the frame for the plugin.
     /// The plugin applies it immediately for a live Agent and queues it until
     /// `agent/created` otherwise, so calling this before the session exists is

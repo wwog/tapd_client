@@ -96,9 +96,6 @@ export function AppearanceCard() {
             <Palette size={15} className="text-slate-400" />
             {t("settings.appearance.title")}
           </h2>
-          <p className="mt-1 text-ui-caption leading-5 text-slate-500">
-            {t("settings.appearance.description")}
-          </p>
         </div>
         <button
           type="button"

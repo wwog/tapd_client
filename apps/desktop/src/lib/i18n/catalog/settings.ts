@@ -36,10 +36,6 @@ export const settings = {
 
   // Appearance
   "settings.appearance.title": ["外观", "Appearance"],
-  "settings.appearance.description": [
-    "系统字体与统一字号层级，设置立即生效。",
-    "System fonts and one shared text scale, applied immediately.",
-  ],
   "settings.font.name": ["字体名称", "Font name"],
   "settings.font.placeholder": ["如 Inter, PingFang SC", "e.g. Inter, PingFang SC"],
   "settings.fontSize.compact": ["紧凑", "Compact"],
@@ -382,6 +378,11 @@ export const settings = {
   "onboard.step.coworkersCopy": [
     "选中的同事会参与之后的 Agent 任务",
     "Selected coworkers join later agent tasks",
+  ],
+  "onboard.step.models": ["配置 AI 模型", "Configure a model"],
+  "onboard.step.modelsCopy": [
+    "添加供应商与模型，开始使用后自动启动运行时",
+    "Add a provider and model; the runtime starts when you begin",
   ],
   "onboard.themeHint": [
     "选一个看着舒服的，立即生效。",

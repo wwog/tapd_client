@@ -497,11 +497,12 @@ struct QuestionPayload {
     answers: Option<Vec<AnswerItem>>,
 }
 
-/// One draft provider the settings page wants the model list for.
+/// One draft provider the settings page wants the model list for. The
+/// provider id is display-only here: the listing comes from the endpoint, not
+/// from the installed catalog, so the host needs no running runtime.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoverPayload {
-    provider: String,
     #[serde(default)]
     base_url: String,
     #[serde(default)]
@@ -604,15 +605,13 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         }
         "dsh_models_discover" => {
             let request: DiscoverPayload = parse(payload, "dsh_models_discover")?;
-            runtime(app)?
-                .discover_models(
-                    app,
-                    &request.provider,
-                    &request.base_url,
-                    &request.api,
-                    request.api_key.as_deref(),
-                )
-                .await
+            let models = super::discovery::discover(
+                &request.base_url,
+                &request.api,
+                request.api_key.as_deref(),
+            )
+            .await?;
+            Ok(json!({ "models": models }))
         }
         "dsh_approval_answer" => {
             let request: ApprovalPayload = parse(payload, "dsh_approval_answer")?;
