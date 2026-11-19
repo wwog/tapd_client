@@ -47,11 +47,6 @@ export const local = {
     "点「添加」新建一条事项。",
     "Tap Add to create one.",
   ],
-  "mobile.local.emptyInProgress": ["没有处理中事项", "No items in progress"],
-  "mobile.local.emptyInProgressHint": [
-    "把待处理事项移入处理中后会出现在这里。",
-    "Items moved to in progress show up here.",
-  ],
   "mobile.local.emptyDone": ["没有已完成事项", "No done items"],
   "mobile.local.emptyDoneHint": [
     "标记为完成的事项会出现在这里。",

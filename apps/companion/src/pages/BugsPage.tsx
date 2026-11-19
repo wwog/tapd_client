@@ -19,6 +19,7 @@ import {
   TTL,
   WORKSPACES_KEY,
 } from "../lib/reqCache";
+import { BugsLocalPivot } from "../components/BugsLocalPivot";
 import { navigate } from "../lib/router";
 import { Badge, PriorityDot, STATUS_TONES } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
@@ -432,9 +433,7 @@ export function BugsPage() {
   return (
     <div data-component="BugsPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
-        <div className="flex items-center px-4 pt-3 pb-2">
-          <h1 className="text-ui-base text-slate-900">{t("common.bugs")}</h1>
-        </div>
+        <BugsLocalPivot view="bugs" />
         <div className="flex items-center gap-2 px-4 pb-2">
           {workspaces.length > 1 ? (
             <select

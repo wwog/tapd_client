@@ -24,6 +24,7 @@ import { relativeTime } from "../lib/format";
 import { t, type MessageKey } from "../lib/i18n";
 import { navigate } from "../lib/router";
 import { Badge } from "../components/Badge";
+import { BugsLocalPivot } from "../components/BugsLocalPivot";
 import { BottomSheet } from "../components/BottomSheet";
 import { DirectoryPickerSheet } from "../components/DirectoryPickerSheet";
 import { EnqueueSheet, type EnqueueTarget } from "../components/EnqueueSheet";
@@ -47,11 +48,19 @@ const storeProject = (id: string): void => {
   }
 };
 
-const STATUS_TABS: ReadonlyArray<{ key: WorkItemStatus; label: MessageKey }> = [
+/**
+ * Two groups, desktop parity: the separate 处理中 tab is gone (the workflow
+ * queue owns in-flight work), so in-progress items stay in 待处理 and their
+ * state rides the row badge.
+ */
+const STATUS_TABS: ReadonlyArray<{ key: "pending" | "done"; label: MessageKey }> = [
   { key: "pending", label: "mobile.local.pending" },
-  { key: "in_progress", label: "mobile.local.inProgress" },
   { key: "done", label: "mobile.local.done" },
 ];
+
+/** Which group an item's status lands in. */
+const statusTab = (status: WorkItemStatus): "pending" | "done" =>
+  status === "done" ? "done" : "pending";
 
 const STATUS_LABELS: Record<WorkItemStatus, MessageKey> = {
   pending: "mobile.local.pending",
@@ -65,17 +74,10 @@ const STATUS_TONES: Record<WorkItemStatus, "neutral" | "blue" | "green"> = {
   done: "green",
 };
 
-const EMPTY_STATES: Record<
-  WorkItemStatus,
-  { title: MessageKey; hint: MessageKey }
-> = {
+const EMPTY_STATES: Record<"pending" | "done", { title: MessageKey; hint: MessageKey }> = {
   pending: {
     title: "mobile.local.emptyPending",
     hint: "mobile.local.emptyPendingHint",
-  },
-  in_progress: {
-    title: "mobile.local.emptyInProgress",
-    hint: "mobile.local.emptyInProgressHint",
   },
   done: {
     title: "mobile.local.emptyDone",
@@ -137,7 +139,7 @@ export function LocalPage(props: { projectId: string | null }) {
   // `#/local?p=<id>` wins at mount; otherwise the remembered project is used.
   const [selection, setSelection] = useState<string | null>(props.projectId);
 
-  const [status, setStatus] = useState<WorkItemStatus>("pending");
+  const [status, setStatus] = useState<"pending" | "done">("pending");
   const [items, setItems] = useState<WorkItem[] | null>(null);
   const [itemsError, setItemsError] = useState<string | null>(null);
 
@@ -242,14 +244,13 @@ export function LocalPage(props: { projectId: string | null }) {
   const counts = useMemo(() => {
     const list = items ?? [];
     return {
-      pending: list.filter((item) => item.status === "pending").length,
-      in_progress: list.filter((item) => item.status === "in_progress").length,
+      pending: list.filter((item) => item.status !== "done").length,
       done: list.filter((item) => item.status === "done").length,
     };
   }, [items]);
 
   const visible = useMemo(
-    () => (items ?? []).filter((item) => item.status === status),
+    () => (items ?? []).filter((item) => statusTab(item.status) === status),
     [items, status],
   );
 
@@ -349,7 +350,7 @@ export function LocalPage(props: { projectId: string | null }) {
         description: draftDescription.trim() || null,
       });
       setItems((current) => (current ? [item, ...current] : [item]));
-      setStatus(item.status);
+      setStatus(statusTab(item.status));
       setAddOpen(false);
     } catch (err) {
       setAddError(asApiError(err).message);
@@ -396,7 +397,7 @@ export function LocalPage(props: { projectId: string | null }) {
     const updated = await patchItem(item, { status: next });
     if (!updated) return;
     // The row left the current tab: follow it so the change stays visible.
-    setStatus(updated.status);
+    setStatus(statusTab(updated.status));
     closeItem();
   };
 
@@ -431,17 +432,20 @@ export function LocalPage(props: { projectId: string | null }) {
   return (
     <div data-component="LocalPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
-        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
-          <h1 className="text-ui-base text-slate-900">{t("mobile.local.title")}</h1>
-          <button
-            type="button"
-            onClick={openProjectSheet}
-            className="ml-auto inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
-          >
-            <FolderPlus size={14} />
-            {t("mobile.local.newProject")}
-          </button>
-        </div>
+        <BugsLocalPivot
+          view="local"
+          actions={
+            <button
+              type="button"
+              onClick={openProjectSheet}
+              aria-label={t("mobile.local.newProject")}
+              title={t("mobile.local.newProject")}
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-surface text-slate-700 transition active:bg-overlay-soft"
+            >
+              <FolderPlus size={16} />
+            </button>
+          }
+        />
 
         {project ? (
           <>

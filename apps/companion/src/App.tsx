@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bug, Bot, Folder, ListChecks, RefreshCw, Settings, Terminal } from "lucide-react";
+import { Bug, Bot, Folder, RefreshCw, Settings, Terminal } from "lucide-react";
 
 import { retryConnection, useConnection } from "./lib/api";
 import { useAgentFeed, useAgentFeedPolling } from "./lib/dsh";
@@ -42,13 +42,12 @@ function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   );
 }
 
-type TabKey = "bugs" | "agent" | "local" | "files" | "terminal" | "settings";
+type TabKey = "bugs" | "agent" | "files" | "terminal" | "settings";
 
 /** Tab labels store keys and resolve through `t()` at render time. */
 const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
   { key: "bugs", label: "common.bugs", hash: "#/bugs" },
   { key: "agent", label: "mobile.tab.agent", hash: "#/agent" },
-  { key: "local", label: "mobile.local.title", hash: "#/local" },
   { key: "files", label: "mobile.files.title", hash: "#/files" },
   { key: "terminal", label: "mobile.terminal.title", hash: "#/terminal" },
   { key: "settings", label: "common.settings", hash: "#/settings" },
@@ -57,14 +56,15 @@ const TABS: ReadonlyArray<{ key: TabKey; label: MessageKey; hash: string }> = [
 /** Which tab owns the current route (pushed pages keep their parent tab). */
 const tabOf = (route: Route): TabKey => {
   switch (route.name) {
+    // Local items live inside the bugs tab now (top pivot switches them);
+    // a bare `#/local` deep link highlights 缺陷.
     case "bugs":
     case "bug":
+    case "local":
       return "bugs";
     case "agent":
     case "agent-session":
       return "agent";
-    case "local":
-      return "local";
     case "coworkers":
       return "settings";
     case "files":
@@ -104,7 +104,6 @@ function TabBar(props: { active: TabKey; agentBadge: number }) {
               <span className="relative">
                 {tab.key === "bugs" ? <Bug size={18} /> : null}
                 {tab.key === "agent" ? <Bot size={18} /> : null}
-                {tab.key === "local" ? <ListChecks size={18} /> : null}
                 {tab.key === "files" ? <Folder size={18} /> : null}
                 {tab.key === "terminal" ? <Terminal size={18} /> : null}
                 {tab.key === "settings" ? <Settings size={18} /> : null}
