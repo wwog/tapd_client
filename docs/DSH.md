@@ -103,7 +103,7 @@ Typert 生成式 RPC）确实有 `assistant/live-chunk`，但那是内部生成�
 | 找 Node | `dsh/runtime.rs::resolve_node`：`shell_path::user_path()` + Homebrew 兜底，`node --version` 过门槛 | 命中 nvm 的 `v24.21.0` |
 | 组合 profile | `crates/dsh-host/profile.rs` 渲染 manifest/patch/pnpm-workspace；插件来自 `<runtime>/node_modules/@tapd/*` | ready 1.8 s |
 | 控制面 | `initialize`（approvalRequests + userQuestions）→ `session/query` | 返回 `{kind:"prompt",messageId}` |
-| 事件 | `session.event` → `dsh://session-event`；审批/提问 → `dsh://approval` / `dsh://question`，回执按 RPC id | 待 P2d 接前端 |
+| 事件 | `session.event` 归一化成 `DshEntry` / `DshStream` 后推 `dsh://entry` / `dsh://stream`；审批/提问 → `dsh://approval` / `dsh://question`，回执按 RPC id | 已接前端（由任务列表、会话页与胶囊共同消费，见第 8 节） |
 
 调试期有一个只读驱动：`POST /dev/dsh`（`{"action":"payload|prepare|start|stop|status|prompt"}`），
 用 `_dev` 数据目录里的 token 鉴权，可以在不打开 UI 的情况下走完整条链路。
@@ -192,7 +192,7 @@ type AssistantStreamFrame =
 - `TeamTaskView`：`id(task-<n>) / revision / subject / description / status(pending|in_progress|completed|deleted)
   / blockedBy[] / writeScopes[] / ownerId? / ownerName? / ready / writeScopeWarnings[]`。
 - 开关：profile 里 `- id: agent-team config: { defaultEnabled: <团队协作?> }` —— 由配置页的
-  「团队协作」决定（`team_enabled`，旧配置按 `coworker_ids` 非空回退）；会话内仍可写 `team/mode`，
+  「团队协作」决定（`team_enabled`，默认 false）；会话内仍可写 `team/mode`，
   Web 侧方法名为 `remote.agentTeams.setEnabled`。
 - 成员：Team 没有名单，任务只能指派给**真实存在**的子 agent（lead 用 `subagent` 按需创建，
   用 `list_agents` 发现，用 `team_task_*` 指派）；没有调度器会自动开始一个 owner。
@@ -299,19 +299,21 @@ Rust 先监听随机端口并把 `TAPD_DSH_BRIDGE_URL` / `TAPD_DSH_BRIDGE_TOKEN`
 
 ## 6. 升级前必须过的验证
 
-`scripts/dsh/verify.mjs`（当前设计）：
-1. 用系统 node 起 `dsh --profile tapd`，`initialize` 成功；
-2. 发一条 prompt，断言 `stream` 收到 `start → text-delta+ → end(committed)`；
-3. 触发一次写入（`write` 工具），断言收到 `approval/request`，回 `allowed-once`，断言 turn 结束；
-4. 断言 `session/snapshot` 能还原上一轮历史；
-5. 断言 `tapd_whoami` 出现在工具表里。
+`scripts/dsh/verify.mjs`（当前实现）：
+
+1. 把 payload 解到临时目录，用系统 node 以与 App 相同的 profile（dsh-base + dsh-sdk-app + 自有插件 + probe provider）启动；
+2. `initialize` 断言 `serverInfo.name === "deepseek-harness-sdk-runtime"`；
+3. `session/query` 断言返回 `{ kind: "prompt", messageId }`；
+4. 等运行时启动探针，断言内置同事 preset 已挂载且 `subagent` 的 `agent_preset` enum 含 `author`；
+5. 断言 stderr 没有插件导入失败（`failed to import:` / `JsonSchemaError` / `failed to load`）；
+6. `shutdown` 并等待进程退出。
 
 ## 7. 与旧架构的差异（已删除的能力）
 
 - 不再有 PTY 运行时、TUI 适配表、`--model` / 权限参数翻译、就绪静默、完成静默、会话 hook 安装。
 - 不再读别人的 transcript / JSONL；消息流来自 dsh 的 session log。
 - 不再给内置 Agent 注入 MCP 配置；外部客户端仍走 `tapd-mcp` sidecar。
-- 状态机只剩 `running → awaiting_review → awaiting_merge → done`，turn 生命周期交给 dsh。
+- 状态机为 `queued → running → awaiting_review → finalizing → done`，另有 `failed` / `canceled` 终态；turn 生命周期交给 dsh。
 
 ## 8. 桥插件与归一化视图
 
@@ -622,7 +624,6 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh://entry` | `{ sessionId, entry: DshEntry }`（tool 行更新会再次发送） |
 | `dsh://stream` | `{ sessionId, stream: DshStream }` |
 | `dsh://sessions` | `{ sessions: DshSession[] }`（新增会话、标题/状态/计数变化时） |
-| `dsh://session-event` | SDK 原始 `{sessionId, event}`（保留给调试/原始消费者） |
 | `dsh://approval` / `dsh://question` | 见 4.4，回执按 `rpcId` |
 | `dsh://request-settled` | `{ rpcId }`：该请求已在别的面（胶囊 / 手机 / 主窗口）作答，或运行时退出清空了 pending；各面据此撤卡 |
 | `dsh://status` / `dsh://ready` / `dsh://error` | 运行时状态机 |
@@ -635,24 +636,37 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_start` / `dsh_stop` | — | `DshStatus` |
 | `dsh_restart` | — | `DshStatus`；持同一把启动锁执行 stop → start，兜底用（模型/团队默认已热更新） |
 | `dsh_session_cancel` | `{ sessionId }` | `{ ok: true }`；只停当前回合，不改任务 workflow；同会话的 pending 请求一并结算 |
+| `dsh_session_retry` | `{ sessionId }` | `{ sessionId, ok: true }`；让运行时重试上一回合（必要时先恢复会话与 cwd） |
 | `dsh_sessions` | — | `{ sessions: DshSession[] }`（按 `updatedAt` 降序） |
 | `dsh_session_entries` | `{ sessionId, sinceSeq? }` | `{ sessionId, known, entries: DshEntry[], lastSeq }`（`known: false` = 运行时没见过该会话，UI 回退而不是报错；带 `sinceSeq` 时返回**最后一次更新事件 seq > sinceSeq** 的行——`tool` 行保留 `tool/call` 的 seq，结果到达时原地更新，所以不能按行自身 seq 过滤，否则增量读取永远看不到工具结果；`lastSeq` 是已应用事件的最大 seq，小于本地值时说明运行时重启过，回退全量读） |
-| `dsh_new_session` | — | `{ sessionId }`（空会话，已进入列表） |
+| `dsh_new_session` | `{ project?: { kind: "tapd" \| "local", id } }` | `{ sessionId }`（空会话，已进入列表；给了 project 就绑定分组与默认 cwd） |
+| `dsh_projects` | — | `{ projects: [{ kind, id, name, repoPath }] }`；已配置仓库的 TAPD 项目 + 全部本地项目 |
+| `dsh_chat_worktree` | `{ sessionId, enabled }` | `{ task }`；只对 `kind: chat` 生效，建 / 删该会话的 worktree |
+| `dsh_session_dir` | `{ sessionId }` | `{ path, exists }`；会话实际 cwd（worktree / 项目仓库 / chat scratch） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
 | `dsh_models_discover` | `{ provider, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens?, inputModalities? }] }`；读端点的模型列表（catalog 路由由引擎目录直接作答），运行时要先就绪 |
+| `dsh_worktrees` | — | `{ root, worktrees: [{ sessionId, path, updatedAt, title, project, repoPath, orphan }] }`；磁盘上残留 / 使用中的 worktree |
+| `dsh_worktree_remove` | `{ path }` | `{ path }`；只接受应用 worktree 根内的路径 |
+| `dsh_plugins` | — | `{ entries }`；运行时 Loader 实际组成的插件（会先确保运行时就绪） |
+| `dsh_tools` | — | `{ tools }`；新会话继承的工具注册表，带 `when` 条件的标 `conditional` |
 | `dsh_session_mode_get` | `{ sessionId }` | `{ sessionId, mode }`；`mode: null` = 继承默认；读 `dsh_session_modes` |
 | `dsh_session_mode_set` | `{ sessionId, mode?, plan? }` | `{ sessionId, mode, plan }`；`mode` 写库并推 `mode` 帧，`plan` 推 `plan` 帧；两者都在下一次工具调用/下一步生效，不需要重启 |
 | `dsh_approval_answer` | `{ rpcId, outcome }` | `{ ok: true }` |
 | `dsh_question_answer` | `{ rpcId, answers }`（`answers: null` = 取消） | `{ ok: true }` |
+| `dsh_prepare` | — | `PayloadReport`；校验并解压 payload（桌面 Tauri 命令，不走 feature dispatch） |
+| `dsh_file_target` | `{ sessionId, path }` | `FileTarget`；把会话内的相对路径解析成可打开的目标（桌面 Tauri 命令） |
 
 补充：
 
 - `dsh_prompt` 对 `kind: "chat"` 的会话先创建并 assign 独立目录
   `<data>/dsh/chats/<sessionId>`；没有项目的自由会话不读写任何真实仓库。运行时进程的默认
   cwd 也是 `<data>/dsh/workspace`。
-- `dsh_restart` / `dsh_task_delete` 只开放给桌面端，不在手机白名单里。
+- 桌面专属（不在手机白名单）：`dsh_restart`、`dsh_session_retry`、`dsh_session_dir`、
+  `dsh_models_discover`、`dsh_worktrees`、`dsh_worktree_remove`、`dsh_plugins`、`dsh_tools`、
+  `dsh_task_delete`、`dsh_prepare`、`dsh_file_target`；手机白名单以
+  `companion/feature.rs` 的 `ALLOWED_FEATURES` 为准。
 - 手机会话页使用 `dsh_session_cancel`（发送键的停止态）、`dsh_select_model` +
   `dsh_session_mode_get/set`（输入框工具条上的模型/模式选择）与
   `settings_agent_models`（脱敏模型目录，无 apiKey/protocol）。
@@ -682,7 +696,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 
 - 归一化视图只在内存中；App 重启后需要等新快照/事件重建（dsh 自己仍持久化会话）。
 - 没有历史分页：快照是全量 `snapshotEvents()`，大仓库会话首次连接会一次推完。
-- image / file 内容块、子 agent 会话树、`subagent.*` 的归一化行都未实现。
+- image / file 内容块未实现。子 agent 会话树已实现：`crates/dsh-host/src/transcript.rs` 按
+  `origin: "subagent"` / `parentSession` 记录子会话，并归一化 `subagent` 调用与
+  `subagent-settled` 通知；`apps/shared/agent/subagents.ts` 把它们组装成可折叠的子会话行，
+  `apps/companion/src/pages/agent/TurnStack.tsx` 复用同一视图。
 - `assistant/attempt`（失败/被取消的模型尝试）与 `session/title` 被忽略：模型失败只通过
   `turn` 行的 `reason` 呈现，标题由第一条人类 user 行生成（不用 dsh 自带的标题投影）。
 - 未做 token 侧合并（见 8.5），高吞吐模型下 NDJSON 行数等于 delta 帧数。
@@ -690,10 +707,11 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 ## 9. 任务工作流与权限模式（P3 / P4 契约）
 
 > **2026-11-18 起，任务工作流以 [`docs/AGENT_TASK_FLOW.md`](AGENT_TASK_FLOW.md) 为准。**
-> 统一任务列表、桥、权限、审批、团队仍按本节实现；非 Worktree 流程、`awaiting_merge`、
-> 自动收尾和推送远端已被新契约取代。
+> 统一任务列表、桥、权限、审批、团队仍按本节实现；非 Worktree 流程、旧 `awaiting_merge`
+> 与自动收尾相关描述已被新契约取代。
 
-本节是 P3/P4 的唯一契约。前端只消费本节的结构；实现分别落在
+本节描述 P3/P4 的实现；`DshTask` 的前端类型以
+[`AGENT_TASK_FLOW.md` §12.1](AGENT_TASK_FLOW.md#121-前端类型) 为准，实现分别落在
 `dsh/policy.rs`（P3）与 `dsh/tasks.rs`（P4）。
 
 ### 9.1 统一任务 `DshTask`
@@ -710,20 +728,26 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
            | null,                       // 无项目的自由会话
   "title": "登录崩溃",                    // bug 标题 / 事项标题 / 首条用户消息
   "bugId": "11223344",                   // kind=bug 才有
-  "workflow": "running" | "awaiting_review" | "awaiting_merge"
+  "workflow": "queued" | "running" | "awaiting_review" | "finalizing"
             | "done" | "failed" | "canceled",
   "status": "idle" | "running" | "failed", // dsh 会话实时状态
   "repoPath": "/repo",
-  "worktreePath": "<data>/worktrees/<session id>",  // 开启 Worktree 才有
+  "worktreePath": "<data>/worktrees/<session id>",  // 工作流任务与开了 Worktree 的自由会话才有
   "branch": "tapd/11223344-…",
   "jsonPath": "/…/bug.json",
   "createdAt": "RFC3339", "updatedAt": "RFC3339",
   "messageCount": 3,
   "changes": { "files": 2, "additions": 30, "deletions": 4 } | null,
-  "review": { "summary": "…", "files": ["src/a.rs"], "risk": "…" } | null,
-  "merge": { "error": "…", "instructions": "…" } | null
+  "review": { "summary": "…", "verification": "…", "risks": "…", "files": ["src/a.rs"] } | null,
+  "finalize": { "step": "commit" | "merge" | "cleanup" | "writeback" | null,
+                "error": "…", "instructions": "…", "notice": "…" } | null,
+  "git": { "start": "…", "commit": "…", "merge": "…" },
+  "writeback": { "comment": true, "statusFrom": "…", "statusTo": "…" },
+  "direct": false                          // 本轮在主仓库直接工作，收尾跳过 merge
 }
 ```
+
+`git` / `writeback` / `direct` 由宿主在返回任务时从内部 `TaskMeta` 派生，不重复落库。
 
 自由会话同样进这个列表：`kind: "chat"`、`project: null`，`workflow` 保持 `running`
 （列表不显示 chip，只显示实时状态点），标题取第一条人类消息的首行（≤60 字）。
@@ -734,43 +758,43 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 必须读 `dsh://sessions` 里的会话状态，不能读 `workflow`：任务第二轮、第三轮运行时
 workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和排序都用会话行的覆盖值。
 
-迁移规则（单一入口，终态防回退）：
+迁移规则（`can_move` 单一入口，终态防回退；完整边界见 `AGENT_TASK_FLOW.md` §3）：
 
-- 创建：`bug` / `local_item` 任务先导出（`bug.json` / `quest.json`），
-  Worktree 开启时建 worktree 并把会话 cwd 指过去，然后发送渲染好的提示词。
-- `running → awaiting_review`：回合结束（`turn/end`）且有改动；无改动 → `done`。
-- `awaiting_review → awaiting_merge`：`dsh_task_approve` 提交改动后（Worktree 关闭时直接 `done` 并回写）。
-- **approve 拒绝有活跃回合的会话**（`dsh.task.approve.busy`）：提交是对当前树的快照，
-  回合继续写会让快照之后的内容在合并时被 `worktree remove` 丢掉。持久化行不带 live
-  状态，判定读 bridge 注册表。
-- `awaiting_merge → done`：`dsh_task_merge` 合并成功且分支已是 HEAD 祖先，随后回写 TAPD。
-  **合并前要求分支 tip ≠ baseline**：`merge --no-ff` 对未前进的分支返回 exit 0
-  （"Already up to date"），ancestor 校验会恒真，任务会被假判成功并回写 resolved。
-- 合并成功但 worktree 有未提交改动（审核后用户又编辑过）时**保留 worktree 目录**，
-  不执行 `remove --force`；目录已不存在则 prune。
-- `dsh_task_cancel` 与 `dsh_task_merge` 共用一把进程内互斥锁：合并期间取消返回
-  「正在合并」，取消先赢时合并直接返回；取消本地事项任务会把事项退回 attach 前的状态
-  并清掉 `agentTaskId`。
+- 创建：`bug` / `local_item` 任务先导出（`bug.json` / `quest.json`），在独立 worktree 中
+  建好分支并把会话 cwd 指过去，然后按执行槽位排队（`queued`）。自由会话没有 workflow。
+- `queued → running`：调度器拿到执行槽位后发送提示词。
+- `running → awaiting_review`：`task_submit` 或 `turn/end` 结算时有改动；无改动 → `done`。
+- `awaiting_review → finalizing`：`dsh_task_approve` 接受审核；**approve 拒绝有活跃回合的会话**
+  （`dsh.task.approve.busy`），因为提交是对当前树的快照，回合继续写会让快照之后的内容在
+  合并时被丢掉。自由会话不能 approve。
+- finalizing 链按 `commit → merge → cleanup → writeback` 自动执行，成功才置 `done`；
+  直接轮次（`direct`，worktree 已合并删除后继续工作）跳过 merge。任一步失败停在 `finalizing`，
+  `finalize.step` 记录失败步骤，`dsh_task_retry_finalize` 从该步骤幂等重试。
+  `finalizing` 不允许取消（改动可能已合并）。
+- `dsh_task_cancel` 取消本地事项任务会把事项退回 attach 前的状态并清掉任务链接。
 - 失败只在准备阶段（导出 / worktree / 启动）置 `failed`；运行中的模型失败仍由 `turn` 行为准。
+- 旧行（例如 `workflow: "awaiting_merge"`）不迁移：只反序列化当前 shape，读不出的行跳过并记日志
+  （`task_store::load_all`）。
 
-### 9.2 命令面（桌面 invoke 与手机 feature 同一实现）
+### 9.2 命令面（桌面与手机都经 `feature_command` 调同一实现）
 
 | 名称 | 入参 | 返回 |
 | --- | --- | --- |
 | `dsh_tasks` | — | `{ tasks: DshTask[] }`（按 `updatedAt` 降序） |
-| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments? }` | `{ task }` |
-| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments? }` | `{ task }` |
-| `dsh_task_approve` | `{ sessionId }` | `{ task }` |
-| `dsh_task_merge` | `{ sessionId }` | `{ task }` |
-| `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }` |
-| `dsh_task_diff` | `{ sessionId, file? }` | `{ diff }`（统一 diff 文本） |
+| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments?, team? }` | `{ task }`（可能 `queued`） |
+| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments?, team? }` | `{ task }` |
+| `dsh_task_approve` | `{ sessionId }` | `{ task }`；`awaiting_review → finalizing`，随后 finalizing 链自动完成 |
+| `dsh_task_retry_finalize` | `{ sessionId }` | `{ task }`；从 `finalize.step` 幂等重试 |
+| `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }`；终态取消是 no-op |
+| `dsh_task_changes` | `{ sessionId }` | `{ files: DshTaskFile[], truncated }` |
+| `dsh_task_diff` | `{ sessionId, file? }` | `{ diff, truncated }`（统一 diff 文本） |
 | `dsh_task_resume` | `{ sessionId }` | `{ task }`（恢复 dsh 持久化会话） |
-| `dsh_task_delete` | `{ sessionId }` | `{ sessionId }`；仅 `kind: "chat"` 且不在运行；删行、日志目录与 chat scratch 目录 |
+| `dsh_task_delete` | `{ sessionId }` | `{ sessionId }`；运行中的任务拒绝；删行、日志目录与 chat scratch 目录；未完成的本地事项任务恢复 attach 前的状态 |
 | `dsh_policy_get` / `dsh_policy_set` | `{ mode }` | `{ mode }`；写 `agent.json` 的默认模式并推 `default-mode` 帧，立即作用于没有会话覆盖的会话 |
 
 事件：`dsh://tasks { tasks }`（列表变化），其余沿用第 8 节。
 
-持久化：`cache.sqlite3` 新表 `dsh_tasks`（schema v9），元数据进库，transcript 仍由 dsh 自己保存。
+持久化：`cache.sqlite3` 的 `dsh_tasks` 表（当前 schema 12），元数据进库，transcript 仍由 dsh 自己保存。
 重启后 `dsh_tasks` 提供列表；打开任务时按需 `dsh_task_resume`。
 
 ### 9.3 权限模式
@@ -797,7 +821,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   模板会被判定为失效并替换成新默认模板（校验而非迁移）。
 - 模式是**会话级**的：`agent.json.permissionMode` 只是默认值（启动时的
   `TAPD_DSH_PERMISSION_MODE` 与 `dsh_policy_set` 的 `default-mode` 帧），会话覆盖存在
-  `dsh_session_modes`（cache v11），由 `dsh_session_mode_set` 推 `mode` 控制帧。
+  `dsh_session_modes`（当前 schema 12），由 `dsh_session_mode_set` 推 `mode` 控制帧。
   `tools/pre-execute` 每次调用都读当前模式，所以切换在**下一个工具调用**生效，不需要重启。
 - 会话选择器另有「计划模式」：走引擎原生 plan mode（`plan` 控制帧 → `ctx.planMode.set`），
   退出由 `exit_plan_mode` 的 review 提问卡批准；plan 激活期间 `tapd-policy` 额外拒绝

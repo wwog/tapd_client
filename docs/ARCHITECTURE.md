@@ -98,7 +98,7 @@ Agent 只跑 App 内置的 DeepSeek Harness 运行时。契约与调研结论见
 - **能力接入**：自有 Cordis 插件 `dsh/plugins/{tapd-tools,tapd-bridge,tapd-policy}` 随 App 打包，profile 以
   绝对路径挂载；TAPD 工具走本机 HTTP，不走 MCP；MCP sidecar 只服务外部客户端。
 - **会话、任务与审批**：控制面走官方 SDK JSON-RPC；token 级流式与任务板由桥插件推送；审批 / 提问进通知胶囊，
-  手机也能回答。任务元数据持久化在 `cache.sqlite3` 的 `dsh_tasks`（schema v9），transcript 仍由 dsh 自己保存。
+  手机也能回答。任务元数据持久化在 `cache.sqlite3` 的 `dsh_tasks`（当前 schema 12，见 `src-tauri/src/cache/migrate.rs`），transcript 仍由 dsh 自己保存。
 
 ### 3.5 MCP 调用
 
@@ -165,7 +165,7 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
 - 工作区：主内容 / 右侧 / 底部统一为可拖动标签组；标签可跨组移动或在组边缘四向分裂，分割条与交叉点统一，布局持久化。入口见 [WORKBENCH.md](WORKBENCH.md)。
 - 缺陷详情右侧面板：打开后落在右侧副组的标签中，与内容区并排，左缘可拖动调宽（也可把标签拖到其他组或分屏）；窗口过窄时先收起项目列表，仍不够再向左扩张。打开详情只刷新这一条缺陷，不触发列表刷新；面板打开期间列表中对应的行保持高亮（面板与列表不同项目或该缺陷不在当前页时不显示）。内容含基本信息、描述、资源、变更记录、评论、自定义字段。顶部的缺陷 ID 可点击复制（就地显示对勾）。处理人 / 开发人员用项目成员下拉直接修改，底部可发表纯文本评论并按工作流流转状态；评论不受认领限制，处理人不是自己时列表操作列与面板底部只显示「认领」，认领后才开放改人与状态流转。成员目录缓存两小时。
 - 资源查看：资源行有独立「预览」按钮（缩放 / 左右切换 / 缩略图条 / Esc 关闭，支持图片与视频），「打开」按默认应用打开，下拉只负责切换默认应用。
-- 顶部状态胶囊：常驻展示通知状态；通知与 AI 卡片展开显示，可拖动并记住位置，单击展开通知、双击打开主窗口。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达），悬停也由那里的 `NSTrackingArea` 原生监听后推 `island://hover`，因为 WebKit 与 tao 默认的 tracking rect 都只给 key window 报悬停。
+- 顶部状态胶囊：常驻展示通知状态；通知与 AI 卡片展开显示，可拖动并记住位置。折叠态单击展开通知（无通知时打开主窗口），双击打开主窗口，按住拖动交给窗口管理器并持久化位置（`IslandWindow.tsx`）。胶囊窗口不取 key window（`island_window/macos.rs` 从窗口自身类派生一个 `canBecomeKeyWindow = NO` 的子类并换类，点击 / 拖动都不会抢走主窗口焦点，首次点击由 `accept_first_mouse` 送达）。
 - 请求历史：设置底部「接口历史」自动记录网页内部接口，支持查看与导出 JSON。
 - 缺陷导出：`bug.json` + `assets/`；`bug.json` 是 `BugDetail` 的 camelCase JSON，顶层 `assets` 只列成功下载的资源，视频 / 图片 / 日志按需下载。
 - 媒体缓存：缺陷导出、界面 / 手机端媒体代理、打开原图共用 `<数据目录>/media-cache/` 里按 URL 哈希寻址的缓存，同一 URL 只下载一次；代理请求的 `Range` 直接由缓存文件本地切片，重复导出与重复渲染不再回源。缓存超过 2GB 时按最久未修改淘汰到 1.5GB。
@@ -180,11 +180,11 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
 
 ### Agent
 
-- 一个统一任务列表：项目分组，状态 chip（`running` / `awaiting_review` / `awaiting_merge` / `done` /
+- 一个统一任务列表：项目分组，状态 chip（`queued` / `running` / `awaiting_review` / `finalizing` / `done` /
   `failed` / `canceled`）+ 实时运行点；bug、本地事项与自由会话都在同一列表。契约见 [DSH.md](DSH.md) §9。
-- 审核 / 合并 / 取消 / 查看 diff 在任务条上直接操作；提交、合并与 TAPD 回写由宿主确定性地做，模型只改代码、跑测试。
+- 审核 / 取消 / 重试收尾 / 查看 diff 在任务条上直接操作；通过后宿主按 finalizing 链自动完成提交、合并、清理与 TAPD 回写，模型只改代码、跑测试。
 - 审批与提问可在桌面与手机回答，阻塞请求可随时用 `dsh_pending` 查快照；手机没有 token 级实时流，靠轮询收齐。
-- 配置页：权限模式三选一（auto / notify / full）、模型供应商与模型目录（多供应商、每模型上下文窗口 / 最大输出 / 输入模态 / 推理等级映射）、团队协作开关（新任务会话默认进入任务板，同事渲染成 agent preset 供 lead 指派；提示词不再写同事名单）、集成（运行时注册的工具）、Worktree 隔离与执行单元；
+- 配置页：权限模式三选一（auto / notify / full）、模型供应商与模型目录（多供应商、每模型上下文窗口 / 最大输出 / 输入模态 / 推理等级映射）、团队协作开关（新任务会话默认进入任务板，同事渲染成 agent preset 供 lead 指派；团队协作开启时提示词不注入同事名单，关闭时把所选同事注入 `{{coworker}}`）、集成（运行时注册的工具）、Worktree 隔离与执行单元；
   改动即时保存，提示词模板只在桌面编辑。
 - 旧的运行时选择、模型与权限 CLI 参数、TUI 终端接管、历史续接与「处理中」范围都已移除。
 
@@ -192,7 +192,7 @@ React / 手机 → feature_command `local_*` → src/local（校验 / SQLite）
 
 - MCP tab：10 个工具（whoami / 项目 / 查询 / 我的缺陷 / 详情导出（含修复提示词与 skills）/ 状态查询 / 评论 / 状态更新 / 胶囊通知 / 等待回执）；「接入 AI 客户端」按客户端一行，一键写入 opencode / ZCode / Claude Code / Cursor 的用户级配置（自动备份、幂等）；Codex 的一键导入入口暂时隐藏（后端 spec 保留）。
 - MCP 策略与审计：可关闭写操作、限制可访问项目、限制目标状态白名单；每次调用记录工具、客户端、允许 / 拒绝 / 失败、耗时与项目 / 缺陷（不保存评论正文和 Cookie），支持筛选、导出与清空。
-- 首启引导：首次登录后展示三步引导（登录与离线缓存 / MCP 与内置 Agent / 通知与胶囊），可跳过，完成状态写入 `config.json`。
+- 首启引导：首次登录后展示三步引导（欢迎 / 基础设置 / 找同事，见 `components/Onboarding.tsx`），可跳过，完成状态写入 `config.json`。
 - 自动更新：启动时立即检查 GitHub Releases，之后每 30 分钟查询一次并记录检查时间；标题栏更新图标在有新版本时变绿，hover 展示更新日志。更新期间主窗口隐藏，胶囊放大 3 倍显示下载 / 解包安装进度；失败时可手动下载或取消。发布说明带 `<!-- force-update -->` 标记时为强制更新：要求写入 `config.json` 的 `forcedUpdate`，登录页与主界面都显示不可关闭的升级模态框，直到当前版本不低于目标版本。
 - 诊断包：设置 → 运行信息一键导出脱敏 zip，包含版本与系统信息、脱敏配置、通知设置、Agent 设置摘要、MCP 审计和最近日志；不包含 Cookie、本地 API token、请求 / 响应正文。
 - 清理缓存：设置 → 本地数据一键删除应用数据目录下的全部内容，随后自动重启；删除在下次启动时、日志与 SQLite 打开前执行，目录来自 `AppPaths`；导出目录不受影响。
@@ -252,11 +252,11 @@ scripts/                     图标、sidecar、发版等构建工具
 - **终端会话归后端，视图可丢弃**：PTY、输出环形缓冲和订阅广播都在 `terminal.rs`，关面板 / 切页面只销毁 xterm 视图，shell 继续运行；重开时回放尾部 256 KiB 并按累计字节数去重，手机与桌面可以同时挂同一会话。
 - **右 / 下容器先开者优先**：主视图区是一个 Grid（`main` / `term` / `detail` 三个稳定节点），先打开的容器保持整幅跨度，后打开者让出空间；只切 `grid-template-areas`，不重建 React 树，所以切换时缺陷列表、详情与终端都不丢状态。
 - **Agent 内核不 fork**：内置运行时钉死上游版本，只通过 profile 组合与自有插件扩展；差异集中在 `docs/DSH.md` 记录的扩展点，升级是改版本号 + 跑契约测试，不做 rebase。
-- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此审核、待合并与历史使用同一套计算。diff 在打开 / 审核时按需计算（含未跟踪文件、超长截断并标注），git 在阻塞线程执行，不阻塞 async 路径。
+- **变更事实只有一个来源**：文件列表、增删行数、二进制、diff 与 commit 全部由 `tapd-workspace` 调 git 子命令产出，不在应用里数行或解析文件内容；目录被清理后自动改用 `baseline..branch`，因此审核、收尾与历史使用同一套计算。diff 在打开 / 审核时按需计算（含未跟踪文件、超长截断并标注），git 在阻塞线程执行，不阻塞 async 路径。
 - **写操作收窄**：MCP 只开放评论与状态更新，不提供删除、改处理人、批量操作。
 - **本地 API 最小暴露**：随机端口 + 每次启动轮换 token，`runtime.json` 权限 0600。
 - **不做未读与托盘角标**：TAPD 没有提供缺陷通知的已读状态，客户端不自行发明计数。
-- **本地项目与 TAPD 分开存储**：本地项目是用户数据而不是 TAPD 缓存，单独用 `local.sqlite3` 并跳过清缓存；本地事项不伪装成缺陷，用 `WorkItem` 与 `sourceKind` 复用 Agent 队列。
+- **本地项目与 TAPD 分开存储**：本地项目是用户数据而不是 TAPD 缓存，单独用 `local.sqlite3` 并跳过清缓存；本地事项不伪装成缺陷，用 `WorkItem` 与任务 `kind: local_item` 复用 Agent 队列。
 
 ## 7. 当前限制
 

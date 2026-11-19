@@ -150,7 +150,6 @@ AI 通知只存在于内存，不写入 SQLite，也不会跨重启保留；设�
 - `tapd_update_bug_status` 的 `comment` 会先追加评论，再进行状态流转；状态流转失败时评论仍保留，便于追溯。
 - 状态流转会按 TAPD 工作流配置自动带出处理人/开发人员/测试人员等字段默认值（与网页端流转弹窗一致）。
 - 需要覆盖默认值时传 `fields` 对象，例如 `{"current_owner":"张三","resolution":"fixed"}`；也支持 `[{"name":"current_owner","value":"张三"}]` 行数组。未提供的字段沿用工作流配置。
-- 桌面 Agent 任务仍有本轮未提交文件时，客户端会拒绝 `tapd_add_bug_comment` / `tapd_update_bug_status` 并提示先 `git commit`。
 
 ### 4.3 修复提示词（tapd_get_bug 的 prompt）
 
@@ -243,7 +242,7 @@ MCP tab 的「MCP 策略」与「调用审计」是客户端的第二层权限�
 - Cookie 不写入文件、不返回给 AI；资源下载在客户端进程内完成。
 - 写回仅开放「追加评论」和「更新状态」，不提供删除、改处理人、批量操作等工具。
 - `tapd_notify_user` / `tapd_wait_notification` 只操作本地胶囊窗口，不读写 TAPD；「允许 AI / MCP 唤起通知」关闭时调用会直接失败。
-- MCP 只提供查询、导出、评论、状态更新与通知工具；任务完成由客户端按进程退出、会话 hook 或输出静默判定，不依赖 MCP 回报。
+- MCP 只提供查询、导出、评论、状态更新与通知工具；内置 Agent 任务的完成由 `task_submit` / `turn/end` 结算（有改动进待审核，无改动置 done），不依赖 MCP 回报。
 - 写操作使用当前 TAPD 会话 Cookie + `dsc-token`，受 TAPD 工作流与权限约束；非法流转会被拒绝并把允许的下一步返回给 AI。
 - 所有工具调用（含写操作）记录在客户端日志（数据目录 `logs/`）与 MCP 审计（`cache.sqlite3` 的 `mcp_audit` 表）；审计包含工具名、客户端、策略决策、耗时、项目/缺陷与错误摘要，不保存评论正文。
 

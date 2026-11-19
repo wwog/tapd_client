@@ -63,7 +63,7 @@ CI（`.github/workflows/ci.yml`）会依次执行前端类型检查、`pnpm chec
 | `/test agents` | 派三个子 agent：一个 glob/read 找文件、一个 `curl` 请求本机 `/healthz`、一个 grep 检索，最后 `wait_agent` 收回 |
 | `/test error` | 一条按预期失败的 `exit 3` |
 | `/test long` | 长文本，看滚动与渲染 |
-| `/test ping` | `tapd_ping`（走桥接工具） |
+| `/test ping` | `task_submit`（任务提交工具） |
 
 要点：
 
@@ -122,7 +122,7 @@ WebView（验证 TAPD 内部接口），一组打到应用自己的 `main` 窗�
 5. Agent 页 →「配置」添加模型供应商（地址、协议、密钥）与模型、点模型行左侧圆圈设默认模型，并填写当前项目仓库路径；权限模式三选一。
 6. 设置 → 新缺陷通知：选择范围（我的 / 项目）与是否包含转移、重新打开。
 7. 打开 MCP tab →「接入 AI 客户端」，选择要用的客户端一键导入（opencode / ZCode / Claude Code / Cursor / Codex / OMP / Kimi Code / Gemini CLI / Qwen Code），并按需调整策略与审计开关；后续启动 Agent 会自动确保注入。
-8. Agent tab：统一任务列表（运行中 / 待审核 / 待合并 / 已完成同一个列表），在任务条上查看 diff、通过、合并或取消；审批 / 提问可在任务页或胶囊里回答。
+8. Agent tab：统一任务列表（排队 / 运行中 / 待审核 / 收尾中 / 已完成同一个列表），在任务条上查看 diff、通过、重试收尾或取消；通过后提交 / 合并 / 清理 / 回写由宿主自动完成，审批 / 提问可在任务页或胶囊里回答。
 9. 遇到问题时，设置 → 运行信息 →「导出诊断包」，把生成的 zip 提供给排查者。
 
 ## 4. MCP 联调

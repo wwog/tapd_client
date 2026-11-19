@@ -83,11 +83,13 @@
 | 表格右侧固定操作列 | `z-30` | `th.sticky right-0` |
 | 行内浮层 / 下拉菜单 | `z-50` | 项目打开方式、右键菜单 |
 | 全屏媒体预览 | `z-60` | MediaPreview |
-| Agent 底部面板 | `z-65` | Compose sheet |
+| Agent 底部面板 | `z-65` | EnqueueSheet |
 | 文件夹选择器 | `z-70` | FolderPicker |
 | 通用弹窗 | `z-80` | Dialog |
 | 弹窗内的文件夹选择器 | `z-85` | FolderPicker `elevated`（项目创建 / 编辑弹窗） |
 | 首次引导 | `z-90` | Onboarding |
+| Agent 行内浮层遮罩 | `z-110` | SelectPicker、SessionModePicker、SessionModelPicker、usage Popover 的点击捕获层 |
+| Agent 行内浮卡 | `z-120` | 上述浮层的卡片、TaskHoverCard |
 
 模态框交互：
 

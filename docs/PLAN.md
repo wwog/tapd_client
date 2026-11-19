@@ -262,6 +262,8 @@ sync_state(workspace_id PK, last_poll_at, last_full_at, baseline_done);
 
 ### 7.4 MD 导出规范
 
+> 已废止（2026-11-19）：当前导出只有 `bug.json` + `assets/`，不再生成 `bug.md`；以 [MCP.md](MCP.md) 的导出产物为准。
+
 导出目录：
 
 ```
@@ -344,6 +346,8 @@ exporter: "tapd-client/1.0"
 
 ### 7.5 Agent 集成（opencode）
 
+> 已废止（2026-11-19）：PTY / TUI / opencode 集成已整体移除，现为内置 dsh 任务流；以 [DSH.md](DSH.md) 与 [AGENT_TASK_FLOW.md](AGENT_TASK_FLOW.md) 为准。
+
 - **仓库映射**：设置中为每个项目配置本地仓库路径；未配置时使用导出目录并在终端提示，不阻塞。
 - **启动方式**：`portable-pty` 在仓库目录启动 `opencode` 完整 TUI：
   1. 创建 PTY（cols/rows 随窗口变化）。
@@ -392,7 +396,7 @@ exporter: "tapd-client/1.0"
 | `tapd_list_bugs` | 缺陷查询：workspace_id、owner（me/nick/all）、status[]、priority[]、severity[]、keyword、iteration_id、created_after、modified_after、only_unresolved、page、limit | ✅ |
 | `tapd_list_my_bugs` | 我的未解决缺陷（便捷封装） | ✅ |
 | `tapd_get_bug` | 详情：描述 Markdown、附件元数据、评论、变更（受策略开关） | ✅ |
-| `tapd_export_bug_md` | 导出 MD 包，返回绝对路径、资源数量、字节数 | ✅ |
+| `tapd_export_bug_md` | 导出 MD 包，返回绝对路径、资源数量、字节数 | 已废止（2026-11-19） |
 | `tapd_list_comments` | 单独取评论（分页） | ✅ |
 | `tapd_bug_stats` | 按状态/处理人聚合计数（v1.1 可选） | ⬜ |
 | `tapd_add_comment` | 追加评论 | ❌ 预留 |
@@ -558,10 +562,10 @@ exporter: "tapd-client/1.0"
 | M1 骨架与登录 | ✅ | Tauri 2 + React、配置/日志、本地 HTTP、runtime 握手 |
 | M2 数据层 | ✅ | 模型、过滤器、响应解析、Tauri 命令；SQLite 离线快照缓存（项目/缺陷列表/详情）已接入 |
 | M3 主界面 | ✅ | 项目切换、我的/全部、状态/优先级/严重度/关键词、分页、并排详情面板、离线优先渲染与骨架屏 |
-| M4 MD 导出 | ✅ | `bug.md` + `assets/` + `bug.json`；带 Cookie 下载图片/视频/日志 |
+| M4 MD 导出 | ✅ | `bug.md` + `assets/` + `bug.json`；带 Cookie 下载图片/视频/日志（`bug.md` 已废止，2026-11-19，现只导出 `bug.json` + `assets/`） |
 | M5 MCP | ✅ | stdio sidecar、查询/导出 + 评论/状态写回共 9 个工具、opencode v2 联调通过；MCP tab 一键导入、策略（写/项目/状态）与审计 |
 | M6 通知 | ✅ | 可配置范围（我的/项目、新建/转移/重新打开）、顶部胶囊卡片、忽略/查看、处理=改派+接受；「我的」跨项目增量轮询 |
-| M7 Agent | ✅ | Agent tab（运行/审核/历史）、串行队列、server 事件完成/审核、胶囊状态、日志与 Terminal 恢复 |
+| M7 Agent | ✅ | Agent tab（运行/审核/历史）、串行队列、server 事件完成/审核、胶囊状态、日志与 Terminal 恢复（PTY/TUI 队列已废止，2026-11-19，现为内置 dsh 任务流） |
 | M8 打包 | ✅ | `tapd-mcp` 作为 externalBin 打进 App；`pnpm build:arm64` 本地出 arm64 dmg；`main` 合并进 `release` 后由 GitHub Actions 出 arm64 dmg 与 artifact，tag 额外发 Release。MCP 策略/审计 UI、首启引导、诊断包已补齐 |
 | M9 自动更新 | ✅ | Tauri updater + GitHub Releases（`latest.json`）；启动后检查、之后每 30 分钟轮询并持久化检查时间；标题栏更新图标 hover 展示日志；主窗口/账户页查看更新说明；更新时隐藏主窗口、胶囊 4 倍显示下载/解包进度；失败可手动下载或取消返回；`scripts/release.sh` 统一版本、日志、合并 `release` 与打 tag |
 
@@ -572,8 +576,8 @@ exporter: "tapd-client/1.0"
 3. **MCP 写回已开放**：在查询/导出之外新增评论与状态更新（含自动先接受再流转）；删除/改处理人/批量操作仍未开放。客户端已提供策略档案（写开关、项目白名单、状态白名单）与调用审计（允许 / 拒绝 / 失败、耗时、客户端、项目/缺陷），审计不保存评论正文。
 4. **opencode 配置结构**：v2.2+ 使用 `mcp.<name>`（直接写在 `mcp` 下）；早期版本曾用 `mcp.servers.<name>`，现在导入时会自动迁移旧包装。已实测 `opencode mcp list` 显示 connected；MCP tab 可一键合并到全局配置并自动备份。
 5. **通知采用自绘窗口 + SQLite 状态**：`cache.sqlite3` 的 `notification_*` 表保存设置、seen、ignored、cursor 与 baseline；首轮只建 baseline，避免历史缺陷轰炸。轮询分页拉取，未读完时保留 cursor；seen/ignored 按时间与条数裁剪。
-6. **处理动作会写 TAPD**：点击「处理」自动改派给自己，并把 `new`/`open`/`reopened` 流转到 `in_progress`/`progressing`；成功后通过 `agent://enqueue` 交给 Agent。
-7. **Agent 严格串行 + 通用 TUI**：单 worker；所有运行时都在 PTY 中启动各自 CLI，提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定；权限确认在右侧内嵌终端完成，不再有 ACP 与 opencode 私有 server。
+6. **处理动作会写 TAPD**：点击「处理」自动改派给自己，并把 `new`/`open`/`reopened` 流转到 `in_progress`/`progressing`；成功后通过 `agent://enqueue` 交给 Agent。（`agent://enqueue` 已废止，2026-11-19：「处理」不再入队，修复改走「用 Agent 修复」→ `dsh_task_enqueue_bug`。）
+7. **Agent 严格串行 + 通用 TUI**：单 worker；所有运行时都在 PTY 中启动各自 CLI，提示词按 argv / flag / stdin 投递，完成由 MCP `agent_task_report`、进程退出或输出静默判定；权限确认在右侧内嵌终端完成，不再有 ACP 与 opencode 私有 server。（PTY/TUI 与 `agent_task_report` 判定已废止，2026-11-19，现由内置 dsh 的 `task_submit` / `turn/end` 结算。）
 
 ### 已知待办
 

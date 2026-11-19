@@ -59,19 +59,18 @@ pub enum Workflow {
 }
 ```
 
-迁移时旧 `awaiting_merge` 映射为 `Finalizing`（`finalize_step = merge`）；
-旧的非 Worktree 活动任务（running/awaiting_review/awaiting_merge）映射为 `Canceled`，
-并把原因写进 `finalize.notice`。终态行不变。
-
 允许的迁移（`can_move`）：
 
 ```
 Queued          -> Running | Canceled | Failed
 Running         -> AwaitingReview | Done | Canceled | Failed
-AwaitingReview  -> Finalizing | Running | Canceled
+AwaitingReview  -> Finalizing | Canceled
 Finalizing      -> Done
 Done/Failed/Canceled -> 终态（用户发新消息时由 reopen_for_input 重新打开 Running）
 ```
+
+`AwaitingReview → Running` 不是 `can_move` 的边：从待审核继续修改走 `reopen_for_input`，
+只有接受新输入的路径会调用它，日志重放或迟到的 `turn/end` 不能把任务重新打开。
 
 说明：
 
