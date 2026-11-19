@@ -298,7 +298,6 @@ export function LocalItemPanel({ panel }: PanelProps) {
         ) : null}
         <Button
           size="sm"
-          variant="ghost"
           icon={<Pencil size={13} />}
           disabled={disabled}
           onClick={() => setDialog(true)}
