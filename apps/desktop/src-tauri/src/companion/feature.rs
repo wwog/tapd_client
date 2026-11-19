@@ -38,7 +38,7 @@ use tauri::AppHandle;
 use crate::{feature_router, state::SharedState};
 
 use super::{
-    pairing::{authorize, RateLimiter},
+    pairing::{authorize_token, bearer_token, RateLimiter},
     err_data, ok_data, upstream_error, CompanionCtx,
 };
 
@@ -147,14 +147,22 @@ pub(super) async fn api_feature(
     headers: HeaderMap,
     Json(request): Json<FeatureRequest>,
 ) -> Response {
-    if let Some(response) = authorize(&ctx.state, &headers) {
+    let token = bearer_token(&headers);
+    if let Some(response) = authorize_token(&ctx.state, token.clone()) {
         return response;
     }
+    // Budget per device (the token's hash), not per source IP: behind the
+    // Quick Tunnel every phone connects from 127.0.0.1, so an IP window would
+    // be one shared budget and a busy session would starve the other devices.
+    let key = match token.as_deref() {
+        Some(token) => format!("device:{}", super::pairing::sha256_hex(token)),
+        None => format!("ip:{}", peer.ip()),
+    };
     let allowed = ctx
         .feature_limiter
         .lock()
         .expect("feature rate limiter lock")
-        .allows(peer.ip(), Instant::now());
+        .allows(&key, Instant::now());
     if !allowed {
         return err_data(
             StatusCode::TOO_MANY_REQUESTS,
@@ -210,7 +218,6 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use std::collections::HashSet;
-    use std::net::{IpAddr, Ipv4Addr};
 
     /// The feature surface mobile v2 documents. The allowlist must cover every
     /// documented name (each one is also an arm of `feature_router::dispatch`).
@@ -346,14 +353,14 @@ mod tests {
 
     #[test]
     fn feature_rate_limit_blocks_requests_over_the_minute_budget() {
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let device = "device:hash-of-one-token";
         let mut limiter = rate_limiter();
         let now = Instant::now();
 
         for _ in 0..FEATURE_MAX_REQUESTS {
-            assert!(limiter.allows(ip, now));
+            assert!(limiter.allows(device, now));
         }
-        // 第 61 次/分钟：拒绝。
-        assert!(!limiter.allows(ip, now));
+        // 第 121 次/分钟：拒绝。
+        assert!(!limiter.allows(device, now));
     }
 }

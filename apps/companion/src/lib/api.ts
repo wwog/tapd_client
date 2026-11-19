@@ -10,7 +10,7 @@ import { useSyncExternalStore } from "react";
 
 import { t } from "./i18n";
 import { navigate } from "./router";
-import { clearSession, getMediaToken, getSession } from "./session";
+import { clearSession, getMediaToken, getSession, sessionRotated } from "./session";
 
 export type UserProfile = {
   nick: string;
@@ -488,13 +488,19 @@ async function request<T>(
 
   if (!envelope.ok) {
     if (envelope.code === "unauthorized") {
-      clearSession();
-      // A scan URL carries its one-time code in the hash. Rewriting it to a
-      // bare `#/pair` here would make PairPage ask for a code that is still
-      // right there, so leave the URL alone while a code is present.
-      const hash = window.location.hash;
-      if (!(hash.includes("/pair") && hash.includes("t="))) {
-        navigate("#/pair");
+      // A sibling tab may have re-paired while this request was in flight,
+      // rotating this device's token on the desktop. Shared storage then
+      // holds the fresh token — keep it (the next read adopts it and the
+      // polls recover) instead of tearing the session down for every tab.
+      if (!sessionRotated(token)) {
+        clearSession();
+        // A scan URL carries its one-time code in the hash. Rewriting it to a
+        // bare `#/pair` here would make PairPage ask for a code that is still
+        // right there, so leave the URL alone while a code is present.
+        const hash = window.location.hash;
+        if (!(hash.includes("/pair") && hash.includes("t="))) {
+          navigate("#/pair");
+        }
       }
       throw new ApiError("unauthorized", t("mobile.api.pairingExpired"));
     }

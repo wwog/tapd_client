@@ -208,7 +208,9 @@ function QueueSection(props: {
   );
 }
 
-/** Queue row: tap opens the session; stopped rows offer continue, live ones cancel. */
+/** Queue row: tap opens the session — or, while queued (no session exists
+ *  yet, the desktop's queue opens the source record too), the bug/local item
+ *  the task came from. Stopped rows offer continue, live ones cancel. */
 function QueueRow(props: {
   task: DshTask;
   busy: boolean;
@@ -217,14 +219,38 @@ function QueueRow(props: {
 }) {
   const { task, busy } = props;
   const interrupted = isInterrupted(task);
-  const openable = task.workflow !== "queued";
+  /** Captured first so the navigation closure keeps the narrowed values. */
+  const bugRef =
+    task.kind === "bug" && task.bugId && task.project
+      ? { bugId: task.bugId, workspaceId: task.project.id }
+      : null;
+  const localProjectId =
+    task.kind === "local_item" && task.project ? task.project.id : null;
+  const open = (() => {
+    if (task.workflow !== "queued") {
+      return () => navigate(`#/agent/session/${encodeURIComponent(task.id)}`);
+    }
+    if (bugRef) {
+      return () =>
+        navigate(
+          `#/bug/${encodeURIComponent(bugRef.bugId)}?w=${encodeURIComponent(bugRef.workspaceId)}`,
+        );
+    }
+    if (localProjectId) {
+      return () => navigate(`#/local?p=${encodeURIComponent(localProjectId)}`);
+    }
+    return null;
+  })();
   return (
     <div data-component="QueueRow" className="flex items-start gap-2 border-b border-border px-4 py-3">
       <button
         type="button"
-        disabled={!openable}
-        onClick={() =>
-          openable && navigate(`#/agent/session/${encodeURIComponent(task.id)}`)
+        disabled={!open}
+        onClick={() => open?.()}
+        title={
+          task.workflow === "queued" && open
+            ? t("mobile.agent.openSource")
+            : undefined
         }
         className="min-w-0 flex-1 text-left transition active:bg-overlay-soft disabled:active:bg-transparent"
       >
@@ -408,11 +434,16 @@ export function AgentPage() {
     [feed.tasks, projects],
   );
 
-  /** Queue buckets, in the desktop's order and FIFO ordering. */
+  /**
+   * Queue buckets, in the desktop's order and FIFO ordering. Chats stay out
+   * (the desktop's feed does the same): a chat's workflow is the neutral
+   * `running`, so they would otherwise fill the running bucket and the row's
+   * cancel button would terminate the conversation record for good.
+   */
   const queue = useMemo(() => {
     const byCreated = (left: DshTask, right: DshTask): number =>
       left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
-    const tasks = feed.tasks ?? [];
+    const tasks = (feed.tasks ?? []).filter((task) => task.kind !== "chat");
     const interrupted = tasks.filter(isInterrupted).sort(byCreated);
     const running = tasks
       .filter((task) => task.workflow === "running" && !isInterrupted(task))

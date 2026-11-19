@@ -758,6 +758,13 @@ pub async fn kind_of(app: &AppHandle, session_id: &str) -> Option<TaskKind> {
     Some(record.task.kind)
 }
 
+/// The persisted workflow of a session, when it has a task row at all. Draft
+/// ids the UI knows but the store does not return `None`.
+pub async fn workflow_of(app: &AppHandle, session_id: &str) -> Option<Workflow> {
+    let record = load_record(app, session_id).await.ok()??;
+    Some(record.task.workflow)
+}
+
 /// The round resumed: clear the interrupted marker the stop left behind.
 /// Called from the turn-start signal, so a prompt, retry and continue all
 /// settle it the same way.

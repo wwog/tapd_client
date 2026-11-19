@@ -73,23 +73,32 @@ export function subscribeCache(key: string, listener: () => void): () => void {
  * old value while a single background revalidation runs; misses load once.
  * The returned promise rejects on miss-load failure; stale revalidation
  * failures keep the old value and are swallowed (the read already resolved).
+ *
+ * Both async paths commit only while they still own the slot (compared by
+ * entry identity): an invalidate after a write plus a fresh read replaces the
+ * object, and a response that raced the write must never land after it —
+ * otherwise a comment posted on the phone would be invisible for a full TTL.
  */
 export function cached<T>(key: string, maxAgeMs: number, loader: () => Promise<T>): Promise<T> {
   const entry = entries.get(key);
   if (!entry) {
+    const fresh: Entry = { value: undefined, at: 0, refreshing: null };
     const pending = loader().then(
       (value) => {
-        entries.set(key, { value, at: Date.now(), refreshing: null });
-        emit(key);
+        if (entries.get(key) === fresh) {
+          fresh.value = value;
+          fresh.at = Date.now();
+          emit(key);
+        }
         return value;
       },
       (err) => {
-        const current = entries.get(key);
-        if (current && current.refreshing === pending) entries.delete(key);
+        if (entries.get(key) === fresh) entries.delete(key);
         throw err;
       },
     );
-    entries.set(key, { value: undefined, at: 0, refreshing: pending });
+    fresh.refreshing = pending;
+    entries.set(key, fresh);
     return pending;
   }
 
@@ -106,14 +115,20 @@ export function cached<T>(key: string, maxAgeMs: number, loader: () => Promise<T
   if (!entry.refreshing) {
     const revalidate = loader().then(
       (value) => {
-        entries.set(key, { value, at: Date.now(), refreshing: null });
-        emit(key);
+        if (entries.get(key) === entry) {
+          entry.value = value;
+          entry.at = Date.now();
+          entry.refreshing = null;
+          emit(key);
+        }
         return value;
       },
       () => {
         // Keep serving the stale value; allow a later read to retry.
         const current = entries.get(key);
-        if (current && current.refreshing === revalidate) current.refreshing = null;
+        if (current === entry && current.refreshing === revalidate) {
+          current.refreshing = null;
+        }
         throw new Error("revalidate-failed");
       },
     );

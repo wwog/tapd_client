@@ -59,6 +59,7 @@ export const agent = {
     "Continue the current task from where it was interrupted.",
   ],
   "mobile.agent.cancelTask": ["取消任务", "Cancel task"],
+  "mobile.agent.openSource": ["任务尚未开始，查看来源记录", "Not started yet; open the source record"],
 
   /* -- Hand a record to the agent ----------------------------------------- */
   "mobile.enqueue.title": ["交给 Agent", "Hand to agent"],

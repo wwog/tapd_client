@@ -35,6 +35,11 @@ pub static MESSAGES: &[Message] = &[
         "The model is still running; approve after this turn ends",
     ),
     (
+        "dsh.task.queued",
+        "任务还在排队中，等它开始运行后再对话",
+        "The task is still queued; talk to it once it starts running",
+    ),
+    (
         "dsh.task.busy",
         "任务正在运行，请稍后再试",
         "The task is still running; try again shortly",

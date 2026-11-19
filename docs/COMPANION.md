@@ -34,7 +34,7 @@
 
 ```
 手机浏览器 ──HTTP──> companion axum server（0.0.0.0:0 随机端口）
-                    │  配对码（一次性，配对成功后自动轮换）→ session token（Bearer）
+                    │  配对码（应用运行期间有效，配对成功不消费）→ session token（Bearer）
                     │  静态资源：rust-embed 内嵌 companion SPA
                     ▼
       commands.rs 内部核心函数（与桌面 UI 同层，不经过 MCP）
@@ -50,7 +50,7 @@
 - 以 `server.rs::run()`（L38）为模板起第二个 listener：`TcpListener::bind(("0.0.0.0", 0))`；仅当 `config.companion.enabled` 时在 lib.rs setup spawn（参照 lib.rs:125 `server::run` 的 spawn 写法）。
 - 路由：
   - `GET /` + 资产 → rust-embed 嵌入 `dist-companion/`（debug 构建从磁盘读）
-  - `POST /companion/api/pair`（免鉴权）：一次性配对码换长期 session token；简单内存限速
+  - `POST /companion/api/pair`（免鉴权）：配对码换长期 session token；简单内存限速
   - `GET /companion/api/devices`（canManage）：已配对设备、在线状态与管理权限
   - `POST /companion/api/devices/permission`（canManage）：开关其他设备的管理权限
   - `POST /companion/api/devices/unpair`（canManage）：解除其他设备
@@ -64,8 +64,9 @@
 ### 4.2 配对持久化（config.json）
 
 - `tapd-core` `AppConfig` 新增 `companion: CompanionConfig`（serde default 向后兼容）：`enabled: bool` + `devices: Vec<{ id, name, token_hash, paired_at, can_manage }>`（有界小列表，按惯例进配置而非 sqlite）。`devicePermissionsInitialized` 是一次性迁移标记：老配置首次加载时把第一台设备设为 `canManage=true`，之后用户显式撤销不会被重启恢复。
-- 写入一律走 `state.update_config`（state.rs:47 惯例）；`token_hash` 用已有 sha2 存 sha256；手机端 token 只存 sessionStorage（按标签页隔离）。
+- 写入一律走 `state.update_config`（state.rs:47 惯例）；`token_hash` 用已有 sha2 存 sha256；手机端 token 存 localStorage（读写兼容旧 sessionStorage，重新打开链接直接恢复会话；桌面解绑或重配对换 token 才失效）。
 - 解除配对 = 删 device 项，手机下次请求 401；`RunEvent::Exit` 关 listener（内存一次性码自然消亡）。
+- 配对码是「门钥匙」不是「票据」：配对成功不消费、打开弹窗重新出码时复用现有码，所以同一条链接在应用运行期间始终能重新配对（浏览器丢了 token 的设备靠它回来）；应用退出即作废（隧道也会换新域名）。
 
 ### 4.3 局域网 IP 与 QR（Tauri commands）
 
@@ -112,7 +113,7 @@
 
 ## 5. 安全要点
 
-- v1 局域网为明文 HTTP（个人工具可接受）：一次性码应用运行期间有效 + 单次有效 + 配对限速；session token 64hex 只存手机，配置里只存 hash（config.json 本身 0o600）。
+- v1 局域网为明文 HTTP（个人工具可接受）：配对码应用运行期间有效（可重复用于重配对，出码即新码替代）+ 配对限速；session token 64hex 只存手机 localStorage，配置里只存 hash（config.json 本身 0o600）。借用设备的语义从「关标签页失效」变成「桌面解绑才失效」。
 - 未登录 → 全部接口返回 `not_logged_in` 语义；桌面退出即伴侣下线，手机端呈现离线态。
 
 ## 6. 验证
@@ -135,7 +136,7 @@
 - **`/companion/api/media` 鉴权支持 `t` 查询参数**：`<img>`/`<video>` 无法设置 Authorization 头，会话 token 经 `t=` 传递（与桌面 `/media?token=` 的既有模式同构）；前端 `mediaUrl` 同步拼参。
 - **`GET /companion/api/bug` 参数为 camelCase**（`workspaceId`/`bugId`，serde rename_all 统一）。
 - **`dist-companion/` 由构建链保证**：根 `build` / `dev` / `check:rust` / `test:rust` 都先 `build:companion` 再动 cargo，release rust-embed 编译期嵌包；debug 运行时读盘、缺失时回占位页；不再用 `.gitkeep`（vite emptyOutDir 会清掉）。**CI 2026-11-13 修复**：GitHub Actions 上 `dist-companion/` 不存在导致 `RustEmbed` 编译失败，补完上述脚本前缀后 check/test job 只需 `pnpm check:rust` / `pnpm test:rust`；release job 增加显式 `pnpm build:companion` 步骤（发布包必须内嵌真实 SPA，不能落到占位页）。
-- **配对细节**：一次性码应用运行期间有效、单次有效、每 IP 每分钟 >10 次限速；同名设备重新配对保留原 id 与管理权限，只轮换 token；`companion_status` 不返回 token_hash。**多设备权限**：第一台配对设备默认 `canManage=true`，其余默认 false；电脑端可开关任意设备（包括第一台）；手机端管理员只能开关/解除其他设备，不能改自己；不自动继承，允许暂时没有手机管理员。
+- **配对细节**：一次性码应用运行期间有效（配对成功不消费，重出码时复用现有码）、每 IP 每分钟 >10 次限速；同名设备重新配对保留原 id 与管理权限，只轮换 token；`companion_status` 不返回 token_hash。**多设备权限**：第一台配对设备默认 `canManage=true`，其余默认 false；电脑端可开关任意设备（包括第一台）；手机端管理员只能开关/解除其他设备，不能改自己；不自动继承，允许暂时没有手机管理员。
 - **SPA**：无 WS（30s 轮询）；HTTPS 系统通知当前为 Notification API 直发（Service Worker/PWA manifest 留 v2）；`<video>` 在 v1 清洗中禁用（无对应代理入口）。
 - **联调修复（2026-11-13 真实环境）**：移动端列表改用 `/companion/api/workspaces`（state 不含项目）；项目下拉显示 `name`（TAPD `prettyName` 是数字 ID）；`fetch_tapd_media` 将站内相对路径（`/tfl/...`）补全到 `TAPD_HOME` 后再过白名单。
 - **debug 调试缝**：`GET /dev/companion`（运行态快照）与 `POST /dev/companion/pairing`（生成配对码），debug-only，供自动化测试绕开设置卡。
@@ -218,12 +219,15 @@
   `dsh_task_enqueue_local`（缺陷详情与本地事项的「交给 Agent」bottom sheet：补充说明 + 模型），
   恢复旧会话走 `dsh_task_resume`。失败回合与桌面一样可以重试（`dsh_session_retry`，
   引擎从自己的日志重跑，不重复发提示词）；任务页有「打开缺陷 / 打开事项」跳转与模型信息。
+  队列不含 chat 会话（chat 的 workflow 恒为 running，混进来会喂给取消按钮）；queued 行点开
+  是来源记录（会话还不存在）；`dsh_prompt` 对 queued 任务直接拒绝（轮次会落回 Queued，
+  改动永远进不了审核/合并链）。
 - **审批与提问可在手机上回答**：`dsh_pending` 返回所有阻塞请求（approval / question），
   `dsh_approval_answer` / `dsh_question_answer` 直接回执；桌面先登记再发事件，所以手机轮询
   拿到的快照与实时事件一致。Agent tab 角标显示待处理数量。
 - **没有实时流**：token 级 `dsh://stream` 只在桌面端消费；手机读已提交的
   `dsh_session_entries`（打开会话时 3s 轮询）和任务列表，不渲染 live 文本。
-- **新增 `dsh_*` 白名单**（仍走 `/companion/api/feature`，120 次/分钟/ IP，白名单外 403；2026-11-18 由 60 提到 120——实时会话页 entries+sessions+feed+子折叠轮询合计 ~70/min，60 会把手机锁在限速外）：
+- **新增 `dsh_*` 白名单**（仍走 `/companion/api/feature`，120 次/分钟/设备，白名单外 403；2026-11-18 由 60 提到 120——实时会话页 entries+sessions+feed+子折叠轮询合计 ~70/min，60 会把手机锁在限速外；**2026-11-20 计数键从 IP 改为设备 token hash**——隧道下所有手机共享 127.0.0.1 一个来源 IP，per-IP 预算实际是全局预算，多设备/多折叠会互相挤爆）：
   - 运行时：`dsh_status` / `dsh_start` / `dsh_stop` / `dsh_sessions` / `dsh_session_entries` /
     `dsh_pending` / `dsh_new_session` / `dsh_prompt` / `dsh_session_cancel` / `dsh_select_model` /
     `dsh_session_mode_get` / `dsh_session_mode_set` / `dsh_approval_answer` / `dsh_question_answer`

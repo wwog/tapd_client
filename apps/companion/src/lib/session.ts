@@ -1,12 +1,21 @@
-/** Pairing session token, kept for this tab's lifetime only: the page stays
- * open and the session stays usable; closing it forgets the token on purpose,
- * so a borrowed device cannot hold a live session. */
+/**
+ * Pairing session token, kept in `localStorage`: the same device reopening
+ * the same link (or the same tab after Safari evicts it from memory) must
+ * come straight back in — the desktop only accepts re-pairing, and a
+ * consumed link used to strand the device on the invalid-code page.
+ *
+ * This widens the earlier "tab-lifetime only" decision on purpose: the
+ * device keeps the session until the desktop unpairs it or a re-pairing
+ * rotates the token. Reads fall back to `sessionStorage` first so a tab
+ * that paired under the old scheme keeps working, and every write moves
+ * the value to `localStorage` and drops the legacy copy.
+ */
 const KEY = "companion.session";
 const MEDIA_KEY = "companion.mediaToken";
 
 export const getSession = (): string | null => {
   try {
-    return sessionStorage.getItem(KEY);
+    return localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY);
   } catch {
     return null;
   }
@@ -14,18 +23,38 @@ export const getSession = (): string | null => {
 
 export const setSession = (token: string): void => {
   try {
-    sessionStorage.setItem(KEY, token);
+    localStorage.setItem(KEY, token);
+    sessionStorage.removeItem(KEY);
   } catch {
-    // Private browsing: pairing will not survive a reload.
+    // Storage blocked (private browsing): pairing will not survive a reload.
   }
 };
 
 export const clearSession = (): void => {
   try {
+    localStorage.removeItem(KEY);
     sessionStorage.removeItem(KEY);
+    localStorage.removeItem(MEDIA_KEY);
     sessionStorage.removeItem(MEDIA_KEY);
   } catch {
     // Ignore.
+  }
+};
+
+/**
+ * True when shared storage already holds a different token than the one the
+ * request used: another tab re-paired while this request was in flight (a
+ * re-pair rotates the desktop's stored hash). The 401 must not then clear
+ * the fresh token or bounce this tab to `#/pair` — the next read adopts the
+ * rotated token and the poll recovers on its own.
+ */
+export const sessionRotated = (sent: string | null): boolean => {
+  if (!sent) return false;
+  try {
+    const stored = localStorage.getItem(KEY);
+    return stored !== null && stored !== sent;
+  } catch {
+    return false;
   }
 };
 
@@ -38,7 +67,7 @@ export const clearSession = (): void => {
  */
 export const getMediaToken = (): string | null => {
   try {
-    return sessionStorage.getItem(MEDIA_KEY) ?? getSession();
+    return localStorage.getItem(MEDIA_KEY) ?? getSession();
   } catch {
     return getSession();
   }
@@ -46,7 +75,8 @@ export const getMediaToken = (): string | null => {
 
 export const setMediaToken = (token: string): void => {
   try {
-    sessionStorage.setItem(MEDIA_KEY, token);
+    localStorage.setItem(MEDIA_KEY, token);
+    sessionStorage.removeItem(MEDIA_KEY);
   } catch {
     // Ignore.
   }

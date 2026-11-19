@@ -9,7 +9,6 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::IpAddr,
     time::{Duration, Instant},
 };
 
@@ -41,13 +40,15 @@ const MAX_DEVICE_NAME_CHARS: usize = 24;
 // Rate limiting
 // ---------------------------------------------------------------------------
 
-/// Sliding-window attempt budget per client IP. One implementation, two
-/// budgets: pairing uses `default()` (10/min), the feature proxy builds its
-/// own wider one via `new`.
+/// Sliding-window attempt budget per caller key. One implementation, two
+/// budgets with different keys: pairing counts per client IP (10/min), the
+/// feature proxy counts per device token (120/min) — behind the Quick Tunnel
+/// every phone connects from 127.0.0.1, so a per-IP window there would make
+/// the budget global and one busy session starve the other devices.
 pub(super) struct RateLimiter {
     max_attempts: usize,
     window: Duration,
-    attempts: HashMap<IpAddr, VecDeque<Instant>>,
+    attempts: HashMap<String, VecDeque<Instant>>,
 }
 
 impl Default for RateLimiter {
@@ -67,8 +68,8 @@ impl RateLimiter {
     }
 
     /// Records an attempt and reports whether it is within the limit.
-    pub(super) fn allows(&mut self, ip: IpAddr, now: Instant) -> bool {
-        let attempts = self.attempts.entry(ip).or_default();
+    pub(super) fn allows(&mut self, key: &str, now: Instant) -> bool {
+        let attempts = self.attempts.entry(key.to_string()).or_default();
         while attempts
             .front()
             .is_some_and(|at| now.duration_since(*at) >= self.window)
@@ -77,7 +78,7 @@ impl RateLimiter {
         }
         if attempts.len() >= self.max_attempts {
             if attempts.is_empty() {
-                self.attempts.remove(&ip);
+                self.attempts.remove(key);
             }
             return false;
         }
@@ -214,7 +215,7 @@ pub(super) fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 /// Lowercase hex SHA-256. The config stores only the hash; the raw token
 /// lives on the phone.
-fn sha256_hex(input: &str) -> String {
+pub(super) fn sha256_hex(input: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(input.as_bytes());
     let mut out = String::with_capacity(64);
@@ -252,7 +253,7 @@ pub(super) async fn pair(
         .pair_limiter
         .lock()
         .expect("pair rate limiter lock")
-        .allows(peer.ip(), Instant::now());
+        .allows(&peer.ip().to_string(), Instant::now());
     if !allowed {
         return err_data(
             StatusCode::TOO_MANY_REQUESTS,
@@ -263,9 +264,12 @@ pub(super) async fn pair(
 
     // Off = test-phase direct pairing: knowing the address is the only gate.
     if ctx.state.config_snapshot().companion.require_pairing_code {
+        // The code is validated, not consumed: a saved link can re-pair the
+        // same device after its browser forgot the session token, and a
+        // successful pair only rotates that device's stored token hash.
         let matched = {
-            let mut runtime = ctx.state.companion.lock().expect("companion lock");
-            runtime.consume_pairing_code(request.token.as_deref().unwrap_or("").trim())
+            let runtime = ctx.state.companion.lock().expect("companion lock");
+            runtime.pairing_code_matches(request.token.as_deref().unwrap_or("").trim())
         };
         if !matched {
             return err_data(
@@ -434,7 +438,6 @@ fn apply_pairing(
 mod tests {
     use super::*;
     use crate::companion::{CompanionRuntime, PairingCode};
-    use std::net::Ipv4Addr;
     use tapd_core::config::CompanionConfig;
 
     fn device(name: &str, token_hash: &str) -> CompanionDevice {
@@ -458,26 +461,38 @@ mod tests {
     }
 
     #[test]
-    fn valid_pairing_code_is_consumed_exactly_once() {
-        let mut runtime = runtime_with_code();
+    fn pairing_code_survives_a_successful_pair() {
+        let runtime = runtime_with_code();
 
-        assert!(runtime.consume_pairing_code("pair-code"));
-        // 第二次提交同一个码：已作废，必须拒绝。
-        assert!(!runtime.consume_pairing_code("pair-code"));
+        // 码是门钥匙不是票据：同一条链接要能重新配对（浏览器丢了会话 token
+        // 的手机靠它恢复），所以配对成功不作废。
+        assert!(runtime.pairing_code_matches("pair-code"));
+        assert!(runtime.pairing_code_matches("pair-code"));
+    }
+
+    #[test]
+    fn replacing_the_code_invalidates_the_old_link() {
+        let mut runtime = runtime_with_code();
+        runtime.pairing = Some(PairingCode {
+            code: "new-code".to_string(),
+        });
+
+        assert!(!runtime.pairing_code_matches("pair-code"));
+        assert!(runtime.pairing_code_matches("new-code"));
     }
 
     #[test]
     fn pairing_code_does_not_expire_over_time() {
-        let mut runtime = runtime_with_code();
+        let runtime = runtime_with_code();
 
-        // 配对码只受“使用/替换/应用退出”影响，没有时间窗口。
-        assert!(runtime.consume_pairing_code("pair-code"));
+        // 配对码只受「替换/应用退出」影响，没有时间窗口。
+        assert!(runtime.pairing_code_matches("pair-code"));
     }
 
     #[test]
     fn unknown_pairing_code_is_rejected() {
-        let mut runtime = runtime_with_code();
-        assert!(!runtime.consume_pairing_code("something-else"));
+        let runtime = runtime_with_code();
+        assert!(!runtime.pairing_code_matches("something-else"));
     }
 
     #[test]
@@ -503,7 +518,7 @@ mod tests {
 
     #[test]
     fn pairing_flood_within_a_minute_is_rate_limited() {
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let ip = "127.0.0.1";
         let mut limiter = RateLimiter::default();
         let now = Instant::now();
 
@@ -516,7 +531,7 @@ mod tests {
 
     #[test]
     fn pairing_attempts_are_forgotten_after_a_minute() {
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let ip = "127.0.0.1";
         let mut limiter = RateLimiter::default();
         let start = Instant::now();
 
@@ -529,16 +544,16 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_is_counted_per_ip() {
+    fn rate_limit_is_counted_per_key() {
         let mut limiter = RateLimiter::default();
         let now = Instant::now();
-        let phone = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
-        let laptop = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3));
+        let phone = "192.168.1.2";
+        let laptop = "192.168.1.3";
 
         for _ in 0..10 {
             assert!(limiter.allows(phone, now));
         }
-        // 另一个 IP 不受影响。
+        // 另一个 key 不受影响。
         assert!(limiter.allows(laptop, now));
         assert!(!limiter.allows(phone, now));
     }

@@ -205,6 +205,13 @@ pub async fn new_session_in(
 /// Ensures the runtime is up, then queues one prompt. The registry row exists
 /// before the call, so the session is listable even if the model call fails.
 pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
+    // A queued task has not been started by the scheduler yet: a turn run now
+    // would settle back into Queued (`finish_turn` returns early) and its
+    // changes would never reach review, merge or writeback. Reject instead of
+    // silently running work outside the flow.
+    if super::tasks::workflow_of(app, session_id).await == Some(super::tasks::Workflow::Queued) {
+        return Err(tr("dsh.task.queued").to_string());
+    }
     bridge(app)?.create_session(app, session_id);
     let state = runtime(app)?;
     state.ensure_ready(app).await?;
