@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LoaderCircle, Play, Plus, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ListTodo, LoaderCircle, Play, Plus, RefreshCw, X } from "lucide-react";
 
 import { asApiError } from "../lib/api";
 import { Badge, type BadgeTone } from "../components/Badge";
 import {
   dshApi,
+  refreshAgentFeed,
   useAgentFeed,
   type DshProjectOption,
   type DshStatus,
@@ -54,12 +55,23 @@ const WORKFLOW_TONES: Record<DshWorkflow, BadgeTone> = {
   canceled: "neutral",
 };
 
-/** Workflow chip shared by the task list and the session header. */
-export function WorkflowChip(props: { workflow: DshWorkflow }) {
+/** Workflow chip shared by the task list, queue view and session header. */
+export function WorkflowChip(props: { workflow: DshWorkflow; interrupted?: boolean }) {
+  if (props.interrupted) {
+    return <Badge tone="amber">{t("mobile.agent.workflowInterrupted")}</Badge>;
+  }
   return (
     <Badge tone={WORKFLOW_TONES[props.workflow]}>{t(WORKFLOW_LABELS[props.workflow])}</Badge>
   );
 }
+
+/**
+ * A `running` row whose session is not working is a stopped turn. The backend
+ * persists the flag on a user stop and at startup recovery; a failed session
+ * row covers a runtime exit while the app stayed open.
+ */
+const isInterrupted = (task: DshTask): boolean =>
+  task.workflow === "running" && (Boolean(task.interrupted) || task.status === "failed");
 
 function ListSkeleton() {
   return (
@@ -155,12 +167,91 @@ function TaskRow(props: { task: DshTask }) {
         </span>
       </span>
       <span className="mt-1 flex items-center gap-2">
-        {task.kind === "chat" ? null : <WorkflowChip workflow={task.workflow} />}
+        {task.kind === "chat" ? null : (
+          <WorkflowChip workflow={task.workflow} interrupted={isInterrupted(task)} />
+        )}
         <span className="ml-auto shrink-0 text-ui-xs text-slate-400">
           {relativeTime(task.updatedAt)}
         </span>
       </span>
     </button>
+  );
+}
+
+/** One queue bucket: heading plus rows, hidden while empty. */
+function QueueSection(props: {
+  label: string;
+  count: number;
+  children: ReactNode;
+}) {
+  if (props.count === 0) return null;
+  return (
+    <section>
+      <div className="flex items-center gap-2 border-b border-border bg-overlay-soft px-4 py-1">
+        <h2 className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500">{props.label}</h2>
+        <span className="shrink-0 text-ui-2xs text-slate-400">{props.count}</span>
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
+/** Queue row: tap opens the session; stopped rows offer continue, live ones cancel. */
+function QueueRow(props: {
+  task: DshTask;
+  busy: boolean;
+  onContinue: (task: DshTask) => void;
+  onCancel: (task: DshTask) => void;
+}) {
+  const { task, busy } = props;
+  const interrupted = isInterrupted(task);
+  const openable = task.workflow !== "queued";
+  return (
+    <div data-component="QueueRow" className="flex items-start gap-2 border-b border-border px-4 py-3">
+      <button
+        type="button"
+        disabled={!openable}
+        onClick={() =>
+          openable && navigate(`#/agent/session/${encodeURIComponent(task.id)}`)
+        }
+        className="min-w-0 flex-1 text-left transition active:bg-overlay-soft disabled:active:bg-transparent"
+      >
+        <span className="flex items-start gap-2">
+          <span className="line-clamp-2 min-w-0 flex-1 text-ui-caption text-slate-900">
+            {plainTitle(task.title) || t("mobile.agent.untitledSession")}
+          </span>
+          <WorkflowChip workflow={task.workflow} interrupted={interrupted} />
+        </span>
+        <span className="mt-1 flex items-center gap-2 text-ui-xs text-slate-400">
+          <span className="min-w-0 truncate">
+            {task.project?.name ?? t("mobile.agent.noProject")}
+          </span>
+          <span className="ml-auto shrink-0">{relativeTime(task.updatedAt)}</span>
+        </span>
+      </button>
+      {interrupted ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => props.onContinue(task)}
+          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-ui-sm text-slate-700 transition active:bg-overlay-soft disabled:opacity-40"
+        >
+          {busy ? <LoaderCircle size={12} className="animate-spin" /> : <Play size={12} />}
+          {t("mobile.agent.continue")}
+        </button>
+      ) : task.workflow === "queued" || task.workflow === "running" ? (
+        <button
+          type="button"
+          disabled={busy}
+          aria-label={t("mobile.agent.cancelTask")}
+          title={t("mobile.agent.cancelTask")}
+          onClick={() => props.onCancel(task)}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-surface text-slate-500 transition active:bg-rose-50 disabled:opacity-40"
+        >
+          <X size={14} />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -183,6 +274,10 @@ export function AgentPage() {
   /** Every configured project, so empty groups still render a header. */
   const [projects, setProjects] = useState<DshProjectOption[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
+  /** Task list vs. the desktop's workflow queue view. */
+  const [view, setView] = useState<"tasks" | "queue">("tasks");
+  /** Queue rows whose continue/cancel request is in flight. */
+  const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
 
   const alive = useRef(true);
   useEffect(() => {
@@ -281,6 +376,82 @@ export function AgentPage() {
     [feed.tasks, projects],
   );
 
+  /** Queue buckets, in the desktop's order and FIFO ordering. */
+  const queue = useMemo(() => {
+    const byCreated = (left: DshTask, right: DshTask): number =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+    const tasks = feed.tasks ?? [];
+    const interrupted = tasks.filter(isInterrupted).sort(byCreated);
+    const running = tasks
+      .filter((task) => task.workflow === "running" && !isInterrupted(task))
+      .sort(byCreated);
+    const queued = tasks.filter((task) => task.workflow === "queued").sort(byCreated);
+    const review = tasks
+      .filter((task) => task.workflow === "awaiting_review")
+      .sort(byCreated);
+    const finalizing = tasks
+      .filter((task) => task.workflow === "finalizing")
+      .sort(byCreated);
+    return {
+      interrupted,
+      running,
+      queued,
+      review,
+      finalizing,
+      total:
+        interrupted.length +
+        running.length +
+        queued.length +
+        review.length +
+        finalizing.length,
+    };
+  }, [feed.tasks]);
+
+  /** One queue action at a time per row; failures stay on the page. */
+  const runQueueAction = async (id: string, action: () => Promise<void>) => {
+    if (busyIds.has(id)) return;
+    setBusyIds((current) => new Set(current).add(id));
+    setActionError(null);
+    try {
+      await action();
+    } catch (err) {
+      if (alive.current) setActionError(asApiError(err).message);
+    } finally {
+      if (alive.current) {
+        setBusyIds((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
+      }
+    }
+  };
+
+  /** Continue a stopped round from the existing context (desktop parity). */
+  const continueTask = (task: DshTask) =>
+    void runQueueAction(task.id, async () => {
+      await dshApi.taskResume(task.id);
+      await dshApi.prompt(task.id, t("mobile.agent.continuePrompt"));
+      void refreshAgentFeed();
+      navigate(`#/agent/session/${encodeURIComponent(task.id)}`);
+    });
+
+  const cancelTask = (task: DshTask) =>
+    void runQueueAction(task.id, async () => {
+      await dshApi.taskCancel(task.id);
+      void refreshAgentFeed();
+    });
+
+  const renderQueueRow = (task: DshTask) => (
+    <QueueRow
+      key={task.id}
+      task={task}
+      busy={busyIds.has(task.id)}
+      onContinue={continueTask}
+      onCancel={cancelTask}
+    />
+  );
+
   const runtimeLabel =
     status?.phase === "ready"
       ? [status.provider, status.model]
@@ -345,10 +516,42 @@ export function AgentPage() {
         ) : null}
       </section>
 
+      <div
+        role="tablist"
+        aria-label={t("mobile.tab.agent")}
+        className="mx-4 mt-3 flex items-center rounded-lg border border-border bg-surface p-0.5"
+      >
+        {[
+          { key: "tasks" as const, label: t("mobile.agent.viewTasks"), count: feed.tasks?.length ?? 0 },
+          { key: "queue" as const, label: t("mobile.agent.viewQueue"), count: queue.total },
+        ].map((tab) => {
+          const active = view === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setView(tab.key)}
+              className={`flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-md text-ui-sm transition ${
+                active ? "bg-slate-100 text-slate-900" : "text-slate-500"
+              }`}
+            >
+              {tab.label}
+              <span
+                className={`tabular-nums text-ui-2xs ${active ? "text-slate-500" : "text-slate-400"}`}
+              >
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {actionError ? (
         <p
           className="px-4 py-3 text-ui-caption text-rose-600"
-          title={t("mobile.agent.newSessionFailed")}
+          title={t("common.actionFailed")}
         >
           {actionError}
         </p>
@@ -381,57 +584,95 @@ export function AgentPage() {
         </p>
       ) : null}
 
-      {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
+      {view === "tasks" ? (
+        <>
+          {feed.tasks === null && !feed.tasksError ? <ListSkeleton /> : null}
 
-      {groups.map((group) => {
-        const name = group.project?.name ?? t("mobile.agent.noProject");
-        return (
-          <section key={group.key || "__none__"}>
-            <div className="flex items-center gap-2 border-b border-border bg-overlay-soft px-4 py-1">
-              <h2 className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500" title={name}>
-                {name}
-              </h2>
-              {group.tasks.length > 0 ? (
-                <span className="shrink-0 text-ui-2xs text-slate-400">
-                  {group.tasks.length}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                aria-label={t("mobile.agent.newSessionInProject", { project: name })}
-                title={
-                  creating === group.key
-                    ? t("mobile.agent.creating")
-                    : t("mobile.agent.newSessionInProject", { project: name })
-                }
-                disabled={creating !== null}
-                onClick={() => void createSession(group.project)}
-                className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
-              >
-                {creating === group.key ? (
-                  <LoaderCircle size={14} className="animate-spin" />
-                ) : (
-                  <Plus size={14} />
-                )}
-              </button>
-            </div>
-            {group.tasks.map((task) => (
-              <TaskRow key={task.id} task={task} />
-            ))}
-            {group.project === null &&
-            group.tasks.length === 0 &&
-            feed.tasks !== null &&
-            !feed.tasksError ? (
-              <p
-                className="px-4 py-10 text-center text-ui-base text-slate-400"
-                title={t("mobile.agent.emptyHint")}
-              >
-                {t("mobile.agent.empty")}
-              </p>
-            ) : null}
-          </section>
-        );
-      })}
+          {groups.map((group) => {
+            const name = group.project?.name ?? t("mobile.agent.noProject");
+            return (
+              <section key={group.key || "__none__"}>
+                <div className="flex items-center gap-2 border-b border-border bg-overlay-soft px-4 py-1">
+                  <h2 className="min-w-0 flex-1 truncate text-ui-2xs text-slate-500" title={name}>
+                    {name}
+                  </h2>
+                  {group.tasks.length > 0 ? (
+                    <span className="shrink-0 text-ui-2xs text-slate-400">
+                      {group.tasks.length}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label={t("mobile.agent.newSessionInProject", { project: name })}
+                    title={
+                      creating === group.key
+                        ? t("mobile.agent.creating")
+                        : t("mobile.agent.newSessionInProject", { project: name })
+                    }
+                    disabled={creating !== null}
+                    onClick={() => void createSession(group.project)}
+                    className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-slate-500 transition active:bg-overlay-soft disabled:opacity-40"
+                  >
+                    {creating === group.key ? (
+                      <LoaderCircle size={14} className="animate-spin" />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                  </button>
+                </div>
+                {group.tasks.map((task) => (
+                  <TaskRow key={task.id} task={task} />
+                ))}
+                {group.project === null &&
+                group.tasks.length === 0 &&
+                feed.tasks !== null &&
+                !feed.tasksError ? (
+                  <p
+                    className="px-4 py-10 text-center text-ui-base text-slate-400"
+                    title={t("mobile.agent.emptyHint")}
+                  >
+                    {t("mobile.agent.empty")}
+                  </p>
+                ) : null}
+              </section>
+            );
+          })}
+        </>
+      ) : feed.tasks === null && !feed.tasksError ? (
+        <ListSkeleton />
+      ) : queue.total === 0 ? (
+        <div className="px-4 py-12 text-center" title={t("mobile.agent.queueEmptyHint")}>
+          <ListTodo size={22} className="mx-auto text-slate-300" />
+          <p className="mt-2 text-ui-base text-slate-400">{t("mobile.agent.queueEmpty")}</p>
+        </div>
+      ) : (
+        <div data-component="QueueView">
+          <QueueSection
+            label={t("mobile.agent.workflowRunning")}
+            count={queue.running.length}
+          >
+            {queue.running.map(renderQueueRow)}
+          </QueueSection>
+          <QueueSection
+            label={t("mobile.agent.workflowInterrupted")}
+            count={queue.interrupted.length}
+          >
+            {queue.interrupted.map(renderQueueRow)}
+          </QueueSection>
+          <QueueSection label={t("mobile.agent.workflowQueued")} count={queue.queued.length}>
+            {queue.queued.map(renderQueueRow)}
+          </QueueSection>
+          <QueueSection label={t("mobile.agent.workflowReview")} count={queue.review.length}>
+            {queue.review.map(renderQueueRow)}
+          </QueueSection>
+          <QueueSection
+            label={t("mobile.agent.workflowFinalizing")}
+            count={queue.finalizing.length}
+          >
+            {queue.finalizing.map(renderQueueRow)}
+          </QueueSection>
+        </div>
+      )}
     </div>
   );
 }

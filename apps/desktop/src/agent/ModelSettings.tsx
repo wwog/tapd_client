@@ -73,7 +73,13 @@ function discoveredEntry(model: DshDiscoveredModel): DshModelEntry {
     id: model.id,
     contextWindow: model.contextWindow ?? 128_000,
     maxTokens: model.maxTokens ?? null,
-    input: model.inputModalities?.includes("image") ? ["text", "image"] : ["text"],
+    // Most chat endpoints accept images; a listing that states its modalities
+    // wins, and the user can still turn the toggle off in the editor.
+    input: model.inputModalities
+      ? model.inputModalities.includes("image")
+        ? ["text", "image"]
+        : ["text"]
+      : ["text", "image"],
     // Unknown levels would be rejected upstream; the ladder stays undeclared
     // until the user maps one, which means "off" only in the picker.
     reasoning: [],

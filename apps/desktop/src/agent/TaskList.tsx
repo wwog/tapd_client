@@ -7,7 +7,6 @@ import {
   Loader2,
   PanelLeftClose,
   Plus,
-  Settings2,
   Trash2,
   Workflow,
 } from "lucide-react";
@@ -270,17 +269,9 @@ export function TaskList({ layout }: { layout: TaskListLayout }) {
           })
         )}
       </div>
-      {/* Settings are page-wide, not per session: the column footer is their
-          one entry point, so the conversation keeps the whole pane. */}
-      <div className="flex shrink-0 items-center gap-1 border-t border-border p-2">
-        <button
-          type="button"
-          onClick={() => agentActions.openConfig()}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ui-caption text-slate-600 transition hover:bg-overlay-soft hover:text-slate-800"
-        >
-          <Settings2 size={13} className="shrink-0 text-slate-400" />
-          {t("agent.tab.config")}
-        </button>
+      {/* Agent settings moved to the Settings page; the footer keeps only the
+          list-collapse control. */}
+      <div className="flex shrink-0 items-center justify-end border-t border-border p-2">
         <button
           type="button"
           aria-label={t("agent.task.collapseList")}

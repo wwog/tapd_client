@@ -11,7 +11,6 @@ import { AgentHostProvider, type AgentHost } from "../../../shared/agent/host";
 import { StreamHud, type StreamHudItem } from "../../../shared/agent/StreamHud";
 import { TodoHud } from "../../../shared/agent/TodoHud";
 import type { AgentTodo } from "../../../shared/agent/types";
-import { AgentConfigTab } from "./AgentConfigTab";
 import { Composer } from "./Composer";
 import { MessageStream } from "./MessageStream";
 import { RuntimeNotice } from "./RuntimeNotice";
@@ -286,9 +285,6 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
-        {state.configOpen ? (
-          <AgentConfigTab toast={toast} onClose={agentActions.closeConfig} />
-        ) : null}
       </div>
     </AgentHostProvider>
   );

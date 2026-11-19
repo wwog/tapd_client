@@ -531,6 +531,10 @@ export const agent = {
   "agent.model.optional": ["可留空", "Optional"],
   "agent.model.advanced": ["高级配置", "Advanced"],
   "agent.model.inputTypes": ["输入类型", "Input types"],
+  "agent.model.inputTypesHint": [
+    "运行时只支持文本与图片；视频/PDF 请作为本地文件交给 Agent。",
+    "The runtime accepts text and images only; hand video/PDF to the agent as local files.",
+  ],
   "agent.model.reasoningLevels": ["推理等级", "Reasoning levels"],
   "agent.model.reasoningMapping": ["推理参数映射", "Reasoning parameter mapping"],
   "agent.model.addLevel": ["添加等级", "Add level"],

@@ -41,7 +41,7 @@ export function ModelEditorDialog(props: Props) {
   const [maxTokens, setMaxTokens] = useState(
     model?.maxTokens === null || model?.maxTokens === undefined ? "" : String(model.maxTokens),
   );
-  const [image, setImage] = useState(model?.input.includes("image") ?? false);
+  const [image, setImage] = useState(model?.input.includes("image") ?? true);
   const [reasoning, setReasoning] = useState<ReasoningEffort[]>(
     () => model?.reasoning.map((effort) => ({ ...effort })) ?? [],
   );
@@ -160,6 +160,33 @@ export function ModelEditorDialog(props: Props) {
         </div>
       </div>
 
+      <div className="mt-3">
+        <div className="text-ui-xs text-slate-400" title={t("agent.model.inputTypesHint")}>
+          {t("agent.model.inputTypes")}
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span
+            className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-ui-caption text-sky-700"
+            title={t("agent.model.inputTextLocked")}
+          >
+            {t("agent.model.inputText")}
+          </span>
+          <button
+            type="button"
+            aria-pressed={image}
+            onClick={() => setImage((current) => !current)}
+            className={clsx(
+              "rounded-lg border px-2.5 py-1 text-ui-caption transition",
+              image
+                ? "border-sky-200 bg-sky-50 text-sky-700"
+                : "border-border bg-surface text-slate-600 hover:border-slate-300",
+            )}
+          >
+            {t("agent.model.inputImage")}
+          </button>
+        </div>
+      </div>
+
       <button
         type="button"
         onClick={() => setAdvanced((current) => !current)}
@@ -171,31 +198,6 @@ export function ModelEditorDialog(props: Props) {
 
       {advanced ? (
         <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
-          <div>
-            <div className="text-ui-xs text-slate-400">{t("agent.model.inputTypes")}</div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <span
-                className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-ui-caption text-sky-700"
-                title={t("agent.model.inputTextLocked")}
-              >
-                {t("agent.model.inputText")}
-              </span>
-              <button
-                type="button"
-                aria-pressed={image}
-                onClick={() => setImage((current) => !current)}
-                className={clsx(
-                  "rounded-lg border px-2.5 py-1 text-ui-caption transition",
-                  image
-                    ? "border-sky-200 bg-sky-50 text-sky-700"
-                    : "border-border bg-surface text-slate-600 hover:border-slate-300",
-                )}
-              >
-                {t("agent.model.inputImage")}
-              </button>
-            </div>
-          </div>
-
           <div>
             <div className="text-ui-xs text-slate-400">{t("agent.model.reasoningLevels")}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

@@ -333,7 +333,7 @@ export function Onboarding({ info, onDone }: Props) {
   const last = step === STEP_HEADINGS.length - 1;
 
   return (
-    <div data-component="Onboarding" className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-canvas text-slate-900">
+    <div data-component="Onboarding" className="fixed inset-0 z-[70] flex flex-col overflow-hidden bg-canvas text-slate-900">
       <header
         data-tauri-drag-region
         className="flex shrink-0 items-center gap-3 border-b border-border bg-surface pb-4 pl-[86px] pr-6 pt-5"

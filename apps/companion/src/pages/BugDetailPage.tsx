@@ -5,9 +5,11 @@ import {
   Link2,
   LoaderCircle,
   MessageSquare,
+  Sparkles,
   UserPlus,
 } from "lucide-react";
 
+import { EnqueueSheet, type EnqueueTarget } from "../components/EnqueueSheet";
 import {
   api,
   asApiError,
@@ -128,6 +130,16 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
   const [commentOpen, setCommentOpen] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [commentBusy, setCommentBusy] = useState(false);
+
+  /** Hand-over sheet; the record identity comes from the route + loaded detail. */
+  const [enqueueTarget, setEnqueueTarget] = useState<EnqueueTarget | null>(null);
+  const [queuedNotice, setQueuedNotice] = useState(false);
+
+  useEffect(() => {
+    if (!queuedNotice) return;
+    const timer = window.setTimeout(() => setQueuedNotice(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [queuedNotice]);
 
   const cacheKey = workspaceId ? bugDetailKey(workspaceId, id) : null;
 
@@ -358,6 +370,25 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
               label={t("mobile.bugDetail.comment")}
               onClick={() => setCommentOpen(true)}
             />
+            <ActionButton
+              icon={<Sparkles size={13} />}
+              label={t("mobile.enqueue.title")}
+              disabled={!workspaceId}
+              onClick={() => {
+                if (!workspaceId) return;
+                setEnqueueTarget({
+                  kind: "bug",
+                  workspaceId,
+                  bugId: id,
+                  title: detail.title,
+                });
+              }}
+            />
+            {queuedNotice ? (
+              <p className="w-full text-ui-sm text-emerald-700">
+                {t("mobile.enqueue.queued")}
+              </p>
+            ) : null}
             {actionError ? (
               <p
                 className="w-full text-ui-sm text-rose-600"
@@ -482,6 +513,12 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
           className="w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-2 text-ui-caption leading-5 text-slate-700 transition placeholder:text-slate-400"
         />
       </BottomSheet>
+
+      <EnqueueSheet
+        target={enqueueTarget}
+        onClose={() => setEnqueueTarget(null)}
+        onDone={() => setQueuedNotice(true)}
+      />
     </div>
   );
 }

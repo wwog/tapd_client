@@ -55,7 +55,7 @@ export type PageHostServices = {
   onOpenQueue: () => void;
   /** Opens/focuses a global page tab (welcome shortcuts, cross-page links). */
   onOpenView: (view: PageView) => void;
-  /** Opens a TAPD project's page tab by id (welcome page, single-project mode). */
+  /** Opens a TAPD project's page tab by id (welcome page shortcut). */
   onOpenProject: (projectId: string, label?: string) => void;
   /** Cancels a queued/running task (the row reports failures as a toast). */
   onCancelAgentTask: (sessionId: string) => Promise<void>;

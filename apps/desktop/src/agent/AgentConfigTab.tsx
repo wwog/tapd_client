@@ -51,7 +51,26 @@ const NAV: Array<{ id: Section; label: MessageKey; icon: LucideIcon }> = [
 ];
 
 /**
- * All agent settings, in a dialog opened from the task column's footer. The
+ * Global mount for the configuration dialog. The Agent page used to own this,
+ * but the entry point lives in Settings now: from a non-Agent page the store
+ * flag had no dialog listening to it.
+ */
+export function AgentConfigHost({ toast }: Pick<Props, "toast">) {
+  const state = agentStore.use();
+  const open = state.configOpen;
+  useEffect(() => {
+    if (!open) return;
+    // Settings can be the first page opened in this app run, so the Agent
+    // page's bootstrap may never have run; load what the dialog renders.
+    if (!state.config) void agentActions.loadConfig();
+    if (!state.status) void agentActions.refreshStatus();
+  }, [open, state.config, state.status]);
+  if (!open) return null;
+  return <AgentConfigTab toast={toast} onClose={agentActions.closeConfig} />;
+}
+
+/**
+ * All agent settings, in a dialog opened from Settings (or a runtime notice). The
  * left column groups them: 模型 (providers and catalog), 规则 (prompt and
  * permission policy), 集成 (the tools a session inherits), 内置插件 and 常规
  * (execution, team collaboration, runtime). Every control applies on its own:

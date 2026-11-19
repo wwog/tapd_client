@@ -3,6 +3,12 @@ import type { Catalog } from "../types";
 
 export const settings = {
   // Settings page: runtime info and local data
+  "settings.agent.title": ["Agent 配置", "Agent configuration"],
+  "settings.agent.hint": [
+    "模型、规则、集成与内置插件",
+    "Models, rules, integrations and built-in plugins",
+  ],
+  "settings.agent.open": ["打开配置", "Open configuration"],
   "settings.runtime.title": ["运行信息", "Runtime info"],
   "settings.runtime.reading": ["正在读取运行信息…", "Reading runtime info…"],
   "settings.runtime.viewDetails": ["查看详情", "View details"],

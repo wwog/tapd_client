@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Sparkles,
   Trash,
   type LucideIcon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import { navigate } from "../lib/router";
 import { Badge } from "../components/Badge";
 import { BottomSheet } from "../components/BottomSheet";
 import { DirectoryPickerSheet } from "../components/DirectoryPickerSheet";
+import { EnqueueSheet, type EnqueueTarget } from "../components/EnqueueSheet";
 
 /** Selected project survives tab switches and reloads; a `#/local?p=` link wins. */
 const PROJECT_KEY = "companion.local.project";
@@ -170,6 +172,16 @@ export function LocalPage(props: { projectId: string | null }) {
   const [editDescription, setEditDescription] = useState("");
   const [itemBusy, setItemBusy] = useState(false);
   const [itemError, setItemError] = useState<string | null>(null);
+
+  /** Hand-over sheet for the tapped item; the item sheet closes behind it. */
+  const [enqueueTarget, setEnqueueTarget] = useState<EnqueueTarget | null>(null);
+  const [queuedNotice, setQueuedNotice] = useState(false);
+
+  useEffect(() => {
+    if (!queuedNotice) return;
+    const timer = window.setTimeout(() => setQueuedNotice(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [queuedNotice]);
 
   const loadProjects = useCallback(() => {
     setProjectsError(null);
@@ -517,6 +529,12 @@ export function LocalPage(props: { projectId: string | null }) {
         <p className="px-4 py-3 text-ui-caption text-rose-600">{itemsError}</p>
       ) : null}
 
+      {queuedNotice ? (
+        <p className="px-4 py-2 text-ui-caption text-emerald-700">
+          {t("mobile.enqueue.queued")}
+        </p>
+      ) : null}
+
       {project && items === null && !itemsError ? <ItemsSkeleton /> : null}
 
       {project && items !== null && visible.length === 0 ? (
@@ -800,6 +818,22 @@ export function LocalPage(props: { projectId: string | null }) {
               </span>
             </p>
             <div className="mt-4 space-y-2">
+              <SheetAction
+                icon={Sparkles}
+                label={t("mobile.enqueue.title")}
+                disabled={itemBusy}
+                onClick={() => {
+                  const item = activeItem;
+                  if (!item) return;
+                  setActiveItem(null);
+                  setEnqueueTarget({
+                    kind: "local",
+                    projectId: item.projectId,
+                    itemId: item.id,
+                    title: item.title,
+                  });
+                }}
+              />
               {activeItem.status === "pending" ? (
                 <SheetAction
                   icon={ArrowRight}
@@ -852,6 +886,17 @@ export function LocalPage(props: { projectId: string | null }) {
         ) : null}
       </BottomSheet>
 
+      <EnqueueSheet
+        target={enqueueTarget}
+        onClose={() => setEnqueueTarget(null)}
+        onDone={() => {
+          // The backend moves the item to in_progress and records the task id.
+          if (enqueueTarget?.kind === "local") {
+            loadItems(enqueueTarget.projectId, true);
+          }
+          setQueuedNotice(true);
+        }}
+      />
     </div>
   );
 }

@@ -16,7 +16,6 @@ export const RAIL_WIDTH = 52;
 export const LAYOUT_GUTTER = 32;
 
 export type SidebarLayoutOptions = {
-  projectListHidden: boolean;
   /** Persisted width owned by the workbench layout. */
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
@@ -68,7 +67,6 @@ export type SidebarLayout = {
  * are persisted by the workbench layout; the drag is the shared `Sash`.
  */
 export function useSidebarLayout({
-  projectListHidden,
   sidebarWidth,
   setSidebarWidth,
   sidebarCollapsed,
@@ -118,9 +116,9 @@ export function useSidebarLayout({
       expandedSidebarWidth +
       contentMinWidth +
       LAYOUT_GUTTER;
-  const sidebarHidden =
-    projectListHidden ||
-    (sidebarPeek ? false : sidebarCollapsed || autoCollapseSidebar);
+  const sidebarHidden = sidebarPeek
+    ? false
+    : sidebarCollapsed || autoCollapseSidebar;
 
   // Drop the temporary reveal once the window is wide enough again.
   useEffect(() => {

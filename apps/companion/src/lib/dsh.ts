@@ -167,6 +167,8 @@ export type DshTask = {
   bugId?: string;
   workflow: DshWorkflow;
   status: DshSessionStatus;
+  /** The round was stopped and the workflow has not resumed it. */
+  interrupted?: boolean;
   repoPath?: string;
   worktreePath?: string;
   branch?: string;
@@ -478,6 +480,30 @@ export const dshApi = {
   policyGet: () => feature<{ mode: DshPermissionMode }>("dsh_policy_get"),
 
   tasks: () => feature<{ tasks: DshTask[] }>("dsh_tasks"),
+  /** Hands a bug to the agent; the task queues until an execution slot frees. */
+  taskEnqueueBug: (
+    workspaceId: string,
+    bugId: string,
+    options: { extraPrompt?: string; model?: ModelSelection } = {},
+  ) =>
+    feature<{ task: DshTask }>("dsh_task_enqueue_bug", {
+      workspaceId,
+      bugId,
+      ...(options.extraPrompt ? { extraPrompt: options.extraPrompt } : {}),
+      ...(options.model ? { model: options.model } : {}),
+    }),
+  /** Hands a local work item to the agent; same queue as a bug task. */
+  taskEnqueueLocal: (
+    projectId: string,
+    itemId: string,
+    options: { extraPrompt?: string; model?: ModelSelection } = {},
+  ) =>
+    feature<{ task: DshTask }>("dsh_task_enqueue_local", {
+      projectId,
+      itemId,
+      ...(options.extraPrompt ? { extraPrompt: options.extraPrompt } : {}),
+      ...(options.model ? { model: options.model } : {}),
+    }),
   /** Commits → merges → cleans the worktree → starts TAPD writeback. */
   taskApprove: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),

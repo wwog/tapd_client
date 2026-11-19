@@ -194,7 +194,7 @@
 
 桌面端新增与 TAPD 无关的本地项目；手机端可创建项目、维护事项并查看 Agent 任务。
 
-- 底部新增「事项」tab（`#/local?p=<projectId>`）：项目下拉 + 新建 / 编辑项目（名称与项目规则）、待处理 / 处理中 / 已完成三段、事项新增 / 编辑 / 删除 / 移动 / 标记完成 / 重新打开。交给 Agent 的入口在桌面事项页 / 缺陷页的 `EnqueuePopover`；任务成功后桌面自动把事项置为已完成，手机通过 Agent 任务流水的签名变化静默刷新列表。
+- 底部新增「事项」tab（`#/local?p=<projectId>`）：项目下拉 + 新建 / 编辑项目（名称与项目规则）、待处理 / 处理中 / 已完成三段、事项新增 / 编辑 / 删除 / 移动 / 标记完成 / 重新打开。交给 Agent 的入口在桌面事项页 / 缺陷页的 `EnqueuePopover`，手机端缺陷详情与事项 sheet 也有「交给 Agent」（补充说明 + 模型）；任务成功后桌面自动把事项置为已完成，手机通过 Agent 任务流水的签名变化静默刷新列表。
 - 新建项目时用 `DirectoryPickerSheet` 浏览桌面目录：`local_browse_dirs { path? }` 只列目录，默认 `$HOME`；服务端在列目录前校验路径位于 `$HOME` 或已配置的本地仓库，其余返回 `local.browse.forbidden`。
 - 项目 / 事项 CRUD 全走 `/companion/api/feature` 的 `local_*` 命令（无 TAPD 登录门禁），数据在桌面 `local.sqlite3`；手机只是渲染与动作意图，不直接持有文件或数据库。项目规则随项目保存，入队时复制到任务并写进 `quest.json` / 提示词。
 - 事项入队走 `dsh_task_enqueue_local`（`EnqueuePopover`，可附加说明），任务字段 `kind: local_item`；桌面把事项置为 `in_progress` 并回传新行。任务与缺陷共用队列，任务页不显示缺陷链接，项目行显示本地项目名。
@@ -206,13 +206,16 @@
 内置 Agent 换成 dsh 运行时后，手机端的 Agent 页按任务闭环重做（本条替换 §8 里旧的
 `agent_*` 队列命令，旧的队列 / 历史 / 待审核 / 待合并四个子页合并为一个列表）。
 
-- **Agent tab = 统一任务列表**：`dsh_tasks` 返回 `{ tasks: DshTask[] }`，按项目分组
+- **Agent tab = 统一任务列表 + 队列视图**：顶部「任务 / 队列」切换。「任务」按项目分组
   （TAPD / 本地 / 未关联），每行是 workflow chip（`queued` / `running` / `awaiting_review` /
   `finalizing` / `done` / `failed` / `canceled`）+ 实时运行点；动作在任务条上直接给：
   通过（`dsh_task_approve`，之后的提交 / 合并 / 清理 / 回写由桌面 finalizing 链自动完成）、
   重试收尾（`dsh_task_retry_finalize`）、取消（`dsh_task_cancel`，可选 stash）、
-  查看文件（`dsh_task_changes`）与 diff（`dsh_task_diff`）。入队走 `dsh_task_enqueue_bug` /
-  `dsh_task_enqueue_local`，恢复旧会话走 `dsh_task_resume`。
+  查看文件（`dsh_task_changes`）与 diff（`dsh_task_diff`）。
+  「队列」与桌面工作流队列同构：执行中 / 已中断 / 排队中 / 待审核 / 收尾中分组，已中断可「继续」
+  （`dsh_task_resume` + 续跑提示词），排队中 / 执行中可取消；入队走 `dsh_task_enqueue_bug` /
+  `dsh_task_enqueue_local`（缺陷详情与本地事项的「交给 Agent」bottom sheet：补充说明 + 模型），
+  恢复旧会话走 `dsh_task_resume`。
 - **审批与提问可在手机上回答**：`dsh_pending` 返回所有阻塞请求（approval / question），
   `dsh_approval_answer` / `dsh_question_answer` 直接回执；桌面先登记再发事件，所以手机轮询
   拿到的快照与实时事件一致。Agent tab 角标显示待处理数量。

@@ -246,14 +246,8 @@ export function useWorkspaceData({
       ),
     [context, hiddenWorkspaceIds],
   );
-  /** Whether the project list has resolved enough to decide its layout. */
+  /** Whether the project list has resolved at least once (cold start). */
   const projectsKnown = context !== null || contextError !== null;
-  /**
-   * With a single visible project the list column is pointless. Unknown counts
-   * stay hidden too: deciding after the context request would flash the column
-   * and then collapse it on every single-project start.
-   */
-  const projectListHidden = !projectsKnown || visibleWorkspaces.length === 1;
 
   const workspace =
     context?.workspaces.find((item) => item.id === workspaceId) ?? null;
@@ -339,7 +333,6 @@ export function useWorkspaceData({
     setProjectMenu,
     visibleWorkspaces,
     projectsKnown,
-    projectListHidden,
     workspace,
     setWorkspaceVisible,
     hideWorkspace,

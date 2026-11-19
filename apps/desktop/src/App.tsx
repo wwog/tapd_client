@@ -22,6 +22,7 @@ import { showToast } from "./lib/toast";
 import { useTauriEvent } from "./lib/tauriEvent";
 import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
+import { AgentConfigHost } from "./agent/AgentConfigTab";
 import { useQueueBadge, useQueueBatchRuntime } from "./agent/queueBatch";
 import { agentActions } from "./agent/store";
 import { useTaskFeedRuntime } from "./agent/useAgentRuntime";
@@ -205,7 +206,6 @@ export default function App() {
     setProjectMenu,
     visibleWorkspaces,
     projectsKnown,
-    projectListHidden: workspaceListHidden,
     workspace,
     setWorkspaceVisible,
     hideWorkspace,
@@ -219,14 +219,6 @@ export default function App() {
 
   // Stable callbacks above (rail clicks, ⌘J) read the selection from here.
   workspaceIdRef.current = workspaceId;
-
-  /**
-   * The column hides only for a single TAPD project with no local projects:
-   * local rows are part of the same list, so they must keep it visible. Both
-   * sides are bootstrapped before the first render (`shellBootstrap`), so this
-   * answer is already correct on the first frame.
-   */
-  const projectListHidden = workspaceListHidden && local.projects.length === 0;
 
   /** TAPD project the visible page belongs to (project tabs carry their own). */
   const pageWorkspaceId =
@@ -344,7 +336,6 @@ export default function App() {
       : requiredWindowWidth);
 
   const sidebar = useSidebarLayout({
-    projectListHidden,
     sidebarWidth: layoutApi.sidebarWidth,
     setSidebarWidth: layoutApi.setSidebarWidth,
     sidebarCollapsed: layoutApi.sidebarCollapsed,
@@ -755,7 +746,7 @@ export default function App() {
   };
 
   /** Leading strip action: the side bar toggle sits above the tabs. */
-  const primaryLeading = !projectListHidden ? (
+  const primaryLeading = (
     <button
       type="button"
       aria-label={
@@ -775,7 +766,7 @@ export default function App() {
     >
       {sidebar.hidden ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
     </button>
-  ) : null;
+  );
 
   /** Sign out after the unsaved-edit confirmation (if any). */
   const performLogout = () => {
@@ -1001,7 +992,7 @@ export default function App() {
             activeTabExtra={activeTabExtra}
           />
 
-          {!sidebar.hidden && !projectListHidden ? (
+          {!sidebar.hidden ? (
             <Sash
               axis="x"
               label={t("settings.sidebar.resizeLabel")}
@@ -1025,6 +1016,8 @@ export default function App() {
       {!info.onboarded ? (
         <Onboarding info={info} onDone={() => void refreshBase()} />
       ) : null}
+
+      <AgentConfigHost toast={showToast} />
 
       {companionOpen ? (
         <CompanionDialog

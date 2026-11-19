@@ -14,7 +14,6 @@ export const agent = {
     "Couldn't load projects",
   ],
   "mobile.agent.loadFailed": ["读取任务失败", "Couldn't load tasks"],
-  "mobile.agent.newSessionFailed": ["新建会话失败", "Couldn't create a session"],
   "mobile.agent.empty": ["还没有任务", "No tasks yet"],
   "mobile.agent.emptyHint": [
     "任务来自「事项」或桌面端。",
@@ -44,6 +43,38 @@ export const agent = {
   "mobile.agent.workflowDone": ["已完成", "Done"],
   "mobile.agent.workflowFailed": ["失败", "Failed"],
   "mobile.agent.workflowCanceled": ["已取消", "Canceled"],
+  "mobile.agent.workflowInterrupted": ["已中断", "Interrupted"],
+
+  /* -- Task list / queue view --------------------------------------------- */
+  "mobile.agent.viewTasks": ["任务", "Tasks"],
+  "mobile.agent.viewQueue": ["队列", "Queue"],
+  "mobile.agent.queueEmpty": ["队列为空", "Queue is empty"],
+  "mobile.agent.queueEmptyHint": [
+    "排队中、执行中和待审核的任务会集中在这里。",
+    "Queued, running and review tasks collect here.",
+  ],
+  "mobile.agent.continue": ["继续", "Continue"],
+  "mobile.agent.continuePrompt": [
+    "继续完成当前任务，从上次中断的地方接着做。",
+    "Continue the current task from where it was interrupted.",
+  ],
+  "mobile.agent.cancelTask": ["取消任务", "Cancel task"],
+
+  /* -- Hand a record to the agent ----------------------------------------- */
+  "mobile.enqueue.title": ["交给 Agent", "Hand to agent"],
+  "mobile.enqueue.note": ["补充说明（可选）", "Add a note (optional)"],
+  "mobile.enqueue.noteHint": [
+    "Agent 会先读详情，再把这段当补充说明。",
+    "The agent reads the record first, then treats this as extra context.",
+  ],
+  "mobile.enqueue.failed": [
+    "交给 Agent 失败",
+    "Couldn't hand over to the agent",
+  ],
+  "mobile.enqueue.queued": [
+    "已交给 Agent，可在「Agent → 队列」查看",
+    "Handed over; see it under Agent → Queue",
+  ],
 
   /* -- Review & finalizing (docs/AGENT_TASK_FLOW.md §7) ------------------- */
   "mobile.agent.reviewTitle": ["审核", "Review"],

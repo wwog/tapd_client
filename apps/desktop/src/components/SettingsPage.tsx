@@ -1,16 +1,19 @@
 import { useState } from "react";
 import {
+  Bot,
   Copy,
   FileJson,
   FolderOpen,
   Info,
   PackageOpen,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
 
+import { agentActions } from "../agent/store";
 import { api, type AppInfo } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
@@ -82,6 +85,28 @@ export function SettingsPage(props: Props) {
 
   return (
     <div data-component="SettingsPage" className="mx-auto max-w-4xl space-y-3">
+      <section className={cardClass}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+              <Bot size={15} className="text-slate-400" />
+              {t("settings.agent.title")}
+            </h2>
+            <p className="mt-1 truncate text-ui-caption text-slate-500">
+              {t("settings.agent.hint")}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => agentActions.openConfig("general")}
+            icon={<Settings2 size={13} />}
+          >
+            {t("settings.agent.open")}
+          </Button>
+        </div>
+      </section>
+
       <AppearanceCard />
 
       <NotificationSettings toast={toast} />
