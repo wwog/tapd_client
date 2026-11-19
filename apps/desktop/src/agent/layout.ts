@@ -8,4 +8,4 @@
  * `px-6` still guarantees the minimum gutter. Every sibling uses this constant
  * so the tabs, the prose and the input never drift out of alignment.
  */
-export const AGENT_COLUMN = "mx-auto w-full max-w-[clamp(46rem,55%,64rem)]";
+export const AGENT_COLUMN = "mx-auto w-full max-w-[clamp(46rem,68%,64rem)]";
