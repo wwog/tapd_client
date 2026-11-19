@@ -414,6 +414,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 `session/working-directory/get` 建好 Agent（不触发 turn），应用选择并等到事件落定再发 prompt，
 避免第一步仍然用运行时默认模型。
 
+会话里或入队弹窗里选的模型/思考强度会同时通过 `agent_model_default_set` 把该供应商与模型
+提到配置首位（应用规则是「顺序即默认」），后续新会话从它启动；已存在的会话保留自己的
+`model/selection`，改默认值不会回写它们。
+
 `start` / `end` / `usage` / `finish` 帧不产生增量，不向上转发；`end(committed)` 之后
 必然跟一条已提交的 `assistant/message` 行，前端据此把 live 文本换成持久行。
 
@@ -444,7 +448,8 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   "status": "running",                 // running | ok | error
   "result": "file.txt",                // ok/error 后出现，字符串（工具结果的文本）
   "startedAtMs": 1700000001000,        // tool/call
-  "endedAtMs": 1700000001026 }         // tool/result，运行中省略
+  "endedAtMs": 1700000001026,          // tool/result，运行中省略
+  "childSessionId": "…" }              // 仅 subagent/subagent_fork：subagent/catalog 的 childId
 
 { "kind": "turn", "seq": 0, "at": "…", "turn": 1, "state": "start" }   // state: start | end
 { "kind": "turn", "seq": 9, "at": "…", "turn": 1, "state": "end", "reason": "error",
@@ -663,6 +668,9 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - `dsh_prompt` 对 `kind: "chat"` 的会话先创建并 assign 独立目录
   `<data>/dsh/chats/<sessionId>`；没有项目的自由会话不读写任何真实仓库。运行时进程的默认
   cwd 也是 `<data>/dsh/workspace`。
+- `dsh_file_target` 先剥掉 Markdown 的行号锚点（`#L497-L516` / `#lines-12`），再按会话
+  当前执行目录解析相对路径；绝对路径若写的是主仓库或旧 worktree，会把同一相对路径映射到
+  当前 worktree/仓库里存在的副本，找不到才回退原路径。
 - 桌面专属（不在手机白名单）：`dsh_restart`、`dsh_session_retry`、`dsh_session_dir`、
   `dsh_models_discover`、`dsh_worktrees`、`dsh_worktree_remove`、`dsh_plugins`、`dsh_tools`、
   `dsh_task_delete`、`dsh_prepare`、`dsh_file_target`；手机白名单以
@@ -697,8 +705,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - 归一化视图只在内存中；App 重启后需要等新快照/事件重建（dsh 自己仍持久化会话）。
 - 没有历史分页：快照是全量 `snapshotEvents()`，大仓库会话首次连接会一次推完。
 - image / file 内容块未实现。子 agent 会话树已实现：`crates/dsh-host/src/transcript.rs` 按
-  `origin: "subagent"` / `parentSession` 记录子会话，并归一化 `subagent` 调用与
-  `subagent-settled` 通知；`apps/shared/agent/subagents.ts` 把它们组装成可折叠的子会话行，
+  `origin: "subagent"` / `parentSession` 记录子会话，把 `subagent` / `subagent_fork` 调用与
+  `subagent/catalog`（`childId` 直接绑到调用行）、`subagent-settled` 通知归一化；
+  `apps/shared/agent/subagents.ts` 用 `senderSessionId` 精确配对，组装成可折叠的子会话行，
+  父行在子会话运行时就存在（可展开看子 transcript），
   `apps/companion/src/pages/agent/TurnStack.tsx` 复用同一视图。
 - `assistant/attempt`（失败/被取消的模型尝试）与 `session/title` 被忽略：模型失败只通过
   `turn` 行的 `reason` 呈现，标题由第一条人类 user 行生成（不用 dsh 自带的标题投影）。
@@ -781,7 +791,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 | 名称 | 入参 | 返回 |
 | --- | --- | --- |
 | `dsh_tasks` | — | `{ tasks: DshTask[] }`（按 `updatedAt` 降序） |
-| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments?, team? }` | `{ task }`（可能 `queued`） |
+| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments?, team?, model? }` | `{ task }`（可能 `queued`） |
 | `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments?, team? }` | `{ task }` |
 | `dsh_task_approve` | `{ sessionId }` | `{ task }`；`awaiting_review → finalizing`，随后 finalizing 链自动完成 |
 | `dsh_task_retry_finalize` | `{ sessionId }` | `{ task }`；从 `finalize.step` 幂等重试 |

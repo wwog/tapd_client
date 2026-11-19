@@ -281,6 +281,8 @@ export type DshEntry =
       startedAtMs?: number;
       /** `tool/result` time (epoch ms); absent while running. */
       endedAtMs?: number;
+      /** Child session of a `subagent`/`subagent_fork` call (`subagent/catalog`). */
+      childSessionId?: string;
     } & DshEntryPosition)
   | {
       kind: "turn";

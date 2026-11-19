@@ -150,7 +150,7 @@ export function NotificationSettings({ toast }: SettingsSectionProps) {
   ).length;
 
   return (
-    <section className={cardClass}>
+    <section data-component="NotificationSettings" className={cardClass}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
@@ -470,6 +470,7 @@ function ScopeOption(props: {
 }) {
   return (
     <button
+      data-component="ScopeOption"
       type="button"
       onClick={props.onClick}
       title={props.description}
@@ -506,7 +507,7 @@ function SwitchRow(props: {
   onChange: (value: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-2">
+    <div data-component="SwitchRow" className="flex items-center justify-between gap-3 px-3 py-2">
       <div className="text-ui-caption text-slate-700" title={props.description}>
         {props.label}
       </div>

@@ -18,6 +18,15 @@ export type ToolAction = {
 /** Which folded group a call belongs to. */
 export type ToolGroup = "reads" | "commands" | "files";
 
+/**
+ * Calls that spawn a child agent. `subagent` is the plain tool and
+ * `subagent_fork` the continuable variant; both get their own root row and never
+ * join a flow's groups.
+ */
+export function isSubagentTool(name: string): boolean {
+  return name === "subagent" || name === "subagent_fork";
+}
+
 /** Line count of a text block; empty text contributes nothing. */
 function lineCount(text: unknown): number {
   if (typeof text !== "string" || text.length === 0) return 0;
@@ -144,6 +153,7 @@ export function describeTool(name: string, argsJson: string, locale: AgentLocale
         target: firstLine(args.job_id) || name,
       };
     case "subagent":
+    case "subagent_fork":
       return {
         kind: "other",
         verb: agentLabel("action.called", locale),

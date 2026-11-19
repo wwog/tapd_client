@@ -54,6 +54,7 @@ export const StreamHud = memo(function StreamHud({
 
   return (
     <div
+      data-component="StreamHud"
       role="region"
       aria-label={agentLabel("hud.region", locale)}
       className={clsx(
@@ -147,6 +148,7 @@ export function StreamHudCard({
 
   return (
     <div
+      data-component="StreamHudCard"
       ref={shellRef}
       className={clsx(
         // The shell's top-right corner is fixed: `top-1/2 -mt-4` centres the

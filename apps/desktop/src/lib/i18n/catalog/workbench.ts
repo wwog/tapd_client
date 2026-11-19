@@ -179,6 +179,7 @@ export const workbench = {
   "media.openWithApp": ["用本地应用打开", "Open with default app"],
   "media.openInBrowser": ["在浏览器中打开", "Open in browser"],
   "media.closePreview": ["关闭预览", "Close preview"],
+  "media.openPreview": ["点击预览", "Click to preview"],
   "media.notReady": [
     "预览服务尚未就绪，可用「在浏览器中打开」",
     'Preview is not ready yet - use "Open in browser"',

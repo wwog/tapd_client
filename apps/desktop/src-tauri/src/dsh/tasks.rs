@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use dsh_host::transcript::{DshEntry, DshSession, SessionStatus, TurnState};
+use dsh_host::transcript::{DshEntry, DshSession, ModelSelection, SessionStatus, TurnState};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use tapd_i18n::{tr, tr_args};
@@ -283,6 +283,10 @@ pub(super) struct TaskMeta {
     /// Team collaboration chosen when the task was created. `None` keeps the
     /// runtime default; a task's choice is fixed for its whole life.
     pub team: Option<bool>,
+    /// Model route chosen in the enqueue sheet. Persisted with the row so a
+    /// queued task keeps its route across an app restart, before its session
+    /// has a log of its own.
+    pub model: Option<EnqueueModel>,
     pub local_project_id: Option<String>,
     pub local_item_id: Option<String>,
     /// Status the item had before `attach_task` moved it to in_progress; a
@@ -568,6 +572,17 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
     }
 }
 
+/// Route the task's first turn runs on. It is recorded on the session before
+/// the scheduler can start it, so the first step already uses the pick.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EnqueueModel {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EnqueueBugRequest {
@@ -580,6 +595,9 @@ struct EnqueueBugRequest {
     /// Team collaboration for this task; `None` keeps the runtime default.
     #[serde(default)]
     team: Option<bool>,
+    /// Model + reasoning effort chosen in the sheet; `None` keeps the default.
+    #[serde(default)]
+    model: Option<EnqueueModel>,
 }
 
 #[derive(Deserialize)]
@@ -594,6 +612,9 @@ struct EnqueueLocalRequest {
     /// Team collaboration for this task; `None` keeps the runtime default.
     #[serde(default)]
     team: Option<bool>,
+    /// Model + reasoning effort chosen in the sheet; `None` keeps the default.
+    #[serde(default)]
+    model: Option<EnqueueModel>,
 }
 
 #[derive(Deserialize)]
@@ -1327,6 +1348,26 @@ pub async fn ensure_session_cwd(app: &AppHandle, session_id: &str) {
     }
 }
 
+/// Pins the sheet's model choice to a session that does not exist in the
+/// runtime yet. `prepare_session` reads it right before the first prompt, so
+/// the very first step runs on the picked route.
+fn remember_enqueue_model(app: &AppHandle, session_id: &str, model: Option<EnqueueModel>) {
+    let Some(model) = model else {
+        return;
+    };
+    let Ok(bridge) = bridge(app) else {
+        return;
+    };
+    bridge.remember_selection(
+        session_id,
+        ModelSelection {
+            provider: model.provider,
+            model: model.model,
+            reasoning_effort: model.reasoning_effort,
+        },
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Enqueue: bug
 // ---------------------------------------------------------------------------
@@ -1366,6 +1407,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
             .map_err(|error| tr_args("dsh.task.export.failed", &[&error]))?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
+    remember_enqueue_model(app, &session_id, request.model.clone());
     // Every workflow task runs in its own worktree; there is no other branch.
     let (work_dir, branch) = prepare_worktree(
         app,
@@ -1427,6 +1469,7 @@ async fn enqueue_bug(app: &AppHandle, request: EnqueueBugRequest) -> Result<Valu
             start: Some(work_dir.baseline),
             worktree: true,
             team: request.team,
+            model: request.model.clone(),
             pending_prompt: Some(prompt),
             ..TaskMeta::default()
         },
@@ -1454,6 +1497,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
 
     let config = agent_settings::config_for(app);
     let session_id = uuid::Uuid::new_v4().to_string();
+    remember_enqueue_model(app, &session_id, request.model.clone());
     let (work_dir, branch) =
         prepare_worktree(app, &repo_path, &session_id, "local", &item.id).await?;
 
@@ -1520,6 +1564,7 @@ async fn enqueue_local(app: &AppHandle, request: EnqueueLocalRequest) -> Result<
             start: Some(work_dir.baseline),
             worktree: true,
             team: request.team,
+            model: request.model.clone(),
             local_project_id: Some(project.id.clone()),
             local_item_id: Some(item.id.clone()),
             local_previous_status: Some(item.status.as_str().to_string()),
@@ -1766,6 +1811,9 @@ async fn start_queued(app: &AppHandle, record: TaskRecord) -> bool {
         fail_task(app, &id, tr("dsh.task.state.invalid")).await;
         return false;
     }
+    // Re-apply the sheet's route: an app restart cleared the bridge's pending
+    // selections, but the task row kept the pick.
+    remember_enqueue_model(app, &id, record.meta.model.clone());
     if let Err(error) = start_session(app, &id, &record.work_dir(), &prompt, record.meta.team).await
     {
         fail_task(app, &id, &error).await;
@@ -3347,6 +3395,38 @@ pub(crate) fn session_root(app: &AppHandle, session_id: &str) -> Option<PathBuf>
         return chat.is_dir().then_some(chat);
     }
     (!repo.is_empty()).then(|| PathBuf::from(repo))
+}
+
+/// Roots a reply path may have been written against, other than the current
+/// working directory: the configured worktree and the project repository.
+///
+/// The model often names an absolute path it saw earlier, or writes the
+/// repository-relative form while the session actually works in a worktree.
+/// The resolver uses these to map the same relative file onto the directory the
+/// session is executing in; it keeps a missing worktree so a stale absolute
+/// path can still be recognised by its prefix.
+pub(crate) fn session_alternate_roots(app: &AppHandle, session_id: &str) -> Vec<PathBuf> {
+    let Ok(state) = shared(app) else {
+        return Vec::new();
+    };
+    let Ok(Some(record)) = task_store::load(&state.cache, session_id) else {
+        return Vec::new();
+    };
+    let mut roots = Vec::new();
+    if let Some(worktree) = record
+        .task
+        .worktree_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        roots.push(PathBuf::from(worktree));
+    }
+    let repo = record.task.repo_path.trim().to_string();
+    if !repo.is_empty() {
+        roots.push(PathBuf::from(repo));
+    }
+    roots
 }
 
 /// The directory one session works in. Used by "在 Finder 中打开" on the

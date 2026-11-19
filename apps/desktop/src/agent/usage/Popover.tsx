@@ -119,7 +119,7 @@ export function UsagePopover({
 /** Label/value grid shared by every card. */
 export function UsageRows({ children }: { children: ReactNode }) {
   return (
-    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5">
+    <dl data-component="UsageRows" className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5">
       {children}
     </dl>
   );
@@ -144,5 +144,5 @@ export function UsageRow({
 
 /** Dot separating dock chips; also used between inline figures. */
 export function Dot() {
-  return <span className="shrink-0 text-slate-300">·</span>;
+  return <span data-component="Dot" className="shrink-0 text-slate-300">·</span>;
 }

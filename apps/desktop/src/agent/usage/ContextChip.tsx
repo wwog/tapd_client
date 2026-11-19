@@ -72,6 +72,7 @@ function ContextRing({ percent }: { percent: number }) {
   const filled = (circumference * percent) / 100;
   return (
     <svg
+      data-component="ContextRing"
       viewBox="0 0 12 12"
       aria-hidden="true"
       className="h-3 w-3 shrink-0 -rotate-90 text-slate-300"
@@ -102,7 +103,7 @@ function CompositionBar({ usage, percent }: { usage: DshSessionUsage; percent: n
   const total = totals.reduce((sum, part) => sum + part.tokens, 0);
 
   return (
-    <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+    <div data-component="CompositionBar" className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
       <div className="flex h-full" style={{ width: `${percent}%` }}>
         {totals.map((part) => (
           <span
@@ -118,7 +119,7 @@ function CompositionBar({ usage, percent }: { usage: DshSessionUsage; percent: n
 
 function Legend({ tone, text }: { tone: string; text: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span data-component="Legend" className="inline-flex items-center gap-1.5">
       <span className={`h-2 w-2 shrink-0 rounded-[2px] ${tone}`} />
       {text}
     </span>

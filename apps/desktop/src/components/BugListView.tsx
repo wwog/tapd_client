@@ -361,7 +361,7 @@ function BugListViewImpl(props: Props) {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div data-component="BugListView" className="flex min-h-0 flex-1 flex-col">
       <BugTableToolbar
         scope={scope}
         me={me}

@@ -353,6 +353,11 @@ pub enum DshEntry {
         /// The `tool/result` event time; absent while the call is running.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ended_at_ms: Option<u64>,
+        /// Child session behind a `subagent`/`subagent_fork` call. The runtime
+        /// publishes it as `subagent/catalog` right after the call, which lets
+        /// the view show the running child before any settle notice arrives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child_session_id: Option<String>,
     },
     Turn {
         seq: u64,
@@ -730,6 +735,7 @@ impl Transcript {
                 | "assistant/message"
                 | "tool/call"
                 | "tool/result"
+                | "subagent/catalog"
                 | "turn/start"
                 | "turn/end"
                 | "step/start"
@@ -782,6 +788,7 @@ impl Transcript {
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
             "tool/result" => record.merge_tool_result(seq, event),
+            "subagent/catalog" => record.merge_subagent_catalog(seq, event),
             "turn/start" => {
                 record.meta.status = SessionStatus::Running;
                 record.meta.usage.turns += 1;
@@ -1347,6 +1354,7 @@ impl SessionRecord {
             result: None,
             started_at_ms: event.get("time").and_then(Value::as_u64),
             ended_at_ms: None,
+            child_session_id: None,
         };
         let mut entry = entry;
         if let DshEntry::Tool { call_id, .. } = &entry {
@@ -1415,6 +1423,42 @@ impl SessionRecord {
             // The call row was replaced (new revision); keep the log honest.
             _ => return None,
         };
+        self.last_update.insert(entry.seq(), seq);
+        Some(entry)
+    }
+
+    /// Binds the child session the runtime just announced to the fork call that
+    /// started it, and re-publishes that call row. `subagent/catalog` carries no
+    /// call id, so it belongs to the most recent subagent call still unbound;
+    /// the catalog lands immediately after its `tool/call` in the log.
+    fn merge_subagent_catalog(&mut self, seq: u64, event: &Value) -> Option<DshEntry> {
+        let child_id = event
+            .pointer("/data/childId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if child_id.is_empty() {
+            return None;
+        }
+        let index = self.entries.iter().rposition(|entry| {
+            matches!(
+                entry,
+                DshEntry::Tool {
+                    name,
+                    child_session_id: None,
+                    ..
+                } if name == "subagent" || name == "subagent_fork"
+            )
+        })?;
+        let DshEntry::Tool {
+            child_session_id, ..
+        } = &mut self.entries[index]
+        else {
+            return None;
+        };
+        *child_session_id = Some(child_id);
+        let entry = self.entries[index].clone();
         self.last_update.insert(entry.seq(), seq);
         Some(entry)
     }
@@ -1937,6 +1981,7 @@ mod tests {
             result: None,
             started_at_ms: Some(1_700_000_000_000),
             ended_at_ms: None,
+            child_session_id: None,
         })
         .unwrap();
         assert_eq!(tool["kind"], "tool");
@@ -2270,6 +2315,35 @@ mod tests {
             }) if message == "summarizer failed"
         ));
         assert_eq!(transcript.entries("s1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn subagent_catalog_binds_the_child_session_to_its_fork_call() {
+        let mut transcript = Transcript::default();
+        let mut call = event("tool/call", 1);
+        call["data"] = json!({
+            "turn": 1, "step": 1, "callId": "fork1", "name": "subagent_fork",
+            "arguments": "{}"
+        });
+        transcript.ingest("s1", &call, "2026-11-16T00:00:01.000Z");
+
+        let mut catalog = event("subagent/catalog", 2);
+        catalog["data"] = json!({
+            "version": 3, "childId": "child-9", "childCreatedAt": 1,
+            "mode": "continuable", "label": "Review", "name": "agent-1"
+        });
+        let updated = transcript.ingest("s1", &catalog, "2026-11-16T00:00:02.000Z");
+        assert!(matches!(
+            &updated.entry,
+            Some(DshEntry::Tool { seq: 1, child_session_id: Some(id), .. }) if id == "child-9"
+        ));
+        // The row keeps its call seq, so the incremental cursor does not move.
+        let rows = transcript.entries("s1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            &rows[0],
+            DshEntry::Tool { seq: 1, child_session_id: Some(id), .. } if id == "child-9"
+        ));
     }
 
     #[test]

@@ -85,7 +85,7 @@ function CodeBlock(props: { text: string; path: string; truncated: boolean }) {
   }, [props.text, props.path, props.truncated]);
 
   return (
-    <div className="mt-3 overflow-x-auto overscroll-x-contain border-y border-border bg-surface">
+    <div data-component="CodeBlock" className="mt-3 overflow-x-auto overscroll-x-contain border-y border-border bg-surface">
       <div className="flex min-w-max">
         {gutter ? (
           <pre
@@ -112,7 +112,7 @@ function CodeBlock(props: { text: string; path: string; truncated: boolean }) {
 
 function MetaRow(props: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+    <div data-component="MetaRow" className="flex items-start justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
       <span className="shrink-0 text-ui-xs text-slate-500">{props.label}</span>
       <span className="min-w-0 break-all text-right text-ui-caption text-slate-700">
         {props.value}
@@ -331,7 +331,7 @@ export function FilePage(props: { workspaceId: string | null; path: string }) {
   );
 
   return (
-    <div>
+    <div data-component="FilePage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center gap-1.5 px-2 py-2">
           <button

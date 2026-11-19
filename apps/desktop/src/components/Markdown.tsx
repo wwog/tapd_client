@@ -37,6 +37,8 @@ export type MarkdownLinks = {
   open: (path: string) => void;
   /** Resolves a local image path into a URL the renderer can load. */
   image?: (path: string) => Promise<string | null>;
+  /** Opens an inline picture in the app's full-screen media preview. */
+  preview?: (item: { src: string; label: string }) => void;
 };
 
 const LinksContext = createContext<MarkdownLinks | null>(null);
@@ -110,6 +112,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   const local = links ? localPathFromHref(href) : null;
   return (
     <a
+      data-component="MarkdownLink"
       href={href}
       title={href}
       onClick={(event) => {
@@ -126,7 +129,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 
 function MarkdownPre({ children }: { children?: ReactNode }) {
   return (
-    <pre>
+    <pre data-component="MarkdownPre">
       <BlockCodeContext.Provider value>{children}</BlockCodeContext.Provider>
     </pre>
   );
@@ -155,11 +158,12 @@ function MarkdownCode({
   const block = useContext(BlockCodeContext);
   const inLink = useContext(InsideLinkContext);
   const path = links && !block && !inLink ? inlineCodePath(plainText(children)) : null;
-  if (!path) return <code className={className}>{children}</code>;
+  if (!path) return <code data-component="MarkdownCode" className={className}>{children}</code>;
 
   const open = () => links?.open(path);
   return (
     <code
+      data-component="MarkdownCode"
       className={clsx(className, "md-file-link")}
       role="link"
       tabIndex={0}
@@ -191,8 +195,24 @@ function MarkdownCode({
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const links = useContext(LinksContext);
   const path = links?.image ? localPathFromHref(src) : null;
-  if (!path) return <img src={src} alt={alt} />;
-  return <LocalImage path={path} alt={alt} />;
+  if (path) return <LocalImage path={path} alt={alt} />;
+  // Remote and data URLs are shown inline too, so the same preview rule holds.
+  if (!src || !links?.preview) {
+    return <img data-component="MarkdownImage" src={src} alt={alt} />;
+  }
+  return (
+    <img
+      data-component="MarkdownImage"
+      src={src}
+      alt={alt || src}
+      title={t("media.openPreview")}
+      className="md-local-image"
+      onClick={(event) => {
+        event.stopPropagation();
+        links.preview?.({ src, label: alt || src });
+      }}
+    />
+  );
 }
 
 function LocalImage({ path, alt }: { path: string; alt?: string }) {
@@ -215,11 +235,19 @@ function LocalImage({ path, alt }: { path: string; alt?: string }) {
     };
   }, [links, path]);
 
-  const open = () => links?.open(path);
+  // The picture opens the preview; the path stays reachable through a miss.
+  const open = () => {
+    if (resolved?.src && links?.preview) {
+      links.preview({ src: resolved.src, label: alt || path });
+      return;
+    }
+    links?.open(path);
+  };
   if (!resolved) return null;
   if (!resolved.src) {
     return (
       <button
+        data-component="LocalImage"
         type="button"
         className="md-image-missing"
         title={t("agent.file.open")}
@@ -235,9 +263,10 @@ function LocalImage({ path, alt }: { path: string; alt?: string }) {
   }
   return (
     <img
+      data-component="LocalImage"
       src={resolved.src}
       alt={alt || path}
-      title={t("agent.file.open")}
+      title={t("media.openPreview")}
       className="md-local-image"
       onClick={(event) => {
         // An image can be the label of a link; the picture is the target here.

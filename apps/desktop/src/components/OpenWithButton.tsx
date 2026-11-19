@@ -90,7 +90,7 @@ export function OpenWithButton({ kind, path, onOpen, onError }: Props) {
   };
 
   return (
-    <div ref={rootRef} className="relative shrink-0">
+    <div data-component="OpenWithButton" ref={rootRef} className="relative shrink-0">
       <div className="inline-flex items-stretch overflow-hidden rounded-lg border border-border bg-surface text-ui-sm text-slate-600">
         <button
           type="button"
@@ -154,6 +154,7 @@ function TargetIcon({ target, kind }: { target: OpenTarget | null; kind: OpenKin
   if (target?.icon) {
     return (
       <img
+        data-component="TargetIcon"
         src={target.icon}
         alt={target.label}
         className="h-4 w-4 shrink-0 rounded-[4px] object-contain"

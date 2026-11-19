@@ -100,6 +100,7 @@ export function Sash({
 
   return (
     <button
+      data-component="Sash"
       type="button"
       aria-label={label}
       title={title ?? label}
@@ -346,6 +347,7 @@ function CornerSash({
 
   return (
     <button
+      data-component="CornerSash"
       ref={buttonRef}
       type="button"
       aria-label={t("layout.cornerSash")}

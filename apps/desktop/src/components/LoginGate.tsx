@@ -233,7 +233,7 @@ export function LoginGate({ info, onRefresh, onToast }: Props) {
   const capsule = capsules[capsuleIndex % capsules.length];
 
   return (
-    <div data-theme="light" className="relative flex h-full overflow-hidden bg-surface text-slate-900">
+    <div data-component="LoginGate" data-theme="light" className="relative flex h-full overflow-hidden bg-surface text-slate-900">
       {/* macOS traffic lights live over this strip; the whole strip drags. */}
       <div data-tauri-drag-region className="absolute inset-x-0 top-0 z-30 h-11" />
 

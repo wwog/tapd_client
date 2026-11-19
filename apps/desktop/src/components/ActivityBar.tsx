@@ -92,7 +92,7 @@ export function ActivityBar({
   const railView: View = view === "local" ? "bugs" : view;
 
   return (
-    <div className="flex w-[52px] shrink-0 flex-col items-center pb-2">
+    <div data-component="ActivityBar" className="flex w-[52px] shrink-0 flex-col items-center pb-2">
       <div className="flex flex-col items-center gap-1">
         {NAV.filter((item) => item.id !== "settings").map((item) => (
           <button

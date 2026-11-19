@@ -11,7 +11,7 @@ export function BugComments(props: { comments: Comment[] }) {
   const { comments } = props;
 
   return (
-    <section>
+    <section data-component="BugComments">
       <BugSectionTitle
         icon={<MessageSquare size={14} />}
         title={t("bugs.commentsCount", { count: countComments(comments) })}
@@ -41,7 +41,7 @@ export function BugCommentComposer(props: {
   const { busy, text, onChange, onSubmit } = props;
 
   return (
-    <section>
+    <section data-component="BugCommentComposer">
       <BugSectionTitle
         icon={<MessageSquarePlus size={14} />}
         title={t("bugs.addComment")}
@@ -83,6 +83,7 @@ function CommentItem(props: { comment: Comment; depth: number }) {
 
   return (
     <div
+      data-component="CommentItem"
       className={clsx(
         "rounded-xl border border-slate-100 bg-surface p-3",
         depth > 0 && "ml-5 border-l-2 border-l-slate-200",

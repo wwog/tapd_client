@@ -102,7 +102,7 @@ export function PluginInventory() {
 
   if (error) {
     return (
-      <div className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-ui-sm leading-5 text-rose-700">
+      <div data-component="PluginInventory" className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-ui-sm leading-5 text-rose-700">
         <div className="break-all">{error}</div>
         <Button size="sm" className="mt-2" onClick={load}>
           {t("common.retry")}
@@ -113,7 +113,7 @@ export function PluginInventory() {
 
   if (entries === null) {
     return (
-      <div className="flex items-center gap-2 py-6 text-ui-caption text-slate-400">
+      <div data-component="PluginInventory" className="flex items-center gap-2 py-6 text-ui-caption text-slate-400">
         <Spinner />
         {t("agent.plugins.loading")}
       </div>
@@ -121,7 +121,7 @@ export function PluginInventory() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div data-component="PluginInventory" className="flex flex-col gap-3">
       <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-canvas px-2 text-slate-400">
         <Search size={12} className="shrink-0" />
         <input
@@ -168,7 +168,7 @@ function Section({
   entries: DshPluginEntry[];
 }) {
   return (
-    <section className="rounded-xl border border-border">
+    <section data-component="Section" className="rounded-xl border border-border">
       <header className="flex items-baseline gap-2 border-b border-border px-3 py-2">
         <h3 className="text-ui-caption text-slate-800">{title}</h3>
         <span className="tabular-nums text-ui-xs text-slate-400">{entries.length}</span>
@@ -196,7 +196,7 @@ function PluginRow({ entry }: { entry: DshPluginEntry }) {
   const module = shortModule(packageName);
 
   return (
-    <div className="flex min-w-0 items-center gap-2 border-b border-border/60 px-3 py-1.5 last:border-b-0">
+    <div data-component="PluginRow" className="flex min-w-0 items-center gap-2 border-b border-border/60 px-3 py-1.5 last:border-b-0">
       <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", DOT[state])} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-2">

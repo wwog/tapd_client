@@ -77,7 +77,7 @@ export function CompanionCard({ toast }: SettingsSectionProps) {
   const enabled = status?.enabled ?? false;
 
   return (
-    <section className={cardClass}>
+    <section data-component="CompanionCard" className={cardClass}>
       <div className="flex items-start justify-between gap-3">
         <h2
           className="flex items-center gap-2 text-ui-base font-normal text-slate-900"

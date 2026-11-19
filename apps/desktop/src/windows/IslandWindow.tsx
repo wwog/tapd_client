@@ -256,7 +256,7 @@ export function IslandWindow() {
 
   if (!layout.expanded) {
     return (
-      <div className="flex h-full w-full flex-col items-center overflow-hidden">
+      <div data-component="IslandWindow" className="flex h-full w-full flex-col items-center overflow-hidden">
         <div className="flex h-8.5 shrink-0 items-center">
           <button
             type="button"
@@ -324,7 +324,7 @@ export function IslandWindow() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
+    <div data-component="IslandWindow" className="flex h-full w-full flex-col gap-1.5 overflow-hidden p-1.5">
       {items.length === 0 ? (
         <div className="island-expand grid flex-1 place-items-center rounded-2xl bg-island text-ui-sm text-island-muted border border-island-line">
           {t("app.island.empty")}
@@ -539,7 +539,7 @@ function AiCard(props: {
       : Boolean(payload.allowCustom);
 
   return (
-    <article className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line">
+    <article data-component="AiCard" className="island-expand relative flex min-h-0 flex-1 flex-col rounded-2xl bg-island p-3 border border-island-line">
       <button
         type="button"
         aria-label={t("common.close")}
@@ -643,6 +643,7 @@ function AiActionButton(props: {
   const { action, busy, disabled, onClick } = props;
   return (
     <button
+      data-component="AiActionButton"
       type="button"
       disabled={disabled}
       onClick={onClick}
@@ -672,6 +673,7 @@ function AiOptionRow(props: {
   const { action, busy, disabled, onClick } = props;
   return (
     <button
+      data-component="AiOptionRow"
       type="button"
       disabled={disabled}
       onClick={onClick}
@@ -718,6 +720,7 @@ function CustomAnswer(props: {
 
   return (
     <form
+      data-component="CustomAnswer"
       className="flex shrink-0 items-center gap-1"
       onSubmit={(event) => {
         event.preventDefault();
@@ -759,7 +762,7 @@ function AiBlocks({ blocks }: { blocks: AiBlock[] }) {
   if (blocks.length === 0) return null;
 
   return (
-    <div className="mt-1 min-h-0 space-y-1 overflow-hidden">
+    <div data-component="AiBlocks" className="mt-1 min-h-0 space-y-1 overflow-hidden">
       {blocks.map((block, index) => {
         switch (block.type) {
           case "text":
@@ -834,7 +837,7 @@ function StatusDot({
   tone: "ok" | "alert" | "paused" | "error" | "idle" | "review" | "agent";
 }) {
   return (
-    <span className="relative grid h-2 w-2 shrink-0 place-items-center">
+    <span data-component="StatusDot" className="relative grid h-2 w-2 shrink-0 place-items-center">
       <span
         className={clsx(
           "absolute h-full w-full rounded-full",
@@ -890,7 +893,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 
   if (failed) {
     return (
-      <div className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line">
+      <div data-component="UpdateCapsule" className="island-expand flex h-full w-full items-center gap-3 rounded-[22px] bg-island px-6 text-island-ink border border-island-line">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-rose-500/15 text-rose-700">
           <AlertTriangle size={16} />
         </span>
@@ -946,7 +949,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
         : t("app.update.verifying");
 
   return (
-    <div className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line">
+    <div data-component="UpdateCapsule" className="island-expand flex h-full w-full flex-col justify-center gap-2 rounded-[22px] bg-island px-6 py-3 text-island-ink border border-island-line">
       <div className="flex items-center gap-2">
         {phase === "ready" ? (
           <CheckCircle2 size={15} className="text-emerald-700" />
@@ -990,6 +993,7 @@ function UpdateCapsule({ state }: { state: UpdateState | null }) {
 function KindBadge({ kind }: { kind: NotificationItem["kind"] }) {
   return (
     <span
+      data-component="KindBadge"
       className={clsx(
         "shrink-0 rounded px-1.5 py-0.5 text-ui-2xs font-normal",
         kind === "new" && "bg-sky-400/15 text-sky-700",

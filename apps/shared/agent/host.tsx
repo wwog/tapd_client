@@ -15,6 +15,14 @@ export type AgentHost = {
   renderUsage?: (usage: AgentUsage, provider?: string, model?: string) => ReactNode;
   /** Reads a local image into a data URL for a `read_image` result preview. */
   loadImage?: (path: string) => Promise<string>;
+  /** Opens an inline picture in the app's full-screen media preview. */
+  previewImage?: (item: { src: string; label: string }) => void;
+  /** Opens the source record a task came from (bug detail, local item page). */
+  openTaskDetail?: (
+    target:
+      | { kind: "bug"; workspaceId: string; bugId: string }
+      | { kind: "local"; projectId: string },
+  ) => void;
 };
 
 const DEFAULT_HOST: AgentHost = {};

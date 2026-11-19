@@ -38,6 +38,7 @@ export function Badge(props: { tone?: BadgeTone; children: ReactNode }) {
   const tone = props.tone ?? "neutral";
   return (
     <span
+      data-component="Badge"
       className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-md px-1.5 py-0.5 text-ui-xs ${BADGE_TONES[tone]}`}
     >
       {props.children}
@@ -48,6 +49,7 @@ export function Badge(props: { tone?: BadgeTone; children: ReactNode }) {
 export function PriorityDot(props: { priority: string }) {
   return (
     <span
+      data-component="PriorityDot"
       className={`h-1.5 w-1.5 shrink-0 rounded-full ${PRIORITY_DOTS[props.priority] ?? "bg-slate-300"}`}
     />
   );

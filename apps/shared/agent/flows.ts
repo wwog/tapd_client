@@ -1,6 +1,7 @@
 import {
   describeTool,
   failedVerb,
+  isSubagentTool,
   isWaitingTool,
   pendingVerb,
   reasoningPreview,
@@ -144,7 +145,7 @@ function buildCommittedFlows(block: AgentTurnBlock): AgentFlow[] {
     ) {
       continue;
     }
-    if (entry.kind === "tool" && entry.name === "subagent") continue;
+    if (entry.kind === "tool" && isSubagentTool(entry.name)) continue;
     if (entry.kind === "assistant") {
       const reasoning = entry.reasoning?.trim() ?? "";
       if (reasoning) {
@@ -287,7 +288,7 @@ function applyLive(
     dirty = false;
   }
   for (const [offset, tool] of live.tools.entries()) {
-    if (tool.name === "subagent") continue;
+    if (isSubagentTool(tool.name)) continue;
     const flow = ensure();
     flow.liveTools.push(tool);
     flow.steps.push({
@@ -416,7 +417,7 @@ export function latestStep(
 
   const liveTool = [...(live?.tools ?? [])]
     .reverse()
-    .find((tool) => tool.name !== "subagent");
+    .find((tool) => !isSubagentTool(tool.name));
   if (liveTool) {
     const action = describeTool(liveTool.name, liveTool.args, locale);
     return {

@@ -65,6 +65,7 @@ export function ScrollingName({ text, className }: Props) {
 
   return (
     <span
+      data-component="ScrollingName"
       ref={outerRef}
       aria-label={text}
       className={clsx("relative block min-w-0 overflow-hidden", className)}

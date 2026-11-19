@@ -30,7 +30,7 @@ export function TodoGlyph({ status }: { status: AgentTodo["status"] }) {
  */
 export const TodoList = memo(function TodoList({ todos }: { todos: AgentTodo[] }) {
   return (
-    <ul className="flex flex-col gap-0.5">
+    <ul data-component="TodoList" className="flex flex-col gap-0.5">
       {todos.map((todo, index) => (
         <li
           key={index}
@@ -75,7 +75,7 @@ export const TodoCard = memo(function TodoCard({
   if (todos.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+    <div data-component="TodoCard" className="overflow-hidden rounded-lg border border-border bg-surface">
       <button
         type="button"
         aria-expanded={open}

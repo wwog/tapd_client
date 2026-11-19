@@ -455,6 +455,7 @@ export function FilePanel({ panel, active }: PanelProps) {
 
   return (
     <div
+      data-component="FilePanel"
       className="flex h-full min-h-0 flex-col bg-surface"
       data-panel-id={panel.id}
       data-panel-active={active ? "true" : "false"}

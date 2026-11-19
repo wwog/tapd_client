@@ -184,7 +184,7 @@ function ResizableDetail({
   };
 
   return (
-    <div className="group/leaf flex min-w-0 flex-col">
+    <div data-component="ResizableDetail" className="group/leaf flex min-w-0 flex-col">
       {label ? (
         <div className="mb-0.5 truncate text-ui-xs text-slate-400">{label}</div>
       ) : null}
@@ -282,7 +282,7 @@ export const LeafRow = memo(function LeafRow({
     : agentLabel("leaf.noOutput", locale));
 
   return (
-    <div className="min-w-0">
+    <div data-component="LeafRow" className="min-w-0">
       <button
         type="button"
         aria-expanded={open}
@@ -352,7 +352,14 @@ export const LeafRow = memo(function LeafRow({
               tone={failed ? "error" : "normal"}
             >
               {preview?.src ? (
-                <img src={preview.src} alt={action.target} className="max-w-full rounded" />
+                <img
+                  src={preview.src}
+                  alt={action.target}
+                  className="max-w-full cursor-zoom-in rounded"
+                  onClick={() =>
+                    host.previewImage?.({ src: preview.src!, label: action.target })
+                  }
+                />
               ) : (
                 <span className="block px-1 py-0.5 font-mono text-ui-xs text-slate-400">
                   {preview?.error ?? agentLabel("action.loading", locale)}

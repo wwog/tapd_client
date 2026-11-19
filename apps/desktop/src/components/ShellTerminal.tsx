@@ -215,5 +215,5 @@ export function ShellTerminal({ sessionId, active, live }: Props) {
     if (live) term.focus();
   }, [active, live]);
 
-  return <div ref={hostRef} className="h-full w-full" />;
+  return <div data-component="ShellTerminal" ref={hostRef} className="h-full w-full" />;
 }

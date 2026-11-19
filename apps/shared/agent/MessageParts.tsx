@@ -15,7 +15,7 @@ export const UserBubble = memo(function UserBubble({
   locale: AgentLocale;
 }) {
   return (
-    <div className="ml-auto max-w-[80%] whitespace-pre-wrap break-words rounded-xl rounded-tr-[3px] border border-border bg-surface px-3.5 py-2.5 text-ui-caption leading-6 text-slate-800 select-text">
+    <div data-component="UserBubble" className="ml-auto max-w-[80%] whitespace-pre-wrap break-words rounded-xl rounded-tr-[3px] border border-border bg-surface px-3.5 py-2.5 text-ui-caption leading-6 text-slate-800 select-text">
       {text}
     </div>
   );
@@ -42,7 +42,7 @@ export const AnswerBlock = memo(function AnswerBlock({
   const deferred = useDeferredValue(text);
   const shown = streaming ? deferred : text;
   return (
-    <div className="min-w-0 break-words text-ui-caption leading-6 text-slate-700 select-text">
+    <div data-component="AnswerBlock" className="min-w-0 break-words text-ui-caption leading-6 text-slate-700 select-text">
       {host.renderMarkdown ? (
         host.renderMarkdown(shown)
       ) : (
@@ -79,6 +79,7 @@ export const MessageMeta = memo(function MessageMeta({
   };
   return (
     <div
+      data-component="MessageMeta"
       className={clsx(
         "mt-1 flex items-center gap-2 text-ui-xs text-slate-400",
         align === "right" ? "justify-end" : "justify-start",

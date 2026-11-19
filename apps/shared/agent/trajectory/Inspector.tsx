@@ -117,6 +117,7 @@ function kindLabel(kind: TrajRecord["kind"], locale: AgentLocale): string {
 function KindTag({ kind, locale }: { kind: TrajRecord["kind"]; locale: AgentLocale }) {
   return (
     <span
+      data-component="KindTag"
       className={clsx(
         "shrink-0 rounded px-1 py-px text-ui-2xs",
         kind === "user" && "bg-sky-50 text-sky-700",
@@ -144,9 +145,10 @@ function Clock({
   locale: AgentLocale;
 }) {
   const [unix, setUnix] = useState(false);
-  if (timestamp === undefined) return <span>{agentLabel("traj.notAvailable", locale)}</span>;
+  if (timestamp === undefined) return <span data-component="Clock">{agentLabel("traj.notAvailable", locale)}</span>;
   return (
     <button
+      data-component="Clock"
       type="button"
       className="select-text text-left transition hover:text-slate-900"
       title={unix ? agentLabel("traj.showLocal", locale) : agentLabel("traj.showUnix", locale)}
@@ -159,7 +161,7 @@ function Clock({
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid min-h-[22px] grid-cols-[94px_minmax(0,1fr)] items-center px-3.5">
+    <div data-component="Row" className="grid min-h-[22px] grid-cols-[94px_minmax(0,1fr)] items-center px-3.5">
       <dt className="text-slate-400">{label}</dt>
       <dd className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-slate-700">
         {children}
@@ -179,7 +181,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex min-h-6 flex-col overflow-hidden">
+    <section data-component="Section" className="flex min-h-6 flex-col overflow-hidden">
       <button
         type="button"
         className="flex h-6 w-full shrink-0 items-end gap-1 px-3.5 pb-0.5 text-left text-ui-xs text-slate-500 transition hover:text-slate-700"
@@ -242,7 +244,7 @@ function AssistantTiming({ record, locale }: { record: TrajRecord; locale: Agent
       : undefined;
 
   return (
-    <dl className="py-2 text-ui-xs">
+    <dl data-component="AssistantTiming" className="py-2 text-ui-xs">
       <Row label={agentLabel("traj.started", locale)}>
         <Clock timestamp={started} locale={locale} />
       </Row>
@@ -265,7 +267,7 @@ function AssistantTiming({ record, locale }: { record: TrajRecord; locale: Agent
 function RecordTiming({ record, locale }: { record: TrajRecord; locale: AgentLocale }) {
   if (record.kind === "assistant") return <AssistantTiming record={record} locale={locale} />;
   return (
-    <dl className="py-2 text-ui-xs">
+    <dl data-component="RecordTiming" className="py-2 text-ui-xs">
       <Row label={agentLabel("traj.started", locale)}>
         <Clock timestamp={record.startedAtMs} locale={locale} />
       </Row>
@@ -295,7 +297,7 @@ function Payload({
 }) {
   if (text === undefined || text === "") {
     return (
-      <p className="px-3.5 py-2 text-ui-xs text-slate-400">
+      <p data-component="Payload" className="px-3.5 py-2 text-ui-xs text-slate-400">
         {agentLabel("traj.noPayload", locale)}
       </p>
     );
@@ -305,7 +307,7 @@ function Payload({
     return <JsonTree value={json} preview={preview} className="px-3.5 py-2" locale={locale} />;
   }
   return (
-    <pre className="select-text overflow-auto whitespace-pre-wrap break-words px-3.5 py-2 font-mono text-ui-xs leading-5 text-slate-600">
+    <pre data-component="Payload" className="select-text overflow-auto whitespace-pre-wrap break-words px-3.5 py-2 font-mono text-ui-xs leading-5 text-slate-600">
       {text}
     </pre>
   );
@@ -633,6 +635,7 @@ export function TrajectoryInspector({
 
   return (
     <aside
+      data-component="TrajectoryInspector"
       ref={asideRef}
       className="relative flex min-h-0 shrink-0 flex-col border-l border-border bg-surface"
       style={{

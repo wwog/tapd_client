@@ -93,7 +93,7 @@ const ROW_ICONS: Record<FileVisualKind, LucideIcon> = {
 
 function ListSkeleton() {
   return (
-    <div aria-hidden="true">
+    <div data-component="ListSkeleton" aria-hidden="true">
       {[0, 1, 2, 3, 4, 5].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-2/3 animate-pulse rounded bg-overlay-soft" />
@@ -107,6 +107,7 @@ function ListSkeleton() {
 function RetryButton(props: { onClick: () => void; label?: string }) {
   return (
     <button
+      data-component="RetryButton"
       type="button"
       onClick={props.onClick}
       className="mt-4 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-ui-sm text-slate-700 transition active:bg-overlay-soft"
@@ -384,7 +385,7 @@ export function FilesPage(props: { workspaceId: string | null; path: string }) {
     rows.length === 0;
 
   return (
-    <div>
+    <div data-component="FilesPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center gap-2 px-4 pt-3 pb-1">
           <h1 className="text-ui-base text-slate-900">{t("mobile.files.title")}</h1>

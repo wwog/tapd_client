@@ -30,7 +30,7 @@ export function AccountPage({
   const userId = context?.user.userId || null;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3">
+    <div data-component="AccountPage" className="mx-auto max-w-3xl space-y-3">
       <section className="rounded-2xl border border-border bg-surface p-6 ">
         <div className="flex flex-wrap items-center gap-4">
           <Avatar

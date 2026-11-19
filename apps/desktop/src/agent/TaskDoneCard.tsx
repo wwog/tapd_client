@@ -5,6 +5,7 @@ import { t } from "../lib/i18n";
 import { Button } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { HashValue } from "./HashValue";
+import { TaskDetailLink } from "./TaskDetailLink";
 import { agentActions } from "./store";
 import { taskHashes } from "./workflow";
 
@@ -38,6 +39,7 @@ export function TaskDoneCard({ task }: { task: DshTask }) {
             <ScrollingName text={task.branch} className="max-w-56" />
           </span>
         ) : null}
+        <TaskDetailLink task={task} />
         {task.changes ? (
           <span
             className="ml-auto shrink-0 text-ui-xs text-slate-500"

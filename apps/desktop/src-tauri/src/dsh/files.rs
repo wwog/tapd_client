@@ -59,7 +59,10 @@ pub(crate) fn resolve(app: &AppHandle, session_id: &str, raw: &str) -> Result<Fi
     // Follow symlinks when the file exists: the containment checks downstream
     // (and the viewer's own reads) canonicalize the same way. A missing path
     // keeps its lexical form so the reply can still be told apart from a typo.
-    let target = absolute.canonicalize().unwrap_or_else(|_| absolute.clone());
+    let mut target = absolute.canonicalize().unwrap_or_else(|_| absolute.clone());
+    if let Some(base) = base.as_deref() {
+        target = remap_onto_execution_root(app, session_id, base, requested, target);
+    }
     let kind = match std::fs::metadata(&target) {
         Ok(meta) if meta.is_file() => "file",
         Ok(meta) if meta.is_dir() => "dir",
@@ -94,6 +97,59 @@ pub(crate) fn resolve(app: &AppHandle, session_id: &str, raw: &str) -> Result<Fi
         label: label_of(&target, &cleaned),
         kind,
     })
+}
+
+/// Maps a reply path that was written against the repository (or a worktree the
+/// session used earlier) onto the directory the session is executing in.
+///
+/// The model sees absolute paths now and then, and a task's worktree path
+/// changes once its work is merged. The same repository-relative file is what
+/// the user means, so the copy in the current root wins; when the current root
+/// does not have it, the repository's copy is tried next.
+fn remap_onto_execution_root(
+    app: &AppHandle,
+    session_id: &str,
+    base: &Path,
+    requested: &Path,
+    target: PathBuf,
+) -> PathBuf {
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let alternates = tasks::session_alternate_roots(app, session_id);
+
+    if !target.starts_with(&base) {
+        for root in &alternates {
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            let Some(relative) = relative_to(&root, &target) else {
+                continue;
+            };
+            let candidate = lexical(&base.join(&relative));
+            let candidate = candidate.canonicalize().unwrap_or(candidate);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    if !target.exists() {
+        // The mirror case: the current root lacks the file (e.g. a worktree
+        // only carries changed files), but the repository has it. `requested`
+        // is already what an absolute path is relative to the current root.
+        let relative = if requested.is_absolute() {
+            relative_to(&base, &target).map(PathBuf::from)
+        } else {
+            Some(requested.to_path_buf())
+        };
+        if let Some(relative) = relative {
+            for root in &alternates {
+                let candidate = root.join(&relative);
+                if candidate.exists() {
+                    return candidate.canonicalize().unwrap_or(candidate);
+                }
+            }
+        }
+    }
+
+    target
 }
 
 /// Longest matching root wins, so a project nested inside another one does not
@@ -145,8 +201,12 @@ fn clean(raw: &str) -> String {
     {
         trimmed = inner.trim();
     }
+    // Markdown links carry a line anchor (`path.swift#L497-L516`); it names a
+    // range inside the file, not part of its name.
+    trimmed = strip_line_anchor(trimmed);
     let decoded = percent_decode_str(trimmed).decode_utf8_lossy().into_owned();
-    let decoded = decoded.trim();
+    // A link may percent-encode the `#` (`%23L12`); strip again after decoding.
+    let decoded = strip_line_anchor(decoded.trim()).trim();
     let without_file = decoded
         .strip_prefix("file://")
         .map(|rest| {
@@ -158,6 +218,25 @@ fn clean(raw: &str) -> String {
     tapd_core::paths::expand_home(without_file)
         .to_string_lossy()
         .to_string()
+}
+
+/// Drops a trailing GitHub/VSCode line anchor (`#L12`, `#L12-L34`,
+/// `#L12C1-L34C9`, `#lines-12`). Anything else after `#` is left alone: it may
+/// be part of a real file name.
+fn strip_line_anchor(raw: &str) -> &str {
+    let Some((path, fragment)) = raw.rsplit_once('#') else {
+        return raw;
+    };
+    let anchor = fragment.starts_with("lines-")
+        || (fragment.starts_with('L')
+            && fragment[1..]
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || ch == '-' || ch == 'L' || ch == 'C'));
+    if anchor && !path.is_empty() {
+        path
+    } else {
+        raw
+    }
 }
 
 /// Collapses `.` and `..` without touching the disk (`/a/b/../c` → `/a/c`).
@@ -186,6 +265,12 @@ mod tests {
         assert_eq!(clean("<docs/a b.md>"), "docs/a b.md");
         assert_eq!(clean("file:///tmp/a%20b.md"), "/tmp/a b.md");
         assert_eq!(clean("file://localhost/tmp/a.md"), "/tmp/a.md");
+        // A line anchor is a range inside the file, not part of its name.
+        assert_eq!(clean("src/a.swift#L497-L516"), "src/a.swift");
+        assert_eq!(clean("src/a.swift#L12C1-L34C9"), "src/a.swift");
+        assert_eq!(clean("src/a.swift#lines-12"), "src/a.swift");
+        // A `#` that is part of the name survives.
+        assert_eq!(clean("docs/a#b.md"), "docs/a#b.md");
     }
 
     #[test]

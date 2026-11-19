@@ -25,6 +25,7 @@ export function Avatar({ src, name, className, rounded = "rounded-full" }: Props
   if (src && !broken) {
     return (
       <img
+        data-component="Avatar"
         src={src}
         alt={name ? t("app.avatar.namedAlt", { name }) : t("app.avatar.alt")}
         draggable={false}
@@ -36,6 +37,7 @@ export function Avatar({ src, name, className, rounded = "rounded-full" }: Props
 
   return (
     <span
+      data-component="Avatar"
       className={clsx(
         "grid shrink-0 place-items-center bg-gradient-to-br from-sky-400 to-emerald-400 font-normal text-white",
         rounded,

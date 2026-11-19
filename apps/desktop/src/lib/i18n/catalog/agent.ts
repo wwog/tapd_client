@@ -94,6 +94,8 @@ export const agent = {
   "agent.task.writebackComment": ["评论已写入", "Comment posted"],
   "agent.task.writebackStatus": ["状态 {from} → {to}", "Status {from} → {to}"],
   "agent.task.writebackPending": ["尚未回写", "Not written back yet"],
+  "agent.task.openBug": ["打开缺陷", "Open bug"],
+  "agent.task.openItem": ["打开事项", "Open item"],
   "agent.task.doneTitle": ["任务已完成", "Task complete"],
   "agent.task.doneDirectHint": [
     "本轮直接在主仓库完成。",
@@ -122,8 +124,12 @@ export const agent = {
   "agent.review.risks": ["风险", "Risks"],
   "agent.review.files": ["改动文件", "Changed files"],
   "agent.review.filesHint": [
-    "「应用内查看」展开逐文件 diff；「IDE 打开」用保存的打开方式打开这个文件。",
-    "“View here” expands the per-file diff; “Open in IDE” opens the file with the saved app.",
+    "「应用内查看」在内置文件查看器中打开；点文件名展开逐行 diff；「IDE 打开」用保存的打开方式打开这个文件。",
+    "“View here” opens the built-in viewer; click the file name for the line diff; “Open in IDE” uses the saved app.",
+  ],
+  "agent.review.viewHereHint": [
+    "在内置文件查看器中打开这个文件。",
+    "Open this file in the built-in viewer.",
   ],
   "agent.review.filesLoadFailed": ["改动列表读取失败", "Could not load the changed files"],
   "agent.review.viewHere": ["应用内查看", "View here"],

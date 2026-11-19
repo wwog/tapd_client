@@ -76,7 +76,7 @@ function FlowBlockImpl({ flow, running, live, locale, hideNote = false }: Props)
   const flatThinking = thinkingOnly && flow.steps.length === 1;
 
   return (
-    <div className="flex min-w-0 flex-col gap-2">
+    <div data-component="FlowBlock" className="flex min-w-0 flex-col gap-2">
       {/* Header and fold share one wrapper so the note below keeps the same
           root gap before, during and after the close animation. */}
       <div className="flex min-w-0 flex-col">
@@ -186,7 +186,7 @@ const ThinkingStep = memo(function ThinkingStep({
         });
 
   return (
-    <div className="flex min-w-0 flex-col">
+    <div data-component="ThinkingStep" className="flex min-w-0 flex-col">
       <button
         type="button"
         aria-expanded={open}
@@ -209,7 +209,7 @@ const ThinkingStep = memo(function ThinkingStep({
         />
       </button>
       <Collapse open={open}>
-        <div className="mt-1">
+        <div className="mt-1 pl-3">
           <ThinkingBlock text={block.text} locale={locale} />
         </div>
       </Collapse>
@@ -335,10 +335,11 @@ function HeaderButton({
   const className =
     "group/flow -ml-1 flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-ui-caption text-slate-500 transition-colors hover:text-slate-700";
   if (!expandable) {
-    return <span className={className}>{children}</span>;
+    return <span data-component="HeaderButton" className={className}>{children}</span>;
   }
   return (
     <button
+      data-component="HeaderButton"
       type="button"
       aria-expanded={open}
       title={

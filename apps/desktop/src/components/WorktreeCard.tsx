@@ -52,7 +52,7 @@ export function WorktreeCard({ toast }: { toast: (kind: "ok" | "error", text: st
   };
 
   return (
-    <section className={cardClass}>
+    <section data-component="WorktreeCard" className={cardClass}>
       <div className="flex items-center gap-2">
         <h2
           className="flex min-w-0 items-center gap-2 text-ui-base text-slate-900"

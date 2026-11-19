@@ -72,6 +72,7 @@ export function ModeChip(props: { value: ModeValue; onClick: () => void }) {
   const Icon = active.icon;
   return (
     <button
+      data-component="ModeChip"
       type="button"
       aria-haspopup="dialog"
       onClick={props.onClick}
@@ -87,6 +88,7 @@ export function ModeChip(props: { value: ModeValue; onClick: () => void }) {
 export function ModelChip(props: { label: string; onClick: () => void }) {
   return (
     <button
+      data-component="ModelChip"
       type="button"
       aria-haspopup="dialog"
       onClick={props.onClick}
@@ -317,7 +319,7 @@ function ReasoningSlider(props: {
   const label = value ?? t("mobile.agent.modelReasoningOff");
 
   return (
-    <div className="mt-4 border-t border-border pt-3">
+    <div data-component="ReasoningSlider" className="mt-4 border-t border-border pt-3">
       <div className="flex items-baseline justify-between gap-2 text-ui-xs">
         <span className="text-slate-400">{t("mobile.agent.modelReasoningEffort")}</span>
         <span className="truncate text-slate-600">{label}</span>

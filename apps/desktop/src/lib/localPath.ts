@@ -16,6 +16,16 @@ const EXTERNAL = /^(?:https?|mailto|tel|data|javascript):/i;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /**
+ * GitHub/VSCode line ranges: `#L12`, `#L12-L34`, `#L12C1-L34C9`, `#lines-12`.
+ * They name a range inside the file, not part of its name.
+ */
+const LINE_ANCHOR = /#(?:L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|lines-\d+)$/i;
+
+function stripLineAnchor(path: string): string {
+  return path.replace(LINE_ANCHOR, "");
+}
+
+/**
  * A link destination that names something on this machine (relative paths,
  * absolute paths, `~/…` or `file://`). Anchors and real URLs are left to the
  * browser.
@@ -25,7 +35,8 @@ export function localPathFromHref(href?: string | null): string | null {
   if (!raw || raw.startsWith("#")) return null;
   if (EXTERNAL.test(raw)) return null;
   if (SCHEME.test(raw) && !/^file:/i.test(raw)) return null;
-  return raw;
+  const path = stripLineAnchor(raw);
+  return path && !path.startsWith("#") ? path : null;
 }
 
 /**
@@ -36,7 +47,9 @@ export function localPathFromHref(href?: string | null): string | null {
  * every `and/or` clickable would be noise).
  */
 export function inlineCodePath(text: string): string | null {
-  const raw = text.trim().replace(/^["'`]+|["'`]+$/g, "");
+  const raw = stripLineAnchor(
+    text.trim().replace(/^["'`]+|["'`]+$/g, ""),
+  );
   if (!raw || raw.length > 240) return null;
   if (/\s/.test(raw) || raw.startsWith("#")) return null;
   // A `file:` URL is a path by definition; every other scheme is a URL.

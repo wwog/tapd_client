@@ -224,7 +224,8 @@ export function compactTokens(tokens: number): string {
 export const agentSettingsApi = {
   get: () => invoke<AgentConfig>("agent_settings_get"),
   set: (config: AgentConfig) => invoke<AgentConfig>("agent_settings_set", { config }),
-  /** Records one model's last reasoning level; only that entry is rewritten. */
-  setEffort: (providerId: string, modelId: string, level: string) =>
-    invoke<AgentConfig>("agent_model_effort_set", { providerId, modelId, level }),
+  /** Records the last pick as the default for new sessions: the provider and
+   *  model move to the front of their lists and the level is remembered. */
+  setDefault: (providerId: string, modelId: string, level: string) =>
+    invoke<AgentConfig>("agent_model_default_set", { providerId, modelId, level }),
 };

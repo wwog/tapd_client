@@ -117,7 +117,7 @@ export function TurnStack({
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div data-component="TurnStack" className="flex min-w-0 flex-col gap-4">
       {shown.map((block) => {
         const active = block.key === activeKey;
         const subagents = groups.get(block.key);

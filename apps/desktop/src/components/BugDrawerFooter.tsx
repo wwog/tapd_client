@@ -36,7 +36,7 @@ export function BugDrawerFooter(props: Props) {
   const [enqueueOpen, setEnqueueOpen] = useState(false);
 
   return (
-    <div className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
+    <div data-component="BugDrawerFooter" className="shrink-0 border-t border-slate-100 bg-surface px-4 py-3">
       {lastExport ? (
         <div className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-ui-xs leading-4 text-emerald-900">
           <div className="flex flex-wrap items-center gap-2">

@@ -19,7 +19,7 @@ export function TerminalPanel({ panel, active }: PanelProps) {
   const exited = session?.exited ?? null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-component="TerminalPanel" className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1 p-1.5">
         <ShellTerminal
           sessionId={sessionId}

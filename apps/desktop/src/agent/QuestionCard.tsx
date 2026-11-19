@@ -71,7 +71,7 @@ export function QuestionCard({ pending }: { pending: PendingQuestion }) {
   };
 
   return (
-    <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
+    <section data-component="QuestionCard" className="rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <span className="shrink-0 text-ui-xs tabular-nums text-slate-400">
           {t("agent.question.step", { index: index + 1, total: questions.length })}

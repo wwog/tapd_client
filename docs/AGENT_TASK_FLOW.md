@@ -424,8 +424,11 @@ export type DshTask = {
 | 名称 | 入参 | 返回 |
 |---|---|---|
 | `dsh_tasks` | — | `{ tasks }` |
-| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments? }` | `{ task }`（可能 `queued`） |
-| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments? }` | `{ task }` |
+| `dsh_task_enqueue_bug` | `{ workspaceId, bugId, extraPrompt?, attachments?, team?, model? }` | `{ task }`（可能 `queued`） |
+| `dsh_task_enqueue_local` | `{ projectId, itemId, extraPrompt?, attachments?, team?, model? }` | `{ task }` |
+
+`model` 是弹窗里选的 `{ provider, model, reasoningEffort? }`：入队时就记到会话上，
+调度器第一次发提示词前生效；同一次选择也会成为后续新会话的默认路由。
 | `dsh_task_approve` | `{ sessionId }` | `{ task }` |
 | `dsh_task_retry_finalize` | `{ sessionId }` | `{ task }` |
 | `dsh_task_cancel` | `{ sessionId, stash? }` | `{ task }` |

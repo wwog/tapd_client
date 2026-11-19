@@ -8,6 +8,7 @@ import { Markdown } from "../../components/Markdown";
 export function MarkdownView({ text }: { text: string }) {
   return (
     <div
+      data-component="MarkdownView"
       className="min-h-0 flex-1 select-text overflow-auto px-4 py-3 text-ui-caption leading-6 text-slate-700"
       data-workbench-file="markdown"
     >

@@ -60,6 +60,7 @@ export function ForceUpdateModal() {
 
   return (
     <div
+      data-component="ForceUpdateModal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="force-update-title"

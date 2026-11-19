@@ -63,7 +63,7 @@ export function WorkflowChip(props: { workflow: DshWorkflow }) {
 
 function ListSkeleton() {
   return (
-    <div aria-hidden="true">
+    <div data-component="ListSkeleton" aria-hidden="true">
       {[0, 1, 2, 3].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-2/3 animate-pulse rounded bg-overlay-soft" />
@@ -138,6 +138,7 @@ function TaskRow(props: { task: DshTask }) {
   const task = props.task;
   return (
     <button
+      data-component="TaskRow"
       type="button"
       onClick={() => navigate(`#/agent/session/${encodeURIComponent(task.id)}`)}
       className="flex min-h-11 w-full flex-col border-b border-border px-4 py-3 text-left transition active:bg-overlay-soft"
@@ -289,7 +290,7 @@ export function AgentPage() {
   const failure = status?.phase === "failed" ? (status.error ?? status.errorCode) : null;
 
   return (
-    <div>
+    <div data-component="AgentPage">
       <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-canvas px-4 py-2">
         <h1 className="min-w-0 flex-1 text-ui-base text-slate-900">{t("mobile.tab.agent")}</h1>
       </header>

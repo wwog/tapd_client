@@ -327,6 +327,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   if (model === null) {
     return (
       <section
+        data-component="TrajectoryTimeline"
         className="shrink-0 select-none border-b border-border"
         aria-label={agentLabel("traj.timelineAria", locale)}
       >
@@ -519,6 +520,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
 
   return (
     <section
+      data-component="TrajectoryTimeline"
       className="shrink-0 select-none border-b border-border"
       aria-label={agentLabel("traj.timelineAria", locale)}
     >
@@ -697,7 +699,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
 
 function LaneLabels({ locale }: { locale: AgentLocale }) {
   return (
-    <div className="relative border-r border-border text-ui-2xs text-slate-400" aria-hidden="true">
+    <div data-component="LaneLabels" className="relative border-r border-border text-ui-2xs text-slate-400" aria-hidden="true">
       {LANE_LABELS.map((key, lane) => (
         <span
           key={key}

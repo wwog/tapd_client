@@ -10,12 +10,14 @@ import {
 
 import { api, relativeTime } from "../lib/api";
 import type { DshFinalizeStep, DshTask } from "../lib/dsh";
+import type { FileTabTarget } from "../lib/fs";
 import { t, type MessageKey } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { Badge, Button, Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
 import { HashValue } from "./HashValue";
 import { AGENT_COLUMN } from "./layout";
+import { TaskDetailLink } from "./TaskDetailLink";
 import { TaskDiffSection } from "./TaskDiffSection";
 import {
   agentActions,
@@ -48,7 +50,14 @@ function dirName(path: string): string {
  * The pane is the permanent home of a workflow task: it exists from `queued`
  * to `done`, unlike the old review surface that disappeared after approval.
  */
-export function TaskPanel({ task }: { task: DshTask }) {
+export function TaskPanel({
+  task,
+  onOpenFile,
+}: {
+  task: DshTask;
+  /** Opens one changed file in the workbench viewer. */
+  onOpenFile: (target: FileTabTarget) => void;
+}) {
   const state = agentStore.use();
   const rootRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -132,6 +141,7 @@ export function TaskPanel({ task }: { task: DshTask }) {
 
   return (
     <div
+      data-component="TaskPanel"
       ref={rootRef}
       className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-3"
     >
@@ -153,6 +163,7 @@ export function TaskPanel({ task }: { task: DshTask }) {
                 <ScrollingName text={task.branch} className="max-w-[16rem]" />
               </span>
             ) : null}
+            <TaskDetailLink task={task} />
             {changes ? (
               <span
                 className="ml-auto shrink-0 text-ui-xs text-slate-500"
@@ -258,7 +269,9 @@ export function TaskPanel({ task }: { task: DshTask }) {
           </section>
         ) : null}
 
-        {review || changes ? <TaskDiffSection task={task} /> : null}
+        {review || changes ? (
+          <TaskDiffSection task={task} onOpenFile={onOpenFile} />
+        ) : null}
 
         {finalizing ? (
           <section className="rounded-xl border border-border bg-surface px-3 py-2.5">

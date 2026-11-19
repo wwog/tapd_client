@@ -624,17 +624,40 @@ pub async fn agent_settings_set(
     Ok(saved)
 }
 
-/// Remembers the reasoning level one model was last used with. Kept apart from
-/// the whole-settings write so a slider pick cannot race a catalog edit: only
-/// this one entry changes.
+/// Records the last model pick as the default for the sessions that start next.
+///
+/// The app's rule is positional — the first enabled provider's first enabled
+/// model is the default — so the picked pair is moved to the front of both
+/// lists instead of storing a second pointer. The reasoning level rides along
+/// in the same write, keeping a slider pick and the route change atomic.
+/// Existing sessions are untouched: their own `model/selection` stays durable.
 #[tauri::command]
-pub async fn agent_model_effort_set(
+pub async fn agent_model_default_set(
     app: tauri::AppHandle,
     provider_id: String,
     model_id: String,
     level: Option<String>,
 ) -> Result<AgentConfig, String> {
     let mut config = config_for(&app);
+    let provider_id = provider_id.trim().to_string();
+    let model_id = model_id.trim().to_string();
+
+    if let Some(index) = config
+        .dsh_models
+        .providers
+        .iter()
+        .position(|provider| provider.id == provider_id)
+    {
+        let mut provider = config.dsh_models.providers.remove(index);
+        if let Some(model_index) = provider.models.iter().position(|model| model.id == model_id) {
+            let model = provider.models.remove(model_index);
+            provider.models.insert(0, model);
+            config.dsh_models.active_provider_id = provider_id.clone();
+            config.dsh_models.active_model_id = model_id.clone();
+        }
+        config.dsh_models.providers.insert(0, provider);
+    }
+
     let key = format!("{provider_id}/{model_id}");
     match level.map(|level| level.trim().to_string()) {
         Some(level) if !level.is_empty() => {

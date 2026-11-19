@@ -19,7 +19,7 @@ export function BugChanges(props: { detail: BugDetail; open: boolean }) {
   }, [open]);
 
   return (
-    <section>
+    <section data-component="BugChanges">
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}
@@ -65,7 +65,7 @@ export function BugChanges(props: { detail: BugDetail; open: boolean }) {
 
 function ChangeItem({ entry }: { entry: ChangeEntry }) {
   return (
-    <div className="rounded-xl border border-slate-100 bg-surface p-3">
+    <div data-component="ChangeItem" className="rounded-xl border border-slate-100 bg-surface p-3">
       <div className="flex flex-wrap items-center gap-2 text-ui-sm text-slate-400">
         <span className="font-mono text-slate-500">#{entry.seq}</span>
         <span className="font-normal text-slate-600">
@@ -96,7 +96,7 @@ function ChangeItem({ entry }: { entry: ChangeEntry }) {
 
 function ChangeFieldLine({ field }: { field: ChangeField }) {
   return (
-    <div className="grid grid-cols-[minmax(56px,auto)_1fr_auto_1fr] items-baseline gap-2 text-ui-sm leading-5">
+    <div data-component="ChangeFieldLine" className="grid grid-cols-[minmax(56px,auto)_1fr_auto_1fr] items-baseline gap-2 text-ui-sm leading-5">
       <dt className="truncate text-slate-400" title={field.field}>
         {field.field}
       </dt>

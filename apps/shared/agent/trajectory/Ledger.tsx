@@ -60,7 +60,7 @@ function KindIcon({ record }: { record: TrajRecord }) {
   const name = record.entry?.kind === "tool" ? record.entry.name : "";
   if (record.kind === "user") {
     return (
-      <span className="h-3 w-3 shrink-0 rounded-full border border-sky-400" aria-hidden="true" />
+      <span data-component="KindIcon" className="h-3 w-3 shrink-0 rounded-full border border-sky-400" aria-hidden="true" />
     );
   }
   if (record.kind === "notice") {
@@ -348,7 +348,7 @@ export function TrajectoryLedger({
 
   if (loading) {
     return (
-      <div className="grid min-h-0 flex-1 place-items-center">
+      <div data-component="TrajectoryLedger" className="grid min-h-0 flex-1 place-items-center">
         <div className="flex items-center gap-2 text-ui-caption text-slate-400">
           <Loader2 size={16} className="animate-spin text-slate-400" />
           {agentLabel("action.loading", locale)}
@@ -359,7 +359,7 @@ export function TrajectoryLedger({
 
   if (failed) {
     return (
-      <div className="grid min-h-0 flex-1 place-items-center">
+      <div data-component="TrajectoryLedger" className="grid min-h-0 flex-1 place-items-center">
         <div className="flex items-center gap-3 text-ui-caption text-slate-400">
           <span>{agentLabel("traj.loadFailed", locale)}</span>
           {onRetry ? (
@@ -378,7 +378,7 @@ export function TrajectoryLedger({
 
   if (rows.length === 0) {
     return (
-      <div className="grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400">
+      <div data-component="TrajectoryLedger" className="grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400">
         {agentLabel("traj.empty", locale)}
       </div>
     );
@@ -391,6 +391,7 @@ export function TrajectoryLedger({
 
   return (
     <div
+      data-component="TrajectoryLedger"
       ref={scrollRef}
       className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
       onClick={(event) => {

@@ -195,7 +195,7 @@ export function LocalItemsPage({ project, toast }: Props) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-component="LocalItemsPage" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
         <Segmented<WorkItemStatus>
           value={tab}
@@ -353,7 +353,7 @@ function ItemRow(props: {
   const { item, busy, onSetStatus, onHandOver, onContextMenu } = props;
 
   return (
-    <li>
+    <li data-component="ItemRow">
       <article
         onContextMenu={(event) => {
           event.preventDefault();
@@ -441,6 +441,7 @@ function RowAction(props: {
   const { label, icon, tone = "default", disabled = false, onClick } = props;
   return (
     <button
+      data-component="RowAction"
       type="button"
       title={label}
       aria-label={label}

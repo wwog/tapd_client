@@ -24,7 +24,7 @@ import { TerminalSessionPage } from "./pages/TerminalSessionPage";
 /** Full-screen gate: one-line title, explanation folded into `title`. */
 function GateScreen(props: { title: string; hint: string; retry?: boolean }) {
   return (
-    <div className="grid h-full place-items-center p-6" title={props.hint}>
+    <div data-component="GateScreen" className="grid h-full place-items-center p-6" title={props.hint}>
       <div className="text-center">
         <h1 className="text-ui-lg text-slate-900">{props.title}</h1>
         {props.retry ? (
@@ -83,6 +83,7 @@ const tabOf = (route: Route): TabKey => {
 function TabBar(props: { active: TabKey; agentBadge: number }) {
   return (
     <nav
+      data-component="TabBar"
       aria-label={t("mobile.nav.main")}
       className="tab-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-canvas"
     >
@@ -156,7 +157,7 @@ export default function App() {
 
   if (!session) {
     return (
-      <div className="flex h-full flex-col">
+      <div data-component="App" className="flex h-full flex-col">
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <PairPage />
         </main>
@@ -195,7 +196,7 @@ export default function App() {
   const ownScroll = route.name === "agent-session";
 
   return (
-    <div className="flex h-full flex-col">
+    <div data-component="App" className="flex h-full flex-col">
       {/* Mounted behind the gates too: its poll requests are what detect
           recovery (desktop back online / logged back in). */}
       {route.name !== "pair" ? <NotificationBanner /> : null}

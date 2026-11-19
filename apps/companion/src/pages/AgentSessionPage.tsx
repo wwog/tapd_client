@@ -106,7 +106,7 @@ const FILE_STATUS_LABELS: Record<DshTaskFileStatus, MessageKey> = {
 
 function TranscriptSkeleton() {
   return (
-    <div className="space-y-3 px-4 py-3" aria-hidden="true">
+    <div data-component="TranscriptSkeleton" className="space-y-3 px-4 py-3" aria-hidden="true">
       {[0, 1, 2].map((row) => (
         <div key={row} className="rounded-lg border border-border px-3 py-2">
           <div className="h-3 w-2/3 animate-pulse rounded bg-overlay-soft" />
@@ -137,6 +137,7 @@ function TaskButton(props: {
         : "border border-border bg-surface text-slate-700 active:bg-overlay-soft";
   return (
     <button
+      data-component="TaskButton"
       type="button"
       disabled={props.disabled || props.busy}
       onClick={props.onClick}
@@ -151,7 +152,7 @@ function TaskButton(props: {
 /** One labelled paragraph of the model's review note. */
 function ReviewField(props: { label: string; text: string }) {
   return (
-    <div className="flex items-baseline gap-2">
+    <div data-component="ReviewField" className="flex items-baseline gap-2">
       <span className="shrink-0 text-ui-2xs text-slate-400">{props.label}</span>
       <span className="min-w-0 flex-1 select-text whitespace-pre-wrap text-ui-xs leading-5 text-slate-700">
         {props.text}
@@ -186,7 +187,7 @@ function ReviewPanel(props: {
   const changes = props.task.changes;
 
   return (
-    <section className="border-b border-border bg-canvas">
+    <section data-component="ReviewPanel" className="border-b border-border bg-canvas">
       <div className="flex items-center gap-2 px-4 pt-2.5 pb-1">
         <h2 className="min-w-0 flex-1 text-ui-caption text-slate-900">
           {finalizing ? t("mobile.agent.finalizeTitle") : t("mobile.agent.reviewTitle")}
@@ -344,7 +345,7 @@ function ApprovalCard(props: { request: ApprovalPending }) {
   };
 
   return (
-    <div className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+    <div data-component="ApprovalCard" className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
       <p className="text-ui-xs text-slate-500">{t("mobile.agent.approvalRequest")}</p>
       <p className="mt-1.5 flex items-baseline gap-2">
         <span className="shrink-0 text-ui-2xs text-slate-400">
@@ -399,7 +400,7 @@ function ApprovalCard(props: { request: ApprovalPending }) {
 function QuestionCard(props: { request: QuestionPending; onAnswer: () => void }) {
   const first = props.request.request.questions[0];
   return (
-    <div className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
+    <div data-component="QuestionCard" className="mx-4 mt-3 rounded-lg border border-border bg-surface px-3 py-3">
       <p className="text-ui-xs text-slate-500">{t("mobile.agent.questionRequest")}</p>
       <p className="mt-1 line-clamp-3 select-text text-ui-caption leading-5 text-slate-900">
         {first?.question ?? t("common.empty")}
@@ -646,6 +647,7 @@ function WorkPill(props: {
   const Icon = props.icon;
   return (
     <button
+      data-component="WorkPill"
       type="button"
       aria-pressed={props.active}
       disabled={props.disabled}
@@ -682,6 +684,7 @@ function PaneSwitch(props: {
   ];
   return (
     <div
+      data-component="PaneSwitch"
       role="tablist"
       className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
     >
@@ -711,7 +714,7 @@ function TeamCard(props: { task: DshTeamTask }) {
   const scopes = task.writeScopes.slice(0, MAX_SCOPES);
   const hidden = task.writeScopes.length - scopes.length;
   return (
-    <article className="rounded-lg border border-border bg-surface px-3 py-2">
+    <article data-component="TeamCard" className="rounded-lg border border-border bg-surface px-3 py-2">
       <p
         className="line-clamp-2 text-ui-caption leading-5 text-slate-900"
         title={task.description || undefined}
@@ -759,18 +762,19 @@ function TeamBoard(props: { team: DshTeam | null; error: string | null }) {
   if (!team) {
     return props.error ? (
       <p
+        data-component="TeamBoard"
         className="px-4 py-6 text-ui-caption leading-5 text-rose-600"
         title={t("mobile.agent.teamLoadFailed")}
       >
         {props.error}
       </p>
     ) : (
-      <p className="px-4 py-6 text-ui-caption text-slate-400">{t("common.reading")}</p>
+      <p data-component="TeamBoard" className="px-4 py-6 text-ui-caption text-slate-400">{t("common.reading")}</p>
     );
   }
 
   return (
-    <div>
+    <div data-component="TeamBoard">
       {team.failure ? (
         <p
           className="mx-4 mt-2 select-text truncate text-ui-xs leading-5 text-amber-700"
@@ -834,7 +838,7 @@ function taskHashes(task: DshTask): { label: string; value: string }[] {
 /** One label/value line; long values wrap and stay selectable. */
 function TaskFact(props: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex items-start gap-2">
+    <div data-component="TaskFact" className="flex items-start gap-2">
       <span className="w-14 shrink-0 text-ui-2xs text-slate-400">{props.label}</span>
       <span
         className={`min-w-0 flex-1 select-text break-all text-ui-xs text-slate-700 ${
@@ -864,7 +868,7 @@ function TaskPane(props: { task: DshTask }) {
     : task.worktreePath || task.repoPath || "";
 
   return (
-    <div className="flex flex-col gap-3 px-4 py-3">
+    <div data-component="TaskPane" className="flex flex-col gap-3 px-4 py-3">
       <section className="rounded-xl border border-border bg-surface p-3">
         <div className="flex items-center gap-2">
           <WorkflowChip workflow={task.workflow} />
@@ -958,7 +962,7 @@ function TaskDoneCard(props: { task: DshTask; onViewTask: () => void }) {
   const wroteStatus = Boolean(writeback.statusFrom || writeback.statusTo);
 
   return (
-    <section className="rounded-xl border border-border bg-surface px-3 py-2.5">
+    <section data-component="TaskDoneCard" className="rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <CheckCircle2 size={14} className="shrink-0 text-emerald-600" />
         <span className="text-ui-caption text-slate-800">{t("mobile.agent.doneTitle")}</span>

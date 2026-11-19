@@ -576,6 +576,7 @@ export function TerminalSessionPage(props: { id: string }) {
 
   return (
     <div
+      data-component="TerminalSessionPage"
       className="fixed z-20 flex min-h-0 flex-col overflow-hidden bg-canvas"
       style={{
         top: viewportBox?.top ?? 0,

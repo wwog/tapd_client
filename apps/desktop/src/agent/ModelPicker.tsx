@@ -409,7 +409,7 @@ function ReasoningSlider(props: {
   const label = value ?? t("agent.model.reasoningOff");
 
   return (
-    <div className="shrink-0 border-t border-slate-100 px-3 py-2">
+    <div data-component="ReasoningSlider" className="shrink-0 border-t border-slate-100 px-3 py-2">
       <div className="flex items-baseline justify-between gap-2 text-ui-xs">
         <span className="text-slate-400">{t("agent.model.reasoningEffort")}</span>
         <span className="truncate text-slate-600">{label}</span>

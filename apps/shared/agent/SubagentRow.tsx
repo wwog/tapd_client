@@ -63,7 +63,7 @@ export const SubagentRow = memo(function SubagentRow({
   const hasTranscript = (row.turns.length > 0 || Boolean(row.error)) && renderTurns;
 
   return (
-    <div className="flex min-w-0 flex-col">
+    <div data-component="SubagentRow" className="flex min-w-0 flex-col">
       <button
         type="button"
         aria-expanded={open}

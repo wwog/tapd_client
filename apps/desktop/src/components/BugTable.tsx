@@ -378,7 +378,7 @@ function BugColumnCell(props: { column: ColumnKey; bug: BugSummary }) {
   switch (column) {
     case "status":
       return (
-        <td className="whitespace-nowrap px-3 py-2.5">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-3 py-2.5">
           <Badge tone={STATUS_TONES[bug.status] ?? "neutral"}>
             {bug.statusLabel || bug.status}
           </Badge>
@@ -386,7 +386,7 @@ function BugColumnCell(props: { column: ColumnKey; bug: BugSummary }) {
       );
     case "priority":
       return (
-        <td className="whitespace-nowrap px-3 py-2.5">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-3 py-2.5">
           <Badge tone={PRIORITY_TONES[bug.priority] ?? "neutral"}>
             {bug.priorityLabel || bug.priority || "—"}
           </Badge>
@@ -394,7 +394,7 @@ function BugColumnCell(props: { column: ColumnKey; bug: BugSummary }) {
       );
     case "severity":
       return (
-        <td className="whitespace-nowrap px-3 py-2.5">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-3 py-2.5">
           <Badge tone={SEVERITY_TONES[bug.severity] ?? "neutral"} dot>
             {bug.severityLabel || bug.severity || "—"}
           </Badge>
@@ -402,19 +402,19 @@ function BugColumnCell(props: { column: ColumnKey; bug: BugSummary }) {
       );
     case "owner":
       return (
-        <td className="whitespace-nowrap px-3 py-2.5 text-slate-600">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-3 py-2.5 text-slate-600">
           <span className="truncate">{bug.owner || "—"}</span>
         </td>
       );
     case "creator":
       return (
-        <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-3 py-2.5 text-slate-500">
           <span className="line-clamp-1">{bug.creator || "—"}</span>
         </td>
       );
     case "created":
       return (
-        <td className="whitespace-nowrap px-4 py-2.5 font-mono text-ui-sm text-slate-400">
+        <td data-component="BugColumnCell" className="whitespace-nowrap px-4 py-2.5 font-mono text-ui-sm text-slate-400">
           {formatTs(bug.created)}
         </td>
       );
@@ -457,7 +457,7 @@ function SortHeader(props: {
   onToggle: () => void;
 }) {
   return (
-    <div className={clsx("group/head flex w-full items-center", props.className)}>
+    <div data-component="SortHeader" className={clsx("group/head flex w-full items-center", props.className)}>
       <span className="min-w-0 flex-1 truncate">{props.label}</span>
       <button
         type="button"

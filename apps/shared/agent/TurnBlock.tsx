@@ -245,7 +245,7 @@ function TurnBlockImpl({
   };
 
   return (
-    <div className="flex flex-col gap-3" data-agent-turn={block.key}>
+    <div data-component="TurnBlock" className="flex flex-col gap-3" data-agent-turn={block.key}>
       {users.map((entry) => (
         <div
           key={entryKey(entry)}
@@ -376,7 +376,7 @@ export const TurnBlock = memo(TurnBlockImpl);
  */
 function WorkingOrb() {
   return (
-    <span aria-hidden className="relative size-3 shrink-0">
+    <span data-component="WorkingOrb" aria-hidden className="relative size-3 shrink-0">
       <span
         className="absolute inset-0 animate-spin motion-reduce:animate-none"
         style={{ animationDuration: "1.8s" }}
@@ -401,7 +401,7 @@ const NoticeRow = memo(function NoticeRow({
   locale: AgentLocale;
 }) {
   return (
-    <div className="flex min-w-0 items-start gap-1.5 py-0.5 text-ui-caption">
+    <div data-component="NoticeRow" className="flex min-w-0 items-start gap-1.5 py-0.5 text-ui-caption">
       <Bot size={12} className="mt-0.5 shrink-0 text-slate-400" />
       <span className="shrink-0 text-slate-500">
         {agentLabel("notice.closing", locale)}:

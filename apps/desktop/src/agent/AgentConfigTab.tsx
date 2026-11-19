@@ -496,7 +496,7 @@ function ConfigDialog({
 
 function Fact(props: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex items-baseline gap-3">
+    <div data-component="Fact" className="flex items-baseline gap-3">
       <span className="w-28 shrink-0 text-ui-xs text-slate-400">{props.label}</span>
       {props.mono ? (
         <ScrollingName

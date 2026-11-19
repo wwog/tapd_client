@@ -23,7 +23,7 @@ function ScopeChips({ scopes }: { scopes: string[] }) {
   const hidden = scopes.length - shown.length;
 
   return (
-    <div className="mt-1 flex flex-wrap gap-1">
+    <div data-component="ScopeChips" className="mt-1 flex flex-wrap gap-1">
       {shown.map((scope) => (
         <span
           key={scope}
@@ -44,7 +44,7 @@ function ScopeChips({ scopes }: { scopes: string[] }) {
 
 function TeamCard({ task }: { task: DshTeamTask }) {
   return (
-    <article className="rounded-xl border border-border bg-surface px-2.5 py-2">
+    <article data-component="TeamCard" className="rounded-xl border border-border bg-surface px-2.5 py-2">
       <div
         className="line-clamp-2 text-ui-caption leading-5 text-slate-800"
         title={task.description || undefined}
@@ -80,6 +80,7 @@ function Board(props: { team: DshTeam; title: string }) {
   if (team.tasks.length === 0) {
     return (
       <div
+        data-component="Board"
         className="grid place-items-center text-ui-caption text-slate-400"
         title={t("agent.team.emptyHint")}
       >
@@ -89,7 +90,7 @@ function Board(props: { team: DshTeam; title: string }) {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-3">
+    <div data-component="Board" className="mx-auto flex w-full max-w-5xl flex-col gap-3">
       {team.failure ? (
         <div
           className="select-text truncate border-l-2 border-amber-300 pl-2 text-ui-xs leading-5 text-amber-700"
@@ -141,7 +142,7 @@ export function TeamBoard() {
   const quiet = empty && approvals.length === 0 && questions.length === 0;
 
   return (
-    <div className="@container min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
+    <div data-component="TeamBoard" className="@container min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
       <div
         className={clsx(
           "mx-auto flex w-full max-w-5xl flex-col gap-3",

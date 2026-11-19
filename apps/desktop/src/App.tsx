@@ -29,6 +29,7 @@ import { Dialog } from "./components/Dialog";
 import { ForceUpdateModal } from "./components/ForceUpdateModal";
 import { LocalProjectDialog } from "./components/LocalProjectDialog";
 import { LoginGate } from "./components/LoginGate";
+import { MediaPreviewHost } from "./components/MediaPreviewHost";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
 import { ProjectSidebar } from "./components/ProjectSidebar";
@@ -874,6 +875,7 @@ export default function App() {
 
   return (
     <div
+      data-component="App"
       className={clsx(
         "flex h-full flex-col overflow-hidden bg-canvas text-slate-900",
         sidebar.resizing && "select-none",
@@ -1052,6 +1054,9 @@ export default function App() {
           onConfirm={() => void deleteLocalProject()}
         />
       ) : null}
+
+      {/* One preview surface for every inline image/video in the app. */}
+      <MediaPreviewHost />
 
       {/* Last layer: a forced update covers onboarding, dialogs and settings. */}
       <ForceUpdateModal />

@@ -9,7 +9,7 @@ export function BugPanel({ active }: PanelProps) {
   const { bug } = usePanelServices();
 
   return (
-    <div className="h-full [&>aside]:h-full [&>aside]:rounded-none [&>aside]:border-0">
+    <div data-component="BugPanel" className="h-full [&>aside]:h-full [&>aside]:rounded-none [&>aside]:border-0">
       <BugDetailDrawer
         open={active}
         detail={bug.detail}

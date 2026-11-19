@@ -53,6 +53,8 @@ export type AgentEntry =
       result?: unknown;
       startedAtMs?: number;
       endedAtMs?: number;
+      /** Child session of a `subagent`/`subagent_fork` call. */
+      childSessionId?: string;
     }
   | {
       kind: "turn";

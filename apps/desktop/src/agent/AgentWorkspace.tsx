@@ -1,5 +1,6 @@
 import { Profiler, useMemo } from "react";
 
+import { openMediaPreview } from "../components/MediaPreviewHost";
 import { Segmented } from "../components/Segmented";
 import { Markdown } from "../components/Markdown";
 import { t, useLocale } from "../lib/i18n";
@@ -34,6 +35,10 @@ type Props = {
   toast: (kind: "ok" | "error", text: string) => void;
   /** Opens a local path from the transcript in a workbench file tab. */
   onOpenFile: (target: FileTabTarget) => void;
+  /** Opens a TAPD bug's detail panel without leaving the Agent page. */
+  onOpenBugById: (workspaceId: string, bugId: string) => void;
+  /** Switches to the local items page of one project. */
+  onSelectLocalProject: (projectId: string) => void;
 };
 
 if (import.meta.env.DEV) installAgentPerf();
@@ -76,9 +81,11 @@ function useAgentHost(
   io: {
     toast: (kind: "ok" | "error", text: string) => void;
     onOpenFile: (target: FileTabTarget) => void;
+    onOpenBugById: (workspaceId: string, bugId: string) => void;
+    onSelectLocalProject: (projectId: string) => void;
   },
 ): AgentHost {
-  const { toast, onOpenFile } = io;
+  const { toast, onOpenFile, onOpenBugById, onSelectLocalProject } = io;
   return useMemo(() => {
     const links = sessionId
       ? {
@@ -86,14 +93,28 @@ function useAgentHost(
             void openAgentPath(sessionId, path, { toast, openFile: onOpenFile });
           },
           image: (path: string) => resolveAgentImage(sessionId, path),
+          preview: previewImage,
         }
       : undefined;
     return {
       renderMarkdown: (source: string) => <Markdown source={source} links={links} />,
       renderUsage,
       loadImage: (path: string) => api.imageDataUrl(path),
+      previewImage,
+      openTaskDetail: (target) => {
+        if (target.kind === "bug") {
+          onOpenBugById(target.workspaceId, target.bugId);
+        } else {
+          onSelectLocalProject(target.projectId);
+        }
+      },
     };
-  }, [sessionId, toast, onOpenFile]);
+  }, [sessionId, toast, onOpenFile, onOpenBugById, onSelectLocalProject]);
+}
+
+/** Inline pictures (Markdown and tool output) open the one app preview. */
+function previewImage(item: { src: string; label: string }) {
+  openMediaPreview([{ url: item.src, src: item.src, kind: "image", label: item.label }], 0);
 }
 
 /** Stable empties: the workspace re-renders per streaming token. */
@@ -112,10 +133,20 @@ const NO_HUD: StreamHudItem[] = [];
  * only. The transcript stays mounted (hidden) so a round trip keeps its scroll
  * position; the ledger keeps its own folds, selection and search.
  */
-export function AgentWorkspace({ toast, onOpenFile }: Props) {
+export function AgentWorkspace({
+  toast,
+  onOpenFile,
+  onOpenBugById,
+  onSelectLocalProject,
+}: Props) {
   const state = agentStore.use();
   const locale = useLocale();
-  const host = useAgentHost(state.selectedId, { toast, onOpenFile });
+  const host = useAgentHost(state.selectedId, {
+    toast,
+    onOpenFile,
+    onOpenBugById,
+    onSelectLocalProject,
+  });
   const selected = state.tasks?.find((task) => task.id === state.selectedId) ?? null;
   const view = agentTaskView(state, state.selectedId);
   // The attention corner lives in the view-tab row: a folded capsule sits on
@@ -179,7 +210,11 @@ export function AgentWorkspace({ toast, onOpenFile }: Props) {
               </div>
             ) : null}
             {workflowTask && selected && paneView === "task" ? (
-              <TaskPanel key={`task:${selected.id}`} task={selected} />
+              <TaskPanel
+                key={`task:${selected.id}`}
+                task={selected}
+                onOpenFile={onOpenFile}
+              />
             ) : null}
             {import.meta.env.DEV ? (
               <Profiler id="agent-stream" onRender={onStreamRender}>

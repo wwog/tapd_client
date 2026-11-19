@@ -13,6 +13,7 @@ import { t } from "../lib/i18n";
 export function SkeletonBlock(props: { className?: string }) {
   return (
     <div
+      data-component="SkeletonBlock"
       aria-hidden="true"
       className={clsx("animate-pulse rounded-md bg-slate-200/80", props.className)}
     />
@@ -47,6 +48,7 @@ export function SkeletonRows(props: SkeletonRowsProps) {
 
   return (
     <div
+      data-component="SkeletonRows"
       role="status"
       aria-busy="true"
       className={clsx("divide-y divide-slate-100", className)}

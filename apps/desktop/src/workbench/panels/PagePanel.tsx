@@ -35,7 +35,7 @@ export function PagePanel({ panel }: PanelProps) {
           ? host.localProjects.find((item) => item.id === projectId)
           : host.localProject) ?? null;
       return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div data-component="PagePanel" className="flex h-full min-h-0 flex-col">
           {project ? (
             <LocalItemsPage
               key={project.id}
@@ -70,7 +70,7 @@ export function PagePanel({ panel }: PanelProps) {
           ? host.activeBug.bugId
           : null;
       return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div data-component="PagePanel" className="flex h-full min-h-0 flex-col">
           {host.contextError ? (
             <div className="p-4">
               <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption leading-6 text-rose-700">
@@ -115,7 +115,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "projects":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
           <div className="mx-auto max-w-4xl">
             <ProjectSettings
               context={host.context}
@@ -139,11 +139,18 @@ export function PagePanel({ panel }: PanelProps) {
       return <CoworkerPage toast={host.toast} />;
 
     case "agent":
-      return <AgentPage toast={host.toast} onOpenFile={host.onOpenFile} />;
+      return (
+        <AgentPage
+          toast={host.toast}
+          onOpenFile={host.onOpenFile}
+          onOpenBugById={host.onOpenBugById}
+          onSelectLocalProject={host.onSelectLocalProject}
+        />
+      );
 
     case "mcp":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
           <McpPage
             workspaces={host.context?.workspaces ?? []}
             onCopy={host.onCopy}
@@ -154,7 +161,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     case "account":
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
           <AccountPage
             info={host.info}
             context={host.context}
@@ -168,7 +175,7 @@ export function PagePanel({ panel }: PanelProps) {
 
     default:
       return (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
           <SettingsPage
             info={host.info}
             onOpenPath={host.onOpenPath}

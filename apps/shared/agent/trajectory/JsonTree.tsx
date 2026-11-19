@@ -32,6 +32,7 @@ type Props = {
 export function JsonTree({ value, preview = false, className, locale }: Props) {
   return (
     <div
+      data-component="JsonTree"
       className={clsx(
         "select-text whitespace-pre-wrap break-words font-mono text-ui-xs leading-5 text-slate-600",
         className,
@@ -53,12 +54,12 @@ function JsonNode({
   preview: boolean;
   locale: AgentLocale;
 }) {
-  if (depth > MAX_DEPTH) return <span className="text-slate-400">…</span>;
-  if (value === null) return <span className="text-slate-400">null</span>;
+  if (depth > MAX_DEPTH) return <span data-component="JsonNode" className="text-slate-400">…</span>;
+  if (value === null) return <span data-component="JsonNode" className="text-slate-400">null</span>;
   if (typeof value === "string") return <JsonString value={value} preview={preview} locale={locale} />;
-  if (typeof value === "number") return <span className="text-amber-600">{String(value)}</span>;
+  if (typeof value === "number") return <span data-component="JsonNode" className="text-amber-600">{String(value)}</span>;
   if (typeof value === "boolean") {
-    return <span className="text-violet-600">{String(value)}</span>;
+    return <span data-component="JsonNode" className="text-violet-600">{String(value)}</span>;
   }
   if (Array.isArray(value)) {
     return (
@@ -84,7 +85,7 @@ function JsonNode({
       />
     );
   }
-  return <span className="text-slate-400">{String(value)}</span>;
+  return <span data-component="JsonNode" className="text-slate-400">{String(value)}</span>;
 }
 
 function JsonBranch({
@@ -106,9 +107,9 @@ function JsonBranch({
   const [expanded, setExpanded] = useState(
     count <= AUTO_COLLAPSE_COUNT && depth < AUTO_COLLAPSE_DEPTH,
   );
-  if (count === 0) return <span className="text-slate-400">{open + close}</span>;
+  if (count === 0) return <span data-component="JsonBranch" className="text-slate-400">{open + close}</span>;
   return (
-    <span>
+    <span data-component="JsonBranch">
       <button
         type="button"
         className="-ml-3.5 inline-flex w-3.5 items-center align-middle text-slate-300 transition hover:text-slate-500"
@@ -166,7 +167,7 @@ function JsonString({
   const long = Array.from(value).length > limit || lineCount(value) > (preview ? 3 : 12);
   const shown = long && !expanded ? truncate(value, limit) : value;
   return (
-    <span className="text-emerald-700">
+    <span data-component="JsonString" className="text-emerald-700">
       {JSON.stringify(shown)}
       {long ? (
         <button

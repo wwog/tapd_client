@@ -212,6 +212,7 @@ export function SplitView({ layout, renderGroup }: SplitViewProps) {
 
   return (
     <div
+      data-component="SplitView"
       ref={containerRef}
       data-workbench-region="layout-area"
       className="relative min-h-0 min-w-0 flex-1 overflow-hidden"

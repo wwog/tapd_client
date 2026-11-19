@@ -111,7 +111,7 @@ export function CoworkerGrid(props: {
 
   if (loadError) {
     return (
-      <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
+      <div data-component="CoworkerGrid" className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-ui-caption text-rose-700">
         <div className="break-all">{loadError}</div>
         <Button
           size="sm"
@@ -127,7 +127,7 @@ export function CoworkerGrid(props: {
 
   if (coworkers === null) {
     return (
-      <div className="flex items-center justify-center gap-2 py-16 text-ui-caption text-slate-400">
+      <div data-component="CoworkerGrid" className="flex items-center justify-center gap-2 py-16 text-ui-caption text-slate-400">
         <Spinner />
         {t("coworker.loading")}
       </div>
@@ -145,7 +145,7 @@ export function CoworkerGrid(props: {
   }
 
   return (
-    <div className={clsx("grid gap-3 sm:grid-cols-2 xl:grid-cols-3", props.className)}>
+    <div data-component="CoworkerGrid" className={clsx("grid gap-3 sm:grid-cols-2 xl:grid-cols-3", props.className)}>
       {coworkers.map((coworker, index) => (
         <CoworkerCard
           key={coworker.id}
@@ -173,6 +173,7 @@ function CoworkerCard(props: {
 
   return (
     <button
+      data-component="CoworkerCard"
       type="button"
       aria-pressed={selected}
       disabled={disabled}

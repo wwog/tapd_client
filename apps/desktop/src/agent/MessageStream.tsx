@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,6 +13,7 @@ import { ArrowDown } from "lucide-react";
 
 import { Button, Spinner } from "../components/ui";
 import { t, useLocale } from "../lib/i18n";
+import { isSubagentTool } from "../../../shared/agent/actions";
 import { TurnBlock as ChildTurnBlock } from "../../../shared/agent/TurnBlock";
 import type { AgentNotice, AgentTurnBlock } from "../../../shared/agent/types";
 import type { AgentSubagentRow } from "../../../shared/agent/subagents";
@@ -87,7 +89,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   // re-run for every command character.
   const liveSubagentToolsRef = useRef<typeof liveTools>([]);
   const liveSubagentTools = useMemo(() => {
-    const next = liveTools.filter((tool) => tool.name === "subagent");
+    const next = liveTools.filter((tool) => isSubagentTool(tool.name));
     const previous = liveSubagentToolsRef.current;
     const unchanged =
       next.length === previous.length &&
@@ -198,6 +200,32 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       agentActions.refreshEntries(childSessionId);
     }
   }, []);
+
+  // An open child has no token stream of its own: while it is still running,
+  // pull its log so the fold grows instead of freezing on the first fetch.
+  const openRunningKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const group of subagentGroups.values()) {
+      for (const child of group.children) {
+        if (
+          child.running &&
+          !isPendingChild(child.sessionId) &&
+          openChildren.has(child.sessionId)
+        ) {
+          ids.add(child.sessionId);
+        }
+      }
+    }
+    return [...ids].join(",");
+  }, [openChildren, subagentGroups]);
+  useEffect(() => {
+    if (!openRunningKey) return;
+    const ids = openRunningKey.split(",");
+    const timer = window.setInterval(() => {
+      for (const id of ids) void agentActions.refreshEntries(id);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [openRunningKey]);
 
   /** One child's transcript, rendered with the same shared turn block (no
    *  trajectory deep-link: the panel shows the current session only). Nested
@@ -349,6 +377,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   if (!sessionId) {
     return (
       <div
+        data-component="MessageStream"
         className={clsx(
           "grid min-h-0 flex-1 place-items-center px-6 text-ui-caption text-slate-400",
           !visible && "hidden",
@@ -374,6 +403,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
   return (
     <div
+      data-component="MessageStream"
       className={clsx(
         "@container relative flex min-h-0 flex-1 flex-col",
         !visible && "hidden",

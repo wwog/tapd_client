@@ -224,6 +224,7 @@ export function BugTableToolbar(props: Props) {
 
   return (
     <div
+      data-component="BugTableToolbar"
       ref={toolbarRef}
       className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-5 py-3"
     >

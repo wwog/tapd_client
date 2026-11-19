@@ -50,6 +50,7 @@ function WorkBarButton(props: {
   const Icon = props.icon;
   return (
     <button
+      data-component="WorkBarButton"
       type="button"
       aria-pressed={props.active}
       disabled={props.disabled}
@@ -184,7 +185,7 @@ export function Composer() {
       : t("common.send");
 
   return (
-    <div className="px-6 pb-3 pt-2">
+    <div data-component="Composer" className="px-6 pb-3 pt-2">
       <div className={AGENT_COLUMN}>
         <div className="rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
           {project ? (

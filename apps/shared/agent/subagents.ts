@@ -4,26 +4,27 @@
  * is given).
  *
  * Sources, per session:
- *  1. committed `subagent` tool calls paired with settle notices — the
- *     notice's `senderSessionId` is the child session id, its text the closing
- *     message;
- *  2. uncommitted live `subagent` calls — running placeholders with no
- *     transcript (the child session id is simply unknown until the notice).
+ *  1. committed `subagent` / `subagent_fork` tool calls paired with settle
+ *     notices — the notice's `senderSessionId` is the child session id, its
+ *     text the closing message. `subagent/catalog` gives the call the same id
+ *     right after it starts, so a running child already has a row;
+ *  2. uncommitted live calls — running placeholders with no transcript (the
+ *     child session id is simply unknown until the catalog event).
  *
  * Pairing runs across the WHOLE transcript, not per turn block: a background
  * child settles after the dispatching turn has ended, so its notice lands in a
- * later block than the call that started it. The k-th call pairs with the k-th
- * notice in log order — exact for sequential children; two children settling
- * out of start order still swap names (kept simple on purpose). Calls whose
- * notice has not landed yet show as running placeholders, and a paired notice
- * is consumed by the fold in its call's block instead of rendering as an
- * orphan in its own.
+ * later block than the call that started it. A call with a child id pairs with
+ * the notice carrying the same `senderSessionId`; only logs without the catalog
+ * fall back to k-th call ↔ k-th notice in log order. Calls whose notice has not
+ * landed yet stay running, and a paired notice is consumed by the fold in its
+ * call's block instead of rendering as an orphan in its own.
  *
  * Nothing here touches a store: per-child facts (status, title, preset,
  * transcript, loading flag) arrive through the `childInfo` lookup.
  */
 import { groupTurns } from "./turns";
 import { LIVE_SUBAGENT_SEQ } from "./flows";
+import { isSubagentTool } from "./actions";
 import type { AgentEntry, AgentNotice, AgentTurnBlock } from "./types";
 
 type SubagentCall = Extract<AgentEntry, { kind: "tool" }>;
@@ -167,7 +168,7 @@ export function assembleSessionSubagents(
   const notices: Array<{ blockKey: string; notice: AgentNotice }> = [];
   for (const block of blocks) {
     for (const entry of block.entries) {
-      if (entry.kind === "tool" && entry.name === "subagent") {
+      if (entry.kind === "tool" && isSubagentTool(entry.name)) {
         calls.push({ blockKey: block.key, call: entry });
       } else if (entry.kind === "notice") {
         notices.push({ blockKey: block.key, notice: entry });
@@ -175,13 +176,35 @@ export function assembleSessionSubagents(
     }
   }
 
-  // k-th call ↔ k-th notice in log order, across turn boundaries.
+  // Exact pairing first: `subagent/catalog` gives the call its child session id
+  // before the child settles, so a notice with the same `senderSessionId`
+  // belongs to that call even when several children settle out of order.
   const noticeOfCall = new Map<SubagentCall, AgentNotice>();
   const pairedNotices = new Set<AgentNotice>();
-  const pairCount = Math.min(calls.length, notices.length);
+  const unpairedCalls: SubagentCall[] = [];
+  for (const { call } of calls) {
+    const childId = call.childSessionId;
+    const match = childId
+      ? notices.find(
+          (candidate) =>
+            !pairedNotices.has(candidate.notice) &&
+            candidate.notice.senderSessionId === childId,
+        )
+      : undefined;
+    if (match) {
+      noticeOfCall.set(call, match.notice);
+      pairedNotices.add(match.notice);
+    } else {
+      unpairedCalls.push(call);
+    }
+  }
+  // Older logs (or a runtime that skipped the catalog) carry no child id:
+  // fall back to k-th call ↔ k-th notice in log order, across turn boundaries.
+  const unpairedNotices = notices.filter((item) => !pairedNotices.has(item.notice));
+  const pairCount = Math.min(unpairedCalls.length, unpairedNotices.length);
   for (let index = 0; index < pairCount; index += 1) {
-    const { notice } = notices[index]!;
-    noticeOfCall.set(calls[index]!.call, notice);
+    const { notice } = unpairedNotices[index]!;
+    noticeOfCall.set(unpairedCalls[index]!, notice);
     pairedNotices.add(notice);
   }
 
@@ -197,9 +220,11 @@ export function assembleSessionSubagents(
     const children: AgentSubagentRow[] = [];
     for (const call of callsByBlock.get(block.key) ?? []) {
       const notice = noticeOfCall.get(call);
+      // A background child is known from `subagent/catalog` before it settles;
+      // only a log without that event falls back to the pending placeholder.
       const sessionId = notice
         ? notice.senderSessionId
-        : `${PENDING_PREFIX}${call.callId || call.seq}`;
+        : (call.childSessionId || `${PENDING_PREFIX}${call.callId || call.seq}`);
       const pending = sessionId.startsWith(PENDING_PREFIX);
       const info = pending ? undefined : lookup(sessionId);
       const name =
@@ -211,7 +236,9 @@ export function assembleSessionSubagents(
         sessionId,
         callId: call.callId,
         callSeq: call.seq,
-        running: pending ? true : (info?.running === true),
+        // Unsettled call = the child is still working, even when the host has
+        // no session row for it yet.
+        running: pending ? true : notice ? false : (info?.running ?? true),
         turns: pending ? [] : groupedTurns(info?.entries),
         loading: info?.loading ?? false,
         settled: notice
@@ -230,7 +257,7 @@ export function assembleSessionSubagents(
     // state only — there is no session id to read yet.
     if (block.key === liveBlockKey) {
       for (const [offset, tool] of liveTools.entries()) {
-        if (tool.name !== "subagent") continue;
+        if (!isSubagentTool(tool.name)) continue;
         children.push({
           name: argsName(tool.args),
           description: argsDescription(tool.args),

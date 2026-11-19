@@ -73,6 +73,7 @@ function PanelSurface({
 
   return createPortal(
     <div
+      data-component="PanelSurface"
       data-panel-id={panel.id}
       data-panel-active={active ? "true" : "false"}
       aria-hidden={!active}

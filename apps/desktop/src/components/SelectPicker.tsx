@@ -129,7 +129,7 @@ export function SelectPicker(props: Props) {
   };
 
   return (
-    <div className={clsx("relative", className)}>
+    <div data-component="SelectPicker" className={clsx("relative", className)}>
       <button
         ref={anchorRef}
         type="button"

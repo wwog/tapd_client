@@ -34,7 +34,7 @@ import { BottomSheet } from "../components/BottomSheet";
 
 function InfoRow(props: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+    <div data-component="InfoRow" className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
       <span className="shrink-0 text-ui-xs text-slate-500">{props.label}</span>
       <span className="min-w-0 truncate text-right text-ui-caption text-slate-700">
         {props.children}
@@ -47,7 +47,7 @@ function InfoRow(props: { label: string; children: ReactNode }) {
 function CommentCard(props: { comment: Comment; depth: number }) {
   const { comment, depth } = props;
   return (
-    <div className={depth > 0 ? "mt-2 ml-3 border-l border-border pl-3" : "mt-3"}>
+    <div data-component="CommentCard" className={depth > 0 ? "mt-2 ml-3 border-l border-border pl-3" : "mt-3"}>
       <div className="flex items-baseline justify-between gap-2">
         <span className="truncate text-ui-caption text-slate-900">{comment.author}</span>
         <span className="shrink-0 text-ui-xs text-slate-400">
@@ -80,6 +80,7 @@ function ActionButton(props: {
 }) {
   return (
     <button
+      data-component="ActionButton"
       type="button"
       disabled={props.disabled || props.busy}
       onClick={props.onClick}
@@ -97,7 +98,7 @@ function ActionButton(props: {
 
 function DetailSkeleton() {
   return (
-    <div className="p-3">
+    <div data-component="DetailSkeleton" className="p-3">
       <div className="h-5 w-4/5 animate-pulse rounded bg-overlay-soft" />
       <div className="mt-3 h-32 animate-pulse rounded-2xl bg-overlay-soft" />
       <div className="mt-3 h-40 animate-pulse rounded-2xl bg-overlay-soft" />
@@ -283,7 +284,7 @@ export function BugDetailPage(props: { id: string; workspaceId: string | null })
   const canCopy = Boolean(detail?.bugUrl);
 
   return (
-    <div>
+    <div data-component="BugDetailPage">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"

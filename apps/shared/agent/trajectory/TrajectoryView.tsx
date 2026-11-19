@@ -61,6 +61,7 @@ function FoldButton({
 }) {
   return (
     <button
+      data-component="FoldButton"
       type="button"
       aria-pressed={collapsed}
       title={label}
@@ -191,7 +192,7 @@ export function TrajectoryView({
   }, [focus, records, selectRecord]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
+    <div data-component="TrajectoryView" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
       <div
         role="toolbar"
         aria-label={agentLabel("traj.toolbarAria", locale)}

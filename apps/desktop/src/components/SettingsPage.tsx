@@ -81,7 +81,7 @@ export function SettingsPage(props: Props) {
     : t("common.notStarted");
 
   return (
-    <div className="mx-auto max-w-4xl space-y-3">
+    <div data-component="SettingsPage" className="mx-auto max-w-4xl space-y-3">
       <AppearanceCard />
 
       <NotificationSettings toast={toast} />
@@ -289,7 +289,7 @@ export function SettingsPage(props: Props) {
 
 function PlainRow(props: { label: string; value: string; onCopy: (text: string) => void }) {
   return (
-    <div className="flex items-center gap-3 py-1">
+    <div data-component="PlainRow" className="flex items-center gap-3 py-1">
       <dt className="w-24 shrink-0 text-slate-400">{props.label}</dt>
       <dd className="min-w-0 flex-1 truncate font-mono text-ui-sm text-slate-600">{props.value}</dd>
       <button

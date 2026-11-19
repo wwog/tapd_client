@@ -78,6 +78,7 @@ export function FolderPicker(props: {
 
   return (
     <div
+      data-component="FolderPicker"
       className={clsx(
         "modal-overlay fixed inset-0 flex items-center justify-center bg-slate-900/30 p-6 backdrop-blur-[2px]",
         elevated ? "z-[85]" : "z-[70]",

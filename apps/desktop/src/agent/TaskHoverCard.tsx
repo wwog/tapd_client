@@ -130,6 +130,7 @@ export function TaskHoverCard({
 
   return createPortal(
     <div
+      data-component="TaskHoverCard"
       ref={cardRef}
       role="dialog"
       aria-label={task.title || t("agent.task.untitled")}

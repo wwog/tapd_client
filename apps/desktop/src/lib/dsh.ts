@@ -154,6 +154,8 @@ export type DshEntry =
       startedAtMs?: number;
       /** `tool/result` time (epoch ms); absent while running. */
       endedAtMs?: number;
+      /** Child session of a `subagent`/`subagent_fork` call (`subagent/catalog`). */
+      childSessionId?: string;
     } & DshEntryPosition)
   | {
       kind: "turn";
@@ -588,6 +590,7 @@ export const dshTaskApi = {
     extraPrompt?: string,
     attachments?: string[],
     team?: boolean,
+    model?: ModelSelection,
   ) =>
     feature<{ task: DshTask }>("dsh_task_enqueue_bug", {
       workspaceId,
@@ -595,6 +598,7 @@ export const dshTaskApi = {
       ...(extraPrompt ? { extraPrompt } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(typeof team === "boolean" ? { team } : {}),
+      ...(model ? { model } : {}),
     }),
   enqueueLocal: (
     projectId: string,
@@ -602,6 +606,7 @@ export const dshTaskApi = {
     extraPrompt?: string,
     attachments?: string[],
     team?: boolean,
+    model?: ModelSelection,
   ) =>
     feature<{ task: DshTask }>("dsh_task_enqueue_local", {
       projectId,
@@ -609,6 +614,7 @@ export const dshTaskApi = {
       ...(extraPrompt ? { extraPrompt } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(typeof team === "boolean" ? { team } : {}),
+      ...(model ? { model } : {}),
     }),
   approve: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_approve", { sessionId }),

@@ -101,7 +101,7 @@ pub fn run() {
             commands::mcp_policy_set,
             agent_settings::agent_settings_get,
             agent_settings::agent_settings_set,
-            agent_settings::agent_model_effort_set,
+            agent_settings::agent_model_default_set,
             dsh::commands::dsh_prepare,
             dsh::commands::dsh_status,
             dsh::commands::dsh_start,

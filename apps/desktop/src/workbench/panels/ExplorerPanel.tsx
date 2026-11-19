@@ -311,6 +311,7 @@ export function ExplorerPanel({ panel, active }: PanelProps) {
 
   return (
     <div
+      data-component="ExplorerPanel"
       className="flex h-full min-h-0 flex-col bg-surface"
       data-panel-id={panel.id}
       data-panel-active={active ? "true" : "false"}

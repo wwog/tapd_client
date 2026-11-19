@@ -37,7 +37,7 @@ export function SessionUsageBar({ usage }: { usage?: DshSessionUsage }) {
   const value = usage ?? EMPTY_USAGE;
 
   return (
-    <div className="flex min-w-0 items-center gap-1 overflow-hidden text-ui-xs text-slate-400">
+    <div data-component="SessionUsageBar" className="flex min-w-0 items-center gap-1 overflow-hidden text-ui-xs text-slate-400">
       <SessionStatsChip usage={value} />
       <Dot />
       <TokenUsageChip usage={value} />

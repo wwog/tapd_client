@@ -91,6 +91,7 @@ export function Collapse({
 
   return (
     <div
+      data-component="Collapse"
       // Hidden content must not take focus or be read while the panel is
       // closing; `inert` covers both without changing the animated height.
       inert={!open}

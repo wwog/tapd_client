@@ -276,7 +276,7 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
   const firstEnabledModel = selected?.models.find((model) => model.enabled)?.id ?? null;
 
   return (
-    <section className={clsx(cardClass, fill && "flex h-full min-h-0 flex-col")}>
+    <section data-component="ModelSettings" className={clsx(cardClass, fill && "flex h-full min-h-0 flex-col")}>
       <div className="flex shrink-0 items-center gap-3">
         <h2 className="text-ui-base text-slate-900" title={t("agent.config.modelHint")}>
           {t("agent.config.model")}
@@ -592,7 +592,7 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
 
 function Field(props: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className="block min-w-0" title={props.hint}>
+    <label data-component="Field" className="block min-w-0" title={props.hint}>
       <span className="block text-ui-xs text-slate-400">{props.label}</span>
       <span className="mt-1 block">{props.children}</span>
     </label>

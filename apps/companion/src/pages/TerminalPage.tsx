@@ -84,7 +84,7 @@ export function TerminalPage() {
   };
 
   return (
-    <div>
+    <div data-component="TerminalPage">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-canvas px-4 py-3">
         <h1 className="text-ui-base text-slate-900">{t("mobile.terminal.title")}</h1>
         <button

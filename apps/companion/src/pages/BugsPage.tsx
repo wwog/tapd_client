@@ -127,6 +127,7 @@ function uniqueValues(values: Array<string | null | undefined>): string[] {
 function FilterChip(props: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
+      data-component="FilterChip"
       type="button"
       aria-pressed={props.selected}
       onClick={props.onSelect}
@@ -141,7 +142,7 @@ function FilterChip(props: { label: string; selected: boolean; onSelect: () => v
 
 function FilterGroup(props: { label: string; children: React.ReactNode }) {
   return (
-    <section className="mt-4 first:mt-0">
+    <section data-component="FilterGroup" className="mt-4 first:mt-0">
       <h3 className="text-ui-sm text-slate-500">{props.label}</h3>
       <div className="mt-2 flex flex-wrap gap-1.5">{props.children}</div>
     </section>
@@ -151,6 +152,7 @@ function FilterGroup(props: { label: string; children: React.ReactNode }) {
 function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) => void }) {
   return (
     <div
+      data-component="ScopeSegmented"
       role="tablist"
       aria-label={t("mobile.bugs.scope")}
       className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface p-0.5"
@@ -178,7 +180,7 @@ function ScopeSegmented(props: { value: BugScope; onChange: (scope: BugScope) =>
 
 function ListSkeleton() {
   return (
-    <div>
+    <div data-component="ListSkeleton">
       {[0, 1, 2, 3, 4, 5].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-3/4 animate-pulse rounded bg-overlay-soft" />
@@ -428,7 +430,7 @@ export function BugsPage() {
     : 1;
 
   return (
-    <div>
+    <div data-component="BugsPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center px-4 pt-3 pb-2">
           <h1 className="text-ui-base text-slate-900">{t("common.bugs")}</h1>

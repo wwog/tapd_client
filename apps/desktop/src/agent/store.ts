@@ -40,7 +40,11 @@ import {
 } from "../lib/dsh";
 import { createExternalStore } from "../lib/store";
 import { readPref, writePref } from "../lib/uiPrefs";
-import { agentSettingsApi, defaultSelection } from "../lib/agentSettings";
+import {
+  agentSettingsApi,
+  defaultSelection,
+  type DshModelsConfig,
+} from "../lib/agentSettings";
 import { isWorkflowTask } from "./workflow";
 
 export type AgentTeamView = "chat" | "board";
@@ -962,7 +966,9 @@ async function flushEffort(): Promise<void> {
   effortPending = null;
   if (!pending) return;
   try {
-    const config = await agentSettingsApi.setEffort(
+    // The backend moves the picked provider/model to the front as well, which
+    // is how the app's "order is the default" rule records the last choice.
+    const config = await agentSettingsApi.setDefault(
       pending.provider,
       pending.model,
       pending.level,
@@ -973,14 +979,47 @@ async function flushEffort(): Promise<void> {
   }
 }
 
-/** Local echo + debounced write of one model's level. */
+/** The picked provider/model becomes the first entry of both lists. */
+function promoteDefault(
+  models: DshModelsConfig,
+  providerId: string,
+  modelId: string,
+): DshModelsConfig {
+  const providers = [...models.providers];
+  const providerIndex = providers.findIndex((item) => item.id === providerId);
+  if (providerIndex < 0) return models;
+  const provider = providers[providerIndex]!;
+  const entries = [...provider.models];
+  const modelIndex = entries.findIndex((item) => item.id === modelId);
+  if (modelIndex < 0) return models;
+  const [model] = entries.splice(modelIndex, 1);
+  if (!model) return models;
+  providers[providerIndex] = { ...provider, models: [model, ...entries] };
+  const [moved] = providers.splice(providerIndex, 1);
+  if (!moved) return models;
+  return {
+    ...models,
+    providers: [moved, ...providers],
+    activeProviderId: providerId,
+    activeModelId: modelId,
+  };
+}
+
+/**
+ * Local echo + debounced write of a pick: the level that model now runs at and
+ * the route every new session starts on. Existing sessions keep their own
+ * durable selection, so changing the default never reaches back into them.
+ */
 function rememberEffort(selection: ModelSelection): void {
-  const level = selection.reasoningEffort?.trim();
-  if (!level) return;
+  const level = selection.reasoningEffort?.trim() || "off";
   effortPending = { provider: selection.provider, model: selection.model, level };
   update((state) => {
     if (!state.config) return state;
-    const models = state.config.dshModels;
+    const models = promoteDefault(
+      state.config.dshModels,
+      selection.provider,
+      selection.model,
+    );
     return {
       ...state,
       config: {
@@ -1077,11 +1116,11 @@ export const agentActions = {
     sessionId: string | null,
     selection: ModelSelection,
   ): Promise<void> => {
-    // Every pick also records the level this model now runs at, so the next
-    // session that starts on it keeps the same effort.
-    rememberEffort(selection);
     if (!sessionId) {
+      // No Agent to route yet: keep the draft and remember the choice as the
+      // default for whichever session is allocated next.
       update((state) => ({ ...state, draftSelection: selection }));
+      rememberEffort(selection);
       return;
     }
     const current = agentStore.get();
@@ -1090,10 +1129,20 @@ export const agentActions = {
     applySelection(sessionId, selection);
     try {
       await dshApi.selectModel(sessionId, selection);
+      // Only a route the runtime accepted becomes the next session's default.
+      rememberEffort(selection);
     } catch (error) {
       applySelection(sessionId, before);
       setError(error);
     }
+  },
+
+  /** Records a route picked outside a live session (the enqueue sheet) as the
+   *  default for every session that starts next. Existing sessions keep their
+   *  own durable selection. */
+  rememberModelDefault: async (selection: ModelSelection): Promise<void> => {
+    rememberEffort(selection);
+    await flushEffort();
   },
 
   /** Switches one session between plan mode and the three permission modes.

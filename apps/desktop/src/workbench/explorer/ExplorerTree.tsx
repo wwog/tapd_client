@@ -92,6 +92,7 @@ export function ExplorerTree(props: Props) {
 
   return (
     <div
+      data-component="ExplorerTree"
       ref={containerRef}
       role="tree"
       aria-label={t("explorer.title")}

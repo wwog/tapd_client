@@ -27,6 +27,7 @@ export function HashValue({
 
   return (
     <button
+      data-component="HashValue"
       type="button"
       onClick={() => void copy()}
       title={`${t("common.copy")}: ${value}`}

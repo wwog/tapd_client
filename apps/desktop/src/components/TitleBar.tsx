@@ -23,6 +23,7 @@ export function TitleBar({ onOpenAccount }: Props) {
 
   return (
     <div
+      data-component="TitleBar"
       className="relative flex h-11 shrink-0 items-center gap-2 px-4"
       data-tauri-drag-region
     >

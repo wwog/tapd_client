@@ -114,6 +114,7 @@ export function GroupView({
 
   return (
     <div
+      data-component="GroupView"
       data-workbench-group={group.id}
       data-workbench-group-cell="true"
       {...(empty ? { "data-workbench-group-empty": "true" } : {})}
@@ -309,6 +310,7 @@ function TabItem({
 
   return (
     <div
+      data-component="TabItem"
       role="tab"
       aria-selected={active}
       data-tab-id={panel.id}
@@ -399,6 +401,7 @@ function ActiveTabExtra({
   if (extra === null || extra === undefined || extra === false) return null;
   return (
     <div
+      data-component="ActiveTabExtra"
       data-active-tab-extra={panel.id}
       className="flex shrink-0 items-center"
     >
@@ -418,6 +421,7 @@ function StripButton({
 }) {
   return (
     <button
+      data-component="StripButton"
       type="button"
       aria-label={label}
       title={label}

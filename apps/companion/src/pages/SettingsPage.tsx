@@ -35,6 +35,7 @@ function Segmented<T extends string>(props: {
 }) {
   return (
     <div
+      data-component="Segmented"
       role="tablist"
       aria-label={props.label}
       className="inline-flex rounded-lg border border-border bg-slate-50 p-0.5"
@@ -62,7 +63,7 @@ function Segmented<T extends string>(props: {
 
 function SettingRow(props: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
+    <div data-component="SettingRow" className="flex items-center justify-between gap-3 border-b border-border py-2.5 last:border-b-0">
       <span className="shrink-0 text-ui-caption text-slate-700">{props.label}</span>
       {props.children}
     </div>
@@ -79,6 +80,7 @@ function SwitchButton(props: {
 }) {
   return (
     <button
+      data-component="SwitchButton"
       type="button"
       role="switch"
       aria-checked={props.checked}
@@ -133,7 +135,7 @@ function Stepper(props: {
 }) {
   const step = props.step ?? 1;
   return (
-    <div className="flex items-center gap-3">
+    <div data-component="Stepper" className="flex items-center gap-3">
       <button
         type="button"
         aria-label={t("mobile.settings.decrease", { label: props.label })}
@@ -167,6 +169,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   if (props.error) {
     return (
       <p
+        data-component="DeskStatus"
         className="border-b border-border py-2.5 text-ui-sm leading-5 text-rose-600 last:border-b-0"
         title={t("mobile.settings.loadErrorHint")}
       >
@@ -176,7 +179,7 @@ function DeskStatus(props: { error: string | null; loading: boolean }) {
   }
   if (props.loading) {
     return (
-      <p className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
+      <p data-component="DeskStatus" className="border-b border-border py-2.5 text-ui-caption text-slate-400 last:border-b-0">
         {t("mobile.settings.loadingDesktop")}
       </p>
     );
@@ -456,7 +459,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="pb-6">
+    <div data-component="SettingsPage" className="pb-6">
       <header className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-border bg-canvas px-2 py-2">
         <button
           type="button"

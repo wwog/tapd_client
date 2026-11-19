@@ -89,6 +89,7 @@ function PreparingLine({ since }: { since: number }) {
 
   return (
     <div
+      data-component="PreparingLine"
       className="flex items-center gap-2 px-4 pt-2 text-ui-sm"
       title={t("agent.runtime.preparingHint")}
     >
@@ -102,7 +103,7 @@ function PreparingLine({ since }: { since: number }) {
 
 function ErrorLine({ error }: { error: { code: string | null; message: string } }) {
   return (
-    <div className="flex items-start gap-2 px-4 pt-2 text-ui-sm text-rose-600">
+    <div data-component="ErrorLine" className="flex items-start gap-2 px-4 pt-2 text-ui-sm text-rose-600">
       <AlertTriangle size={13} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1 break-all" title={error.code ?? undefined}>
         {error.message}

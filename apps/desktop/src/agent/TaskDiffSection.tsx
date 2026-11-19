@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
+import { dshFileApi } from "../lib/dsh";
 import type { DshTask, DshTaskFile, DshTaskFileStatus } from "../lib/dsh";
+import type { FileTabTarget } from "../lib/fs";
 import { t, type MessageKey } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { Spinner } from "../components/ui";
@@ -50,7 +52,14 @@ function reviewBase(task: DshTask): string {
  * and a file can be opened in the saved editor. Shared by the task pane; the
  * review decision lives above it.
  */
-export function TaskDiffSection({ task }: { task: DshTask }) {
+export function TaskDiffSection({
+  task,
+  onOpenFile,
+}: {
+  task: DshTask;
+  /** Opens the file in the workbench viewer instead of expanding a panel. */
+  onOpenFile: (target: FileTabTarget) => void;
+}) {
   const base = reviewBase(task);
   const [files, setFiles] = useState<{
     files: DshTaskFile[];
@@ -97,6 +106,29 @@ export function TaskDiffSection({ task }: { task: DshTask }) {
     }
   };
 
+  /** 「应用内查看」: the app's own read-only viewer owns the file tab. */
+  const openInViewer = async (relative: string) => {
+    const absolute = joinUnder(base, relative);
+    if (!absolute) {
+      showToast("error", t("agent.review.noPath", { path: relative }));
+      return;
+    }
+    try {
+      const target = await dshFileApi.target(task.id, absolute);
+      if (target.kind !== "file") {
+        showToast("error", t("agent.file.missing", { path: relative }));
+        return;
+      }
+      onOpenFile({
+        workspaceId: target.workspaceId,
+        path: target.path,
+        label: target.label,
+      });
+    } catch (error) {
+      showToast("error", t("agent.review.openFailed", { error: String(error) }));
+    }
+  };
+
   const toggleDiff = async (file: DshTaskFile) => {
     if (expanded === file.path) {
       setExpanded(null);
@@ -121,7 +153,7 @@ export function TaskDiffSection({ task }: { task: DshTask }) {
   const shownFiles = files?.files ?? [];
 
   return (
-    <section className="rounded-xl border border-border bg-surface">
+    <section data-component="TaskDiffSection" className="rounded-xl border border-border bg-surface">
       <div className="flex items-center gap-2 px-3 py-2">
         <h2 className="text-ui-sm text-slate-900" title={t("agent.review.filesHint")}>
           {t("agent.review.files")}
@@ -173,7 +205,7 @@ export function TaskDiffSection({ task }: { task: DshTask }) {
                   <button
                     type="button"
                     onClick={() => void toggleDiff(file)}
-                    title={file.path}
+                    title={open ? t("agent.task.hideDiff") : file.path}
                     className="min-w-0 flex-1 text-left"
                   >
                     <ScrollingName
@@ -193,10 +225,11 @@ export function TaskDiffSection({ task }: { task: DshTask }) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => void toggleDiff(file)}
+                    onClick={() => void openInViewer(file.path)}
+                    title={t("agent.review.viewHereHint")}
                     className="shrink-0 rounded px-1 py-0.5 text-ui-2xs text-slate-500 transition hover:bg-overlay-soft hover:text-slate-800"
                   >
-                    {open ? t("agent.task.hideDiff") : t("agent.review.viewHere")}
+                    {t("agent.review.viewHere")}
                   </button>
                   <button
                     type="button"

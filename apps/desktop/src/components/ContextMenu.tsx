@@ -52,6 +52,7 @@ export function ContextMenu({ x, y, label, onClose, className, children }: Props
 
   return (
     <div
+      data-component="ContextMenu"
       ref={ref}
       role="menu"
       aria-label={label}
@@ -83,6 +84,7 @@ export function ContextMenuItem(props: {
   const { label, icon, done = false, tone = "default", disabled, title, onClick } = props;
   return (
     <button
+      data-component="ContextMenuItem"
       type="button"
       role="menuitem"
       disabled={disabled}
@@ -114,13 +116,13 @@ export function ContextMenuItem(props: {
 }
 
 export function ContextMenuSeparator() {
-  return <div className="my-1 border-t border-border" />;
+  return <div data-component="ContextMenuSeparator" className="my-1 border-t border-border" />;
 }
 
 /** Small caption used to group items (e.g. the dev-only simulation block). */
 export function ContextMenuLabel({ icon, children }: { icon?: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-ui-2xs text-slate-400">
+    <div data-component="ContextMenuLabel" className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-ui-2xs text-slate-400">
       {icon}
       {children}
     </div>

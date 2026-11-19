@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import clsx from "clsx";
 import { Sparkles, X } from "lucide-react";
 
@@ -10,6 +10,7 @@ import {
 import { dshTaskApi } from "../lib/dsh";
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
+import { hasOpenDismissLayer } from "../hooks/useDismiss";
 import { useLayerClose } from "../hooks/useLayerClose";
 import { usePanelServices } from "../workbench/panels/context";
 import { Button, ModalDragStrip, Switch } from "../components/ui";
@@ -37,18 +38,29 @@ export function EnqueueSheet({ target, onClose }: Props) {
   const { closing, requestClose } = useLayerClose(onClose);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  // The task inherits the configured default; the choice is fixed once the
-  // task is created, so it is offered here and nowhere else. Read once at
-  // mount: subscribing would re-render the sheet on every stream delta.
+  // The task inherits the configured default; both start-only choices (team
+  // and model) are offered here and fixed once the task is created. Read once
+  // at mount: subscribing would re-render the sheet on every stream delta.
   const [team, setTeam] = useState(
     () => agentStore.get().config?.teamEnabled ?? false,
   );
   // The route this task starts on. It begins at the last choice (which is the
   // default for new sessions) and the task keeps its own copy once created.
-  const models = agentStore.get().config?.dshModels ?? null;
+  // Only the config slice is subscribed: the sheet must not re-render per
+  // stream token while another session runs.
+  const config = useSyncExternalStore(
+    agentStore.subscribe,
+    () => agentStore.get().config,
+  );
+  const models = config?.dshModels ?? null;
   const [model, setModel] = useState<ModelSelection | null>(() =>
     defaultSelection(models),
   );
+  // The sheet opens from bug/local pages, which may never have visited the
+  // Agent page (the only other bootstrap point).
+  useEffect(() => {
+    if (!agentStore.get().config) void agentActions.loadConfig();
+  }, []);
 
   const heading =
     target.kind === "bug" ? t("bugs.fixWithAgent") : t("local.items.toAgent");
@@ -57,6 +69,8 @@ export function EnqueueSheet({ target, onClose }: Props) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || submitting) return;
+      // The model menu is its own layer: Escape closes it, not the sheet.
+      if (hasOpenDismissLayer()) return;
       event.preventDefault();
       requestClose();
     };
@@ -103,7 +117,7 @@ export function EnqueueSheet({ target, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[65]">
+    <div data-component="EnqueueSheet" className="fixed inset-0 z-[65]">
       {/* The sheet has explicit close/cancel: the backdrop never dismisses. */}
       <div
         aria-hidden="true"

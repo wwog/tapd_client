@@ -222,6 +222,7 @@ function Thumbnail(props: {
 
   return (
     <button
+      data-component="Thumbnail"
       type="button"
       onClick={onClick}
       title={title}
@@ -249,6 +250,7 @@ function Thumbnail(props: {
 function PreviewButton(props: { onClick: () => void }) {
   return (
     <button
+      data-component="PreviewButton"
       type="button"
       onClick={props.onClick}
       title={t("bugs.preview")}
@@ -284,7 +286,7 @@ function OpenButton(props: {
   });
 
   return (
-    <div className="relative shrink-0">
+    <div data-component="OpenButton" className="relative shrink-0">
       <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-surface text-ui-sm text-slate-600">
         <button
           type="button"
@@ -366,6 +368,7 @@ function TargetIcon(props: {
   if (target?.icon) {
     return (
       <img
+        data-component="TargetIcon"
         src={target.icon}
         alt={target.label}
         title={fallback}
@@ -375,6 +378,7 @@ function TargetIcon(props: {
   }
   return (
     <span
+      data-component="TargetIcon"
       title={fallback}
       className="grid h-4 w-4 shrink-0 place-items-center rounded-[4px] bg-slate-100 text-slate-500"
     >
@@ -400,7 +404,7 @@ function AttachmentRow(props: {
     : -1;
 
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
+    <div data-component="AttachmentRow" className="flex items-center gap-3 rounded-xl border border-slate-100 bg-surface p-3">
       <Thumbnail
         url={previewable ? attachment.downloadUrl : ""}
         icon={Icon}
@@ -458,7 +462,7 @@ function EmbeddedMediaRow(props: {
     : -1;
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
+    <div data-component="EmbeddedMediaRow" className="flex items-center gap-3 rounded-lg border border-slate-100 bg-surface p-2.5">
       <Thumbnail
         url={previewable ? media.url : ""}
         icon={Icon}

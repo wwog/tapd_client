@@ -113,7 +113,7 @@ export function CapturesPage({ toast, onOpenPath }: Props) {
   };
 
   return (
-    <div className="space-y-3">
+    <div data-component="CapturesPage" className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
         <div className="relative min-w-[220px] flex-1">
           <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
@@ -359,7 +359,7 @@ function BodyPanel(props: {
   const { title, value, truncated, onCopy } = props;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+    <div data-component="BodyPanel" className="overflow-hidden rounded-xl border border-border bg-surface">
       <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-ui-sm text-slate-500">
         <span>
           {title}

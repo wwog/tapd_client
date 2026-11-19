@@ -23,7 +23,7 @@ export function CoworkerPage({ toast }: Props) {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+    <div data-component="CoworkerPage" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div className="mx-auto max-w-5xl">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>

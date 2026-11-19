@@ -39,6 +39,7 @@ export function AccountChip({
   if (compact) {
     return (
       <button
+        data-component="AccountChip"
         type="button"
         title={t("settings.account.title")}
         aria-label={t("settings.account.title")}
@@ -61,6 +62,7 @@ export function AccountChip({
 
   return (
     <button
+      data-component="AccountChip"
       type="button"
       onClick={onClick}
       title={t("settings.account.title")}

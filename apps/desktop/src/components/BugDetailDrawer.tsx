@@ -232,6 +232,7 @@ function BugDetailDrawerImpl(props: Props) {
 
   return (
     <aside
+      data-component="BugDetailDrawer"
       aria-hidden={!open}
         className={clsx(
           "flex h-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface  border border-border",
@@ -481,7 +482,7 @@ export const BugDetailDrawer = memo(BugDetailDrawerImpl);
  */
 function DetailSkeleton() {
   return (
-    <div role="status" aria-busy="true" className="space-y-5">
+    <div data-component="DetailSkeleton" role="status" aria-busy="true" className="space-y-5">
       <span className="sr-only">{t("bugs.loadingDetail")}</span>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-100 bg-surface p-3 sm:grid-cols-4">

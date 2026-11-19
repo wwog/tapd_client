@@ -36,6 +36,7 @@ export function Button(
 
   return (
     <button
+      data-component="Button"
       type="button"
       {...rest}
       disabled={disabled || loading}
@@ -73,6 +74,7 @@ export function Badge(props: {
 
   return (
     <span
+      data-component="Badge"
       className={clsx(
         "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-ui-sm font-normal",
         BADGE_TONES[tone],
@@ -106,6 +108,7 @@ export const cardClass = "rounded-2xl border border-border bg-surface p-4";
 export function ModalDragStrip({ className }: { className?: string }) {
   return (
     <div
+      data-component="ModalDragStrip"
       data-tauri-drag-region
       className={clsx("absolute inset-x-0 top-0 h-11", className)}
     />
@@ -132,6 +135,7 @@ export function Switch(props: {
 
   return (
     <button
+      data-component="Switch"
       type="button"
       role="switch"
       aria-checked={checked}
@@ -163,6 +167,7 @@ export function EmptyState(props: {
 }) {
   return (
     <div
+      data-component="EmptyState"
       className="grid min-h-[280px] place-items-center p-8 text-center"
       title={props.description}
     >

@@ -46,6 +46,7 @@ export const PromptNavigator = memo(function PromptNavigator({
 
   return (
     <div
+      data-component="PromptNavigator"
       ref={rootRef}
       className="pointer-events-none absolute left-2 top-2 z-30 hidden @min-[900px]:block"
     >

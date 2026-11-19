@@ -6,6 +6,7 @@ import { agentActions, type PendingApproval } from "./store";
 export function ApprovalCard({ approval }: { approval: PendingApproval }) {
   return (
     <section
+      data-component="ApprovalCard"
       className="rounded-xl border border-amber-200 bg-amber-50/40 px-3 py-2"
       title={t("agent.approval.hint")}
     >

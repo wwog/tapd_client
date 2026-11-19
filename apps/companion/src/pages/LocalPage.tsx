@@ -92,6 +92,7 @@ function SheetAction(props: {
   const Icon = props.icon;
   return (
     <button
+      data-component="SheetAction"
       type="button"
       disabled={props.disabled}
       onClick={props.onClick}
@@ -113,7 +114,7 @@ const textField =
 
 function ItemsSkeleton() {
   return (
-    <div aria-hidden="true">
+    <div data-component="ItemsSkeleton" aria-hidden="true">
       {[0, 1, 2, 3].map((row) => (
         <div key={row} className="border-b border-border px-4 py-3">
           <div className="h-4 w-3/4 animate-pulse rounded bg-overlay-soft" />
@@ -416,7 +417,7 @@ export function LocalPage(props: { projectId: string | null }) {
   };
 
   return (
-    <div>
+    <div data-component="LocalPage">
       <header className="sticky top-0 z-20 border-b border-border bg-canvas">
         <div className="flex items-center gap-2 px-4 pt-3 pb-2">
           <h1 className="text-ui-base text-slate-900">{t("mobile.local.title")}</h1>
