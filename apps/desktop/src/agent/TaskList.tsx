@@ -26,7 +26,12 @@ import { Button, Spinner } from "../components/ui";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContextMenu, ContextMenuItem } from "../components/ContextMenu";
 import { ScrollingName } from "../components/ScrollingName";
-import { agentActions, agentStore, taskActivityAt, taskLiveStatus } from "./store";
+import {
+  agentActions,
+  agentStore,
+  taskActivityAt,
+  taskLiveStatus,
+} from "./store";
 import { TaskHoverCard } from "./TaskHoverCard";
 import { WORKFLOW, WORKFLOW_MARK, isWorkflowTask } from "./workflow";
 
@@ -74,10 +79,9 @@ function groupTasks(
   }
   for (const task of tasks) {
     const project = task.project;
-    ensure(
-      project,
-      project?.name || t("agent.task.noProject"),
-    ).tasks.push(task);
+    ensure(project, project?.name || t("agent.task.noProject")).tasks.push(
+      task,
+    );
   }
 
   const ordered = [...groups.values()].filter(
@@ -93,7 +97,11 @@ function groupTasks(
 export function TaskList() {
   const state = agentStore.use();
   const [deleting, setDeleting] = useState<DshTask | null>(null);
-  const [menu, setMenu] = useState<{ task: DshTask; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{
+    task: DshTask;
+    x: number;
+    y: number;
+  } | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
     () => new Set(readPref<string[]>(COLLAPSED_PREF) ?? []),
   );
@@ -106,7 +114,10 @@ export function TaskList() {
       if (!exists) throw new Error(path);
       await api.openPath(path);
     } catch (error) {
-      showToast("error", t("agent.session.revealFailed", { error: String(error) }));
+      showToast(
+        "error",
+        t("agent.session.revealFailed", { error: String(error) }),
+      );
     }
   };
 
@@ -129,10 +140,14 @@ export function TaskList() {
   }
 
   const groups = ordered ? groupTasks(ordered, state.projects) : [];
-  const empty = ordered !== null && ordered.length === 0 && !state.projects?.length;
+  const empty =
+    ordered !== null && ordered.length === 0 && !state.projects?.length;
 
   return (
-    <aside data-component="TaskList" className="flex h-full min-h-0 w-[248px] shrink-0 flex-col border-r border-border">
+    <aside
+      data-component="TaskList"
+      className="flex h-full min-h-0 w-[248px] shrink-0 flex-col border-r border-border"
+    >
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 pt-2">
         {tasks === null ? (
           state.tasksError ? (
@@ -178,10 +193,17 @@ export function TaskList() {
                   >
                     <ChevronRight
                       size={11}
-                      className={clsx("shrink-0 transition-transform", !folded && "rotate-90")}
+                      className={clsx(
+                        "shrink-0 transition-transform",
+                        !folded && "rotate-90",
+                      )}
                     />
                     <Folder size={12} className="shrink-0" />
-                    <ScrollingName text={group.name} className="min-w-0 flex-1" />
+                    {/* The extra leading space is what row titles align to. */}
+                    <ScrollingName
+                      text={group.name}
+                      className="ml-1 min-w-0 flex-1"
+                    />
                     <span className="shrink-0 tabular-nums text-ui-2xs text-slate-300">
                       {group.tasks.length}
                     </span>
@@ -189,14 +211,16 @@ export function TaskList() {
                   <button
                     type="button"
                     title={t("agent.task.newInProject", { name: group.name })}
-                    aria-label={t("agent.task.newInProject", { name: group.name })}
+                    aria-label={t("agent.task.newInProject", {
+                      name: group.name,
+                    })}
                     onClick={() => {
                       // The new row lands in this group; a folded group would
                       // hide the session the click just created.
                       if (collapsed.has(group.key)) toggleGroup(group.key);
                       void agentActions.newSession(group.project ?? undefined);
                     }}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition group-hover/grp:text-slate-600 hover:text-slate-800"
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition group-hover/grp:text-slate-600 hover:bg-overlay hover:text-slate-900 active:bg-overlay-soft"
                   >
                     <Plus size={12} />
                   </button>
@@ -214,9 +238,13 @@ export function TaskList() {
                         status={taskLiveStatus(state, task)}
                         updatedAt={taskActivityAt(state, task)}
                         pending={pending.get(task.id) ?? 0}
-                        model={state.sessions[task.id]?.usage.model || undefined}
+                        model={
+                          state.sessions[task.id]?.usage.model || undefined
+                        }
                         onDelete={setDeleting}
-                        onMenu={(target, x, y) => setMenu({ task: target, x, y })}
+                        onMenu={(target, x, y) =>
+                          setMenu({ task: target, x, y })
+                        }
                       />
                     ))}
                   </div>
@@ -341,32 +369,10 @@ function TaskRow({
     <div
       data-component="TaskRow"
       ref={rowRef}
-      className="group relative"
+      className="group relative flex items-center"
       onMouseEnter={openHover}
       onMouseLeave={closeHover}
     >
-      {/* Left gutter: blocked on a person wins over running, because the
-          spinner would mean the opposite of what is happening. The workflow
-          mark sits beside it; both stay out of the title's flow. */}
-      <span className="pointer-events-none absolute left-1 top-1/2 flex -translate-y-1/2 items-center gap-1">
-        {pending > 0 ? (
-          <span
-            className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 px-1 text-ui-2xs tabular-nums text-amber-700"
-            title={t("agent.task.needsInput", { count: pending })}
-          >
-            {pending}
-          </span>
-        ) : status === "running" ? (
-          <span className="shrink-0" title={t("agent.task.live")}>
-            <Loader2 size={12} className="animate-spin text-slate-400" />
-          </span>
-        ) : null}
-        {isWorkflowTask(task) ? (
-          <span className="shrink-0" title={t(workflow.label)}>
-            <Workflow size={11} className={mark} />
-          </span>
-        ) : null}
-      </span>
       <button
         type="button"
         aria-current={selected}
@@ -376,20 +382,43 @@ function TaskRow({
           onMenu(task, event.clientX, event.clientY);
         }}
         className={clsx(
-          // The status glyph lives in the left gutter, so the title starts at
-          // the same x as the project name whether or not it is spinning.
-          "flex w-full items-center gap-1.5 rounded-lg border py-1.5 pl-9 pr-2 text-left transition",
+          // The workflow mark sits inside the fill, on its own fixed slot, so
+          // the title lines up with the group title with or without the mark.
+          "flex min-w-0 flex-1 items-center rounded-lg border py-1.5 pl-0.5 pr-2 text-left transition",
           selected
             ? "border-sky-200 bg-sky-50"
             : "border-transparent hover:bg-slate-50",
         )}
       >
+        <span className="pointer-events-none pl-1 w-3 flex shrink-0 items-center justify-center">
+
+          {pending > 0 ? (
+            <span
+              className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 px-1 text-ui-2xs tabular-nums text-amber-700"
+              title={t("agent.task.needsInput", { count: pending })}
+            >
+              {pending}
+            </span>
+          ) : status === "running" ? (
+            <span className="shrink-0" title={t("agent.task.live")}>
+              <Loader2 size={12} className="animate-spin text-slate-400" />
+            </span>
+          ) : null}
+        </span>
+        <span
+          className="pl-1 grid shrink-0 place-items-center"
+          title={isWorkflowTask(task) ? t(workflow.label) : undefined}
+        >
+          {isWorkflowTask(task) ? (
+            <Workflow size={11} className={mark} />
+          ) : null}
+        </span>
         <ScrollingName
           text={task.title || t("agent.task.untitled")}
           className="min-w-0 flex-1 text-ui-caption text-slate-800"
         />
         {updatedAt ? (
-          <span className="shrink-0 text-ui-2xs tabular-nums text-slate-400 transition group-hover:opacity-0">
+          <span className="ml-1.5 shrink-0 text-ui-2xs tabular-nums text-slate-400 transition group-hover:opacity-0">
             {relativeTime(updatedAt)}
           </span>
         ) : null}
