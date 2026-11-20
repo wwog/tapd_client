@@ -462,6 +462,8 @@ export const agent = {
     "保存在本机 agent.json（明文），只经环境变量传给运行时，不写进日志。",
     "Stored locally in agent.json (plain text); passed to the runtime only through an environment variable and never logged.",
   ],
+  "agent.config.apiKeyShow": ["显示 API Key", "Show API Key"],
+  "agent.config.apiKeyHide": ["隐藏 API Key", "Hide API Key"],
 
   // Model providers.
   "agent.model.providers": ["供应商", "Providers"],

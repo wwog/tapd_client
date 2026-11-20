@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { GripVertical, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Eye, EyeOff, GripVertical, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ScrollingName } from "../components/ScrollingName";
@@ -107,6 +107,8 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
   const [fetching, setFetching] = useState(false);
   /** Outcome of the last 获取模型 on the selected provider. */
   const [fetchNote, setFetchNote] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Provider whose API key is shown in clear text; clears when switching away. */
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
 
   const providers = value.providers;
   const selected = providers.find((provider) => provider.id === selectedId) ?? providers[0] ?? null;
@@ -233,6 +235,7 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
   const selectProvider = (id: string) => {
     setSelectedId(id);
     setFetchNote(null);
+    setRevealedKey(null);
   };
 
   /**
@@ -364,7 +367,8 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
           )}
         </nav>
 
-        <div className="min-w-0 flex-1 overflow-y-auto pl-4">
+        {/* pr keeps the 8px overlay scrollbar off the row toggles. */}
+        <div className="min-w-0 flex-1 overflow-y-auto pl-4 pr-2">
           {selected === null ? (
             <div className="grid h-full place-items-center px-4 text-center">
               <div>
@@ -436,15 +440,42 @@ export function ModelSettings({ value, onChange, fill = false }: Props) {
                   </select>
                 </Field>
                 <Field label={t("agent.config.apiKey")} hint={t("agent.config.apiKeyHint")}>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={selected.apiKey}
-                    onChange={(event) =>
-                      patchProvider(selected.id, { apiKey: event.target.value })
-                    }
-                    className={inputClass}
-                  />
+                  <span className="relative block">
+                    <input
+                      type={revealedKey === selected.id ? "text" : "password"}
+                      autoComplete="off"
+                      value={selected.apiKey}
+                      onChange={(event) =>
+                        patchProvider(selected.id, { apiKey: event.target.value })
+                      }
+                      className={`${inputClass} pr-8 font-mono`}
+                    />
+                    <button
+                      type="button"
+                      title={
+                        revealedKey === selected.id
+                          ? t("agent.config.apiKeyHide")
+                          : t("agent.config.apiKeyShow")
+                      }
+                      aria-label={
+                        revealedKey === selected.id
+                          ? t("agent.config.apiKeyHide")
+                          : t("agent.config.apiKeyShow")
+                      }
+                      onClick={() =>
+                        setRevealedKey((current) =>
+                          current === selected.id ? null : selected.id,
+                        )
+                      }
+                      className="absolute right-1 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-md text-slate-400 transition hover:bg-overlay hover:text-slate-700"
+                    >
+                      {revealedKey === selected.id ? (
+                        <EyeOff size={12} />
+                      ) : (
+                        <Eye size={12} />
+                      )}
+                    </button>
+                  </span>
                 </Field>
               </div>
 
