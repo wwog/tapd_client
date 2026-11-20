@@ -4,9 +4,9 @@ import {
   EyeOff,
   Folder,
   FolderCog,
-  FolderPlus,
   FolderTree,
   Pencil,
+  Plus,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -206,65 +206,86 @@ export function ProjectSidebar({
                 );
               })}
 
-              {localProjects.length > 0 ? (
-                <div className="mt-1 border-t border-border pt-1">
-                  <div
-                    className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
-                    title={t("local.projects.hint")}
-                  >
-                    <span>{t("local.projects.title")}</span>
-                    <span className="tabular-nums">{localProjects.length}</span>
-                  </div>
-                  {localProjects.map((project) => {
-                    const active = project.id === localProjectId;
-                    return (
-                      <div key={project.id} className="group relative">
+              {/* The group header is always here: the only in-sidebar way to
+                  create a local project lives on it (count on rest,「+」on
+                  hover, and「+」alone while there is nothing to count). */}
+              <div className="mt-1 border-t border-border pt-1">
+                <div
+                  className="group/lp flex items-center justify-between px-2.5 pb-1 pt-1.5 text-ui-xs text-slate-400"
+                  title={t("local.projects.hint")}
+                >
+                  <span>{t("local.projects.title")}</span>
+                  <span className="grid shrink-0 place-items-center">
+                    {localProjects.length > 0 ? (
+                      <span className="tabular-nums group-hover/lp:hidden">
+                        {localProjects.length}
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      aria-label={t("local.projects.create")}
+                      title={t("local.projects.create")}
+                      onClick={onCreateLocalProject}
+                      className={clsx(
+                        "-my-1 h-5 w-5 place-items-center rounded transition hover:bg-overlay hover:text-slate-600 focus-visible:grid",
+                        localProjects.length > 0
+                          ? "hidden group-hover/lp:grid"
+                          : "grid",
+                      )}
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </span>
+                </div>
+                {localProjects.map((project) => {
+                  const active = project.id === localProjectId;
+                  return (
+                    <div key={project.id} className="group relative">
+                      <button
+                        type="button"
+                        onClick={() => onSelectLocalProject(project.id)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setLocalMenu({
+                            project,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                        className={clsx(
+                          "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
+                          active
+                            ? "bg-overlay font-normal text-slate-900"
+                            : "text-slate-600 hover:bg-overlay-soft",
+                        )}
+                      >
+                        <Folder
+                          size={13}
+                          className={clsx(
+                            "shrink-0",
+                            active ? "text-sky-600" : "text-slate-400",
+                          )}
+                        />
+                        <ScrollingName text={project.name} className="flex-1" />
+                      </button>
+                      {onBrowseFiles ? (
                         <button
                           type="button"
-                          onClick={() => onSelectLocalProject(project.id)}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            setLocalMenu({
-                              project,
-                              x: event.clientX,
-                              y: event.clientY,
-                            });
+                          aria-label={t("explorer.browse")}
+                          title={t("explorer.browseHint")}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onBrowseFiles(project.id);
                           }}
-                          className={clsx(
-                            "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] pr-8 text-left text-ui-base transition",
-                            active
-                              ? "bg-overlay font-normal text-slate-900"
-                              : "text-slate-600 hover:bg-overlay-soft",
-                          )}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
                         >
-                          <Folder
-                            size={13}
-                            className={clsx(
-                              "shrink-0",
-                              active ? "text-sky-600" : "text-slate-400",
-                            )}
-                          />
-                          <ScrollingName text={project.name} className="flex-1" />
+                          <FolderTree size={12} />
                         </button>
-                        {onBrowseFiles ? (
-                          <button
-                            type="button"
-                            aria-label={t("explorer.browse")}
-                            title={t("explorer.browseHint")}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onBrowseFiles(project.id);
-                            }}
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-overlay hover:text-slate-600 focus-visible:opacity-100 group-hover:opacity-100"
-                          >
-                            <FolderTree size={12} />
-                          </button>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -317,15 +338,6 @@ export function ProjectSidebar({
                 label={t("settings.sidebar.manage")}
                 onClick={() => {
                   onManageProjects();
-                  requestClose();
-                }}
-              />
-              <ContextMenuItem
-                icon={<FolderPlus size={13} />}
-                label={t("local.projects.create")}
-                title={t("local.projects.hint")}
-                onClick={() => {
-                  onCreateLocalProject();
                   requestClose();
                 }}
               />

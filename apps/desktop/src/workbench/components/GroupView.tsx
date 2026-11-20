@@ -45,7 +45,10 @@ type GroupViewProps = {
    */
   activeTabExtra?: (panel: PanelRef) => ReactNode;
   onRegisterBody: (groupId: string, element: HTMLElement | null) => void;
+  /** The strip's `+`: spawns another shell inside an already visible dock. */
   onSpawnTerminal: () => void;
+  /** The welcome page's「打开终端」: shows the dock, then spawns if needed. */
+  onOpenTerminal: () => void;
   onTabPointerDown: (
     event: ReactPointerEvent<HTMLElement>,
     panel: PanelRef,
@@ -78,6 +81,7 @@ export function GroupView({
   activeTabExtra,
   onRegisterBody,
   onSpawnTerminal,
+  onOpenTerminal,
   onTabPointerDown,
 }: GroupViewProps) {
   const services = usePanelServices();
@@ -185,7 +189,7 @@ export function GroupView({
             className="relative min-h-0 flex-1 overflow-hidden"
           >
             {group.role === "primary" && group.panels.length === 0 ? (
-              <WelcomeView onOpenTerminal={onSpawnTerminal} />
+              <WelcomeView onOpenTerminal={onOpenTerminal} />
             ) : null}
           </div>
         </div>

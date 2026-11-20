@@ -1,5 +1,5 @@
 import { Profiler, useMemo } from "react";
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { openMediaPreview } from "../components/MediaPreviewHost";
 import { Segmented } from "../components/Segmented";
@@ -203,23 +203,28 @@ export function AgentWorkspace({
             />
           ) : null}
           <div className="relative flex min-w-0 flex-1 flex-col">
-            {/* The list's way back: a tiny chip in the transcript's gutter, so
-                a folded column never hides the only control that reopens it. */}
-            {list.hidden ? (
-              <button
-                type="button"
-                aria-label={t("agent.task.expandList")}
-                title={
-                  list.autoCollapse
+            {/* One toggle in one spot: the transcript's top-left gutter. It
+                folds the session column and is the only way back, so hovering
+                it must never mean moving the pointer somewhere else. */}
+            <button
+              type="button"
+              aria-label={
+                list.hidden
+                  ? t("agent.task.expandList")
+                  : t("agent.task.collapseList")
+              }
+              title={
+                list.hidden
+                  ? list.autoCollapse
                     ? t("agent.task.expandListNarrow")
                     : t("agent.task.expandList")
-                }
-                onClick={list.toggle}
-                className="absolute left-1 top-1.5 z-20 grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
-              >
-                <PanelLeftOpen size={14} />
-              </button>
-            ) : null}
+                  : t("agent.task.collapseList")
+              }
+              onClick={list.toggle}
+              className="absolute left-1 top-1.5 z-20 grid h-7 w-7 place-items-center rounded-lg border border-border bg-surface text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
+            >
+              {list.hidden ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+            </button>
             {state.selectedId ? (
               <div className="relative shrink-0 px-6 py-2">
                 <div className={`${AGENT_COLUMN} flex items-center justify-center`}>

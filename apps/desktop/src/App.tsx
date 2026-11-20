@@ -425,6 +425,17 @@ export default function App() {
   const terminalOpen = !terminal.hidden && hasTerminalPanels;
 
   /**
+   * Show the shell dock: restores its tabs, spawns the first shell when there
+   * is none, and focuses the bottom dock. Shared by ⌘J and the welcome page's
+   *「打开终端」, which must never fold a dock the reader is already using.
+   */
+  const showTerminal = useCallback(() => {
+    terminal.show();
+    wantTerminalFocus.current = true;
+    if (terminal.sessions.length === 0) terminal.create();
+  }, [terminal.create, terminal.show, terminal.sessions.length]);
+
+  /**
    * ⌘J / rail toggle. Hiding keeps every PTY alive; showing restores the tabs,
    * spawns the first shell when there is none, and focuses the bottom dock.
    */
@@ -433,17 +444,8 @@ export default function App() {
       terminal.hide();
       return;
     }
-    terminal.show();
-    wantTerminalFocus.current = true;
-    if (terminal.sessions.length === 0) terminal.create();
-  }, [
-    hasTerminalPanels,
-    terminal.create,
-    terminal.hide,
-    terminal.hidden,
-    terminal.sessions.length,
-    terminal.show,
-  ]);
+    showTerminal();
+  }, [hasTerminalPanels, showTerminal, terminal.hide, terminal.hidden]);
 
   // ⌘J is the shell dock's only global shortcut. Captured so a focused editor
   // cannot swallow it; Ctrl+J is a newline inside a shell, so only the platform
@@ -997,6 +999,7 @@ export default function App() {
             page={page}
             primaryLeading={primaryLeading}
             activeTabExtra={activeTabExtra}
+            onOpenTerminal={showTerminal}
           />
 
           {!sidebar.hidden ? (

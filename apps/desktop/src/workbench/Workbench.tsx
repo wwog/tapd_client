@@ -48,6 +48,11 @@ type WorkbenchProps = {
    * per focused tab; a handler that returns nothing leaves the slot empty.
    */
   activeTabExtra?: (panel: PanelRef) => ReactNode;
+  /**
+   * Welcome page's「打开终端」: App owns dock visibility, so the row cannot just
+   * spawn a PTY (`services.terminal.create`) behind a folded dock.
+   */
+  onOpenTerminal: () => void;
   /** One app-level strip above the layout area (recovery report). */
   banner?: ReactNode;
 };
@@ -68,6 +73,7 @@ export function Workbench({
   page,
   primaryLeading,
   activeTabExtra,
+  onOpenTerminal,
   banner,
 }: WorkbenchProps) {
   const [bodies, setBodies] = useState<Record<string, HTMLElement | null>>({});
@@ -354,10 +360,19 @@ export function Workbench({
         activeTabExtra={activeTabExtra}
         onRegisterBody={registerBody}
         onSpawnTerminal={spawnTerminal}
+        onOpenTerminal={onOpenTerminal}
         onTabPointerDown={startTabDrag}
       />
     ),
-    [api, activeTabExtra, primaryLeading, registerBody, spawnTerminal, startTabDrag],
+    [
+      api,
+      activeTabExtra,
+      primaryLeading,
+      registerBody,
+      spawnTerminal,
+      onOpenTerminal,
+      startTabDrag,
+    ],
   );
 
   return (

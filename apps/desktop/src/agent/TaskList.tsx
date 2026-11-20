@@ -5,7 +5,6 @@ import {
   Folder,
   FolderOpen,
   Loader2,
-  PanelLeftClose,
   Plus,
   Trash2,
   Workflow,
@@ -268,19 +267,6 @@ export function TaskList({ layout }: { layout: TaskListLayout }) {
             );
           })
         )}
-      </div>
-      {/* Agent settings moved to the Settings page; the footer keeps only the
-          list-collapse control. */}
-      <div className="flex shrink-0 items-center justify-end border-t border-border p-2">
-        <button
-          type="button"
-          aria-label={t("agent.task.collapseList")}
-          title={t("agent.task.collapseList")}
-          onClick={layout.toggle}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-overlay-soft hover:text-slate-700"
-        >
-          <PanelLeftClose size={14} />
-        </button>
       </div>
       {menu ? (
         <ContextMenu
