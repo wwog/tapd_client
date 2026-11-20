@@ -6,7 +6,7 @@
  * enqueue sheet feeds it the choice for a task that does not exist yet. A pick
  * is a full `ModelSelection`, so both callers persist it the same way.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { Check, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
@@ -63,6 +63,8 @@ export type ModelPickerProps = {
   disabled?: boolean;
   className?: string;
   placement?: "up" | "down";
+  /** A rising number opens the menu (the slash palette's `/model`). */
+  openSignal?: number;
 };
 
 export function ModelPicker({
@@ -74,6 +76,7 @@ export function ModelPicker({
   disabled = false,
   className,
   placement = "up",
+  openSignal = 0,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<Panel>("providers");
@@ -111,12 +114,8 @@ export function ModelPicker({
   /** `off` first, then every level the model declares. */
   const stops: string[] = route ? effortStops(route.model) : [];
 
-  const toggle = () => {
-    if (disabled) return;
-    if (open) {
-      close();
-      return;
-    }
+  /** Anchors the menu above the chip; shared by the click and `/model`. */
+  const openMenu = useCallback(() => {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
     setPosition(
@@ -130,6 +129,20 @@ export function ModelPicker({
     // Level two always starts at the provider the session runs on.
     setProviderId(route?.provider.id ?? null);
     setOpen(true);
+  }, [placement, route?.provider.id]);
+
+  // The slash palette opens this same menu instead of listing models twice.
+  useEffect(() => {
+    if (openSignal > 0 && !disabled) openMenu();
+  }, [openSignal, disabled, openMenu]);
+
+  const toggle = () => {
+    if (disabled) return;
+    if (open) {
+      close();
+      return;
+    }
+    openMenu();
   };
 
   /** A new route starts at the level that model last used. */

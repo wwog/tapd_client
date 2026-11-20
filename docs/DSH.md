@@ -230,7 +230,7 @@ Team 没有名册，但 `subagent` 工具可以选择子 agent 的组合，所�
 - `allowedAgentPresets` 会变成 `subagent` 工具里的可选 `agent_preset` 枚举（只有 id，
   没有描述）；不传时按父 preset 走，lead 想派给某位同事就必须显式传 id。
 - `agent_preset` 只对 spawn 生效，`subagent_fork` 不支持。
-- 只有**已安装**的同事进 preset 名单；「同事」页的勾选只决定单人路径的提示词名单。
+- 只有**已安装**的同事进 preset 名单；Agent 配置「同事」分组的勾选只决定单人路径的提示词名单。
   名单随 payload 变化，改名单需要重启运行时（profile 在启动时重写）。
 - registry 的 `default` 是 schema 必填项，但 SDK 创建 root session 时不走 preset 组合，
   root 仍是全局组合。
@@ -401,6 +401,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 // 面板读取：Loader 实际组成的插件 / 新会话继承的工具注册表
 { "type": "plugins", "token": "<token>", "requestId": 3 }
 { "type": "tools", "token": "<token>", "requestId": 4 }
+// 输入框 `/` 面板：读指令目录（省略 sessionId 即全局层）/ 执行一条命令行
+{ "type": "commands", "token": "<token>", "requestId": 5, "sessionId": "probe-1" }
+{ "type": "command-run", "token": "<token>", "requestId": 6, "sessionId": "probe-1",
+  "line": "/compact" }
 ```
 
 `models` / `discover-models` / `plugins` / `tools` 是请求帧，回复走同一通道：
@@ -413,6 +417,23 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 托管凭据（启动初始化后做一次，覆盖早先运行留在 `.credentials.yaml` 里的旧 key）。
 `discover-models` 走引擎的 `ctx.llm.discoverModels`：目录内的路由直接由 pi-ai 目录作答，
 其它路由读端点自己的模型列表。
+
+`commands` / `command-run` 是输入框 `/` 面板的两个请求帧：
+
+- `commands` 读 `ctx.commands.list(agent)`（全局层 + 该 Agent 的作用域覆盖），回复
+  `{type:"commands-listed", token, requestId, commands:[{name, description, inputHint?}]}`。
+  `sessionId` 省略或该会话还没有 Agent 时只回全局层，所以新会话打开面板也不是空的。
+- `command-run` 先按 dsh 的命令名文法校验这一行、并确认名字在目录里，然后**不等待**地启动
+  `commands.execute(agent, line, [], signal)`，立刻回复
+  `{type:"command-acked", token, requestId, started, name?, error?}`。执行结果不接受同步返回：
+  `/compact` 可能跑几十秒，而 `command/run` / `command/done` 本来就是日志事件，行由
+  `session.event` 正常流到 transcript。名字不在目录里时 `started:false` 并带回引擎侧原因。
+
+前端对 `/` 的路由顺序是：本应用自己实现的五条（`file` / `plan` / `permission` / `model` /
+`export`）→ 目录里的运行时指令（`goal` / `compact` / `feedback` 以及将来新增的任何名字）→
+其余（含拼错的 `/foo`）当普通消息发给模型，与 dsh 的退路一致。`/plan` 在本应用是**切换**
+（`/plan off` 强制退出，`/plan <文本>` 进入并把文本作为提示），`/permission` 不带参数时打开
+同一张模式面板而不是直接改模式。
 
 `assign` / `team` / `select-model` 在目标 Agent 还不存在时会排队，等 `session/created`
 （Agent 发布后是 `agent/created`）再应用；`select-model` 走 `agent.model.select`，dsh 会把
@@ -538,6 +559,14 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   `tool` 行（start 的 seq、dispatch 原地合并）；`arguments` 是日志里的归一化值（字符串原样，
   其他值紧凑重序列化）。
 - `session/end-seed` 产生一行 `{ kind: "seed", seq, at, inherited? }`。
+- `command/run` 打开一行 `{ kind: "command", seq, at, commandId, name, args?, status:
+  "running" }`（按 `commandId` 记录映射）；`command/done` 到达时原地合并出
+  `status: "ok" | "error"` 与引擎自己的 `text`，并以 done 的 seq 重发该行。两条事件都是
+  **log-only**：没有 turn 包着它们，行也不计 `messageCount`，更不是用户气泡
+  （`recordInput: false` 的命令如 `/feedback` 不带 `args`）。`done` 先于 `run` 出现（日志
+  从中途开始）时丢弃——没有名字的行只画得出一个 `/`。
+- `goal/change` 只更新会话的 `goal`（目标 id、objective、phase、轮次），**不产生行**；
+  `clear` 把它清回 `None`。
 - `system/message` 是一次请求实际渲染出的系统提示词，产生一行
   `{ kind: "system", seq, at, turn, step, text, update? }`：`turn` / `step` 取事件自带值，
   `surfaceOp` 不是 `append`（阶段切换或归一化重写）时 `update: true`。它**只进轨迹面板**，
@@ -545,7 +574,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   空节点（`text` 为空）不产生行。
 - `context` / `system` / `request` / `retry` / `attempt` / `compaction` / `subcall` / `seed`
   都是**轨迹专用行**：对话区（`groupTurns`）直接跳过，只有 `user` / `assistant` / `tool` /
-  `turn` / `notice` 进对话。
+  `turn` / `notice` / `command` 进对话。
 - 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
@@ -575,6 +604,9 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   "status": "idle", "messageCount": 1, "planActive": false,
   // 当前 todo 列表；还没有 todo/write 时为空数组
   "todos": [{ "content": "survey", "status": "in_progress" }],
+  // 可省略；长期目标（goal/change），clear 后消失
+  "goal": { "id": "g1", "objective": "ship v2", "phase": "active",
+            "roundsStarted": 1, "maxRounds": 5 },   // phase: active | paused | blocked | complete
   // 以下两项可省略；仅子 agent 会话携带，根会话两者都不出现
   "parentSession": "root-1", "agentPreset": "author",
   // 可省略；还没有选择时为空，UI 退回 usage 或配置的默认模型
@@ -656,6 +688,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_session_dir` | `{ sessionId }` | `{ path, exists }`；会话实际 cwd（worktree / 项目仓库 / chat scratch） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
+| `dsh_commands` | `{ sessionId? }` | `{ commands: [{ name, description, inputHint? }] }`；引擎的指令目录（省略 `sessionId` = 全局层） |
+| `dsh_command_run` | `{ sessionId, line }` | `{ sessionId, name }`；只等准入，结果按 `command` 行回来；未知名字报错而不是退回 prompt |
+| `dsh_session_export` | `{ sessionId, dir }` | `{ sessionId, path, bytes, zipped }`；把原始会话日志打成 ZIP（没有 `ditto` 时保留目录） |
+| `dsh_prompt_history` | `{ limit? }` | `{ prompts: string[] }`；跨会话最近的输入（`dsh_prompts` 表，去重、倒序） |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
 | `dsh_models_discover` | `{ provider?, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens? }] }`；宿主直接 `GET` 端点列表，**不依赖运行时**（openai-completions / openai-responses / anthropic-messages / google-generative-ai） |
 | `dsh_worktrees` | — | `{ root, worktrees: [{ sessionId, path, updatedAt, title, project, repoPath, orphan }] }`；磁盘上残留 / 使用中的 worktree |
@@ -897,3 +933,24 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   开关按会话写入 `team/mode`，之后重启沿用；开启后同一条栏里出现「会话 / 任务板」切换，
   chat 默认停在会话（任务会话默认停在任务板）。第一次发消息前只是草稿状态，选择随新会话落盘。
 - 任务板不创建独立工作目录；成员共用当前 checkout（worktree 语义不变）。
+
+### 9.6 输入框的 `/` 与 ↑
+
+输入框的两个键盘面板都只是前端状态，不新增后端契约（数据来自 §8.2 的 `commands` /
+`command-run` 与 §8.3 的 `command` / `goal` 行）：
+
+- **`/` 面板**：草稿匹配 `^/[^\s]*$` 时浮在卡片上方，分「添加」（`file` `goal` `plan`
+  `feedback`）与「指令」（`compact` `permission` `model` `export`）两组，行 = 中文本地化名 +
+  英文命令名 + 描述（引擎行再补 `inputHint`）。`↑`/`↓` 选择、`Enter`/`Tab` 执行或插入、
+  `Esc` 收起（同一个草稿不再自动弹回，继续输入才重新出现）。目录按会话懒加载，失败时只留
+  本应用的八条，所以运行中/未启动都不会出现空面板。
+- **执行语义**：有输入的（`goal` `feedback`）只把 `/name ` 写进草稿；无输入的立即执行；
+  `model` / `permission` 打开输入框下方同一个选择面板（`openSignal` 计数触发，不复制第二份
+  模型/模式列表）；`file` 打开系统选择器，把路径按引擎的引用文法插入为 `@path`（会话
+  worktree/仓库根下的用相对路径，含空格用 `@"…"`）；`export` 选目录后用 `ditto` 打包原始
+  会话日志并在 Finder 中选中。
+- **`↑` 面板**：草稿为空时按 `↑` 打开，行是本会话已提交的 user 行 + 未回显的 pending +
+  `dsh_prompts` 表里的跨会话最近 50 条（按文本去重、倒序）。`↑`/`↓` 选择、`Enter`/点击填入
+  草稿（只填不发）、`Esc` 关；打开后继续打字就是过滤。
+- 对话区把 `command` 行渲染成一条轻量状态行（`/名字 参数` + 引擎结果文本，失败为红色），
+  不折进「已工作」——命令不属于某一轮的工作；`goal` 显示在输入框下方的状态行里。

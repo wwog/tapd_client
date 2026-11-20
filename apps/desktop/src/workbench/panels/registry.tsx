@@ -17,7 +17,6 @@ import {
   Settings as SettingsIcon,
   SquareTerminal,
   User,
-  Users,
 } from "lucide-react";
 
 import { t, type MessageKey } from "../../lib/i18n";
@@ -42,7 +41,6 @@ const PAGE_TITLES: Record<PageView, MessageKey> = {
   local: "app.nav.local",
   agent: "app.nav.agent",
   projects: "common.projects",
-  coworker: "app.nav.coworker",
   mcp: "app.nav.mcp",
   settings: "common.settings",
   account: "app.account.title",
@@ -54,7 +52,6 @@ const PAGE_ICONS: Record<PageView, ReactNode> = {
   local: <ListChecks size={13} />,
   agent: <Bot size={13} />,
   projects: <FolderGit2 size={13} />,
-  coworker: <Users size={13} />,
   mcp: <Plug size={13} />,
   settings: <SettingsIcon size={13} />,
   account: <User size={13} />,

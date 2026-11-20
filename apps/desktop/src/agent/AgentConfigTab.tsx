@@ -9,6 +9,7 @@ import {
   ScrollText,
   Settings2,
   SlidersHorizontal,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -19,6 +20,7 @@ import { Button, Spinner, Switch, cardClass, inputClass } from "../components/ui
 import { t, type MessageKey } from "../lib/i18n";
 import type { DshAgentConfig, DshPermissionMode } from "../lib/dsh";
 import { ModelSettings } from "./ModelSettings";
+import { CoworkerSettings } from "./CoworkerSettings";
 import { PluginInventory } from "./PluginInventory";
 import { ToolInventory } from "./ToolInventory";
 import { UsagePopover } from "./usage/Popover";
@@ -46,6 +48,7 @@ const NAV: Array<{ id: Section; label: MessageKey; icon: LucideIcon }> = [
   { id: "general", label: "agent.config.nav.general", icon: SlidersHorizontal },
   { id: "models", label: "agent.config.nav.models", icon: Boxes },
   { id: "rules", label: "agent.config.nav.rules", icon: ScrollText },
+  { id: "coworkers", label: "agent.config.nav.coworkers", icon: Users },
   { id: "integrations", label: "agent.config.nav.integrations", icon: Plug },
   { id: "plugins", label: "agent.config.nav.plugins", icon: Puzzle },
 ];
@@ -72,10 +75,11 @@ export function AgentConfigHost({ toast }: Pick<Props, "toast">) {
 /**
  * All agent settings, in a dialog opened from Settings (or a runtime notice). The
  * left column groups them: 模型 (providers and catalog), 规则 (prompt and
- * permission policy), 集成 (the tools a session inherits), 内置插件 and 常规
- * (execution, team collaboration, runtime). Every control applies on its own:
- * edits are written back after a short pause instead of behind a save button.
- * Projects are edited on the projects page and merged by the same command.
+ * permission policy), 同事 (who joins the prompt), 集成 (the tools a session
+ * inherits), 内置插件 and 常规 (execution, team collaboration, runtime). Every
+ * control applies on its own: edits are written back after a short pause instead
+ * of behind a save button. Projects are edited on the projects page and merged
+ * by the same command.
  */
 export function AgentConfigTab({ toast, onClose }: Props) {
   const state = agentStore.use();
@@ -256,6 +260,10 @@ export function AgentConfigTab({ toast, onClose }: Props) {
           ) : section === "integrations" ? (
             <div className="mx-auto max-w-3xl pb-2">
               <ToolInventory />
+            </div>
+          ) : section === "coworkers" ? (
+            <div className="mx-auto max-w-3xl pb-2">
+              <CoworkerSettings toast={toast} />
             </div>
           ) : section === "plugins" ? (
             <div className="mx-auto max-w-3xl pb-2">

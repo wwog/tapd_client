@@ -107,6 +107,7 @@ type SpanLabelKey =
   | "traj.kindRetry"
   | "traj.kindAttempt"
   | "traj.kindCompaction"
+  | "traj.kindCommand"
   | "traj.kindSeed";
 
 const KIND_LABEL: Record<TrajSpan["kind"], SpanLabelKey> = {
@@ -121,6 +122,7 @@ const KIND_LABEL: Record<TrajSpan["kind"], SpanLabelKey> = {
   attempt: "traj.kindAttempt",
   compaction: "traj.kindCompaction",
   subcall: "traj.kindTool",
+  command: "traj.kindCommand",
   seed: "traj.kindSeed",
 };
 

@@ -18,6 +18,7 @@ import {
   type DshApprovalEvent,
   type DshApprovalOutcome,
   type DshAnswer,
+  type DshCommandDescriptor,
   type DshEntry,
   type DshEntryEvent,
   type DshErrorEvent,
@@ -102,6 +103,7 @@ export type AgentConfigSection =
   | "general"
   | "models"
   | "rules"
+  | "coworkers"
   | "integrations"
   | "plugins";
 
@@ -159,6 +161,10 @@ export type AgentState = {
   taskViews: Record<string, AgentTaskView>;
   /** Bumped by「继续修改」so the composer takes focus after switching back. */
   composerFocusAt: number;
+  /** The engine's slash-command catalog per session (`__new` before any). */
+  commandCatalog: Record<string, DshCommandDescriptor[]>;
+  /** Newest prompts across sessions, loaded once for the ↑ history panel. */
+  promptHistory: string[] | null;
   preparingSince: number | null;
   starting: boolean;
   stopping: boolean;
@@ -168,6 +174,9 @@ export type AgentState = {
 /** Selected task is view state, but it survives page unmounts and restarts
  *  through the config.json preference blob. The settings dialog does not. */
 const UI_PREF_KEY = "agent.ui.v1";
+
+/** Composer key for a conversation that has no session yet (mirrors Composer). */
+const NEW_SESSION_KEY = "__new";
 
 type AgentPrefs = { sessionId?: unknown };
 
@@ -212,6 +221,8 @@ const initialState: AgentState = {
   teamViews: {},
   taskViews: {},
   composerFocusAt: 0,
+  commandCatalog: {},
+  promptHistory: null,
   preparingSince: null,
   starting: false,
   stopping: false,
@@ -1143,6 +1154,67 @@ export const agentActions = {
   rememberModelDefault: async (selection: ModelSelection): Promise<void> => {
     rememberEffort(selection);
     await flushEffort();
+  },
+
+  /** Allocates the session a composer action needs (a slash command picked
+   *  before the first message). Returns the existing selection when there is
+   *  one, so a command never forks a conversation. */
+  ensureSession: async (): Promise<string> => {
+    const existing = agentStore.get().selectedId;
+    if (existing) return existing;
+    const sessionId = await allocateSession();
+    await applyDraftSelection(sessionId);
+    return sessionId;
+  },
+
+  /** Reads the engine's slash-command catalog for one session (or the global
+   *  layer when none exists yet). Silent on failure: the palette keeps its own
+   *  eight commands, which never need the runtime. */
+  loadCommands: async (sessionId: string | null): Promise<void> => {
+    const key = sessionId ?? NEW_SESSION_KEY;
+    try {
+      const { commands } = await dshApi.commands(sessionId);
+      update((state) => ({
+        ...state,
+        commandCatalog: { ...state.commandCatalog, [key]: commands },
+      }));
+    } catch {
+      // A stopped runtime is not an error here: the static catalog still works.
+    }
+  },
+
+  /** Runs one slash-command line on the runtime. Returns false when the engine
+   *  refused admission, so the composer keeps the draft. */
+  runCommand: async (line: string): Promise<boolean> => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    const existing = agentStore.get().selectedId;
+    let sessionId = existing;
+    try {
+      if (!sessionId) {
+        sessionId = await allocateSession();
+        await applyDraftSelection(sessionId);
+      }
+      update((state) => ({ ...state, lastError: null }));
+      await dshApi.runCommand(sessionId, trimmed);
+      return true;
+    } catch (error) {
+      setError(error);
+      return false;
+    }
+  },
+
+  /** Loads the local recent prompts once (the ↑ panel's cross-session half). */
+  loadPromptHistory: async (refresh = false): Promise<void> => {
+    if (!refresh && agentStore.get().promptHistory !== null) return;
+    try {
+      const { prompts } = await dshApi.promptHistory(50);
+      update((state) => ({ ...state, promptHistory: prompts }));
+    } catch {
+      // A missing cache is not worth an error: the panel still lists this
+      // conversation's own prompts.
+      update((state) => ({ ...state, promptHistory: state.promptHistory ?? [] }));
+    }
   },
 
   /** Switches one session between plan mode and the three permission modes.

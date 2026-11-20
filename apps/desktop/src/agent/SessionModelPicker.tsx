@@ -11,7 +11,7 @@ import {
 import { agentActions, agentStore } from "./store";
 import { ModelPicker } from "./ModelPicker";
 
-export function SessionModelPicker() {
+export function SessionModelPicker({ openSignal = 0 }: { openSignal?: number } = {}) {
   const state = agentStore.use();
   const models = state.config?.dshModels ?? null;
   const row = state.selectedId ? state.sessions[state.selectedId] : undefined;
@@ -40,6 +40,7 @@ export function SessionModelPicker() {
       defaultModel={configured}
       onChange={(selection) => void agentActions.selectModel(state.selectedId, selection)}
       onManage={() => agentActions.openConfig("models")}
+      openSignal={openSignal}
     />
   );
 }

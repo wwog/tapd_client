@@ -24,7 +24,6 @@ export const shell = {
   "app.nav.queue": ["工作流队列", "Workflow queue"],
   "app.nav.agent": ["Agent", "Agent"],
   "app.nav.mcp": ["MCP", "MCP"],
-  "app.nav.coworker": ["同事", "Coworkers"],
   "app.nav.companion": ["移动端伴侣", "Mobile companion"],
 
   // Title bar and update entry points
@@ -72,6 +71,10 @@ export const shell = {
   "app.island.tipOpen": [
     "双击打开客户端 · 可拖动",
     "Double-click to open the app, drag to move",
+  ],
+  "app.island.tipUpdate": [
+    "单击打开账号页查看更新 · 可拖动",
+    "Click to open the account page and update, drag to move",
   ],
   "app.island.empty": ["暂无待处理通知", "No pending notifications"],
   "app.island.dismiss": ["关闭（忽略）", "Close (ignore)"],

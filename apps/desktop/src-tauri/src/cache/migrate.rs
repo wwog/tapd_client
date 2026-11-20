@@ -8,7 +8,7 @@ use rusqlite::Connection;
 
 /// Schema version. Bumped when the stored shape changes; a mismatched database
 /// is recreated rather than migrated.
-pub(super) const SCHEMA_VERSION: i64 = 12;
+pub(super) const SCHEMA_VERSION: i64 = 13;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -144,6 +144,17 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             mode TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        -- Composer prompt history (↑ panel). Append-only and pruned to the
+        -- newest few hundred rows; `text` is the identity the panel dedupes on.
+        CREATE TABLE IF NOT EXISTS dsh_prompts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS dsh_prompts_text ON dsh_prompts(text);
         "#,
     )
     .map_err(|error| error.to_string())

@@ -41,8 +41,12 @@ export type TaskListLayout = {
  * pane. Same contract as `useSidebarLayout` for the project list, but the
  * decision is measured on the Agent pane instead of the window: the pane also
  * shrinks when the workbench opens a group beside it.
+ *
+ * `active` is the page's visibility: every entry into the Agent page reveals the
+ * column, because picking a session is the only thing it is for and a folded
+ * column there reads as an empty app.
  */
-export function useTaskListLayout(): TaskListLayout {
+export function useTaskListLayout(active = false): TaskListLayout {
   const [stored] = useState<TaskListPref>(
     () => readPref<TaskListPref>(PREF) ?? {},
   );
@@ -62,6 +66,23 @@ export function useTaskListLayout(): TaskListLayout {
   const persist = useCallback((next: TaskListPref) => {
     writePref(PREF, { ...(readPref<TaskListPref>(PREF) ?? {}), ...next });
   }, []);
+
+  // Every entry into the Agent page reveals the session column again — a folded
+  // column is the page's only way to pick a session. On a pane too narrow for
+  // the preferred width the peek keeps it on screen instead of letting the
+  // auto-collapse fold it straight back shut.
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (!active) {
+      wasActive.current = false;
+      return;
+    }
+    if (wasActive.current) return;
+    wasActive.current = true;
+    setCollapsed(false);
+    setPeek(true);
+    persist({ collapsed: false });
+  }, [active, persist]);
 
   // The pane follows window resizes and workbench splits; coalesce into one
   // update per frame.

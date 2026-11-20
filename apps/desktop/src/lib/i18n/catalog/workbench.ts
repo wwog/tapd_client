@@ -114,8 +114,7 @@ export const workbench = {
   "mcp.alreadyPresent": ["已存在，无需重复写入：{path}", "Already present, nothing to write: {path}"],
   "mcp.backupSuffix": ["（备份：{path}）", " (backup: {path})"],
 
-  // -------------------------------------------------------- CoworkerPage.tsx
-  "coworker.pageTitle": ["找同事搭伙", "Find coworkers"],
+  // ----------------------------------------------- CoworkerSettings.tsx
   "coworker.pageIntro": [
     "选几位同事。团队协作关闭时名单写进提示词；开启后改由任务板分配工作。",
     "Pick teammates. With team collaboration off they are written into the prompt; with it on, work is assigned on the board.",

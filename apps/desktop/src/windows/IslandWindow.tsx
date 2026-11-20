@@ -332,7 +332,11 @@ export function IslandWindow() {
               clickTimer.current = window.setTimeout(() => {
                 clickTimer.current = null;
                 setPeeking(false);
-                if (items.length > 0) {
+                if (updateState?.available && items.length === 0) {
+                  // The capsule reads "可更新 vX": land on the page that owns
+                  // 立即更新 instead of the last page the app was on.
+                  void notificationApi.openMain("account").catch(() => undefined);
+                } else if (items.length > 0) {
                   void notificationApi.expandIsland(true).catch(() => undefined);
                 } else {
                   void notificationApi.openMain();
@@ -354,7 +358,9 @@ export function IslandWindow() {
                 ? undefined
                 : items.length > 0
                   ? t("app.island.tipNotifications")
-                  : t("app.island.tipOpen")
+                  : updateState?.available
+                    ? t("app.island.tipUpdate")
+                    : t("app.island.tipOpen")
             }
             className="island-pill group flex cursor-grab items-center gap-2 rounded-full bg-island px-3 py-1.5 text-ui-sm text-island-muted border border-island-line active:cursor-grabbing"
           >

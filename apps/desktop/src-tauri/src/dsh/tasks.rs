@@ -3730,6 +3730,13 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         .map_err(|error| {
             tracing::warn!(%error, session = %request.session_id, "failed to delete the session mode");
         });
+    // The ↑ history rows outlive their session on purpose, but a deleted
+    // conversation must not keep feeding the panel.
+    if let Ok(state) = shared(app) {
+        let cache = state.cache.clone();
+        let id = request.session_id.clone();
+        let _ = blocking(move || super::prompt_store::delete_for_session(&cache, &id)).await;
+    }
     if let Ok(bridge) = bridge(app) {
         bridge.forget_session(app, &request.session_id);
     }
@@ -4101,6 +4108,7 @@ mod tests {
             selection: None,
             plan_active: false,
             todos: Vec::new(),
+            goal: None,
             parent_session: None,
             agent_preset: None,
         }

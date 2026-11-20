@@ -86,6 +86,11 @@ const TABS: Record<TrajRecord["kind"], readonly { id: Tab; label: TabLabelKey }[
     { id: "output", label: "traj.tabOutput" },
     { id: "timing", label: "traj.tabTiming" },
   ],
+  command: [
+    { id: "summary", label: "traj.tabSummary" },
+    { id: "preview", label: "traj.tabPreview" },
+    { id: "raw", label: "traj.tabRaw" },
+  ],
   seed: [{ id: "summary", label: "traj.tabSummary" }],
 };
 
@@ -109,6 +114,7 @@ function kindLabel(kind: TrajRecord["kind"], locale: AgentLocale): string {
   if (kind === "attempt") return agentLabel("traj.kindAttempt", locale);
   if (kind === "compaction") return agentLabel("traj.kindCompaction", locale);
   if (kind === "subcall") return agentLabel("traj.kindTool", locale);
+  if (kind === "command") return agentLabel("traj.kindCommand", locale);
   if (kind === "seed") return agentLabel("traj.kindSeed", locale);
   return agentLabel("traj.kindTool", locale);
 }

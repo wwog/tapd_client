@@ -56,6 +56,7 @@ import {
 import type { BugScope } from "./components/bugListPrefs";
 import {
   GROUP_GAP,
+  PAGE_VIEWS,
   PANEL_MIN_SIZE,
   groupMinSize,
 } from "./workbench/layout/defaults";
@@ -175,6 +176,15 @@ export default function App() {
   );
   useTauriEvent("companion://paired", () => markCompanionOnline());
   useTauriEvent("companion://presence", () => markCompanionOnline());
+
+  // The capsule asked to land on a specific page (the update state opens the
+  // account page, which owns 立即更新). Anything else is ignored rather than
+  // trusting the island's payload as a page id.
+  useTauriEvent<{ view?: string }>("notification://open-view", (payload) => {
+    const target = payload?.view;
+    if (!target || !(PAGE_VIEWS as readonly string[]).includes(target)) return;
+    setView(target as View);
+  });
 
   /** Detail actions read by workspace events without a hook-order cycle. */
   const paneBridgeRef = useRef<WorkspacePaneBridge>({

@@ -17,7 +17,6 @@ export type PageView =
   | "local"
   | "agent"
   | "projects"
-  | "coworker"
   | "mcp"
   | "settings"
   | "account";

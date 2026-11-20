@@ -26,6 +26,11 @@
  *   select-model → switch one session's model route (durable in its log)
  *   models → adopt a model catalog, Team default and credentials live
  *   discover-models → ask the engine which models a draft endpoint advertises
+ *   commands → read the human slash-command catalog for a session (answered by
+ *                  `commands-listed`, so the composer palette never guesses)
+ *   command-run → execute one slash-command line through the engine's own
+ *                  registry (answered by `command-acked`; the result arrives as
+ *                  the log-only `command/run` / `command/done` events)
  *   plugins → read the Loader's composed plugin inventory (settings panel)
  *   tools → read the tool registry a new session inherits (settings panel)
  *   task-phase / task-phases → mirror the host's per-root-session task phase
@@ -89,6 +94,8 @@ const SETTLE_MS = 300
 const HOST_CALL_TIMEOUT_MS = 30_000
 /** Reply type for `task-phase` / `task-phases`, drained by the host's REPLY_TYPES. */
 const PHASE_ACK = 'task-phase-applied'
+/** dsh's own command-name grammar (`packages/interaction/commands`). */
+const COMMAND_LINE = /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/u
 
 /**
  * Package name behind a Loader row's module specifier. Our own rows are
@@ -913,6 +920,88 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * Answers "which human slash commands does this session accept?".
+   *
+   * The engine's own registry is the only truth: a live Agent sees the global
+   * layer plus its scoped shadows, and a session without an Agent yet still gets
+   * the global catalog (a palette opened on a fresh chat must not be empty).
+   */
+  const commandCatalog = (sessionId) => {
+    const commands = ctx.get('commands')
+    if (typeof commands?.list !== 'function') return { commands: [] }
+    let descriptors
+    try {
+      descriptors = commands.list(sessionId ? ctx.agents.get(sessionId) : undefined)
+    } catch (error) {
+      warn('commands', error)
+      return { commands: [] }
+    }
+    return {
+      commands: (Array.isArray(descriptors) ? descriptors : []).map((descriptor) => ({
+        name: String(descriptor.name ?? ''),
+        description: typeof descriptor.description === 'string' ? descriptor.description : '',
+        ...(typeof descriptor.input?.hint === 'string'
+          ? { inputHint: descriptor.input.hint }
+          : {}),
+      })),
+    }
+  }
+
+  /**
+   * Executes one slash-command line through the engine registry.
+   *
+   * `commands.execute` appends `command/run` and `command/done` (log-only, no
+   * turn) and only settles when the handler does — `/compact` can run for
+   * minutes. The ack therefore reports admission only; the row reaches the UI
+   * through the ordinary session-event feed.
+   *
+   * An unknown name is rejected here instead of falling back to a prompt: the
+   * host already decided this line was meant as a command.
+   */
+  const runCommand = (frame) => {
+    const requestId = frame.requestId
+    const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''
+    const line = typeof frame.line === 'string' ? frame.line.trim() : ''
+    const commands = ctx.get('commands')
+    const agent = sessionId ? ctx.agents.get(sessionId) : undefined
+    const fail = (error) => reply('command-acked', requestId, { started: false, error })
+    if (!commands || typeof commands.execute !== 'function') {
+      fail('the command registry is not composed')
+      return
+    }
+    if (!agent) {
+      fail(`no live agent for session ${sessionId || '?'}`)
+      return
+    }
+    const match = COMMAND_LINE.exec(line)
+    if (!match) {
+      fail(`not a command line: ${line.slice(0, 40)}`)
+      return
+    }
+    const name = match[1]
+    let known
+    try {
+      known = commands.list(agent).some((descriptor) => descriptor?.name === name)
+    } catch (error) {
+      fail(messageOf(error))
+      return
+    }
+    if (!known) {
+      fail(`unknown command /${name}`)
+      return
+    }
+    // The signal is never aborted: a socket drop must not kill an engine command
+    // the user already submitted. Failures are still contained here.
+    Promise.resolve()
+      .then(() => commands.execute(agent, line, [], new AbortController().signal))
+      .then(
+        () => ctx.logger.info(`${name}: command ${line} settled`),
+        (error) => warn(`command ${line}`, error),
+      )
+    reply('command-acked', requestId, { started: true, name })
+  }
+
   /** Applies one `task-phase` frame; answers whenever the host asked. */
   const handleTaskPhase = (frame) => {
     const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''
@@ -999,6 +1088,22 @@ export function apply(ctx) {
     }
     if (frame.type === 'discover-models' && typeof frame.requestId === 'number') {
       void discoverModels(frame)
+      return
+    }
+    // Commands: the catalog carries an optional session (a fresh chat has none)
+    // and `command-run` needs one, so both are handled before the id guard.
+    if (frame.type === 'commands' && typeof frame.requestId === 'number') {
+      try {
+        const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''
+        reply('commands-listed', frame.requestId, commandCatalog(sessionId))
+      } catch (error) {
+        warn('commands', error)
+        reply('commands-listed', frame.requestId, { commands: [], error: messageOf(error) })
+      }
+      return
+    }
+    if (frame.type === 'command-run' && typeof frame.requestId === 'number') {
+      runCommand(frame)
       return
     }
     const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : ''

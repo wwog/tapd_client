@@ -7,7 +7,6 @@ import {
   Settings as SettingsIcon,
   Smartphone,
   SquareTerminal,
-  Users,
 } from "lucide-react";
 
 import { AccountChip } from "./AccountChip";
@@ -19,7 +18,6 @@ export type View =
   | "local"
   | "agent"
   | "projects"
-  | "coworker"
   | "mcp"
   | "settings"
   | "account";
@@ -27,7 +25,6 @@ export type View =
 const RAIL_ANIM: Record<string, string> = {
   agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
-  coworker: "rail-users-wave",
   mcp: "rail-plug-rise",
   settings: "rail-settings-spin",
   account: "rail-avatar-pop",
@@ -44,7 +41,6 @@ const RAIL_ANIM: Record<string, string> = {
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
-  { id: "coworker", label: "app.nav.coworker", icon: <Users size={15} /> },
   { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
   { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
 ];

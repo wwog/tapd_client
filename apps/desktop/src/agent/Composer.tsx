@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   FolderGit2,
   GitBranch,
@@ -14,24 +15,48 @@ import {
 
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
+import { pickExportDir } from "../lib/exportDir";
+import { api } from "../lib/api";
+import { dshApi } from "../lib/dsh";
 import { ScrollingName } from "../components/ScrollingName";
+import { GoalChip } from "./GoalChip";
 import { AGENT_COLUMN } from "./layout";
+import { moveIndex } from "./listNav";
+import { PromptHistoryPanel } from "./PromptHistoryPanel";
 import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModePicker } from "./SessionModePicker";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { SessionUsageBar } from "./usage/SessionUsageBar";
+import { SlashPalette } from "./SlashPalette";
+import {
+  buildSlashItems,
+  fileMention,
+  permissionArg,
+  slashIntent,
+  slashQuery,
+  type SlashCommand,
+} from "./slashCommands";
+import {
+  collectPromptHistory,
+  filterHistory,
+} from "./promptHistory";
 import {
   agentActions,
   agentStore,
   agentTaskView,
   agentTeamView,
   isSessionRunning,
+  sessionPermissionMode,
+  sessionPlan,
   taskReviewable,
 } from "./store";
 import { isWorkflowTask } from "./workflow";
 
 /** Draft key before any session exists; the text follows the first one. */
 const NEW_SESSION_KEY = "__new";
+
+/** Stable empty catalog, so `buildSlashItems` keeps its memo. */
+const EMPTY_COMMANDS: never[] = [];
 
 /**
  * One compact control in the composer's work bar. It reads as text until it is
@@ -94,10 +119,25 @@ export function Composer() {
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  /** Draft the palette was dismissed for; a new keystroke reopens it. */
+  const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  /** Rising counters that open the composer's own model / mode sheets. */
+  const [signals, setSignals] = useState({ model: 0, mode: 0 });
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const text = drafts[sessionId] ?? "";
   const setText = (value: string) =>
     setDrafts((current) => ({ ...current, [sessionId]: value }));
+  /** Empties this chat's draft, including the slot a send may have outgrown
+   *  (allocation moves the selection off `__new` mid-flight). */
+  const clearDraft = () =>
+    setDrafts((current) => ({
+      ...current,
+      [sessionId]: "",
+      [NEW_SESSION_KEY]: "",
+    }));
   const block = runtimeBlock(state);
   const running = isSessionRunning(state, state.selectedId);
   const task = state.tasks?.find((item) => item.id === state.selectedId);
@@ -126,6 +166,7 @@ export function Composer() {
   const teamError = task ? state.teamErrors[task.id] : null;
   const teamView = task ? agentTeamView(state, task.id) : "chat";
   const paneView = agentTaskView(state, state.selectedId);
+  const goal = state.selectedId ? state.sessions[state.selectedId]?.goal : undefined;
 
   // 「继续修改」in the review pane switches back here and asks for the caret.
   const focusAt = state.composerFocusAt;
@@ -133,9 +174,213 @@ export function Composer() {
     if (focusAt > 0) editorRef.current?.focus();
   }, [focusAt]);
 
+  // ---------------------------------------------------------------------
+  // `/` palette and ↑ history
+  // ---------------------------------------------------------------------
+
+  const catalogKey = state.selectedId ?? NEW_SESSION_KEY;
+  const descriptors = state.commandCatalog[catalogKey] ?? EMPTY_COMMANDS;
+  const slashItems = useMemo(
+    () => buildSlashItems(text, descriptors, (key) => t(key)),
+    [text, descriptors],
+  );
+  const slashOpen =
+    slashQuery(text) !== undefined && slashDismissed !== text;
+
+  /** Engine command names for routing a typed line without opening the menu. */
+  const runtimeNames = useMemo(
+    () => new Set(descriptors.map((descriptor) => descriptor.name)),
+    [descriptors],
+  );
+
+  const historyItems = useMemo(() => {
+    const session = state.selectedId;
+    const own = session ? state.entries[session]?.items : undefined;
+    const ownTexts = own
+      ?.filter((entry) => entry.kind === "user")
+      .map((entry) => entry.text);
+    const pending = session ? state.pendingPrompts[session] : undefined;
+    return filterHistory(
+      collectPromptHistory([pending, ownTexts, state.promptHistory ?? undefined]),
+      historyOpen ? text : "",
+    );
+  }, [
+    historyOpen,
+    state.entries,
+    state.pendingPrompts,
+    state.promptHistory,
+    state.selectedId,
+    text,
+  ]);
+
+  // A new draft restarts both lists at the top.
+  useEffect(() => {
+    setSlashIndex(0);
+    setHistoryIndex(0);
+  }, [text]);
+
+  useEffect(() => {
+    if (!slashOpen) return;
+    if (state.commandCatalog[catalogKey] !== undefined) return;
+    void agentActions.loadCommands(state.selectedId);
+  }, [catalogKey, slashOpen, state.commandCatalog, state.selectedId]);
+
+  useEffect(() => {
+    if (historyOpen) void agentActions.loadPromptHistory(true);
+  }, [historyOpen]);
+
+  const focusEditor = () => editorRef.current?.focus();
+
+  /** Puts the caret after the last character once the new value is committed. */
+  const caretToEnd = () => {
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    });
+  };
+
+  /** Appends a snippet to the current draft (file references, history picks). */
+  const applyInsert = (snippet: string, base: string) => {
+    const head = base.replace(/\s+$/u, "");
+    setText(head === "" ? snippet : `${head} ${snippet}`);
+    setHistoryOpen(false);
+    caretToEnd();
+  };
+
+  /** The directory a `@` reference should be relative to, when there is one. */
+  const mentionBase = (): string => {
+    if (task?.worktreePath) return task.worktreePath;
+    const repo = state.projects?.find((item) => item.id === task?.project?.id);
+    return repo?.repoPath ?? "";
+  };
+
+  /** Opens the system picker and replaces the draft with `@path` references. */
+  const pickFiles = async (args: string) => {
+    if (args.trim()) {
+      applyInsert(
+        args
+          .split(/\s+/u)
+          .filter(Boolean)
+          .map(fileMention)
+          .join(" "),
+        "",
+      );
+      focusEditor();
+      return;
+    }
+    const selected = await openDialog({
+      multiple: true,
+      title: t("agent.cmd.filePick"),
+    });
+    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    if (paths.length === 0) return;
+    const base = mentionBase();
+    applyInsert(
+      paths
+        .map((path) =>
+          base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : path,
+        )
+        .map(fileMention)
+        .join(" "),
+      "",
+    );
+    focusEditor();
+  };
+
+  const exportLog = async () => {
+    const id = agentStore.get().selectedId;
+    if (!id) {
+      showToast("error", t("agent.cmd.noSession"));
+      return;
+    }
+    const dir = await pickExportDir();
+    if (!dir) return;
+    try {
+      const result = await dshApi.exportSession(id, dir);
+      await api.revealPath(result.path);
+    } catch (error) {
+      showToast("error", t("agent.cmd.exportFailed", { error: String(error) }));
+    }
+  };
+
+  /**
+   * Runs one of the five commands this app owns. The caller clears the draft
+   * first: a command line is not message content, and `file` writes the
+   * references it produced straight back.
+   */
+  const runNative = async (name: string, args: string): Promise<void> => {
+    if (name === "file") {
+      await pickFiles(args);
+      return;
+    }
+    if (name === "model") {
+      setSignals((current) => ({ ...current, model: current.model + 1 }));
+      return;
+    }
+    if (name === "export") {
+      await exportLog();
+      return;
+    }
+    if (name === "permission") {
+      const mode = permissionArg(args);
+      if (!mode) {
+        // `/permission` with no argument opens the picker, it does not guess.
+        try {
+          await agentActions.ensureSession();
+        } catch (error) {
+          showToast("error", String(error));
+          return;
+        }
+        setSignals((current) => ({ ...current, mode: current.mode + 1 }));
+        return;
+      }
+      try {
+        const id = await agentActions.ensureSession();
+        await agentActions.selectSessionMode(id, mode);
+      } catch (error) {
+        showToast("error", String(error));
+      }
+      return;
+    }
+    if (name === "plan") {
+      const message = args.trim();
+      try {
+        const id = await agentActions.ensureSession();
+        const current = agentStore.get();
+        if (message.toLowerCase() === "off") {
+          // Leaving plan keeps the permission mode underneath it.
+          await agentActions.selectSessionMode(
+            id,
+            sessionPermissionMode(current, id) ?? "auto",
+          );
+          return;
+        }
+        if (message !== "") {
+          // A message enters the plan and becomes its first instruction, the
+          // way dsh steers the rest of the line into plan mode.
+          if (!sessionPlan(current, id)) {
+            await agentActions.selectSessionMode(id, "plan");
+          }
+          await agentActions.sendPrompt(message);
+          return;
+        }
+        // Bare `/plan` toggles, which is what the palette row promises.
+        await agentActions.selectSessionMode(
+          id,
+          sessionPlan(current, id)
+            ? sessionPermissionMode(current, id) ?? "auto"
+            : "plan",
+        );
+      } catch (error) {
+        showToast("error", String(error));
+      }
+    }
+  };
+
   const send = async () => {
     if (block !== null || sending || !text.trim()) return;
-    const draftKey = sessionId;
     // From the task pane (or the review section) a message means "keep
     // editing": show the transcript first, so the reply lands where the reader
     // can follow it.
@@ -144,10 +389,50 @@ export function Composer() {
     }
     setSending(true);
     const accepted = await agentActions.sendPrompt(text);
-    if (accepted) {
-      setDrafts((current) => ({ ...current, [draftKey]: "" }));
-    }
+    if (accepted) clearDraft();
     setSending(false);
+  };
+
+  /**
+   * Enter. A line that names a known command takes the command path; anything
+   * else (including `/unknown`) is an ordinary message, which is exactly what
+   * dsh does with text it cannot resolve.
+   */
+  const submit = async () => {
+    const draft = text.trim();
+    if (!draft) return;
+    const intent = slashIntent(draft, runtimeNames);
+    setSlashDismissed(null);
+    if (intent.kind === "native") {
+      // The command line is not content: clear it before anything runs, so a
+      // cancelled picker leaves an empty draft instead of `/file`.
+      setText("");
+      await runNative(intent.name, intent.args);
+      focusEditor();
+      return;
+    }
+    if (intent.kind === "runtime") {
+      if (await agentActions.runCommand(intent.line)) clearDraft();
+      return;
+    }
+    await send();
+  };
+
+  /** A palette row. No-input commands run; input ones rewrite the draft. */
+  const pickSlash = async (command: SlashCommand) => {
+    setSlashDismissed(null);
+    if (command.action.kind === "insert") {
+      setText(command.action.text);
+      focusEditor();
+      return;
+    }
+    if (command.action.kind === "runtime") {
+      if (await agentActions.runCommand(`/${command.name}`)) clearDraft();
+      return;
+    }
+    setText("");
+    await runNative(command.name, "");
+    focusEditor();
   };
 
   const stop = async () => {
@@ -193,7 +478,28 @@ export function Composer() {
   return (
     <div data-component="Composer" className="px-6 pb-3 pt-2">
       <div className={AGENT_COLUMN}>
-        <div className="rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
+        <div className="relative rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
+          {/* The two keyboard lists float above the card, like dsh desktop:
+              they never push the transcript while a draft is being shaped. */}
+          {slashOpen ? (
+            <SlashPalette
+              items={slashItems}
+              index={slashIndex}
+              onPick={(command) => void pickSlash(command)}
+              onHover={setSlashIndex}
+            />
+          ) : historyOpen ? (
+            <PromptHistoryPanel
+              items={historyItems}
+              index={historyIndex}
+              onPick={(picked) => {
+                setText(picked);
+                setHistoryOpen(false);
+                focusEditor();
+              }}
+              onHover={setHistoryIndex}
+            />
+          ) : null}
           {project ? (
             <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
               {/* The task pane above already names the project and branch. */}
@@ -263,22 +569,90 @@ export function Composer() {
                 : t("agent.composer.placeholder")
             }
             onChange={(event) => setText(event.target.value)}
+            // Leaving the field drops both lists; a row click keeps the focus
+            // (mousedown is prevented), so this only fires on a real exit.
+            onBlur={() => {
+              setSlashDismissed(text);
+              setHistoryOpen(false);
+            }}
             onKeyDown={(event) => {
-              if (event.key !== "Enter" || event.shiftKey) return;
               if (event.nativeEvent.isComposing) return;
+              const key = event.key;
+
+              // The `/` menu owns the arrows, Enter/Tab and Escape while it is
+              // open; anything else is ordinary editing of the query.
+              if (slashOpen) {
+                if (key === "ArrowDown" || key === "ArrowUp") {
+                  event.preventDefault();
+                  setSlashIndex((index) =>
+                    moveIndex(index, key === "ArrowDown" ? 1 : -1, slashItems.length),
+                  );
+                  return;
+                }
+                if (key === "Escape") {
+                  event.preventDefault();
+                  setSlashDismissed(text);
+                  return;
+                }
+                if (key === "Enter" || key === "Tab") {
+                  const command = slashItems[slashIndex];
+                  if (command) {
+                    event.preventDefault();
+                    void pickSlash(command);
+                    return;
+                  }
+                  // No match: Enter still sends, which is how an unknown
+                  // `/line` reaches the model.
+                }
+              }
+
+              // The ↑ panel behaves the same way over history rows.
+              if (historyOpen) {
+                if (key === "ArrowDown" || key === "ArrowUp") {
+                  event.preventDefault();
+                  setHistoryIndex((index) =>
+                    moveIndex(index, key === "ArrowDown" ? 1 : -1, historyItems.length),
+                  );
+                  return;
+                }
+                if (key === "Escape") {
+                  event.preventDefault();
+                  setHistoryOpen(false);
+                  return;
+                }
+                if (key === "Enter" || key === "Tab") {
+                  const picked = historyItems[historyIndex];
+                  if (picked !== undefined) {
+                    event.preventDefault();
+                    setText(picked);
+                    setHistoryOpen(false);
+                    return;
+                  }
+                }
+              }
+
+              // ↑ on an empty draft opens history (a caret move otherwise).
+              if (key === "ArrowUp" && text === "") {
+                event.preventDefault();
+                setHistoryIndex(0);
+                setHistoryOpen(true);
+                return;
+              }
+
+              if (key !== "Enter" || event.shiftKey) return;
               event.preventDefault();
               // Enter always sends (the runtime queues it); only the button
               // carries the send/stop state, so a keystroke never kills a run.
-              void send();
+              void submit();
             }}
             className="block w-full resize-none bg-transparent px-3 pb-1 pt-2 text-ui-caption leading-6 text-slate-700 placeholder:text-slate-300 focus:outline-none"
           />
           <div className="flex items-center gap-2 px-2 pb-2 pt-0.5">
-            <SessionModePicker />
+            <SessionModePicker openSignal={signals.mode} />
             {/* Only operable controls live inside the field: the session's
                 figures are read-only status, so they sit under the card. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
-              <SessionModelPicker />
+              <SessionModelPicker openSignal={signals.model} />
               <button
                 type="button"
                 title={primaryTitle}
@@ -305,10 +679,16 @@ export function Composer() {
             </span>
           </div>
         </div>
-        <div className="mt-1.5 flex justify-center">
+        <div className="mt-1.5 flex items-center justify-center">
           <SessionUsageBar
             usage={state.selectedId ? state.sessions[state.selectedId]?.usage : undefined}
           />
+          {goal ? (
+            <>
+              <span className="px-1.5 text-ui-xs text-slate-300">·</span>
+              <GoalChip goal={goal} />
+            </>
+          ) : null}
         </div>
       </div>
     </div>

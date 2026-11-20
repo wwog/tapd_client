@@ -5,7 +5,6 @@ import type { PageView } from "../layout/types";
 import { AccountPage } from "../../components/AccountPage";
 import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
-import { CoworkerPage } from "../../components/CoworkerPage";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
 import { McpPage } from "../../components/McpPage";
 import { ProjectSettings } from "../../components/ProjectSettings";
@@ -156,9 +155,6 @@ export function PagePanel({ panel, visible }: PanelProps) {
         </div>
       );
 
-    case "coworker":
-      return <CoworkerPage toast={host.toast} />;
-
     case "agent":
       return (
         <AgentPage
@@ -166,6 +162,7 @@ export function PagePanel({ panel, visible }: PanelProps) {
           onOpenFile={host.onOpenFile}
           onOpenBugById={host.onOpenBugById}
           onSelectLocalProject={host.onSelectLocalProject}
+          visible={visible}
         />
       );
 

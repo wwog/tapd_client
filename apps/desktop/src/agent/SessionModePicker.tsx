@@ -7,7 +7,7 @@
  * flag — picking a permission mode also leaves plan mode, while picking plan
  * keeps the permission mode underneath.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import {
@@ -67,7 +67,7 @@ const OPTIONS: Option[] = [
   },
 ];
 
-export function SessionModePicker() {
+export function SessionModePicker({ openSignal = 0 }: { openSignal?: number } = {}) {
   const state = agentStore.use();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -77,6 +77,27 @@ export function SessionModePicker() {
   useDismiss(open, cardRef, close, { resize: true, blur: true });
 
   const sessionId = state.selectedId;
+
+  /** Anchors the panel above the chip; shared by the click and `/permission`. */
+  const openMenu = useCallback(() => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPosition(
+      computeMenuPosition(rect, {
+        placement: "up",
+        minWidth: 300,
+        fullHeight: 320,
+      }),
+    );
+    setOpen(true);
+  }, []);
+
+  // The slash palette (`/permission`, `/plan`) opens this same sheet instead of
+  // duplicating a second mode list.
+  useEffect(() => {
+    if (openSignal > 0) openMenu();
+  }, [openSignal, openMenu]);
+
   if (!sessionId) return null;
 
   const plan = sessionPlan(state, sessionId);
@@ -90,16 +111,7 @@ export function SessionModePicker() {
       close();
       return;
     }
-    const rect = anchorRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setPosition(
-      computeMenuPosition(rect, {
-        placement: "up",
-        minWidth: 300,
-        fullHeight: 320,
-      }),
-    );
-    setOpen(true);
+    openMenu();
   };
 
   const pick = (value: ModeValue) => {

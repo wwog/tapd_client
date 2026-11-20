@@ -30,6 +30,21 @@ pub static MESSAGES: &[Message] = &[
         "The conversation's project has no local repository configured",
     ),
     (
+        "dsh.export.copyFailed",
+        "复制会话日志失败：{}",
+        "Failed to copy the session log: {}",
+    ),
+    (
+        "dsh.export.noLog",
+        "这个会话还没有日志可以导出",
+        "This conversation has no log to export yet",
+    ),
+    (
+        "dsh.export.noRuntime",
+        "找不到 dsh 的会话目录",
+        "The dsh session directory is unavailable",
+    ),
+    (
         "dsh.task.approve.busy",
         "模型还在运行，等这一轮结束后再审核",
         "The model is still running; approve after this turn ends",

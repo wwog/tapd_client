@@ -119,6 +119,39 @@ pub async fn dsh_prompt(
     feature::prompt(&app, &session_id, &text).await
 }
 
+/// The engine's human slash-command catalog (globals plus the session's own
+/// scoped rows). Omit `session_id` for a chat that has no session yet.
+#[tauri::command]
+pub async fn dsh_commands(app: AppHandle, session_id: Option<String>) -> Result<Value, String> {
+    feature::commands(&app, session_id.as_deref()).await
+}
+
+/// Runs one slash-command line through the engine registry.
+#[tauri::command]
+pub async fn dsh_command_run(
+    app: AppHandle,
+    session_id: String,
+    line: String,
+) -> Result<Value, String> {
+    feature::run_command(&app, &session_id, &line).await
+}
+
+/// Packs one session's raw log into `dir` (`/export`).
+#[tauri::command]
+pub async fn dsh_session_export(
+    app: AppHandle,
+    session_id: String,
+    dir: String,
+) -> Result<Value, String> {
+    feature::export_session(&app, &session_id, &dir).await
+}
+
+/// Newest distinct composer prompts across sessions (the ↑ history panel).
+#[tauri::command]
+pub async fn dsh_prompt_history(app: AppHandle, limit: Option<u32>) -> Result<Value, String> {
+    feature::prompt_history(&app, limit.unwrap_or(50)).await
+}
+
 /// Switches one session's model route; the choice is durable in its session log.
 #[tauri::command]
 pub async fn dsh_select_model(

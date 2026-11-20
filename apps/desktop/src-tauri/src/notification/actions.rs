@@ -172,7 +172,19 @@ pub async fn command(
             Ok(json!({ "ok": true, "visible": visible }))
         }
         "notification_open_main" => {
+            // An optional `view` sends the window straight to one page: the
+            // update capsule opens the account page (which owns 立即更新)
+            // instead of dumping the user wherever the app was left.
+            let view = payload
+                .get("view")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|view| !view.is_empty())
+                .map(str::to_string);
             focus_main_window(app);
+            if let Some(view) = view {
+                let _ = app.emit("notification://open-view", json!({ "view": view }));
+            }
             Ok(json!({ "ok": true }))
         }
         "notification_open_bug" => {

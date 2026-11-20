@@ -21,6 +21,7 @@ export type TrajKind =
   | "attempt"
   | "compaction"
   | "subcall"
+  | "command"
   | "seed";
 
 /** One in-flight call of the live attempt; the host's stream shape fits as-is. */
@@ -448,6 +449,24 @@ export function deriveTrajectory(entries: readonly AgentEntry[], locale: AgentLo
         ...(toolIndexByCallId.get(entry.parentCallId) === undefined
           ? {}
           : { parentIndex: toolIndexByCallId.get(entry.parentCallId) }),
+      });
+      continue;
+    }
+    if (entry.kind === "command") {
+      // Log-only: no turn wraps a command, so it sits at its own log position.
+      records.push({
+        id: `command:${entry.commandId || entry.seq}`,
+        index,
+        kind: "command",
+        turn: 0,
+        step: 0,
+        group: agentLabel("traj.groupCommand", locale),
+        text: `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`,
+        ...(entry.text === undefined ? {} : { result: previewText(entry.text) }),
+        state: statusState(entry.status),
+        startedAtMs: atMs(entry.at),
+        endedAtMs: atMs(entry.at),
+        entry,
       });
       continue;
     }

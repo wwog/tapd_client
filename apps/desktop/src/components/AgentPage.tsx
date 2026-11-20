@@ -7,6 +7,8 @@ type Props = {
   onOpenFile: (target: FileTabTarget) => void;
   onOpenBugById: (workspaceId: string, bugId: string) => void;
   onSelectLocalProject: (projectId: string) => void;
+  /** The tab is the focused one; entering it re-opens the session column. */
+  visible: boolean;
 };
 
 /**
@@ -18,6 +20,7 @@ export function AgentPage({
   onOpenFile,
   onOpenBugById,
   onSelectLocalProject,
+  visible,
 }: Props) {
   useAgentRuntime();
   return (
@@ -26,6 +29,7 @@ export function AgentPage({
       onOpenFile={onOpenFile}
       onOpenBugById={onOpenBugById}
       onSelectLocalProject={onSelectLocalProject}
+      visible={visible}
     />
   );
 }

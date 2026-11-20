@@ -392,6 +392,17 @@ export type DshEntry =
       endedAtMs?: number;
     } & DshEntryPosition)
   | {
+      /** One human slash command (`command/run` → `command/done`). */
+      kind: "command";
+      seq: number;
+      at: string;
+      commandId: string;
+      name: string;
+      args?: string;
+      status: "running" | "ok" | "error";
+      text?: string;
+    }
+  | {
       /** The inherited-history boundary (`session/end-seed`). */
       kind: "seed";
       seq: number;

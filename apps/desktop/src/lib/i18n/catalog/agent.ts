@@ -393,8 +393,51 @@ export const agent = {
   ],
 
   // Composer.
-  "agent.composer.placeholder": ["描述要做什么…", "Describe the task…"],
+  "agent.composer.placeholder": [
+    "描述要做什么，/ 调用指令",
+    "Describe the task, or type / for commands",
+  ],
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
+
+  // Composer `/` menu: the same eight commands and two groups as dsh desktop.
+  "agent.cmd.title": ["调用指令", "Commands"],
+  "agent.cmd.empty": ["没有匹配的指令", "No matching command"],
+  "agent.cmd.groupAdd": ["添加", "Add"],
+  "agent.cmd.groupCommand": ["指令", "Commands"],
+  "agent.cmd.file": ["文件", "File"],
+  "agent.cmd.fileHint": ["插入文件引用", "Reference files"],
+  "agent.cmd.filePick": ["选择要引用的文件", "Choose files to reference"],
+  "agent.cmd.goal": ["目标", "Goal"],
+  "agent.cmd.goalHint": ["设置或查看长期目标", "Set or view the long-running goal"],
+  "agent.cmd.plan": ["计划", "Plan"],
+  "agent.cmd.planHint": ["进入或退出计划模式", "Enter or leave plan mode"],
+  "agent.cmd.feedback": ["反馈", "Feedback"],
+  "agent.cmd.feedbackHint": [
+    "发送关于当前会话的反馈",
+    "Send feedback about this conversation",
+  ],
+  "agent.cmd.compact": ["压缩", "Compact"],
+  "agent.cmd.compactHint": ["压缩以上对话内容", "Compact the conversation above"],
+  "agent.cmd.permission": ["权限", "Permission"],
+  "agent.cmd.permissionHint": ["切换权限模式", "Switch the permission mode"],
+  "agent.cmd.model": ["模型", "Model"],
+  "agent.cmd.modelHint": ["选择本会话使用的模型", "Pick this conversation's model"],
+  "agent.cmd.export": ["下载日志", "Export"],
+  "agent.cmd.exportHint": ["将会话内容导出为 ZIP", "Export this conversation as a ZIP"],
+  "agent.cmd.other": ["指令", "Command"],
+  "agent.cmd.otherHint": ["由运行时执行", "Run by the runtime"],
+  "agent.cmd.noSession": ["还没有会话可以导出", "There is no conversation to export yet"],
+  "agent.cmd.exportFailed": ["导出失败：{error}", "Export failed: {error}"],
+
+  // Composer ↑ history.
+  "agent.history.title": ["历史消息", "Prompt history"],
+  "agent.history.empty": ["还没有可用的历史", "No prompt history yet"],
+
+  // The session goal chip (goal/change events).
+  "agent.goal.active": ["进行中", "Active"],
+  "agent.goal.paused": ["已暂停", "Paused"],
+  "agent.goal.blocked": ["受阻", "Blocked"],
+  "agent.goal.complete": ["已完成", "Completed"],
 
   // Runtime states (also used as the composer's disabled explanation).
   "agent.runtime.stopped": ["正在准备运行时", "Preparing the runtime"],
@@ -544,6 +587,7 @@ export const agent = {
   "agent.model.wirePlaceholder": ["发到线上的参数值", "Value sent upstream"],
   "agent.config.nav.models": ["模型", "Models"],
   "agent.config.nav.rules": ["规则", "Rules"],
+  "agent.config.nav.coworkers": ["同事", "Coworkers"],
   "agent.config.nav.general": ["常规", "General"],
   "agent.config.nav.integrations": ["集成", "Integrations"],
   "agent.config.nav.plugins": ["内置插件", "Built-in plugins"],

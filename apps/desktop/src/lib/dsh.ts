@@ -102,11 +102,32 @@ export type DshSessionRow = {
   planActive?: boolean;
   /** Current session todo list (`todo/write`); empty until the agent plans. */
   todos?: DshTodo[];
+  /** The long-running goal (`goal/change`); absent until one is created. */
+  goal?: DshGoal;
   /** Present on a child agent session (`header.origin === "subagent"`):
    *  the parent session this child was started from. Roots never set it. */
   parentSession?: string;
   /** The agent preset a child session runs under, when one was recorded. */
   agentPreset?: string;
+};
+
+/** One session's long-running goal, folded from `goal/change`. */
+export type DshGoal = {
+  id: string;
+  objective: string;
+  phase: "active" | "paused" | "blocked" | "complete";
+  roundsStarted: number;
+  maxRounds: number;
+  /** The policy-owned explanation behind a `blocked` phase. */
+  blockedReason?: string;
+};
+
+/** One human slash command the runtime registers (composer palette). */
+export type DshCommandDescriptor = {
+  name: string;
+  description: string;
+  /** Argument grammar (`[off|message]`), when the command takes input. */
+  inputHint?: string;
 };
 
 /** dsh's 1-based turn/step counters; a step is one model request. */
@@ -258,6 +279,20 @@ export type DshEntry =
       startedAtMs?: number;
       endedAtMs?: number;
     } & DshEntryPosition)
+  | {
+      /** One human slash command (`command/run` → `command/done`), merged by
+       *  `commandId`. Log-only: no turn wraps it and it is not a message. */
+      kind: "command";
+      seq: number;
+      at: string;
+      commandId: string;
+      name: string;
+      /** Typed arguments; absent for commands that do not record input. */
+      args?: string;
+      status: "running" | "ok" | "error";
+      /** The engine's own success or failure text. */
+      text?: string;
+    }
   | {
       /** The inherited-history boundary (`session/end-seed`). */
       kind: "seed";
@@ -509,6 +544,21 @@ export const dshApi = {
     ),
   prompt: (sessionId: string, text: string) =>
     invoke<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
+  /** The runtime's own command catalog; omit `sessionId` for a fresh chat. */
+  commands: (sessionId?: string | null) =>
+    invoke<{ commands: DshCommandDescriptor[] }>("dsh_commands", {
+      sessionId: sessionId ?? null,
+    }),
+  /** Admission only: the row and its result arrive as `command` entries. */
+  runCommand: (sessionId: string, line: string) =>
+    invoke<{ sessionId: string; name?: string }>("dsh_command_run", { sessionId, line }),
+  /** Packs the raw session log into `dir`; returns the ZIP (or the folder when
+   *  `ditto` is unavailable). */
+  exportSession: (sessionId: string, dir: string) =>
+    invoke<DshSessionExport>("dsh_session_export", { sessionId, dir }),
+  /** Newest distinct prompts across sessions, newest first (↑ history). */
+  promptHistory: (limit = 50) =>
+    invoke<{ prompts: string[] }>("dsh_prompt_history", { limit }),
   selectModel: (sessionId: string, selection: ModelSelection) =>
     invoke<{ ok: true }>("dsh_select_model", {
       sessionId,
@@ -531,6 +581,15 @@ export const dshApi = {
     invoke<void>("dsh_approval_answer", { rpcId, outcome }),
   questionAnswer: (rpcId: number, answers: DshAnswer[] | null) =>
     invoke<void>("dsh_question_answer", { rpcId, answers }),
+};
+
+/** One session's raw log, packed for `/export`. */
+export type DshSessionExport = {
+  sessionId: string;
+  /** The ZIP, or the staging folder when the platform cannot compress. */
+  path: string;
+  bytes: number;
+  zipped: boolean;
 };
 
 /** Event payloads, kept next to the command types they mirror. */

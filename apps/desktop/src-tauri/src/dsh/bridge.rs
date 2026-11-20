@@ -56,15 +56,23 @@ const PHASE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Inbound frame types that answer a pending request. A reply type missing
 /// here is dropped and its caller times out, so every new request frame adds
 /// its reply here as well.
-const REPLY_TYPES: [&str; 5] = [
+const REPLY_TYPES: [&str; 7] = [
     "models-applied",
     "models-discovered",
     "plugins-listed",
     "tools-listed",
+    // The engine's human-command catalog and the admission ack of one run. The
+    // result itself arrives as `command/run` / `command/done` session events.
+    "commands-listed",
+    "command-acked",
     // The plugin acknowledges `task-phase` / `task-phases`; only the former is
     // awaited (the write-back turn cannot start without it).
     "task-phase-applied",
 ];
+
+/// A command line needs admission only — the handler settles later and its
+/// result reaches the transcript as events — so this covers a registry read.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the child needs to reach this listener.
 #[derive(Clone, Debug)]
@@ -370,6 +378,42 @@ impl BridgeState {
             .get("tools")
             .cloned()
             .unwrap_or_else(|| json!([])))
+    }
+
+    /// Reads the human slash-command catalog the composer's palette lists. A
+    /// fresh chat has no session yet; the plugin then answers with the global
+    /// layer, so the palette still shows what the runtime actually registers.
+    pub async fn list_commands(&self, session_id: Option<&str>) -> Result<Value, String> {
+        let mut frame = json!({ "type": "commands" });
+        if let Some(session_id) = session_id {
+            frame["sessionId"] = json!(session_id);
+        }
+        let reply = self.request(frame, COMMAND_TIMEOUT).await?;
+        Ok(reply
+            .get("commands")
+            .cloned()
+            .unwrap_or_else(|| json!([])))
+    }
+
+    /// Submits one slash-command line to the engine registry. Only admission is
+    /// awaited: the row opens and settles as `command/run` / `command/done`
+    /// session events, which is also why the run itself is not cancellable here.
+    pub async fn run_command(&self, session_id: &str, line: &str) -> Result<Value, String> {
+        let reply = self
+            .request(
+                json!({ "type": "command-run", "sessionId": session_id, "line": line }),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        if reply.get("started").and_then(Value::as_bool) == Some(false) {
+            let error = reply
+                .get("error")
+                .and_then(Value::as_str)
+                .filter(|error| !error.is_empty())
+                .unwrap_or("the command could not be started");
+            return Err(error.to_string());
+        }
+        Ok(reply)
     }
 
     /// Points one session at a model route and queues the frame for the plugin.

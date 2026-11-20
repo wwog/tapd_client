@@ -27,7 +27,8 @@ export function groupTurns(items: AgentEntry[]): AgentTurnBlock[] {
       item.kind !== "assistant" &&
       item.kind !== "tool" &&
       item.kind !== "turn" &&
-      item.kind !== "notice"
+      item.kind !== "notice" &&
+      item.kind !== "command"
     ) {
       continue;
     }

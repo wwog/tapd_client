@@ -207,6 +207,23 @@ pub struct DshTodo {
     pub status: String,
 }
 
+/// The session's long-running goal (`goal/change` folds). A goal survives many
+/// turns, so it lives on the session row instead of the transcript; `phase` is
+/// dsh's own string (`active` / `paused` / `blocked` / `complete`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshGoal {
+    pub id: String,
+    pub objective: String,
+    pub phase: String,
+    #[serde(default)]
+    pub rounds_started: u64,
+    pub max_rounds: u64,
+    /// The policy-owned explanation behind a `blocked` phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+}
+
 /// One session as the session list shows it. `title` is empty until a first
 /// user message arrives — the UI renders its own empty state rather than a
 /// fabricated title.
@@ -236,6 +253,10 @@ pub struct DshSession {
     /// state, not transcript rows: the latest write wins.
     #[serde(default)]
     pub todos: Vec<DshTodo>,
+    /// The long-running goal (`goal/change`), absent until one is created and
+    /// cleared back to `None` by a `clear` operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<DshGoal>,
     /// The parent session of a child agent session (dsh header
     /// `origin === "subagent"`). Roots never carry it, so its presence is the
     /// child marker the UI reads.
@@ -258,6 +279,7 @@ impl DshSession {
             selection: None,
             plan_active: false,
             todos: Vec::new(),
+            goal: None,
             parent_session: None,
             agent_preset: None,
         }
@@ -533,6 +555,26 @@ pub enum DshEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ended_at_ms: Option<u64>,
     },
+    /// One human slash command (`command/run` → `command/done`), merged in
+    /// place by its `commandId`: the row opens running and settles with the
+    /// engine's own result text. dsh writes these two events log-only — no turn
+    /// wraps them — so the row is never a chat bubble and never counts as a
+    /// message.
+    Command {
+        seq: u64,
+        at: String,
+        /// dsh's pairing id (`cmd-<instance>-<n>`); the row's identity.
+        command_id: String,
+        name: String,
+        /// The typed arguments; absent for commands that do not record input
+        /// (`/feedback`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<String>,
+        status: ToolStatus,
+        /// The engine's success or failure text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     /// The inherited-history boundary (`session/end-seed`): log from before
     /// this session owned the work (fork prefix / restored cut).
     Seed {
@@ -563,6 +605,7 @@ impl DshEntry {
             | Self::Attempt { seq, .. }
             | Self::Compaction { seq, .. }
             | Self::Subcall { seq, .. }
+            | Self::Command { seq, .. }
             | Self::Seed { seq, .. } => *seq,
         }
     }
@@ -583,6 +626,7 @@ impl DshEntry {
             | Self::Attempt { at, .. }
             | Self::Compaction { at, .. }
             | Self::Subcall { at, .. }
+            | Self::Command { at, .. }
             | Self::Seed { at, .. } => at,
         }
     }
@@ -644,6 +688,9 @@ struct SessionRecord {
     subcalls: HashMap<String, usize>,
     /// `compactionId` → index in `entries`, for merging a compaction cycle.
     compactions: HashMap<String, usize>,
+    /// `commandId` → index in `entries`, for merging `command/done` into its
+    /// `command/run` row.
+    commands: HashMap<String, usize>,
     /// Row seq → the event seq that last touched it. A tool row keeps its
     /// call's seq while the result lands much later, so incremental readers
     /// page on this instead of the row's own seq.
@@ -702,6 +749,7 @@ impl Transcript {
                 calls: HashMap::new(),
                 subcalls: HashMap::new(),
                 compactions: HashMap::new(),
+                commands: HashMap::new(),
                 last_update: HashMap::new(),
                 orphans: HashMap::new(),
                 first_user_seen: false,
@@ -753,6 +801,9 @@ impl Transcript {
                 | "compaction/summary"
                 | "compaction/end"
                 | "compaction/prune"
+                | "command/run"
+                | "command/done"
+                | "goal/change"
                 | "tool/ptc-dispatch-start"
                 | "tool/ptc-dispatch"
                 | "session/end-seed"
@@ -784,6 +835,12 @@ impl Transcript {
             "compaction/end" => record.merge_compaction(seq, at, event, true),
             "tool/ptc-dispatch-start" => record.push_subcall(seq, at, event),
             "tool/ptc-dispatch" => record.merge_subcall(seq, event),
+            "command/run" => record.push_command(seq, at, event),
+            "command/done" => record.merge_command(seq, event),
+            "goal/change" => {
+                record.fold_goal(event);
+                None
+            }
             "session/end-seed" => record.push_seed(seq, at, event),
             "assistant/message" => record.push_assistant(seq, at, event),
             "tool/call" => record.push_tool(seq, at, event),
@@ -1678,6 +1735,139 @@ impl SessionRecord {
         Some(entry)
     }
 
+    /// Opens one human command's row (`command/run`); `command/done` settles it.
+    fn push_command(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
+        let command_id = event
+            .pointer("/data/commandId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let name = event
+            .pointer("/data/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // A row without a name renders as `/` and tells the reader nothing.
+        if name.is_empty() {
+            return None;
+        }
+        let entry = DshEntry::Command {
+            seq,
+            at: at.to_string(),
+            command_id: command_id.clone(),
+            name,
+            args: event
+                .pointer("/data/args")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|args| !args.is_empty())
+                .map(str::to_string),
+            status: ToolStatus::Running,
+            text: None,
+        };
+        if !command_id.is_empty() {
+            self.commands.insert(command_id, self.entries.len());
+        }
+        Some(self.commit(entry, seq))
+    }
+
+    /// Settles the command row its `commandId` opened. A `done` whose `run` was
+    /// never seen (a log that starts mid-command) carries no name, so it is
+    /// dropped instead of fabricating a row.
+    fn merge_command(&mut self, seq: u64, event: &Value) -> Option<DshEntry> {
+        let command_id = event
+            .pointer("/data/commandId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let index = *self.commands.get(&command_id)?;
+        let kind = event
+            .pointer("/data/kind")
+            .and_then(Value::as_str)
+            .unwrap_or("error");
+        let text = event
+            .pointer("/data/text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        let entry = match self.entries.get_mut(index) {
+            Some(DshEntry::Command {
+                status,
+                text: row_text,
+                ..
+            }) => {
+                *status = if kind == "success" {
+                    ToolStatus::Ok
+                } else {
+                    ToolStatus::Error
+                };
+                if text.is_some() {
+                    *row_text = text;
+                }
+                self.entries[index].clone()
+            }
+            _ => return None,
+        };
+        self.last_update.insert(entry.seq(), seq);
+        Some(entry)
+    }
+
+    /// Folds one `goal/change` into the session row. Session state, not a
+    /// transcript row: the objective outlives single turns, and the composer
+    /// status line is where it is read.
+    fn fold_goal(&mut self, event: &Value) {
+        let change = event.get("data");
+        let operation = change
+            .and_then(|change| change.get("operation"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if operation == "clear" {
+            self.meta.goal = None;
+            return;
+        }
+        let Some(goal) = change.and_then(|change| change.get("goal")) else {
+            return;
+        };
+        let blocked_reason = goal
+            .pointer("/blockedReason")
+            .and_then(|reason| {
+                let message = reason.get("message").and_then(Value::as_str)?;
+                let code = reason.get("code").and_then(Value::as_str).unwrap_or_default();
+                Some(if code.is_empty() {
+                    message.to_string()
+                } else {
+                    format!("{code}: {message}")
+                })
+            });
+        self.meta.goal = Some(DshGoal {
+            id: goal
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            objective: goal
+                .get("objective")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            phase: goal
+                .get("phase")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            rounds_started: change
+                .and_then(|change| change.get("roundsStarted"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            max_rounds: goal
+                .get("maxGoalRounds")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            blocked_reason,
+        });
+    }
+
     /// Opens one PTC sub-call row, nested under its parent tool call.
     fn push_subcall(&mut self, seq: u64, at: &str, event: &Value) -> Option<DshEntry> {
         let call_id = event
@@ -2315,6 +2505,107 @@ mod tests {
             }) if message == "summarizer failed"
         ));
         assert_eq!(transcript.entries("s1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn command_run_and_done_merge_into_one_row() {
+        let mut transcript = Transcript::default();
+        let mut run = event("command/run", 1);
+        run["data"] = json!({
+            "commandId": "cmd-abcd-1", "name": "goal", "args": " ship the release "
+        });
+        let opened = transcript.ingest("s1", &run, "2026-11-16T00:00:01.000Z");
+        assert!(matches!(
+            &opened.entry,
+            Some(DshEntry::Command {
+                seq: 1, command_id, name, args: Some(args),
+                status: ToolStatus::Running, text: None, ..
+            }) if command_id == "cmd-abcd-1" && name == "goal" && args == "ship the release"
+        ));
+        // A command is log-only: it never counts as a message.
+        assert_eq!(
+            transcript.session("s1").expect("session").message_count,
+            0
+        );
+
+        let mut done = event("command/done", 2);
+        done["data"] = json!({
+            "commandId": "cmd-abcd-1", "kind": "success", "text": "Goal created"
+        });
+        let settled = transcript.ingest("s1", &done, "2026-11-16T00:00:02.000Z");
+        assert!(matches!(
+            &settled.entry,
+            Some(DshEntry::Command {
+                seq: 1, status: ToolStatus::Ok, text: Some(text), ..
+            }) if text == "Goal created"
+        ));
+        assert_eq!(transcript.entries("s1").unwrap().len(), 1);
+
+        // An error result paints the same row; a done without its run is dropped.
+        let mut failed = event("command/done", 3);
+        failed["data"] = json!({
+            "commandId": "orphan", "kind": "error", "text": "Compaction cancelled."
+        });
+        assert!(transcript
+            .ingest("s1", &failed, "2026-11-16T00:00:03.000Z")
+            .entry
+            .is_none());
+        assert_eq!(transcript.entries("s1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn goal_change_folds_into_the_session_row() {
+        let mut transcript = Transcript::default();
+        let mut created = event("goal/change", 1);
+        created["data"] = json!({
+            "kind": "goal/change",
+            "version": 1,
+            "operation": "create",
+            "goal": {
+                "id": "g1", "revision": 1, "objective": "ship v2",
+                "phase": "active", "maxGoalRounds": 5
+            },
+            "roundsStarted": 0,
+            "createdAt": 1,
+            "updatedAt": 1
+        });
+        transcript.ingest("s1", &created, "2026-11-16T00:00:01.000Z");
+        let goal = transcript.session("s1").unwrap().goal.expect("goal folded");
+        assert_eq!(goal.objective, "ship v2");
+        assert_eq!(goal.phase, "active");
+        assert_eq!(goal.max_rounds, 5);
+        assert!(transcript.entries("s1").unwrap().is_empty());
+
+        let mut blocked = event("goal/change", 2);
+        blocked["data"] = json!({
+            "kind": "goal/change",
+            "version": 1,
+            "operation": "block",
+            "goal": {
+                "id": "g1", "revision": 2, "objective": "ship v2",
+                "phase": "blocked", "maxGoalRounds": 5,
+                "blockedReason": { "code": "policy", "message": "needs approval" }
+            },
+            "roundsStarted": 2,
+            "createdAt": 1,
+            "updatedAt": 2
+        });
+        transcript.ingest("s1", &blocked, "2026-11-16T00:00:02.000Z");
+        let goal = transcript.session("s1").unwrap().goal.expect("goal folded");
+        assert_eq!(goal.phase, "blocked");
+        assert_eq!(goal.rounds_started, 2);
+        assert_eq!(goal.blocked_reason.as_deref(), Some("policy: needs approval"));
+
+        let mut cleared = event("goal/change", 3);
+        cleared["data"] = json!({
+            "kind": "goal/change",
+            "version": 1,
+            "operation": "clear",
+            "cleared": { "id": "g1", "revision": 2 },
+            "clearedAt": 3
+        });
+        transcript.ingest("s1", &cleared, "2026-11-16T00:00:03.000Z");
+        assert!(transcript.session("s1").unwrap().goal.is_none());
     }
 
     #[test]

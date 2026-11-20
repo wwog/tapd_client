@@ -210,7 +210,9 @@ export const notificationApi = {
   /** Grows the collapsed capsule into the Agent summary card while hovered. */
   setPeek: (active: boolean) =>
     featureCommand<{ ok: boolean; active: boolean }>("notification_island_peek", { active }),
-  openMain: () => featureCommand<{ ok: boolean }>("notification_open_main"),
+  /** Focus the main window, optionally switching it to one page first. */
+  openMain: (view?: string) =>
+    featureCommand<{ ok: boolean }>("notification_open_main", view ? { view } : {}),
   /** Focus the main window and open one bug's detail (查看缺陷). */
   openBug: (workspaceId: string, bugId: string) =>
     featureCommand<{ ok: boolean }>("notification_open_bug", { workspaceId, bugId }),

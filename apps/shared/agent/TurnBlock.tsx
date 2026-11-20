@@ -7,9 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Bot, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, Loader2, Terminal } from "lucide-react";
 
 import type {
+  AgentCommand,
   AgentEntry,
   AgentLocale,
   AgentNotice,
@@ -120,6 +121,13 @@ function TurnBlockImpl({
 
   const users = useMemo(
     () => block.entries.filter((entry) => entry.kind === "user"),
+    [block.entries],
+  );
+  // Slash commands are lifecycle rows, not work: they stay visible next to the
+  // prompt instead of folding under 已工作, so a `/compact` result is readable
+  // after the turn that framed it settled.
+  const commands = useMemo(
+    () => block.entries.filter((entry) => entry.kind === "command"),
     [block.entries],
   );
   const prompt = users[users.length - 1]?.text ?? "";
@@ -257,6 +265,10 @@ function TurnBlockImpl({
         </div>
       ))}
 
+      {commands.map((entry) => (
+        <CommandRow key={`command:${entry.commandId || entry.seq}`} entry={entry} />
+      ))}
+
       {/* Settled: 已工作 is the process fold. Collapsed it hides every flow,
           sub-agent row and intermediate 说明; the turn's last 说明 stays
           outside, always readable.
@@ -388,6 +400,50 @@ function WorkingOrb() {
     </span>
   );
 }
+
+/**
+ * One human slash command and its result. The engine writes `command/run` and
+ * `command/done` log-only (no turn, no message), so this is a quiet status row:
+ * `/name args`, then the engine's own success or failure text.
+ */
+const CommandRow = memo(function CommandRow({ entry }: { entry: AgentCommand }) {
+  const running = entry.status === "running";
+  const failed = entry.status === "error";
+  return (
+    <div
+      data-component="CommandRow"
+      data-status={entry.status}
+      className="flex min-w-0 items-start gap-1.5 py-0.5 text-ui-caption"
+    >
+      {running ? (
+        <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin text-slate-400" />
+      ) : (
+        <Terminal
+          size={12}
+          className={clsx("mt-0.5 shrink-0", failed ? "text-rose-500" : "text-slate-400")}
+        />
+      )}
+      <span
+        className={clsx(
+          "shrink-0 select-text font-mono text-ui-xs",
+          failed ? "text-rose-600" : "text-slate-600",
+        )}
+      >
+        {`/${entry.name}${entry.args ? ` ${entry.args}` : ""}`}
+      </span>
+      {entry.text ? (
+        <span
+          className={clsx(
+            "min-w-0 flex-1 whitespace-pre-wrap break-words select-text",
+            failed ? "text-rose-600" : "text-slate-500",
+          )}
+        >
+          {entry.text}
+        </span>
+      ) : null}
+    </div>
+  );
+});
 
 /**
  * A settle notice that matched no `subagent` call: one closing message row,

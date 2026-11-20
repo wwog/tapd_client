@@ -41,6 +41,8 @@ type Props = {
   onOpenBugById: (workspaceId: string, bugId: string) => void;
   /** Switches to the local items page of one project. */
   onSelectLocalProject: (projectId: string) => void;
+  /** The page is the focused tab; every entry re-opens the session column. */
+  visible: boolean;
 };
 
 if (import.meta.env.DEV) installAgentPerf();
@@ -140,12 +142,14 @@ export function AgentWorkspace({
   onOpenFile,
   onOpenBugById,
   onSelectLocalProject,
+  visible,
 }: Props) {
   const state = agentStore.use();
   const locale = useLocale();
   // Width, drag, collapse and the narrow-pane auto-collapse of the session
-  // column. The decision reads this pane, not the window.
-  const list = useTaskListLayout();
+  // column. The decision reads this pane, not the window; `visible` makes every
+  // entry into the page reveal the column.
+  const list = useTaskListLayout(visible);
   const host = useAgentHost(state.selectedId, {
     toast,
     onOpenFile,

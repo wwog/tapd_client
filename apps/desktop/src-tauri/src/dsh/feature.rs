@@ -202,23 +202,32 @@ pub async fn new_session_in(
     super::tasks::new_session(app, project).await
 }
 
-/// Ensures the runtime is up, then queues one prompt. The registry row exists
-/// before the call, so the session is listable even if the model call fails.
-pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
-    // A queued task has not been started by the scheduler yet: a turn run now
-    // would settle back into Queued (`finish_turn` returns early) and its
-    // changes would never reach review, merge or writeback. Reject instead of
-    // silently running work outside the flow.
+/// Everything user input needs before it can reach a session: a registry row,
+/// a live runtime, a reopened task row, the chat's own directory, a resumed
+/// Agent and the mirrored task phase.
+///
+/// Shared by `prompt`, `retry_turn` and `run_command` so a slash command can
+/// never reach a session that a prompt could not (and vice versa). A queued
+/// task is rejected: a turn run now would settle back into Queued and its work
+/// would never reach review, merge or writeback.
+async fn prepare_for_input(
+    app: &AppHandle,
+    session_id: &str,
+    reopen: bool,
+) -> Result<(), String> {
     if super::tasks::workflow_of(app, session_id).await == Some(super::tasks::Workflow::Queued) {
         return Err(tr("dsh.task.queued").to_string());
     }
     bridge(app)?.create_session(app, session_id);
     let state = runtime(app)?;
     state.ensure_ready(app).await?;
-    // A prompt on a finished or failed task makes it active again before the
-    // first event lands: the row must not say "已完成" while it works.
-    if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
-        tracing::warn!(%error, session = session_id, "task row was not reopened");
+    // Input on a finished or failed task makes it active again before the first
+    // event lands: the row must not say "已完成" while it works. A slash command
+    // is not work — `/compact` must not start a new round for a settled task.
+    if reopen {
+        if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
+            tracing::warn!(%error, session = session_id, "task row was not reopened");
+        }
     }
     // A free chat works in its worktree, its project repository, or its own
     // scratch directory — in that order. A session with no project must never
@@ -242,17 +251,118 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
     if restored {
         state.resume_session(app, session_id).await?;
     }
-    // Creates a new Agent before the prompt (and re-applies the route) so the
+    // Creates a new Agent before the input (and re-applies the route) so the
     // very first step uses the session's chosen model.
     state.prepare_session(app, session_id, !restored).await;
     // A task restored from a previous run may still point at a worktree the
-    // finishing chain removed; the prompt must land in the repository.
+    // finishing chain removed; the input must land in the repository.
     super::tasks::ensure_session_cwd(app, session_id).await;
     // The phase frame and the prompt use different channels; await the plugin's
     // ack so the first step already sees the right tools and prompt section.
     super::tasks::sync_phase(app, session_id).await?;
+    Ok(())
+}
+
+/// Ensures the runtime is up, then queues one prompt. The registry row exists
+/// before the call, so the session is listable even if the model call fails.
+pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
+    prepare_for_input(app, session_id, true).await?;
+    let state = runtime(app)?;
     let receipt = state.query(app, session_id, text).await?;
+    // The composer's ↑ history: recorded here so every prompt a human typed
+    // (chat, continue, retry follow-up) is remembered, while the task
+    // scheduler's own prompts bypass this function and stay out of it.
+    remember_prompt(app, session_id, text);
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
+}
+
+/// The engine's human slash-command catalog for one session (globals plus that
+/// Agent's scoped shadows). A chat with no session yet lists the global layer.
+///
+/// Every failure answers with an empty catalog instead of an error: the palette
+/// keeps its own eight commands, so a stopped or missing runtime must not turn
+/// opening `/` into a failed IPC.
+pub async fn commands(app: &AppHandle, session_id: Option<&str>) -> Result<Value, String> {
+    let empty = || json!({ "commands": [] });
+    let Ok(state) = runtime(app) else {
+        return Ok(empty());
+    };
+    if state.ensure_ready(app).await.is_err() {
+        return Ok(empty());
+    }
+    let Ok(bridge) = bridge(app) else {
+        return Ok(empty());
+    };
+    match bridge.list_commands(session_id).await {
+        Ok(commands) => Ok(json!({ "commands": commands })),
+        Err(error) => {
+            tracing::debug!(%error, "command catalog is unavailable");
+            Ok(empty())
+        }
+    }
+}
+
+/// Runs one slash-command line through the engine registry. Only admission is
+/// awaited; the row and its result follow as `command/run` / `command/done`.
+pub async fn run_command(
+    app: &AppHandle,
+    session_id: &str,
+    line: &str,
+) -> Result<Value, String> {
+    // A command never reopens a settled task: it is not a work round.
+    prepare_for_input(app, session_id, false).await?;
+    let reply = bridge(app)?.run_command(session_id, line).await?;
+    Ok(json!({
+        "sessionId": session_id,
+        "name": reply.get("name").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+/// Records one human prompt for the composer's ↑ history. Best effort: a cache
+/// that is disabled (or a failed write) must never fail the prompt it describes.
+fn remember_prompt(app: &AppHandle, session_id: &str, text: &str) {
+    let Some(state) = app.try_state::<Arc<crate::state::AppState>>() else {
+        return;
+    };
+    let cache = state.inner().cache.clone();
+    let session_id = session_id.to_string();
+    let text = text.to_string();
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = super::prompt_store::remember(&cache, &session_id, &text, &at) {
+            tracing::warn!(%error, session = %session_id, "prompt history was not written");
+        }
+    });
+}
+
+/// The newest distinct prompts across sessions, newest first (↑ history).
+pub async fn prompt_history(app: &AppHandle, limit: u32) -> Result<Value, String> {
+    let state = app
+        .try_state::<Arc<crate::state::AppState>>()
+        .ok_or_else(|| tr("dsh.state.unavailable").to_string())?;
+    let cache = state.inner().cache.clone();
+    let texts = tauri::async_runtime::spawn_blocking(move || {
+        super::prompt_store::recent(&cache, limit)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(json!({ "prompts": texts }))
+}
+
+/// Packs one session's raw log into `dir` (`/export`).
+pub async fn export_session(
+    app: &AppHandle,
+    session_id: &str,
+    dir: &str,
+) -> Result<Value, String> {
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    let dir = std::path::PathBuf::from(dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        super::export::export(&app, &session_id, &dir)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Re-runs a failed turn without sending its prompt a second time.
@@ -264,27 +374,10 @@ pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Val
 /// way `cancel` does. A retry is new input, so a task that had settled as
 /// done/failed is working again.
 pub async fn retry_turn(app: &AppHandle, session_id: &str) -> Result<Value, String> {
-    let bridge = bridge(app)?;
-    bridge.create_session(app, session_id);
-    let state = runtime(app)?;
-    state.ensure_ready(app).await?;
-    if let Err(error) = super::tasks::reopen_for_input(app, session_id).await {
-        tracing::warn!(%error, session = session_id, "task row was not reopened");
-    }
-    // A session restored from a previous run is not open in the runtime, and
-    // the bridge plugin drops a retry with no live Agent.
-    let restored = dsh_sessions_dir(app)
-        .and_then(|dir| super::session_log::path(&dir, session_id))
-        .is_some();
-    if restored {
-        state.resume_session(app, session_id).await?;
-    }
-    state.prepare_session(app, session_id, !restored).await;
-    // Same cwd guarantee as `prompt`: a retried round must not inherit a
-    // worktree that no longer exists.
-    super::tasks::ensure_session_cwd(app, session_id).await;
-    super::tasks::sync_phase(app, session_id).await?;
-    bridge.retry_session(session_id)?;
+    // Same prelude as a prompt, including the chat cwd: a retried round must not
+    // inherit a worktree that no longer exists.
+    prepare_for_input(app, session_id, true).await?;
+    bridge(app)?.retry_session(session_id)?;
     Ok(json!({ "sessionId": session_id, "ok": true }))
 }
 

@@ -172,6 +172,17 @@ export type AgentEntry =
       endedAtMs?: number;
     }
   | {
+      /** One human slash command (`command/run` → `command/done`). */
+      kind: "command";
+      seq: number;
+      at: string;
+      commandId: string;
+      name: string;
+      args?: string;
+      status: "running" | "ok" | "error";
+      text?: string;
+    }
+  | {
       /** The inherited-history boundary (`session/end-seed`). */
       kind: "seed";
       seq: number;
@@ -186,6 +197,9 @@ export type AgentUsage = NonNullable<
 
 /** The `subagent-settled` row, when a caller needs just this variant. */
 export type AgentNotice = Extract<AgentEntry, { kind: "notice" }>;
+
+/** One human slash command's row, when a caller needs just this variant. */
+export type AgentCommand = Extract<AgentEntry, { kind: "command" }>;
 
 /** One user-visible turn: everything committed between the turn markers. */
 export type AgentTurnBlock = {
