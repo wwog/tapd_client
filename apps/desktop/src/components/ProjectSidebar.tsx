@@ -30,6 +30,7 @@ type Props = {
   contextError: string | null;
   contextLoading: boolean;
   visibleWorkspaces: Workspace[];
+  /** Project whose page tab is on screen; empty when a global tab is active. */
   workspaceId: string;
   /** Local (non-TAPD) projects; `localProjectId` clears the TAPD selection. */
   localProjects: LocalProject[];
@@ -159,7 +160,9 @@ export function ProjectSidebar({
 
               {visibleWorkspaces.map((item) => {
                 // A selected local project owns the "active" state, so one row
-                // is highlighted at a time across both sections.
+                // is highlighted at a time across both sections. `workspaceId`
+                // is empty whenever the visible tab is not a TAPD project
+                // page, so a remembered selection never lights a closed row.
                 const active = item.id === workspaceId && localProjectId === null;
                 return (
                   <div key={item.id} className="group relative">

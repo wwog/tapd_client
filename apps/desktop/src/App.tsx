@@ -224,6 +224,13 @@ export default function App() {
   const pageWorkspaceId =
     view === "bugs" ? (activeProjectId ?? workspaceId) : workspaceId;
 
+  /**
+   * Row the project list paints as selected. A row stands for the project page
+   * on screen, so a global tab (settings, Agent, …) selects no row — the
+   * remembered `workspaceId` alone must not keep a closed project highlighted.
+   */
+  const selectedWorkspaceId = view === "bugs" ? pageWorkspaceId : "";
+
   // Members belong to the page's TAPD workspace. A local selection is only
   // relevant while the local page is active, so it must not suppress members
   // when the user switches back to the bug list.
@@ -962,7 +969,7 @@ export default function App() {
           contextError={contextError}
           contextLoading={contextLoading}
           visibleWorkspaces={visibleWorkspaces}
-          workspaceId={pageWorkspaceId}
+          workspaceId={selectedWorkspaceId}
           localProjects={local.projects}
           localProjectId={view === "local" ? activeProjectId : null}
           view={view}

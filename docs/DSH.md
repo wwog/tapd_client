@@ -9,8 +9,8 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | https://github.com/deepseek-ai/deepseek-harness |
-| commit | `39163dd30f703a79079e2d2446545cff3c453738`（2026-11-13） |
-| 包版本 | `@deepseek-ai/dsh@0.2.2-rc.3` |
+| commit | `9c2670d3bce5275e0d1610272958121af87787bb`（2026-11-18） |
+| 包版本 | `@deepseek-ai/dsh@0.2.2-rc.5` |
 | 许可 | MIT（需在 THIRD_PARTY_NOTICES 里披露） |
 
 升级流程：改 `vendor/dsh/package.json` 的精确版本 → `pnpm install --frozen-lockfile` →
@@ -29,7 +29,7 @@
   payload 里是 JS 依赖树与自有插件，**不含 Node 二进制**。清理只删版本形态的旧目录：
   同一父目录下的 `home/`（`DSH_HOME`）与解压 staging 必须保留。
 
-### 2.1 已实测（2026-11-16，`/tmp/dsh-probe`）
+### 2.1 已实测（2026-11-16，`0.2.2-rc.3`，`/tmp/dsh-probe`）
 
 | 验证 | 结果 |
 | --- | --- |
@@ -45,7 +45,7 @@
 实验性插件（auto-review、CUA、插件市场、CoT 翻译、徽章技能、会话标题、个性化推荐、
 tool-worktree、inspector 等）本来就随 `@deepseek-ai/dsh` 的依赖树发布，不需要单独安装。
 
-### 2.2 依赖树体积（实测，arm64 macOS）
+### 2.2 依赖树体积（`0.2.2-rc.3` 实测，arm64 macOS）
 
 | 状态 | 大小 | 说明 |
 | --- | --- | --- |

@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-/// Upstream `engines.node` for `@deepseek-ai/dsh@0.2.2-rc.3`.
+/// Upstream `engines.node` for `@deepseek-ai/dsh@0.2.2-rc.5`.
 pub const MINIMUM_MAJOR: u64 = 24;
 pub const MINIMUM_MINOR: u64 = 9;
 
