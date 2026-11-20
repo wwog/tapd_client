@@ -70,21 +70,28 @@ export function effortStops(model: CatalogModel): string[] {
   return ["off", ...declared];
 }
 
+/** Whether this model offers any reasoning level beyond the implicit `off`. */
+export function hasReasoning(model: CatalogModel): boolean {
+  return model.reasoning.some((level) => level !== "off");
+}
+
 /**
  * The level a model runs at unless the user picks another: the level it last
- * used, or `off`. An undeclared level is ignored — upstream rejects an effort
- * the route does not offer.
+ * used, or `off`. A model with no declared ladder has no reasoning capability,
+ * so it returns `undefined` and the route must omit `reasoningEffort` entirely —
+ * sending `off` to such a model fails upstream. An undeclared level is ignored.
  */
 export function rememberedEffort(
   catalog: DshModelsCatalog | null,
   providerId: string,
   modelId: string,
-): string {
+): string | undefined {
   const model = catalog?.providers
     .find((item) => item.id === providerId)
     ?.models.find((item) => item.id === modelId);
+  if (!model || !hasReasoning(model)) return undefined;
   const level = catalog?.modelEfforts?.[effortKey(providerId, modelId)];
-  if (!level || !model) return "off";
+  if (!level) return "off";
   return effortStops(model).includes(level) ? level : "off";
 }
 

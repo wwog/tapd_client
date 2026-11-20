@@ -145,12 +145,14 @@ export function ModelPicker({
     openMenu();
   };
 
-  /** A new route starts at the level that model last used. */
+  /** A new route starts at the level that model last used. A model with no
+   *  reasoning ladder omits `reasoningEffort`: sending `off` to it fails upstream. */
   const pick = (provider: DshProvider, model: DshModelEntry) => {
+    const level = rememberedEffort(models, provider.id, model.id);
     onChange({
       provider: provider.id,
       model: model.id,
-      reasoningEffort: rememberedEffort(models, provider.id, model.id),
+      ...(level ? { reasoningEffort: level } : {}),
     });
     close();
   };

@@ -166,6 +166,11 @@ export function effortKey(providerId: string, modelId: string): string {
   return `${providerId}/${modelId}`;
 }
 
+/** Whether this model offers any reasoning level beyond the implicit `off`. */
+export function hasReasoning(model: DshModelEntry): boolean {
+  return model.reasoning.some((effort) => effort.level !== "off");
+}
+
 /** The reasoning levels this model offers: `off` first, then its declared ladder. */
 export function effortStops(model: DshModelEntry): string[] {
   const declared = model.reasoning
@@ -176,19 +181,22 @@ export function effortStops(model: DshModelEntry): string[] {
 
 /**
  * The level a model runs at unless the user picks another: the level it last
- * used, or `off` when it has never been used. An undeclared level is ignored,
- * because upstream rejects an effort the route does not offer.
+ * used, or `off` when it has never been used. A model with no declared ladder
+ * has no reasoning capability, so it returns `undefined` and the route must
+ * omit `reasoningEffort` entirely — sending `off` to such a model fails upstream.
+ * An undeclared level is likewise ignored.
  */
 export function rememberedEffort(
   models: DshModelsConfig | null | undefined,
   providerId: string,
   modelId: string,
-): string {
+): string | undefined {
   const model = models?.providers
     .find((item) => item.id === providerId)
     ?.models.find((item) => item.id === modelId);
+  if (!model || !hasReasoning(model)) return undefined;
   const level = models?.modelEfforts?.[effortKey(providerId, modelId)];
-  if (!level || !model) return "off";
+  if (!level) return "off";
   return effortStops(model).includes(level) ? level : "off";
 }
 

@@ -981,7 +981,7 @@ fn session_selection(app: &AppHandle, session_id: &str) -> Option<ModelSelection
     let configured = models.active().map(|(provider, model)| ModelSelection {
         provider: provider.id.clone(),
         model: model.id.clone(),
-        reasoning_effort: Some(models.effort_for(&provider.id, &model.id)),
+        reasoning_effort: models.effort_for(&provider.id, &model.id),
     });
     bridge.desired_selection(session_id, configured)
 }

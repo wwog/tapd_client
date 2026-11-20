@@ -56,10 +56,11 @@ export function EnqueueSheet({ target, onClose, onDone }: Props) {
         setCatalog(models);
         const active = resolveActive(models);
         if (!active) return;
+        const level = rememberedEffort(models, active.provider.id, active.model.id);
         setModel({
           provider: active.provider.id,
           model: active.model.id,
-          reasoningEffort: rememberedEffort(models, active.provider.id, active.model.id),
+          ...(level ? { reasoningEffort: level } : {}),
         });
       })
       .catch(() => {
@@ -169,10 +170,11 @@ export function EnqueueSheet({ target, onClose, onDone }: Props) {
           chosen={model}
           effort={model?.reasoningEffort}
           onPick={(provider, picked) => {
+            const level = rememberedEffort(catalog, provider.id, picked.id);
             setModel({
               provider: provider.id,
               model: picked.id,
-              reasoningEffort: rememberedEffort(catalog, provider.id, picked.id),
+              ...(level ? { reasoningEffort: level } : {}),
             });
           }}
           onEffort={(level) =>

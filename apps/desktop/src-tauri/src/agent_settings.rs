@@ -210,22 +210,31 @@ impl DshModelsConfig {
     }
 
     /// 某个模型上次使用的思考强度；没有记录或记录已失效时为 `off`。
-    pub fn effort_for(&self, provider_id: &str, model_id: &str) -> String {
-        let key = format!("{provider_id}/{model_id}");
-        let some = self.model_efforts.get(&key).cloned().unwrap_or_default();
-        if some == "off" {
-            return some;
-        }
-        let declared = self
+    /// 没有推理能力的模型返回 `None`：调用方必须彻底省略 reasoningEffort，
+    /// 传 `off` 会被上游当作不支持的等级而报错。
+    pub fn effort_for(&self, provider_id: &str, model_id: &str) -> Option<String> {
+        let model = self
             .providers
             .iter()
             .find(|provider| provider.id == provider_id)
-            .and_then(|provider| provider.models.iter().find(|model| model.id == model_id))
-            .is_some_and(|model| model.reasoning.iter().any(|effort| effort.level == some));
-        if !some.is_empty() && declared {
-            some
+            .and_then(|provider| provider.models.iter().find(|model| model.id == model_id))?;
+        // `off` 是隐式下限，不算推理能力；只有声明了真实等级的模型才接受 effort。
+        if !model
+            .reasoning
+            .iter()
+            .any(|effort| effort.level != "off")
+        {
+            return None;
+        }
+        let key = format!("{provider_id}/{model_id}");
+        let some = self.model_efforts.get(&key).cloned().unwrap_or_default();
+        if some == "off" {
+            return Some(some);
+        }
+        if !some.is_empty() && model.reasoning.iter().any(|effort| effort.level == some) {
+            Some(some)
         } else {
-            "off".to_string()
+            Some("off".to_string())
         }
     }
 
@@ -1149,6 +1158,57 @@ mod tests {
         );
         // Blank ids are dropped, not kept as empty rows.
         assert_eq!(config.providers[0].models.len(), 1);
+    }
+
+    #[test]
+    fn effort_for_omits_level_for_non_reasoning_models() {
+        // Two models: one discovered with no ladder, one with a real ladder.
+        // The remembered entries exist for both, but only the reasoning model
+        // may be given an effort — `off` on the other fails upstream.
+        let config = DshModelsConfig {
+            providers: vec![DshProvider {
+                id: "p".into(),
+                models: vec![
+                    DshModelEntry {
+                        id: "plain".into(),
+                        ..Default::default()
+                    },
+                    DshModelEntry {
+                        id: "smart".into(),
+                        reasoning: vec![
+                            ReasoningEffort {
+                                level: "off".into(),
+                                wire: String::new(),
+                            },
+                            ReasoningEffort {
+                                level: "high".into(),
+                                wire: "high".into(),
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            model_efforts: [
+                ("p/plain".to_string(), "off".to_string()),
+                ("p/smart".to_string(), "high".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        assert_eq!(config.effort_for("p", "plain"), None);
+        assert_eq!(config.effort_for("p", "smart").as_deref(), Some("high"));
+        // An undeclared remembered level falls back to `off`, not omission.
+        let mut changed = config.clone();
+        changed
+            .model_efforts
+            .insert("p/smart".to_string(), "bogus".to_string());
+        assert_eq!(changed.effort_for("p", "smart").as_deref(), Some("off"));
+        // A remembered level on a now-unknown model resolves to nothing.
+        assert_eq!(config.effort_for("p", "missing"), None);
     }
 
     #[test]

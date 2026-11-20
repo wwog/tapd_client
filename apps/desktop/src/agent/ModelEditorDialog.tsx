@@ -1,22 +1,30 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Cpu, Plus, Trash2 } from "lucide-react";
 
 import { Dialog } from "../components/Dialog";
-import { Button, inputClass, selectClass } from "../components/ui";
+import { Button, inputClass } from "../components/ui";
 import {
   REASONING_LEVELS,
   type DshModelEntry,
   type DshReasoningLevel,
-  type ReasoningEffort,
 } from "../lib/agentSettings";
 import { t } from "../lib/i18n";
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
 
-/** Levels that may be offered; `off` alone is rejected upstream. */
+/** Levels that may be offered; `off` is an implicit floor, not an editable row. */
 const OFFERED_LEVELS = REASONING_LEVELS.filter((level) => level !== "off");
+
+/** One editable row. `level` stays free text until it is validated on save. */
+type EditableEffort = { key: number; level: string; wire: string };
+let nextRowKey = 0;
+const newRow = (level: string, wire: string): EditableEffort => ({
+  key: nextRowKey++,
+  level,
+  wire,
+});
 
 type Props = {
   /** The entry being edited, or `null` when adding a new one. */
@@ -42,50 +50,46 @@ export function ModelEditorDialog(props: Props) {
     model?.maxTokens === null || model?.maxTokens === undefined ? "" : String(model.maxTokens),
   );
   const [image, setImage] = useState(model?.input.includes("image") ?? true);
-  const [reasoning, setReasoning] = useState<ReasoningEffort[]>(
-    () => model?.reasoning.map((effort) => ({ ...effort })) ?? [],
+  // `off` is the implicit floor the backend re-adds; the editor shows only the
+  // real ladder so there is no phantom row that keeps coming back after delete.
+  const [reasoning, setReasoning] = useState<EditableEffort[]>(
+    () =>
+      model?.reasoning
+        .filter((effort) => effort.level !== "off")
+        .map((effort) => newRow(effort.level, effort.wire)) ?? [],
   );
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const levelListId = useId();
 
-  const used = new Set(reasoning.map((effort) => effort.level));
-  const available = OFFERED_LEVELS.filter((level) => !used.has(level));
-
-  /** Ladders are stated from low to high, the same order the profile writes. */
-  const sorted = (efforts: ReasoningEffort[]) =>
-    [...efforts].sort(
-      (left, right) =>
-        REASONING_LEVELS.indexOf(left.level) - REASONING_LEVELS.indexOf(right.level),
-    );
-
-  const addLevel = () => {
-    const level = available[0];
-    if (!level) return;
-    // The wire value usually spells the level; the user can still change it.
-    setReasoning(sorted([...reasoning, { level, wire: level }]));
+  const edit = (update: (current: EditableEffort[]) => EditableEffort[]) => {
+    setReasoning(update);
+    setError(null);
   };
 
-  const changeLevel = (index: number, level: DshReasoningLevel) =>
-    setReasoning((current) =>
-      sorted(
-        current.map((effort, position) => {
-          if (position !== index) return effort;
-          // Keep an untouched wire value in step with the level it names.
-          const wire = effort.wire.trim() === effort.level ? level : effort.wire;
-          return { level, wire };
-        }),
-      ),
+  const addLevel = () => {
+    if (reasoning.length >= OFFERED_LEVELS.length) return;
+    edit((current) => [...current, newRow("", "")]);
+  };
+
+  const changeLevel = (key: number, level: string) =>
+    edit((current) =>
+      current.map((effort) => {
+        if (effort.key !== key) return effort;
+        // Keep an untouched wire value in step with the level it names.
+        const wire =
+          effort.wire.trim() === effort.level.trim() ? level : effort.wire;
+        return { ...effort, level, wire };
+      }),
     );
 
-  const changeWire = (index: number, wire: string) =>
-    setReasoning((current) =>
-      current.map((effort, position) =>
-        position === index ? { ...effort, wire } : effort,
-      ),
+  const changeWire = (key: number, wire: string) =>
+    edit((current) =>
+      current.map((effort) => (effort.key === key ? { ...effort, wire } : effort)),
     );
 
-  const removeLevel = (index: number) =>
-    setReasoning((current) => current.filter((_, position) => position !== index));
+  const removeLevel = (key: number) =>
+    edit((current) => current.filter((effort) => effort.key !== key));
 
   const save = () => {
     const trimmed = id.trim();
@@ -97,8 +101,38 @@ export function ModelEditorDialog(props: Props) {
       setError(t("agent.model.idDuplicate"));
       return;
     }
+
+    // Normalize and validate the free-text ladder before it reaches the backend.
+    const seen = new Set<string>();
+    for (const effort of reasoning) {
+      const level = effort.level.trim().toLowerCase();
+      if (!OFFERED_LEVELS.some((offered) => offered === level)) {
+        setError(t("agent.model.reasoningLevelInvalid", { level: effort.level || "—" }));
+        return;
+      }
+      if (seen.has(level)) {
+        setError(t("agent.model.reasoningLevelDuplicate", { level }));
+        return;
+      }
+      seen.add(level);
+    }
+    if (reasoning.some((effort) => effort.wire.trim().length === 0)) {
+      setError(t("agent.model.wireRequired"));
+      return;
+    }
+
     const window = Number.parseInt(context, 10);
     const output = Number.parseInt(maxTokens, 10);
+    // Persist in escalation order so the profile writes a stable ladder.
+    const ladder = reasoning
+      .map((effort) => ({
+        level: effort.level.trim().toLowerCase() as DshReasoningLevel,
+        wire: effort.wire.trim(),
+      }))
+      .sort(
+        (left, right) =>
+          REASONING_LEVELS.indexOf(left.level) - REASONING_LEVELS.indexOf(right.level),
+      );
     onSubmit({
       id: trimmed,
       contextWindow: clamp(
@@ -109,9 +143,7 @@ export function ModelEditorDialog(props: Props) {
       maxTokens:
         maxTokens.trim() && Number.isFinite(output) ? clamp(output, 1, 4_000_000) : null,
       input: image ? ["text", "image"] : ["text"],
-      reasoning: reasoning
-        .filter((effort) => effort.wire.trim().length > 0)
-        .map((effort) => ({ level: effort.level, wire: effort.wire.trim() })),
+      reasoning: ladder,
       enabled: model?.enabled ?? true,
     });
     onClose();
@@ -197,75 +229,65 @@ export function ModelEditorDialog(props: Props) {
       </button>
 
       {advanced ? (
-        <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
-          <div>
-            <div className="text-ui-xs text-slate-400">{t("agent.model.reasoningLevels")}</div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {reasoning.map((effort) => (
-                <span
-                  key={effort.level}
-                  className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-ui-xs text-slate-600"
-                >
-                  {effort.level}
-                </span>
-              ))}
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<Plus size={13} />}
-                disabled={available.length === 0}
-                onClick={addLevel}
-              >
-                {t("agent.model.addLevel")}
-              </Button>
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <div
+              className="text-ui-xs text-slate-400"
+              title={t("agent.model.reasoningHint")}
+            >
+              {t("agent.model.reasoningLevels")}
             </div>
-
-            {reasoning.length > 0 ? (
-              <>
-                <div className="mt-3 text-ui-xs text-slate-400">
-                  {t("agent.model.reasoningMapping")}
-                </div>
-                <div className="mt-1.5 space-y-1.5">
-                  {reasoning.map((effort, index) => (
-                    <div key={effort.level} className="flex items-center gap-2">
-                      <select
-                        value={effort.level}
-                        aria-label={t("agent.model.reasoningLevels")}
-                        onChange={(event) =>
-                          changeLevel(index, event.target.value as DshReasoningLevel)
-                        }
-                        className={`${selectClass} w-24 shrink-0 py-1 font-mono text-ui-sm`}
-                      >
-                        {REASONING_LEVELS.map((level) => (
-                          <option
-                            key={level}
-                            value={level}
-                            disabled={level !== effort.level && used.has(level)}
-                          >
-                            {level}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        value={effort.wire}
-                        placeholder={t("agent.model.wirePlaceholder")}
-                        onChange={(event) => changeWire(index, event.target.value)}
-                        className={`${inputClass} font-mono`}
-                      />
-                      <button
-                        type="button"
-                        title={t("agent.model.removeLevel")}
-                        onClick={() => removeLevel(index)}
-                        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Plus size={13} />}
+              disabled={reasoning.length >= OFFERED_LEVELS.length}
+              onClick={addLevel}
+            >
+              {t("agent.model.addLevel")}
+            </Button>
           </div>
+          <datalist id={levelListId}>
+            {OFFERED_LEVELS.map((level) => (
+              <option key={level} value={level} />
+            ))}
+          </datalist>
+          {reasoning.length > 0 ? (
+            <div className="mt-1.5 space-y-1.5">
+              {reasoning.map((effort) => (
+                <div key={effort.key} className="flex items-center gap-2">
+                  <input
+                    list={levelListId}
+                    value={effort.level}
+                    placeholder="low"
+                    aria-label={t("agent.model.reasoningLevels")}
+                    onChange={(event) => changeLevel(effort.key, event.target.value)}
+                    className={`${inputClass} w-24 shrink-0 py-1 font-mono`}
+                  />
+                  <span className="shrink-0 text-slate-300">→</span>
+                  <input
+                    value={effort.wire}
+                    placeholder={t("agent.model.wirePlaceholder")}
+                    aria-label={t("agent.model.reasoningMapping")}
+                    onChange={(event) => changeWire(effort.key, event.target.value)}
+                    className={`${inputClass} font-mono`}
+                  />
+                  <button
+                    type="button"
+                    title={t("agent.model.removeLevel")}
+                    onClick={() => removeLevel(effort.key)}
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1.5 text-ui-xs leading-5 text-slate-400">
+              {t("agent.model.reasoningHint")}
+            </p>
+          )}
         </div>
       ) : null}
 

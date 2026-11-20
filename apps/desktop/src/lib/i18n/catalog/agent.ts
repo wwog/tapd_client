@@ -588,9 +588,25 @@ export const agent = {
   ],
   "agent.model.reasoningLevels": ["推理等级", "Reasoning levels"],
   "agent.model.reasoningMapping": ["推理参数映射", "Reasoning parameter mapping"],
+  "agent.model.reasoningHint": [
+    "每行一个推理等级，直接输入或选择，右侧填它发到线上的参数值。「关闭」是隐式下限，无需填写；留空表示该模型无推理能力。",
+    "One reasoning level per row — type or pick a name, then the value sent upstream. Off is an implicit floor and needs no row; leave empty for a model with no reasoning.",
+  ],
+  "agent.model.reasoningLevelInvalid": [
+    "「{level}」不是有效的推理等级",
+    "\"{level}\" is not a valid reasoning level",
+  ],
+  "agent.model.reasoningLevelDuplicate": [
+    "推理等级「{level}」重复了",
+    "Reasoning level \"{level}\" is duplicated",
+  ],
   "agent.model.addLevel": ["添加等级", "Add level"],
   "agent.model.removeLevel": ["删除等级", "Remove level"],
   "agent.model.wirePlaceholder": ["发到线上的参数值", "Value sent upstream"],
+  "agent.model.wireRequired": [
+    "每个推理等级都要填写发到线上的参数值",
+    "Every reasoning level needs a value sent upstream",
+  ],
   "agent.config.nav.models": ["模型", "Models"],
   "agent.config.nav.rules": ["规则", "Rules"],
   "agent.config.nav.coworkers": ["同事", "Coworkers"],

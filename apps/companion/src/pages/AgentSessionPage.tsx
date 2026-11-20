@@ -1789,13 +1789,15 @@ export function AgentSessionPage(props: { id: string }) {
     }
   };
 
-  /** A new route starts at the level that model last used. */
+  /** A new route starts at the level that model last used. A model with no
+   *  reasoning ladder omits `reasoningEffort`: `off` would fail upstream. */
   const pickModel = (provider: CatalogProvider, model: CatalogModel) => {
     setModelSheetOpen(false);
+    const level = rememberedEffort(catalog, provider.id, model.id);
     void applySelection({
       provider: provider.id,
       model: model.id,
-      reasoningEffort: rememberedEffort(catalog, provider.id, model.id),
+      ...(level ? { reasoningEffort: level } : {}),
     });
   };
 
