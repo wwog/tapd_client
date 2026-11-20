@@ -22,6 +22,7 @@ mod discovery;
 mod export;
 pub mod feature;
 mod files;
+mod mentions;
 mod meter_store;
 mod mode_store;
 pub mod payload;

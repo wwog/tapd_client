@@ -21,6 +21,8 @@ import { agentLabel } from "./labels";
 import { duration } from "./format";
 import { buildFlows, isClosed, type AgentFlow, type FlowLive } from "./flows";
 import { Collapse } from "./Collapse";
+import { turnChanges } from "./changes";
+import { TurnChangesCard } from "./TurnChangesCard";
 import { FlowBlock } from "./FlowBlock";
 import { SubagentRow } from "./SubagentRow";
 import { AnswerBlock, MessageMeta, UserBubble } from "./MessageParts";
@@ -130,6 +132,9 @@ function TurnBlockImpl({
     () => block.entries.filter((entry) => entry.kind === "command"),
     [block.entries],
   );
+  // What this turn changed on disk: tool calls only, so an empty card means the
+  // turn touched no files (bash edits stay out of it, see `changes.ts`).
+  const changes = useMemo(() => turnChanges(block), [block]);
   const prompt = users[users.length - 1]?.text ?? "";
   const end = block.end;
   const failure = !running && (end?.reason === "error" || end?.reason === "blocked");
@@ -260,7 +265,7 @@ function TurnBlockImpl({
           className="flex scroll-mt-4 flex-col"
           data-agent-user={entry.seq}
         >
-          <UserBubble text={entry.text} locale={locale} />
+          <UserBubble text={entry.text} images={entry.images} locale={locale} />
           <MessageMeta at={entry.at} text={entry.text} align="right" locale={locale} />
         </div>
       ))}
@@ -338,6 +343,8 @@ function TurnBlockImpl({
           />
         </div>
       ) : null}
+
+      <TurnChangesCard changes={changes} locale={locale} />
 
       {/* Running: the clock is independent, at the bottom, never a fold. */}
       {running ? (

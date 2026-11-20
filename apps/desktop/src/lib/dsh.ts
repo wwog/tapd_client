@@ -142,8 +142,25 @@ export type DshTodo = {
   status: "pending" | "in_progress" | "completed";
 };
 
+/** One image attached to a human prompt (`user/message` image block). */
+export type DshUserImage = {
+  /** `sha256:<64 hex>`: the content address inside dsh's attachment store. */
+  attachmentId: string;
+  mediaType: string;
+  name?: string;
+  width?: number;
+  height?: number;
+};
+
 export type DshEntry =
-  | ({ kind: "user"; seq: number; at: string; text: string } & DshEntryPosition)
+  | ({
+      kind: "user";
+      seq: number;
+      at: string;
+      text: string;
+      /** Attached images, in message order; absent for a text-only prompt. */
+      images?: DshUserImage[];
+    } & DshEntryPosition)
   | ({
       kind: "assistant";
       seq: number;
@@ -542,8 +559,10 @@ export const dshApi = {
       "dsh_session_entries",
       { sessionId },
     ),
-  prompt: (sessionId: string, text: string) =>
-    invoke<{ receipt: unknown }>("dsh_prompt", { sessionId, text }),
+  /** Queues one message. `images` are encoded attachments; an image-only
+   *  prompt is legal, so `text` may be empty when images are present. */
+  prompt: (sessionId: string, text: string, images: DshPromptImage[] = []) =>
+    invoke<{ receipt: unknown }>("dsh_prompt", { sessionId, text, images }),
   /** The runtime's own command catalog; omit `sessionId` for a fresh chat. */
   commands: (sessionId?: string | null) =>
     invoke<{ commands: DshCommandDescriptor[] }>("dsh_commands", {
@@ -559,6 +578,19 @@ export const dshApi = {
   /** Newest distinct prompts across sessions, newest first (↑ history). */
   promptHistory: (limit = 50) =>
     invoke<{ prompts: string[] }>("dsh_prompt_history", { limit }),
+  /** Workspace files the composer's `@` panel may mention, ranked. */
+  mentions: (params: {
+    sessionId?: string | null;
+    root?: string | null;
+    query: string;
+    limit?: number;
+  }) =>
+    invoke<{ root: string; items: DshMentionItem[] }>("dsh_mentions", {
+      sessionId: params.sessionId ?? null,
+      root: params.root ?? null,
+      query: params.query,
+      limit: params.limit ?? 20,
+    }),
   selectModel: (sessionId: string, selection: ModelSelection) =>
     invoke<{ ok: true }>("dsh_select_model", {
       sessionId,
@@ -582,6 +614,16 @@ export const dshApi = {
   questionAnswer: (rpcId: number, answers: DshAnswer[] | null) =>
     invoke<void>("dsh_question_answer", { rpcId, answers }),
 };
+
+/**
+ * One `@` completion candidate. `kind` is open on purpose: the panel lists
+ * files today and leaves `plugin` / `conversation` for the providers that will
+ * fill those rows.
+ */
+export type DshMentionItem = { path: string; kind: "file" | "plugin" | "conversation" };
+
+/** One encoded image sent with a prompt (canonical base64, no `data:` prefix). */
+export type DshPromptImage = { data: string; mimeType: string; name?: string };
 
 /** One session's raw log, packed for `/export`. */
 export type DshSessionExport = {

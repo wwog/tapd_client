@@ -44,6 +44,10 @@ const LABELS = {
   "turn.blocked": ["本轮被策略拦截", "This turn was blocked"],
   "turn.aborted": ["已停止这一轮", "This turn was stopped"],
   "turn.retry": ["重试", "Retry"],
+  "turn.changes": ["修改 {count} 个文件", "{count} files changed"],
+  "turn.changesExpand": ["展开看改了哪些文件", "Show the changed files"],
+  "turn.changesCollapse": ["收起改动清单", "Hide the changed files"],
+  "turn.changesOpen": ["打开文件", "Open the file"],
 
   // Flow: the steps between two 说明, folded under one summary line.
   "flow.reads": ["已查阅 {count} 项", "{count} reads"],

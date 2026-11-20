@@ -105,6 +105,15 @@ function useAgentHost(
       renderUsage,
       loadImage: (path: string) => api.imageDataUrl(path),
       previewImage,
+      loadAttachmentImage: (image) =>
+        api.attachmentImage(image.attachmentId, image.mediaType),
+      // A `@path` mention opens the file the same way a Markdown link does:
+      // relative to this session's execution root, in a workbench tab.
+      openPath: sessionId
+        ? (path: string) => {
+            void openAgentPath(sessionId, path, { toast, openFile: onOpenFile });
+          }
+        : undefined,
       openTaskDetail: (target) => {
         if (target.kind === "bug") {
           onOpenBugById(target.workspaceId, target.bugId);

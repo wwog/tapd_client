@@ -1056,6 +1056,61 @@ pub fn image_data_url(path: String) -> Result<String, String> {
     ))
 }
 
+/// One image a prompt attached, resolved from dsh's attachment store.
+///
+/// dsh normalizes every stored image to an extensionless content-addressed
+/// object (`<DSH_HOME>/attachments/v1/objects/<sha[:2]>/<sha>`), so the mime
+/// type comes from the reference instead of the filename. Same size cap and
+/// data-URL shape as [`image_data_url`], which the chat bubble renders.
+#[tauri::command]
+pub fn dsh_attachment_image(
+    state: State<'_, SharedState>,
+    attachment_id: String,
+    media_type: String,
+) -> Result<String, String> {
+    use base64::Engine as _;
+
+    const MAX_PREVIEW_BYTES: u64 = 24 * 1024 * 1024;
+
+    let mime = match media_type.trim() {
+        "image/png" => "image/png",
+        "image/jpeg" => "image/jpeg",
+        "image/webp" => "image/webp",
+        "image/gif" => "image/gif",
+        _ => return Err(tr("agent.image.unsupported").to_string()),
+    };
+    // `sha256:<64 hex>` — the only reference shape the store mints.
+    let id = attachment_id.trim();
+    let digest = id
+        .strip_prefix("sha256:")
+        .filter(|digest| {
+            digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| tr("agent.image.missing").to_string())?;
+    let file = state
+        .paths
+        .data_dir
+        .join("dsh")
+        .join("home")
+        .join("attachments")
+        .join("v1")
+        .join("objects")
+        .join(&digest[..2])
+        .join(digest);
+    let meta = std::fs::metadata(&file).map_err(|_| tr("agent.image.missing").to_string())?;
+    if !meta.is_file() {
+        return Err(tr("agent.image.missing").to_string());
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(tr("agent.image.tooLarge").to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|_| tr("agent.image.missing").to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 /// Opens a local file with the saved "打开方式" choice for its kind.
 ///
 /// `open_path` hands everything to the system default; this variant honours the

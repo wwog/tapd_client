@@ -249,7 +249,21 @@ type DshEntryPosition = { turn: number; step: number };
  * both apps' rows unchanged.
  */
 export type DshEntry =
-  | ({ kind: "user"; seq: number; at: string; text: string } & DshEntryPosition)
+  | ({
+      kind: "user";
+      seq: number;
+      at: string;
+      text: string;
+      /** Attached images; the phone cannot read the desktop store, so it shows
+       *  their names instead of the pictures. */
+      images?: {
+        attachmentId: string;
+        mediaType: string;
+        name?: string;
+        width?: number;
+        height?: number;
+      }[];
+    } & DshEntryPosition)
   | ({
       kind: "assistant";
       seq: number;

@@ -3,10 +3,11 @@
  *
  * dsh desktop groups its slash menu into 添加 (things that shape the input) and
  * 指令 (things that act on the session). The engine registers six of them
- * (`goal`, `plan`, `feedback`, `compact`, `permission`, `export`); `file` and
- * `model` are client commands, and this app answers `plan`, `permission`,
- * `model`, `file` and `export` itself — its permission modes and export format
- * are its own, so those must not round-trip through the engine's presets.
+ * (`goal`, `plan`, `feedback`, `compact`, `permission`, `export`); `feedback` is
+ * hidden here (see `HIDDEN`), and `file` / `model` are client commands. This app
+ * answers `plan`, `permission`, `model`, `file` and `export` itself — its
+ * permission modes and export format are its own, so those must not round-trip
+ * through the engine's presets.
  *
  * Everything here is pure: the palette renders the result, the composer routes
  * a submitted line with `slashIntent`.
@@ -27,6 +28,14 @@ import type { DshCommandDescriptor } from "../lib/dsh";
 import type { MessageKey } from "../lib/i18n";
 
 export type SlashGroup = "add" | "command";
+
+/**
+ * Engine rows this product does not offer. `feedback` is registered upstream but
+ * the composer deliberately drops it: a conversation feedback remark needs an
+ * upstream sink this app does not have, so showing the row would only produce a
+ * dead end.
+ */
+export const HIDDEN_COMMANDS: ReadonlySet<string> = new Set(["feedback"]);
 
 /** What picking the row does. */
 export type SlashAction =
@@ -80,14 +89,6 @@ const CATALOG: readonly SlashCommand[] = [
     action: { kind: "native", action: "plan" },
   },
   {
-    name: "feedback",
-    group: "add",
-    icon: Send,
-    label: "agent.cmd.feedback",
-    hint: "agent.cmd.feedbackHint",
-    action: { kind: "insert", text: "/feedback " },
-  },
-  {
     name: "compact",
     group: "command",
     icon: Minimize2,
@@ -126,7 +127,7 @@ const COMMAND_LINE = /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/u;
 
 /**
  * Names this app executes itself when a line is submitted, so they work even
- * when the runtime is down. `goal` and `feedback` are not here: picking their
+ * when the runtime is down. `goal` is not here: picking its
  * row only inserts the command, and the submitted line belongs to the engine.
  */
 export const NATIVE_COMMANDS = new Set([
@@ -136,6 +137,20 @@ export const NATIVE_COMMANDS = new Set([
   "model",
   "export",
 ]);
+
+/**
+ * Engine names a submitted line may run: the catalog minus the hidden rows, so
+ * hiding `feedback` also keeps a typed `/feedback` from reaching the engine.
+ */
+export function runtimeCommandNames(
+  descriptors: readonly DshCommandDescriptor[],
+): Set<string> {
+  return new Set(
+    descriptors
+      .map((descriptor) => descriptor.name)
+      .filter((name) => Boolean(name) && !HIDDEN_COMMANDS.has(name)),
+  );
+}
 
 export type ParsedSlash = { name: string; args: string };
 
@@ -181,6 +196,7 @@ export function buildSlashItems(
   const engine: SlashCommand[] = [];
   for (const descriptor of descriptors) {
     if (!descriptor?.name || known.has(descriptor.name)) continue;
+    if (HIDDEN_COMMANDS.has(descriptor.name)) continue;
     known.add(descriptor.name);
     engine.push({
       name: descriptor.name,

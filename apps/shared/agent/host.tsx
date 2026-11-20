@@ -17,6 +17,13 @@ export type AgentHost = {
   loadImage?: (path: string) => Promise<string>;
   /** Opens an inline picture in the app's full-screen media preview. */
   previewImage?: (item: { src: string; label: string }) => void;
+  /** Reads one prompt attachment (dsh store) into a data URL. */
+  loadAttachmentImage?: (image: {
+    attachmentId: string;
+    mediaType: string;
+  }) => Promise<string>;
+  /** Reveals a `@path` mention in the host file system. */
+  openPath?: (path: string) => void;
   /** Opens the source record a task came from (bug detail, local item page). */
   openTaskDetail?: (
     target:

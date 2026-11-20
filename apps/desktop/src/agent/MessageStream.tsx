@@ -472,8 +472,17 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
             );
           })}
 
-          {pending.map((text, index) => (
-            <UserBubble key={`pending-${index}-${text.length}`} text={text} locale={locale} />
+          {pending.map((item, index) => (
+            <UserBubble
+              key={`pending-${index}-${item.text.length}-${item.images?.length ?? 0}`}
+              text={item.text}
+              images={item.images?.map((image) => ({
+                mediaType: image.mediaType,
+                ...(image.name ? { name: image.name } : {}),
+                src: image.src,
+              }))}
+              locale={locale}
+            />
           ))}
 
           {approvals.map((approval) => (

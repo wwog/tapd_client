@@ -1,15 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+} from "react";
 import clsx from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   FolderGit2,
   GitBranch,
+  ImagePlus,
   LayoutGrid,
   Loader2,
   MessageSquare,
   Send,
   Square,
   Users,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -19,9 +27,16 @@ import { pickExportDir } from "../lib/exportDir";
 import { api } from "../lib/api";
 import { dshApi } from "../lib/dsh";
 import { ScrollingName } from "../components/ScrollingName";
+import { openMediaPreview } from "../components/MediaPreviewHost";
 import { GoalChip } from "./GoalChip";
 import { AGENT_COLUMN } from "./layout";
 import { moveIndex } from "./listNav";
+import { MentionPalette } from "./MentionPalette";
+import {
+  activeMention,
+  applyMention,
+  type MentionRow,
+} from "./mentions";
 import { PromptHistoryPanel } from "./PromptHistoryPanel";
 import { runtimeBlock, runtimeLabel } from "./runtime";
 import { SessionModePicker } from "./SessionModePicker";
@@ -33,6 +48,7 @@ import {
   fileMention,
   permissionArg,
   slashIntent,
+  runtimeCommandNames,
   slashQuery,
   type SlashCommand,
 } from "./slashCommands";
@@ -57,6 +73,39 @@ const NEW_SESSION_KEY = "__new";
 
 /** Stable empty catalog, so `buildSlashItems` keeps its memo. */
 const EMPTY_COMMANDS: never[] = [];
+
+/** One image waiting to be sent: `data` is canonical base64 for the model. */
+type ComposerImage = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data: string;
+  /** The same bytes as a data URL, for the chip and the optimistic bubble. */
+  src: string;
+};
+
+const EMPTY_IMAGES: ComposerImage[] = [];
+
+/** dsh admits exactly these four image types (attachment store allowlist). */
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+const MAX_IMAGES = 8;
+
+/** The media type a picked path can be attached as, or undefined. */
+function imageTypeOf(path: string): string | undefined {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_TYPES[ext];
+}
+
+function fileNameOf(path: string): string {
+  return path.split(/[/\\]/u).pop() ?? path;
+}
 
 /**
  * One compact control in the composer's work bar. It reads as text until it is
@@ -116,6 +165,7 @@ export function Composer() {
   const state = agentStore.use();
   const sessionId = state.selectedId ?? NEW_SESSION_KEY;
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [images, setImages] = useState<Record<string, ComposerImage[]>>({});
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -124,10 +174,17 @@ export function Composer() {
   const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyIndex, setHistoryIndex] = useState(0);
+  /** `@` completion state: the caret's token drives the query. */
+  const [caret, setCaret] = useState(0);
+  const [mention, setMention] = useState<{ items: MentionRow[]; root: string } | null>(
+    null,
+  );
+  const [mentionIndex, setMentionIndex] = useState(0);
   /** Rising counters that open the composer's own model / mode sheets. */
   const [signals, setSignals] = useState({ model: 0, mode: 0 });
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const text = drafts[sessionId] ?? "";
+  const attachments = images[sessionId] ?? EMPTY_IMAGES;
   const setText = (value: string) =>
     setDrafts((current) => ({ ...current, [sessionId]: value }));
   /** Empties this chat's draft, including the slot a send may have outgrown
@@ -137,6 +194,14 @@ export function Composer() {
       ...current,
       [sessionId]: "",
       [NEW_SESSION_KEY]: "",
+    }));
+  const setAttachments = (next: ComposerImage[]) =>
+    setImages((current) => ({ ...current, [sessionId]: next }));
+  const clearImages = () =>
+    setImages((current) => ({
+      ...current,
+      [sessionId]: [],
+      [NEW_SESSION_KEY]: [],
     }));
   const block = runtimeBlock(state);
   const running = isSessionRunning(state, state.selectedId);
@@ -187,11 +252,15 @@ export function Composer() {
   const slashOpen =
     slashQuery(text) !== undefined && slashDismissed !== text;
 
+  /**
+   * `@` completion. The token under the caret is the query; a slash command
+   * draft never opens it, so the two panels cannot fight over the same keys.
+   */
+  const mentionToken = slashOpen ? undefined : activeMention(text, caret);
+  const mentionOpen = mentionToken !== undefined && mention !== null;
+
   /** Engine command names for routing a typed line without opening the menu. */
-  const runtimeNames = useMemo(
-    () => new Set(descriptors.map((descriptor) => descriptor.name)),
-    [descriptors],
-  );
+  const runtimeNames = useMemo(() => runtimeCommandNames(descriptors), [descriptors]);
 
   const historyItems = useMemo(() => {
     const session = state.selectedId;
@@ -201,7 +270,11 @@ export function Composer() {
       .map((entry) => entry.text);
     const pending = session ? state.pendingPrompts[session] : undefined;
     return filterHistory(
-      collectPromptHistory([pending, ownTexts, state.promptHistory ?? undefined]),
+      collectPromptHistory([
+        pending?.map((item) => item.text),
+        ownTexts,
+        state.promptHistory ?? undefined,
+      ]),
       historyOpen ? text : "",
     );
   }, [
@@ -229,6 +302,40 @@ export function Composer() {
     if (historyOpen) void agentActions.loadPromptHistory(true);
   }, [historyOpen]);
 
+  // One search per settled query; a keystroke inside the debounce window
+  // cancels the previous request so results can never arrive out of order.
+  const mentionQuery = mentionToken?.query;
+  useEffect(() => {
+    if (mentionQuery === undefined) {
+      setMention(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void dshApi
+        .mentions({
+          sessionId: state.selectedId,
+          root: mentionBase(),
+          query: mentionQuery,
+        })
+        .then((reply) => {
+          if (!live) return;
+          setMention({ items: reply.items, root: reply.root });
+          setMentionIndex(0);
+        })
+        .catch(() => {
+          if (live) setMention(null);
+        });
+    }, 120);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+    // `mentionBase` reads the selected task, which `state.selectedId` already
+    // keys; the query is the real input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionQuery, state.selectedId]);
+
   const focusEditor = () => editorRef.current?.focus();
 
   /** Puts the caret after the last character once the new value is committed. */
@@ -249,6 +356,21 @@ export function Composer() {
     caretToEnd();
   };
 
+  /** Replaces the active `@token` with the picked path and keeps the caret. */
+  const pickMention = (row: MentionRow) => {
+    if (!mentionToken) return;
+    const next = applyMention(text, mentionToken, row.path);
+    setText(next.text);
+    setCaret(next.caret);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      editor.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
   /** The directory a `@` reference should be relative to, when there is one. */
   const mentionBase = (): string => {
     if (task?.worktreePath) return task.worktreePath;
@@ -256,37 +378,108 @@ export function Composer() {
     return repo?.repoPath ?? "";
   };
 
-  /** Opens the system picker and replaces the draft with `@path` references. */
+  /**
+   * Paths become `@path` references; images become real attachments so the
+   * model sees them (`@path` only lets it read the file, which cannot show a
+   * picture). A failed read falls back to the reference.
+   */
   const pickFiles = async (args: string) => {
-    if (args.trim()) {
-      applyInsert(
-        args
-          .split(/\s+/u)
-          .filter(Boolean)
-          .map(fileMention)
-          .join(" "),
-        "",
-      );
-      focusEditor();
-      return;
+    const typed = args
+      .split(/\s+/u)
+      .filter(Boolean)
+      .map((path) => path.replace(/^"(.*)"$/u, "$1"));
+    let paths = typed;
+    if (paths.length === 0) {
+      const selected = await openDialog({
+        multiple: true,
+        title: t("agent.cmd.filePick"),
+      });
+      paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     }
+    if (paths.length === 0) return;
+    const base = mentionBase();
+    const mentions: string[] = [];
+    const next = [...attachments];
+    for (const path of paths) {
+      const mediaType = imageTypeOf(path);
+      if (mediaType && next.length < MAX_IMAGES) {
+        try {
+          const dataUrl = await api.imageDataUrl(path);
+          const comma = dataUrl.indexOf(",");
+          if (comma > 0) {
+            next.push({
+              id: `${Date.now()}-${next.length}`,
+              name: fileNameOf(path),
+              mediaType,
+              data: dataUrl.slice(comma + 1),
+              src: dataUrl,
+            });
+            continue;
+          }
+        } catch {
+          // Unreadable or oversized: fall back to a readable reference.
+        }
+      }
+      mentions.push(base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : path);
+    }
+    if (next.length !== attachments.length) setAttachments(next);
+    if (mentions.length > 0) {
+      applyInsert(mentions.map(fileMention).join(" "), "");
+    } else {
+      focusEditor();
+    }
+  };
+
+  /** Adds bytes as an attachment (paste, or a file chosen through the picker). */
+  const addAttachment = (src: string, mediaType: string, name: string) => {
+    const comma = src.indexOf(",");
+    if (comma < 0) return;
+    setAttachments([
+      ...attachments.slice(0, MAX_IMAGES - 1),
+      {
+        id: `${Date.now()}-${attachments.length}`,
+        name,
+        mediaType,
+        data: src.slice(comma + 1),
+        src,
+      },
+    ]);
+  };
+
+  /** Opens the image file picker used by the paperclip button. */
+  const pickImages = async () => {
     const selected = await openDialog({
       multiple: true,
       title: t("agent.cmd.filePick"),
+      filters: [{ name: "images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    if (paths.length === 0) return;
-    const base = mentionBase();
-    applyInsert(
-      paths
-        .map((path) =>
-          base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : path,
-        )
-        .map(fileMention)
-        .join(" "),
-      "",
+    for (const path of paths) {
+      const mediaType = imageTypeOf(path);
+      if (!mediaType) continue;
+      try {
+        addAttachment(await api.imageDataUrl(path), mediaType, fileNameOf(path));
+      } catch (error) {
+        showToast("error", t("agent.image.failed", { error: String(error) }));
+      }
+    }
+  };
+
+  /** Clipboard pictures paste straight into the draft as attachments. */
+  const pasteImages = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+      Object.values(IMAGE_TYPES).includes(file.type),
     );
-    focusEditor();
+    if (files.length === 0) return;
+    event.preventDefault();
+    for (const [index, file] of files.entries()) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = typeof reader.result === "string" ? reader.result : "";
+        if (src) addAttachment(src, file.type, file.name || `pasted-${index + 1}.png`);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const exportLog = async () => {
@@ -380,7 +573,8 @@ export function Composer() {
   };
 
   const send = async () => {
-    if (block !== null || sending || !text.trim()) return;
+    const hasImages = attachments.length > 0;
+    if (block !== null || sending || (!text.trim() && !hasImages)) return;
     // From the task pane (or the review section) a message means "keep
     // editing": show the transcript first, so the reply lands where the reader
     // can follow it.
@@ -388,8 +582,23 @@ export function Composer() {
       agentActions.setTaskView(task.id, "chat");
     }
     setSending(true);
-    const accepted = await agentActions.sendPrompt(text);
-    if (accepted) clearDraft();
+    const accepted = await agentActions.sendPrompt(
+      text,
+      attachments.map((image) => ({
+        data: image.data,
+        mimeType: image.mediaType,
+        name: image.name,
+      })),
+      attachments.map((image) => ({
+        name: image.name,
+        mediaType: image.mediaType,
+        src: image.src,
+      })),
+    );
+    if (accepted) {
+      clearDraft();
+      clearImages();
+    }
     setSending(false);
   };
 
@@ -400,9 +609,19 @@ export function Composer() {
    */
   const submit = async () => {
     const draft = text.trim();
-    if (!draft) return;
+    if (!draft) {
+      // An image-only prompt has no command line to route: straight to send.
+      if (attachments.length > 0) await send();
+      return;
+    }
     const intent = slashIntent(draft, runtimeNames);
     setSlashDismissed(null);
+    if (intent.kind !== "prompt" && attachments.length > 0) {
+      // Slash commands own the turn/state they touch; an attachment has no
+      // meaning for them, so say so instead of silently dropping the pictures.
+      showToast("error", t("agent.cmd.noAttachments"));
+      return;
+    }
     if (intent.kind === "native") {
       // The command line is not content: clear it before anything runs, so a
       // cancelled picker leaves an empty draft instead of `/file`.
@@ -468,7 +687,9 @@ export function Composer() {
 
   const lockedHint = t("agent.chat.lockedHint");
   const primaryBusy = running ? stopping : sending;
-  const primaryDisabled = running ? stopping : block !== null || sending || !text.trim();
+  const primaryDisabled = running
+    ? stopping
+    : block !== null || sending || (!text.trim() && attachments.length === 0);
   const primaryTitle = running
     ? t("agent.task.stop")
     : block
@@ -487,6 +708,14 @@ export function Composer() {
               index={slashIndex}
               onPick={(command) => void pickSlash(command)}
               onHover={setSlashIndex}
+            />
+          ) : mentionOpen ? (
+            <MentionPalette
+              items={mention.items}
+              index={mentionIndex}
+              root={mention.root}
+              onPick={pickMention}
+              onHover={setMentionIndex}
             />
           ) : historyOpen ? (
             <PromptHistoryPanel
@@ -558,6 +787,53 @@ export function Composer() {
               </span>
             </div>
           ) : null}
+          {attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2 border-b border-border px-3 py-2">
+              {attachments.map((image) => (
+                <span
+                  key={image.id}
+                  data-component="ComposerImage"
+                  className="group/thumb relative"
+                >
+                  <button
+                    type="button"
+                    title={`${image.name} · ${t("agent.composer.preview")}`}
+                    onClick={() =>
+                      openMediaPreview(
+                        [
+                          {
+                            url: image.src,
+                            src: image.src,
+                            kind: "image",
+                            label: image.name,
+                          },
+                        ],
+                        0,
+                      )
+                    }
+                    className="block cursor-zoom-in overflow-hidden rounded-lg border border-border"
+                  >
+                    <img
+                      src={image.src}
+                      alt={image.name}
+                      className="h-14 w-14 object-cover"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t("agent.composer.removeImage")}
+                    title={t("agent.composer.removeImage")}
+                    onClick={() =>
+                      setAttachments(attachments.filter((item) => item.id !== image.id))
+                    }
+                    className="absolute -right-1.5 -top-1.5 grid size-4 place-items-center rounded-full border border-border bg-surface text-slate-500 transition hover:text-rose-600"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           <textarea
             ref={editorRef}
             value={text}
@@ -568,7 +844,14 @@ export function Composer() {
                 ? t("agent.review.continuePlaceholder")
                 : t("agent.composer.placeholder")
             }
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => {
+              setText(event.target.value);
+              setCaret(event.target.selectionStart ?? event.target.value.length);
+            }}
+            onSelect={(event) =>
+              setCaret(event.currentTarget.selectionStart ?? text.length)
+            }
+            onPaste={pasteImages}
             // Leaving the field drops both lists; a row click keeps the focus
             // (mousedown is prevented), so this only fires on a real exit.
             onBlur={() => {
@@ -603,6 +886,30 @@ export function Composer() {
                   }
                   // No match: Enter still sends, which is how an unknown
                   // `/line` reaches the model.
+                }
+              }
+
+              // The `@` panel owns the same keys while it lists candidates.
+              if (mentionOpen) {
+                if (key === "ArrowDown" || key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionIndex((index) =>
+                    moveIndex(index, key === "ArrowDown" ? 1 : -1, mention.items.length),
+                  );
+                  return;
+                }
+                if (key === "Escape") {
+                  event.preventDefault();
+                  setMention(null);
+                  return;
+                }
+                if (key === "Enter" || key === "Tab") {
+                  const row = mention.items[mentionIndex];
+                  if (row) {
+                    event.preventDefault();
+                    pickMention(row);
+                    return;
+                  }
                 }
               }
 
@@ -652,6 +959,15 @@ export function Composer() {
             {/* Only operable controls live inside the field: the session's
                 figures are read-only status, so they sit under the card. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                title={t("agent.composer.attach")}
+                aria-label={t("agent.composer.attach")}
+                onClick={() => void pickImages()}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+              >
+                <ImagePlus size={13} />
+              </button>
               <SessionModelPicker openSignal={signals.model} />
               <button
                 type="button"

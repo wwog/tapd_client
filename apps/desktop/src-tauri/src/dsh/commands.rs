@@ -7,7 +7,7 @@
 use dsh_host::protocol::AnswerItem;
 use dsh_host::transcript::ModelSelection;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use super::feature;
@@ -109,14 +109,17 @@ pub async fn dsh_file_target(
     super::files::resolve(&app, &session_id, &path)
 }
 
-/// Queues one user message on a session.
+/// Queues one user message on a session. `images` are encoded attachments
+/// (canonical base64 + media type); an image-only prompt is legal, so `text`
+/// may be empty when images are present.
 #[tauri::command]
 pub async fn dsh_prompt(
     app: AppHandle,
     session_id: String,
     text: String,
+    images: Option<Vec<feature::PromptImage>>,
 ) -> Result<Value, String> {
-    feature::prompt(&app, &session_id, &text).await
+    feature::prompt(&app, &session_id, &text, images.unwrap_or_default()).await
 }
 
 /// The engine's human slash-command catalog (globals plus the session's own
@@ -144,6 +147,43 @@ pub async fn dsh_session_export(
     dir: String,
 ) -> Result<Value, String> {
     feature::export_session(&app, &session_id, &dir).await
+}
+
+/// Workspace files the composer's `@` panel may mention. `root` is the
+/// session's execution root; without a session the composer passes the project
+/// repository, so a brand-new chat completes against the same tree.
+#[tauri::command]
+pub async fn dsh_mentions(
+    app: AppHandle,
+    session_id: Option<String>,
+    root: Option<String>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    let resolved = match session_id.as_deref() {
+        Some(session) if !session.is_empty() => {
+            match super::tasks::session_dir(&app, session).await {
+                Ok(value) => value
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                Err(_) => root.unwrap_or_default(),
+            }
+        }
+        _ => root.unwrap_or_default(),
+    };
+    if resolved.trim().is_empty() {
+        return Ok(json!({ "root": "", "items": [] }));
+    }
+    let limit = limit.unwrap_or(20);
+    let search_root = resolved.clone();
+    let items = tauri::async_runtime::spawn_blocking(move || {
+        super::mentions::list(&search_root, &query, limit)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(json!({ "root": resolved, "items": items }))
 }
 
 /// Newest distinct composer prompts across sessions (the ↑ history panel).

@@ -430,7 +430,8 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   `session.event` 正常流到 transcript。名字不在目录里时 `started:false` 并带回引擎侧原因。
 
 前端对 `/` 的路由顺序是：本应用自己实现的五条（`file` / `plan` / `permission` / `model` /
-`export`）→ 目录里的运行时指令（`goal` / `compact` / `feedback` 以及将来新增的任何名字）→
+`export`）→ 目录里的运行时指令（`goal` / `compact` 以及将来新增的任何名字；`feedback` 已被
+本应用隐藏，见 §9.6）→
 其余（含拼错的 `/foo`）当普通消息发给模型，与 dsh 的退路一致。`/plan` 在本应用是**切换**
 （`/plan off` 强制退出，`/plan <文本>` 进入并把文本作为提示），`/permission` 不带参数时打开
 同一张模式面板而不是直接改模式。
@@ -457,7 +458,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 
 ```jsonc
 { "kind": "user", "seq": 3, "at": "2026-11-16T12:00:00.000Z",
-  "turn": 1, "step": 1, "text": "hello" }
+  "turn": 1, "step": 1, "text": "hello",
+  // 可省略；prompt 带的图片，按消息顺序。字节在 dsh 的附件 store 里
+  "images": [{ "attachmentId": "sha256:…", "mediaType": "image/png",
+               "name": "shot.png", "width": 640, "height": 480 }] }
 
 { "kind": "assistant", "seq": 5, "at": "…", "turn": 1, "step": 1,
   "text": "…", "reasoning": "…",
@@ -563,7 +567,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
   "running" }`（按 `commandId` 记录映射）；`command/done` 到达时原地合并出
   `status: "ok" | "error"` 与引擎自己的 `text`，并以 done 的 seq 重发该行。两条事件都是
   **log-only**：没有 turn 包着它们，行也不计 `messageCount`，更不是用户气泡
-  （`recordInput: false` 的命令如 `/feedback` 不带 `args`）。`done` 先于 `run` 出现（日志
+  （上游 `recordInput: false` 的命令不带 `args`）。`done` 先于 `run` 出现（日志
   从中途开始）时丢弃——没有名字的行只画得出一个 `/`。
 - `goal/change` 只更新会话的 `goal`（目标 id、objective、phase、轮次），**不产生行**；
   `clear` 把它清回 `None`。
@@ -575,7 +579,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 - `context` / `system` / `request` / `retry` / `attempt` / `compaction` / `subcall` / `seed`
   都是**轨迹专用行**：对话区（`groupTurns`）直接跳过，只有 `user` / `assistant` / `tool` /
   `turn` / `notice` / `command` 进对话。
-- 目前只渲染 `text` / `reasoning` 块；image / file 块不进 `text`（附件仍在 TAPD 侧）。
+- 文本只拼接 `text` 块；`image` 块另存为 `user` 行的 `images`（见 8.3 的 `user` 形状），
+  UI 用 `dsh_attachment_image` 按 `attachmentId` 读附件 store 里的原图渲染缩略图，
+  点击进全屏预览。只有图像的 prompt 也是合法输入（`text` 为空，标题退回图片文件名）。
+  `file` 块仍需上传凭据，本应用不用它——文件引用一律走 `@path` 文本。
 - 会话行（`DshSession`）带 `usage` 汇总：`turns` / `steps`（`turn/start`、`step/start` 计数）、
   累计四类 token、最近一次请求的 `provider` / `model` / `contextWindow`（来自 `request/context`）、
   生成速度 `tokensPerSecond`（**整段会话**的 `decodeTokens ÷ decodeMs`，来自 `sessionStats` 投影；
@@ -687,9 +694,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_chat_worktree` | `{ sessionId, enabled }` | `{ task }`；只对 `kind: chat` 生效，建 / 删该会话的 worktree |
 | `dsh_session_dir` | `{ sessionId }` | `{ path, exists }`；会话实际 cwd（worktree / 项目仓库 / chat scratch） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
-| `dsh_prompt` | `{ sessionId, text }` | `{ sessionId, receipt }`；必要时先启动运行时 |
+| `dsh_prompt` | `{ sessionId, text, images? }` | `{ sessionId, receipt }`；必要时先启动运行时。`images` 是 `{ data, mimeType, name? }`（base64，无 `data:` 前缀），只支持 png/jpeg/webp/gif；可以只发图片不发文本 |
 | `dsh_commands` | `{ sessionId? }` | `{ commands: [{ name, description, inputHint? }] }`；引擎的指令目录（省略 `sessionId` = 全局层） |
 | `dsh_command_run` | `{ sessionId, line }` | `{ sessionId, name }`；只等准入，结果按 `command` 行回来；未知名字报错而不是退回 prompt |
+| `dsh_attachment_image` | `{ attachmentId, mediaType }` | `data:` URL（`<data_dir>/dsh/home/attachments/v1/objects/<sha[:2]>/<sha>`，同 24 MiB 上限） |
 | `dsh_session_export` | `{ sessionId, dir }` | `{ sessionId, path, bytes, zipped }`；把原始会话日志打成 ZIP（没有 `ditto` 时保留目录） |
 | `dsh_prompt_history` | `{ limit? }` | `{ prompts: string[] }`；跨会话最近的输入（`dsh_prompts` 表，去重、倒序） |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
@@ -746,7 +754,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 
 - 归一化视图只在内存中；App 重启后需要等新快照/事件重建（dsh 自己仍持久化会话）。
 - 没有历史分页：快照是全量 `snapshotEvents()`，大仓库会话首次连接会一次推完。
-- image / file 内容块未实现。子 agent 会话树已实现：`crates/dsh-host/src/transcript.rs` 按
+- file 内容块未实现（图片已实现，见 §8.3 的 `user.images`）。子 agent 会话树已实现：`crates/dsh-host/src/transcript.rs` 按
   `origin: "subagent"` / `parentSession` 记录子会话，把 `subagent` / `subagent_fork` 调用与
   `subagent/catalog`（`childId` 直接绑到调用行）、`subagent-settled` 通知归一化；
   `apps/shared/agent/subagents.ts` 用 `senderSessionId` 精确配对，组装成可折叠的子会话行，
@@ -939,18 +947,32 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 输入框的两个键盘面板都只是前端状态，不新增后端契约（数据来自 §8.2 的 `commands` /
 `command-run` 与 §8.3 的 `command` / `goal` 行）：
 
-- **`/` 面板**：草稿匹配 `^/[^\s]*$` 时浮在卡片上方，分「添加」（`file` `goal` `plan`
-  `feedback`）与「指令」（`compact` `permission` `model` `export`）两组，行 = 中文本地化名 +
-  英文命令名 + 描述（引擎行再补 `inputHint`）。`↑`/`↓` 选择、`Enter`/`Tab` 执行或插入、
+- **`/` 面板**：草稿匹配 `^/[^\s]*$` 时浮在卡片上方，分「添加」（`file` `goal` `plan`）与
+  「指令」（`compact` `permission` `model` `export`）两组——`feedback` 由引擎注册但这里隐藏
+  （`HIDDEN_COMMANDS`）。行 = 中文本地化名 + 英文命令名 + 描述（引擎行再补 `inputHint`）。`↑`/`↓` 选择、`Enter`/`Tab` 执行或插入、
   `Esc` 收起（同一个草稿不再自动弹回，继续输入才重新出现）。目录按会话懒加载，失败时只留
-  本应用的八条，所以运行中/未启动都不会出现空面板。
-- **执行语义**：有输入的（`goal` `feedback`）只把 `/name ` 写进草稿；无输入的立即执行；
+  本应用的七条，所以运行中/未启动都不会出现空面板。
+- **执行语义**：有输入的（`goal`）只把 `/name ` 写进草稿；无输入的立即执行；
   `model` / `permission` 打开输入框下方同一个选择面板（`openSignal` 计数触发，不复制第二份
-  模型/模式列表）；`file` 打开系统选择器，把路径按引擎的引用文法插入为 `@path`（会话
-  worktree/仓库根下的用相对路径，含空格用 `@"…"`）；`export` 选目录后用 `ditto` 打包原始
+  模型/模式列表）；`file` 打开系统选择器：图片变成真正的附件（见下），其余路径按引擎的引用
+  文法插入为 `@path`（会话 worktree/仓库根下的用相对路径，含空格用 `@"…"`）；`export`
+  选目录后用 `ditto` 打包原始
   会话日志并在 Finder 中选中。
 - **`↑` 面板**：草稿为空时按 `↑` 打开，行是本会话已提交的 user 行 + 未回显的 pending +
   `dsh_prompts` 表里的跨会话最近 50 条（按文本去重、倒序）。`↑`/`↓` 选择、`Enter`/点击填入
   草稿（只填不发）、`Esc` 关；打开后继续打字就是过滤。
 - 对话区把 `command` 行渲染成一条轻量状态行（`/名字 参数` + 引擎结果文本，失败为红色），
   不折进「已工作」——命令不属于某一轮的工作；`goal` 显示在输入框下方的状态行里。
+- **`@` 面板**：`@` 出现在词边界时弹出，按会话执行根（worktree → 仓库 → chat scratch）
+  搜索文件并插入 `@path`（含空格自动加引号）。搜索在 Rust（`dsh/mentions.rs`，`dsh_mentions`
+  命令）：git 仓库走 `git ls-files --cached --others --exclude-standard`，否则按 dsh 的排除表
+  有界遍历；每个根缓存 10 秒，排序沿用 dsh 的名字/路径/子序列打分。行的 `kind` 是开放枚举，
+  `plugin` / `conversation` 已预留（面板与协议无需再改），目前只有 `file` 有 provider。
+- **变更卡片**：每轮结束在对话里给一张默认收起的卡片（`修改 N 个文件 +X −Y`），展开逐文件列出
+  路径与增删行，点击用工作台打开。数据由前端从本轮已提交的 `write` / `edit` /
+  `apply_patch` / `str_replace_editor` 调用投影（`apps/shared/agent/changes.ts`），不依赖运行时
+  服务；`bash` 里的改动不计入（无法可靠归因）。
+- **图片与 `@` 引用**：输入框可粘贴图片，或由 `/file`、回形针按钮挑选（不支持拖拽）；它们作为附件
+  （base64 → `session/query` 的 image 块）随消息发送，回显后用户气泡里显示缩略图、点击进全屏
+  预览（`dsh_attachment_image` 从附件 store 读回原图）。`@path` 引用在气泡里渲染成文件卡片，
+  点击按会话根解析后用工作台打开。带图片时不能提交 `/` 指令（提示「指令不能带图片」）。

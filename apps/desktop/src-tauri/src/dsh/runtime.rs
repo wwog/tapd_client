@@ -889,6 +889,25 @@ impl RuntimeState {
         session_id: &str,
         text: &str,
     ) -> Result<Value, String> {
+        self.query_blocks(
+            app,
+            session_id,
+            vec![dsh_host::protocol::ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        )
+        .await
+    }
+
+    /// The same call with explicit content blocks: images plus the text that
+    /// accompanies them. An image-only prompt is legal upstream, so a blank
+    /// text block is dropped instead of sent.
+    pub async fn query_blocks(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        content_blocks: Vec<dsh_host::protocol::ContentBlock>,
+    ) -> Result<Value, String> {
         // The last host-controlled point before a turn: every prompt path
         // (chat, task, team, dev) goes through here.
         self.apply_session_mode(app, session_id).await;
@@ -896,9 +915,7 @@ impl RuntimeState {
         self.apply_session_selection(app, session_id);
         let params = SessionQueryParams {
             session_id: session_id.to_string(),
-            content_blocks: vec![dsh_host::protocol::ContentBlock::Text {
-                text: text.to_string(),
-            }],
+            content_blocks,
         };
         self.call(
             rpc::METHOD_SESSION_QUERY,

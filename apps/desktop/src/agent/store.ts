@@ -25,6 +25,7 @@ import {
   type DshFocusSessionEvent,
   type DshPermissionMode,
   type DshProject,
+  type DshPromptImage,
   type DshQuestionEvent,
   type DshSessionEvent,
   type DshSessionRow,
@@ -49,6 +50,16 @@ import {
 import { isWorkflowTask } from "./workflow";
 
 export type AgentTeamView = "chat" | "board";
+
+/**
+ * One prompt in flight: what the composer sent before the runtime echoed it.
+ * `images` keeps the optimistic thumbnails (`src` is a data URL) until the
+ * committed row replaces this entry.
+ */
+export type PendingPrompt = {
+  text: string;
+  images?: { name?: string; mediaType: string; src: string }[];
+};
 
 /** The session's panes: the task's own record, the transcript, the trajectory
  *  ledger. A workflow task opens on its task record; a free chat has no task
@@ -128,7 +139,7 @@ export type AgentState = {
    *  dropped instead of starting a second live run. */
   committedAttempts: Record<string, string | undefined>;
   /** Prompts accepted by the runtime but not yet echoed as a user entry. */
-  pendingPrompts: Record<string, string[] | undefined>;
+  pendingPrompts: Record<string, PendingPrompt[] | undefined>;
   /** Model picked before a session exists; applied to the next allocation. */
   draftSelection: ModelSelection | null;
   /** Team collaboration for the next free chat. Chats default off even when
@@ -624,7 +635,17 @@ function applyEntry(payload: DshEntryEvent): void {
       }
     } else if (entry.kind === "user") {
       const queue = pendingPrompts[sessionId];
-      const index = queue ? queue.indexOf(entry.text) : -1;
+      // Text alone is not unique once images exist: an image-only prompt has
+      // no text at all, so match the whole shape first and fall back to text.
+      const count = entry.images?.length ?? 0;
+      let index = queue
+        ? queue.findIndex(
+            (item) => item.text === entry.text && (item.images?.length ?? 0) === count,
+          )
+        : -1;
+      if (queue && index < 0 && entry.text) {
+        index = queue.findIndex((item) => item.text === entry.text);
+      }
       if (queue && index >= 0) {
         const next = queue.slice();
         next.splice(index, 1);
@@ -1470,7 +1491,7 @@ export const agentActions = {
       committedAttempts: { ...state.committedAttempts, [sessionId]: undefined },
       pendingPrompts: {
         ...state.pendingPrompts,
-        [sessionId]: [...(state.pendingPrompts[sessionId] ?? []), text],
+        [sessionId]: [...(state.pendingPrompts[sessionId] ?? []), { text }],
       },
       tasks:
         state.tasks?.map((task) =>
@@ -1500,7 +1521,7 @@ export const agentActions = {
     } catch (error) {
       update((state) => {
         const queue = state.pendingPrompts[sessionId] ?? [];
-        const index = queue.indexOf(text);
+        const index = queue.findIndex((item) => item.text === text);
         const pendingPrompts = { ...state.pendingPrompts };
         if (index >= 0) pendingPrompts[sessionId] = queue.filter((_, i) => i !== index);
         return { ...state, pendingPrompts };
@@ -1719,9 +1740,14 @@ export const agentActions = {
 
   /** Returns false when the runtime rejected the prompt, so the composer keeps
    *  the text for a retry. */
-  sendPrompt: async (text: string): Promise<boolean> => {
+  sendPrompt: async (
+    text: string,
+    images: DshPromptImage[] = [],
+    pendingImages: PendingPrompt["images"] = [],
+  ): Promise<boolean> => {
     const trimmed = text.trim();
-    if (!trimmed) return false;
+    // An image-only prompt is legal: dsh admits content without text.
+    if (!trimmed && images.length === 0) return false;
     const existing = agentStore.get().selectedId;
     let sessionId: string | null = existing;
     try {
@@ -1738,7 +1764,10 @@ export const agentActions = {
         committedAttempts: { ...state.committedAttempts, [targetId]: undefined },
         pendingPrompts: {
           ...state.pendingPrompts,
-          [targetId]: [...(state.pendingPrompts[targetId] ?? []), trimmed],
+          [targetId]: [
+            ...(state.pendingPrompts[targetId] ?? []),
+            { text: trimmed, images: pendingImages },
+          ],
         },
         lastError: null,
       }));
@@ -1754,7 +1783,7 @@ export const agentActions = {
           void error;
         }
       }
-      await dshApi.prompt(targetId, trimmed);
+      await dshApi.prompt(targetId, trimmed, images);
       if (draftTeam !== undefined) {
         update((state) => {
           const drafts = { ...state.chatTeamDrafts };
@@ -1768,7 +1797,9 @@ export const agentActions = {
         const targetId = sessionId;
         update((state) => {
           const queue = state.pendingPrompts[targetId] ?? [];
-          const index = queue.indexOf(trimmed);
+          const index = queue.findIndex(
+            (item) => item.text === trimmed && (item.images?.length ?? 0) === images.length,
+          );
           if (index === -1) return state;
           const next = queue.slice();
           next.splice(index, 1);

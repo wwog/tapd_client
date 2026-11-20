@@ -207,6 +207,23 @@ pub struct DshTodo {
     pub status: String,
 }
 
+/// One image attached to a human prompt (`user/message` image block). Mirrors
+/// dsh's durable attachment reference; `name` is whatever the upload declared.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserImage {
+    /// `sha256:<64 hex>` — the content address inside the attachment store.
+    pub attachment_id: String,
+    /// `image/png` | `image/jpeg` | `image/webp` | `image/gif`.
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+}
+
 /// The session's long-running goal (`goal/change` folds). A goal survives many
 /// turns, so it lives on the session row instead of the transcript; `phase` is
 /// dsh's own string (`active` / `paused` / `blocked` / `complete`).
@@ -323,6 +340,11 @@ pub enum DshEntry {
         #[serde(default)]
         step: u64,
         text: String,
+        /// Images attached to this prompt, in message order. The bytes live in
+        /// dsh's attachment store; the UI resolves them by `attachmentId`
+        /// (`dsh_attachment_image`), so a row stays small and replayable.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<UserImage>,
     },
     Assistant {
         seq: u64,
@@ -1168,9 +1190,17 @@ impl SessionRecord {
             return Some(self.commit(entry, seq));
         }
         let text = join_text_blocks(event.pointer("/data/content"));
+        let images = user_images(event.pointer("/data/content"));
         if !self.first_user_seen {
             self.first_user_seen = true;
-            self.meta.title = title_from(&text);
+            // An image-only prompt has no text to title: the picture's own
+            // name is the only honest label (empty when the upload was unnamed,
+            // which the list shows as its "new conversation" state).
+            self.meta.title = if text.trim().is_empty() {
+                title_from(images.first().and_then(|image| image.name.as_deref()).unwrap_or(""))
+            } else {
+                title_from(&text)
+            };
         }
         self.meta.message_count += 1;
         let entry = DshEntry::User {
@@ -1179,6 +1209,7 @@ impl SessionRecord {
             turn: self.turn,
             step: self.step,
             text,
+            images,
         };
         self.entries.push(entry.clone());
         self.last_update.insert(seq, seq);
@@ -2092,6 +2123,36 @@ fn read_usage(event: &Value) -> Option<EntryUsage> {
 }
 
 /// First line of the first user message, bounded to [`TITLE_MAX_CHARS`] chars.
+/// Images of one message, in order. Only stored (`attachment`) refs count:
+/// an encoded image exists before admission, not in a committed log.
+fn user_images(content: Option<&Value>) -> Vec<UserImage> {
+    let Some(blocks) = content.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+        .filter_map(|block| {
+            let attachment = block.get("attachment")?;
+            let attachment_id = attachment.get("attachmentId").and_then(Value::as_str)?;
+            let media_type = attachment
+                .get("mediaType")
+                .or_else(|| attachment.get("mimeType"))
+                .and_then(Value::as_str)?;
+            Some(UserImage {
+                attachment_id: attachment_id.to_string(),
+                media_type: media_type.to_string(),
+                name: attachment
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                width: attachment.get("width").and_then(Value::as_u64),
+                height: attachment.get("height").and_then(Value::as_u64),
+            })
+        })
+        .collect()
+}
+
 fn title_from(text: &str) -> String {
     let first_line = text.lines().next().unwrap_or("").trim();
     let mut title: String = first_line.chars().take(TITLE_MAX_CHARS).collect();
@@ -2149,6 +2210,7 @@ mod tests {
             turn: 1,
             step: 1,
             text: "hello".into(),
+            images: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -2551,6 +2613,59 @@ mod tests {
             .entry
             .is_none());
         assert_eq!(transcript.entries("s1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_rows_carry_attached_images_and_an_image_only_title() {
+        let mut transcript = Transcript::default();
+        let mut message = event("user/message", 1);
+        message["data"] = json!({
+            "id": "m1",
+            "role": "user",
+            "content": [
+                { "type": "image", "attachment": {
+                    "attachmentId": "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                    "mediaType": "image/png",
+                    "width": 640,
+                    "height": 480,
+                    "bytes": 12345,
+                    "name": "shot.png"
+                } },
+                { "type": "text", "text": "what is this?" }
+            ],
+            "source": { "kind": "user" }
+        });
+        transcript.ingest("s1", &message, "2026-11-20T00:00:01.000Z");
+        let entries = transcript.entries("s1").expect("entries");
+        match &entries[0] {
+            DshEntry::User { text, images, .. } => {
+                assert_eq!(text, "what is this?");
+                assert_eq!(images.len(), 1);
+                assert_eq!(images[0].media_type, "image/png");
+                assert_eq!(images[0].width, Some(640));
+                assert_eq!(images[0].name.as_deref(), Some("shot.png"));
+            }
+            other => panic!("expected a user row, got {other:?}"),
+        }
+        assert_eq!(transcript.session("s1").unwrap().title, "what is this?");
+
+        // An image-only prompt still counts as a message and titles itself
+        // with the picture's name; an unnamed one stays untitled.
+        let mut only_image = event("user/message", 2);
+        only_image["data"] = json!({
+            "id": "m2",
+            "role": "user",
+            "content": [{ "type": "image", "attachment": {
+                "attachmentId": "sha256:ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+                "mediaType": "image/jpeg",
+                "name": "chart.jpg"
+            } }],
+            "source": { "kind": "user" }
+        });
+        transcript.ingest("s2", &only_image, "2026-11-20T00:00:02.000Z");
+        let session = transcript.session("s2").expect("session");
+        assert_eq!(session.title, "chart.jpg");
+        assert_eq!(session.message_count, 1);
     }
 
     #[test]

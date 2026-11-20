@@ -398,6 +398,10 @@ export const agent = {
     "Describe the task, or type / for commands",
   ],
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
+  "agent.composer.attach": ["添加图片", "Attach an image"],
+  "agent.composer.preview": ["查看大图", "Open preview"],
+  "agent.composer.removeImage": ["移除这张图片", "Remove this image"],
+  "agent.image.failed": ["读取图片失败：{error}", "Could not read the image: {error}"],
 
   // Composer `/` menu: the same eight commands and two groups as dsh desktop.
   "agent.cmd.title": ["调用指令", "Commands"],
@@ -411,11 +415,6 @@ export const agent = {
   "agent.cmd.goalHint": ["设置或查看长期目标", "Set or view the long-running goal"],
   "agent.cmd.plan": ["计划", "Plan"],
   "agent.cmd.planHint": ["进入或退出计划模式", "Enter or leave plan mode"],
-  "agent.cmd.feedback": ["反馈", "Feedback"],
-  "agent.cmd.feedbackHint": [
-    "发送关于当前会话的反馈",
-    "Send feedback about this conversation",
-  ],
   "agent.cmd.compact": ["压缩", "Compact"],
   "agent.cmd.compactHint": ["压缩以上对话内容", "Compact the conversation above"],
   "agent.cmd.permission": ["权限", "Permission"],
@@ -427,7 +426,14 @@ export const agent = {
   "agent.cmd.other": ["指令", "Command"],
   "agent.cmd.otherHint": ["由运行时执行", "Run by the runtime"],
   "agent.cmd.noSession": ["还没有会话可以导出", "There is no conversation to export yet"],
+  "agent.cmd.noAttachments": ["指令不能带图片", "A command cannot carry images"],
   "agent.cmd.exportFailed": ["导出失败：{error}", "Export failed: {error}"],
+
+  // Composer `@` panel (workspace files; plugin/conversation rows are reserved).
+  "agent.mention.title": ["引用文件", "Mention a file"],
+  "agent.mention.hint": ["输入内容以搜索文件，Enter 插入", "Type to search files, Enter inserts"],
+  "agent.mention.empty": ["没有匹配的文件", "No matching file"],
+  "agent.mention.kind": ["{kind}", "{kind}"],
 
   // Composer ↑ history.
   "agent.history.title": ["历史消息", "Prompt history"],

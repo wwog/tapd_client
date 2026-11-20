@@ -42,10 +42,23 @@ pub struct SessionQueryParams {
     pub content_blocks: Vec<ContentBlock>,
 }
 
+/// One ordered prompt block. dsh admits only text and encoded images over
+/// `session/query`; a file block needs a durable upload receipt this app never
+/// has, which is why file references travel as `@path` text instead.
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum ContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    Image {
+        /// Canonical base64 (no `data:` prefix).
+        data: String,
+        /// `image/png` | `image/jpeg` | `image/webp` | `image/gif`.
+        mime_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -228,6 +241,37 @@ mod tests {
         assert_eq!(json["sessionId"], "s1");
         assert_eq!(json["contentBlocks"][0]["type"], "text");
         assert_eq!(json["contentBlocks"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn query_blocks_carry_encoded_images() {
+        let json = serde_json::to_value(SessionQueryParams {
+            session_id: "s1".into(),
+            content_blocks: vec![
+                ContentBlock::Image {
+                    data: "iVBORw0KGgo=".into(),
+                    mime_type: "image/png".into(),
+                    name: Some("shot.png".into()),
+                },
+                ContentBlock::Image {
+                    data: "AAAA".into(),
+                    mime_type: "image/jpeg".into(),
+                    name: None,
+                },
+                ContentBlock::Text {
+                    text: "look".into(),
+                },
+            ],
+        })
+        .expect("serialize");
+        let blocks = json["contentBlocks"].as_array().expect("array");
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["data"], "iVBORw0KGgo=");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
+        assert_eq!(blocks[0]["name"], "shot.png");
+        assert_eq!(blocks[1]["mimeType"], "image/jpeg");
+        assert!(blocks[1].get("name").is_none());
+        assert_eq!(blocks[2]["type"], "text");
     }
 
     #[test]

@@ -427,6 +427,9 @@ export const api = {
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   /** One local image as a `data:` URL, for inline previews. */
   imageDataUrl: (path: string) => invoke<string>("image_data_url", { path }),
+  /** One prompt attachment (dsh's content-addressed store) as a `data:` URL. */
+  attachmentImage: (attachmentId: string, mediaType: string) =>
+    invoke<string>("dsh_attachment_image", { attachmentId, mediaType }),
   /** Opens a local file with the saved "打开方式" app for `kind`. */
   openFile: (path: string, kind?: string, target?: string) =>
     invoke<void>("open_file", {

@@ -16,9 +16,28 @@ export type AgentTodo = {
   status: "pending" | "in_progress" | "completed";
 };
 
+/** One image attached to a prompt. `src` is only set on the pending bubble,
+ *  before the runtime has stored the attachment. */
+export type AgentImage = {
+  attachmentId?: string;
+  mediaType: string;
+  name?: string;
+  width?: number;
+  height?: number;
+  src?: string;
+};
+
 /** One normalized, committed transcript row. Mirrors `DshEntry` in dsh.ts. */
 export type AgentEntry =
-  | { kind: "user"; seq: number; at: string; turn: number; step: number; text: string }
+  | {
+      kind: "user";
+      seq: number;
+      at: string;
+      turn: number;
+      step: number;
+      text: string;
+      images?: AgentImage[];
+    }
   | {
       kind: "assistant";
       seq: number;

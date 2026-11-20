@@ -9,7 +9,9 @@
 
 use std::sync::Arc;
 
-use dsh_host::protocol::{AnswerItem, ApprovalOutcome, ApprovalRequestResult, UserQuestionResult};
+use dsh_host::protocol::{
+    AnswerItem, ApprovalOutcome, ApprovalRequestResult, ContentBlock, UserQuestionResult,
+};
 use dsh_host::transcript::ModelSelection;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -263,16 +265,48 @@ async fn prepare_for_input(
     Ok(())
 }
 
+/// One encoded image the composer attaches to a prompt. dsh admits exactly
+/// these four media types; the bytes are canonical base64 without a `data:`
+/// prefix.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptImage {
+    pub data: String,
+    pub mime_type: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// Ensures the runtime is up, then queues one prompt. The registry row exists
 /// before the call, so the session is listable even if the model call fails.
-pub async fn prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
+pub async fn prompt(
+    app: &AppHandle,
+    session_id: &str,
+    text: &str,
+    images: Vec<PromptImage>,
+) -> Result<Value, String> {
     prepare_for_input(app, session_id, true).await?;
     let state = runtime(app)?;
-    let receipt = state.query(app, session_id, text).await?;
+    let mut blocks = Vec::with_capacity(images.len() + 1);
+    for image in images {
+        blocks.push(ContentBlock::Image {
+            data: image.data,
+            mime_type: image.mime_type,
+            name: image.name,
+        });
+    }
+    if !text.trim().is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: text.to_string(),
+        });
+    }
+    let receipt = state.query_blocks(app, session_id, blocks).await?;
     // The composer's ↑ history: recorded here so every prompt a human typed
     // (chat, continue, retry follow-up) is remembered, while the task
     // scheduler's own prompts bypass this function and stay out of it.
-    remember_prompt(app, session_id, text);
+    if !text.trim().is_empty() {
+        remember_prompt(app, session_id, text);
+    }
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
 }
 
@@ -570,6 +604,8 @@ struct SessionModePayload {
 struct PromptPayload {
     session_id: String,
     text: String,
+    #[serde(default)]
+    images: Vec<PromptImage>,
 }
 
 #[derive(Deserialize)]
@@ -685,7 +721,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         }
         "dsh_prompt" => {
             let request: PromptPayload = parse(payload, "dsh_prompt")?;
-            prompt(app, &request.session_id, &request.text).await
+            prompt(app, &request.session_id, &request.text, request.images).await
         }
         "dsh_select_model" => {
             let request: SelectModelPayload = parse(payload, "dsh_select_model")?;
