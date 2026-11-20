@@ -1,7 +1,7 @@
 {
   "name": "tapd-client",
   "private": true,
-  "version": "1.6.7",
+  "version": "1.6.8",
   "description": "TAPD enhanced desktop client with MCP support",
   "packageManager": "pnpm@12.10.1",
   "scripts": {
