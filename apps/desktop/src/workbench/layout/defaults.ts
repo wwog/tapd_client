@@ -115,7 +115,6 @@ export const PAGE_VIEWS: readonly PageView[] = [
   "local",
   "agent",
   "projects",
-  "mcp",
   "settings",
   "account",
 ];

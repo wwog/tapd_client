@@ -1227,19 +1227,21 @@ export function Composer() {
             className="block w-full resize-none bg-transparent px-3 pb-1 pt-2 text-ui-caption leading-6 text-slate-700 placeholder:text-slate-300 focus:outline-none"
           />
           <div className="flex items-center gap-2 px-2 pb-2 pt-0.5">
+            {/* The attach control opens the row: it is the leftmost action in
+                the field, ahead of the session's mode label. */}
+            <button
+              type="button"
+              title={t("agent.composer.add")}
+              aria-label={t("agent.composer.add")}
+              onClick={() => void pickFiles("")}
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
+            >
+              <Plus size={14} />
+            </button>
             <SessionModePicker openSignal={signals.mode} />
             {/* Only operable controls live inside the field: the session's
                 figures are read-only status, so they sit under the card. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
-              <button
-                type="button"
-                title={t("agent.composer.add")}
-                aria-label={t("agent.composer.add")}
-                onClick={() => void pickFiles("")}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
-              >
-                <Plus size={14} />
-              </button>
               <SessionModelPicker openSignal={signals.model} />
               <button
                 type="button"

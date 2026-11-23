@@ -112,6 +112,7 @@ pub fn run() {
             dsh::commands::dsh_session_entries,
             dsh::commands::dsh_pending,
             dsh::commands::dsh_prompt,
+            dsh::commands::dsh_steer_prompt,
             dsh::commands::dsh_commands,
             dsh::commands::dsh_command_run,
             dsh::commands::dsh_session_export,

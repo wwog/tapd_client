@@ -310,6 +310,41 @@ pub async fn prompt(
     Ok(json!({ "sessionId": session_id, "receipt": receipt }))
 }
 
+/// 「立即」: hands one queued prompt to the live Agent so it is injected at the
+/// running turn's next step (the engine's `steer`), instead of waiting for the
+/// turn to end. The bridge replies nothing: the message commits as a normal
+/// `user/message` row, which is also what tells the composer it landed.
+pub async fn steer_prompt(
+    app: &AppHandle,
+    session_id: &str,
+    text: &str,
+    images: Vec<PromptImage>,
+) -> Result<(), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() && images.is_empty() {
+        return Err(tr("dsh.prompt.empty").to_string());
+    }
+    let mut blocks = Vec::with_capacity(images.len() + 1);
+    for image in images {
+        blocks.push(ContentBlock::Image {
+            data: image.data,
+            mime_type: image.mime_type,
+            name: image.name,
+        });
+    }
+    if !trimmed.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: trimmed.to_string(),
+        });
+    }
+    let blocks = serde_json::to_value(blocks).map_err(|error| error.to_string())?;
+    bridge(app)?.steer_prompt(session_id, blocks).await?;
+    if !trimmed.is_empty() {
+        remember_prompt(app, session_id, trimmed);
+    }
+    Ok(())
+}
+
 /// The engine's human slash-command catalog for one session (globals plus that
 /// Agent's scoped shadows). A chat with no session yet lists the global layer.
 ///

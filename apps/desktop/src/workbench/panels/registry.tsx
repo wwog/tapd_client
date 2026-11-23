@@ -13,7 +13,6 @@ import {
   FolderTree,
   ListChecks,
   ListTodo,
-  Plug,
   Settings as SettingsIcon,
   SquareTerminal,
   User,
@@ -41,7 +40,6 @@ const PAGE_TITLES: Record<PageView, MessageKey> = {
   local: "app.nav.local",
   agent: "app.nav.agent",
   projects: "common.projects",
-  mcp: "app.nav.mcp",
   settings: "common.settings",
   account: "app.account.title",
 };
@@ -52,7 +50,6 @@ const PAGE_ICONS: Record<PageView, ReactNode> = {
   local: <ListChecks size={13} />,
   agent: <Bot size={13} />,
   projects: <FolderGit2 size={13} />,
-  mcp: <Plug size={13} />,
   settings: <SettingsIcon size={13} />,
   account: <User size={13} />,
 };

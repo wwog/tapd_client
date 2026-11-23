@@ -514,6 +514,21 @@ impl BridgeState {
         }))
     }
 
+    /// Hands one prompt to the running turn so the engine injects it at its next
+    /// step (the composer queue's 「立即」). The plugin falls back to a normal
+    /// follow-up when the turn has already ended, so the message is never lost.
+    pub async fn steer_prompt(
+        &self,
+        session_id: &str,
+        content_blocks: Value,
+    ) -> Result<(), String> {
+        self.send_control(json!({
+            "type": "steer",
+            "sessionId": session_id,
+            "contentBlocks": content_blocks,
+        }))
+    }
+
     /// Requests plan mode for one session. The plugin queues the frame until
     /// the Agent exists; the engine writes `plan/mode` once it is applied.
     pub fn set_plan(&self, session_id: &str, active: bool) -> Result<(), String> {

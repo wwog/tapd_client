@@ -609,16 +609,27 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
           })}
 
           {pending.map((item, index) => (
-            <UserBubble
+            <div
               key={`pending-${index}-${item.text.length}-${item.images?.length ?? 0}`}
-              text={item.text}
-              images={item.images?.map((image) => ({
-                mediaType: image.mediaType,
-                ...(image.name ? { name: image.name } : {}),
-                src: image.src,
-              }))}
-              locale={locale}
-            />
+              className="flex flex-col items-end gap-1"
+            >
+              <UserBubble
+                text={item.text}
+                images={item.images?.map((image) => ({
+                  mediaType: image.mediaType,
+                  ...(image.name ? { name: image.name } : {}),
+                  src: image.src,
+                }))}
+                locale={locale}
+              />
+              {/* 「立即」 waits for the running turn's next step; behind a long
+                  tool call that is not instant, so the bubble says so. */}
+              {item.steer ? (
+                <span className="pr-1 text-ui-2xs text-slate-400">
+                  {t("agent.queue.steeringPending")}
+                </span>
+              ) : null}
+            </div>
           ))}
 
           {approvals.map((approval) => (

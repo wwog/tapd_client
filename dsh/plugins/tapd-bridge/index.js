@@ -20,6 +20,9 @@
  *   assign → move a session to a working directory (task worktrees)
  *   cancel → stop one session's turn
  *   retry → continue the last turn after a failure, without re-sending it
+ *   steer → inject one prompt into the running turn at its next step (the
+ *                  composer queue's 「立即」), or queue it as a follow-up when
+ *                  the turn already ended
  *   mode / default-mode → session permission mode / runtime-wide default
  *   plan → enter or leave the engine's plan mode
  *   team → enable / disable Agent Teams for one root session
@@ -71,6 +74,7 @@ import { readFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import {
@@ -741,6 +745,71 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * Rewrites encoded image blocks to durable attachment refs, exactly like the
+   * SDK's prompt admission does: the transcript then carries attachment ids
+   * (`dsh_attachment_image`) instead of raw base64 in every row.
+   */
+  const steerContent = async (blocks) => {
+    const encoded = blocks.filter(
+      (block) => block && block.type === 'image' && typeof block.data === 'string',
+    )
+    if (encoded.length === 0) return blocks
+    const attachments = ctx.get('attachments')
+    if (!attachments) throw new Error('a steer with images needs the attachment store')
+    const refs = await admitEncodedImages(
+      attachments,
+      encoded.map((image) => ({
+        data: image.data,
+        mediaType: image.mimeType,
+        ...(typeof image.name === 'string' && image.name ? { name: image.name } : {}),
+      })),
+    )
+    let next = 0
+    return blocks.map((block) =>
+      block && block.type === 'image' && typeof block.data === 'string'
+        ? { type: 'image', attachment: refs[next++] }
+        : block,
+    )
+  }
+
+  /**
+   * 「立即」: hands one queued prompt to the live Agent. While a turn is running
+   * the engine's `steer` places it in the next step (the model sees it at the
+   * next tool boundary, which is what ZCode's 「立即」 does); a turn that ended
+   * in between makes the same message a normal follow-up, so it is never lost.
+   */
+  const steerSession = async (sessionId, blocks) => {
+    try {
+      const agent = ctx.agents.get(sessionId)
+      if (!agent) {
+        ctx.logger.info(`${name}: steer for ${sessionId} ignored, no live agent`)
+        return
+      }
+      const content = await steerContent(blocks)
+      const message = createUserMessage({ content, source: { kind: 'user' } })
+      if (agent.status === 'running') agent.steer(message)
+      else agent.followup(message)
+    } catch (error) {
+      warn(`steer ${sessionId}`, error)
+      // Never drop the reader's words: steering is an optimization, so fall
+      // back to a normal follow-up with the text (an image may be exactly what
+      // admission refused).
+      try {
+        const text = blocks
+          .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('\n\n')
+        const agent = ctx.agents.get(sessionId)
+        if (agent && text.trim()) {
+          agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+        }
+      } catch (fallback) {
+        warn(`steer fallback ${sessionId}`, fallback)
+      }
+    }
+  }
+
   /** Replies to one Rust request; `error` is the engine's own diagnostic. */
   const reply = (type, requestId, body = {}) => {
     send({ type, token, requestId, ...body })
@@ -1118,6 +1187,8 @@ export function apply(ctx) {
       cancelSession(sessionId)
     } else if (frame.type === 'retry') {
       retrySession(sessionId)
+    } else if (frame.type === 'steer' && Array.isArray(frame.contentBlocks)) {
+      void steerSession(sessionId, frame.contentBlocks)
     } else if (frame.type === 'team' && typeof frame.enabled === 'boolean') {
       applyTeamMode(sessionId, frame.enabled)
     } else if (frame.type === 'mode' && typeof frame.mode === 'string') {

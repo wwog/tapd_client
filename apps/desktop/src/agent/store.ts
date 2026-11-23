@@ -61,6 +61,9 @@ export type AgentTeamView = "chat" | "board";
 export type PendingPrompt = {
   text: string;
   images?: { name?: string; mediaType: string; src: string }[];
+  /** 「立即」: waiting for the running turn's next step (engine steer). The
+   *  transcript marks it, because it may take a while behind a tool call. */
+  steer?: boolean;
 };
 
 /**
@@ -530,6 +533,7 @@ function clearSelection(sessionId: string): void {
   drafts.delete(sessionId);
   // Nothing may put a dispatched item back into a session that is going away.
   bumpQueueGeneration(sessionId);
+  steersInFlight.delete(sessionId);
   activeTurns.delete(sessionId);
   dispatchedAt.delete(sessionId);
   update((state) => {
@@ -693,8 +697,11 @@ function applyEntry(payload: DshEntryEvent): void {
       }
       if (queue && index >= 0) {
         const next = queue.slice();
-        next.splice(index, 1);
+        const [matched] = next.splice(index, 1);
         pendingPrompts = { ...pendingPrompts, [sessionId]: next };
+        // A steered prompt is delivered as a normal user row; from now on a
+        // stop can no longer take it away.
+        if (matched?.steer) dropSteerInFlight(sessionId, matched.text);
       }
     }
 
@@ -1142,6 +1149,13 @@ const dispatchedAt = new Map<string, number>();
  */
 const queueInFlight = new Map<string, QueuedPrompt>();
 
+/**
+ * Items handed to the engine's steer path that the transcript has not confirmed
+ * yet. A stop clears the engine's pending inbox, so an uncommitted steer goes
+ * back to the queue instead of vanishing with the turn it was aimed at.
+ */
+const steersInFlight = new Map<string, QueuedPrompt[]>();
+
 /** Bumped when a queue is cleared or its session deleted, so a late dispatch
  *  failure cannot resurrect what the reader removed. */
 const queueGeneration = new Map<string, number>();
@@ -1336,36 +1350,128 @@ async function dispatchQueued(
     lastError: null,
   }));
   try {
-    await dshApi.prompt(
-      sessionId,
-      item.text,
-      (item.images ?? []).map((image) => ({
-        data: image.data,
-        mimeType: image.mediaType,
-        ...(image.name ? { name: image.name } : {}),
-      })),
-    );
+    await dshApi.prompt(sessionId, item.text, imagePayload(item));
     return true;
   } catch (error) {
     // Drop only the placeholder this call added; an older identical prompt
     // stays where it was.
-    update((state) => {
-      const queue = state.pendingPrompts[sessionId] ?? [];
-      let index = -1;
-      for (let i = queue.length - 1; i >= 0; i -= 1) {
-        if (queue[i]?.text === item.text) {
-          index = i;
-          break;
-        }
-      }
-      if (index < 0) return state;
-      const next = queue.slice();
-      next.splice(index, 1);
-      return { ...state, pendingPrompts: { ...state.pendingPrompts, [sessionId]: next } };
-    });
+    dropPendingPrompt(sessionId, item.text);
     setError(error);
     return false;
   }
+}
+
+/** Encoded images in the IPC shape (`data`/`mimeType`/optional `name`). */
+function imagePayload(item: QueuedPrompt): DshPromptImage[] {
+  return (item.images ?? []).map((image) => ({
+    data: image.data,
+    mimeType: image.mediaType,
+    ...(image.name ? { name: image.name } : {}),
+  }));
+}
+
+/** Removes this call's optimistic bubble (matched from the tail). */
+function dropPendingPrompt(sessionId: string, text: string): void {
+  update((state) => {
+    const queue = state.pendingPrompts[sessionId] ?? [];
+    let index = -1;
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      if (queue[i]?.text === text) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) return state;
+    const next = queue.slice();
+    next.splice(index, 1);
+    return { ...state, pendingPrompts: { ...state.pendingPrompts, [sessionId]: next } };
+  });
+}
+
+/**
+ * 「立即」 while a turn is running: hands the item to the engine's steer path,
+ * which injects it at the running turn's next step (ZCode's 「立即」). Returns
+ * false when the bridge is offline or the frame was rejected, so the caller can
+ * fall back to a normal follow-up instead of dropping the message.
+ *
+ * The live overlay is kept: the answer being steered into must not disappear.
+ */
+async function dispatchSteer(sessionId: string, item: QueuedPrompt): Promise<boolean> {
+  dispatchedAt.set(sessionId, Date.now());
+  const preview = item.images?.map(({ name, mediaType, src }) => ({
+    ...(name ? { name } : {}),
+    mediaType,
+    src,
+  }));
+  update((state) => ({
+    ...state,
+    pendingPrompts: {
+      ...state.pendingPrompts,
+      [sessionId]: [
+        ...(state.pendingPrompts[sessionId] ?? []),
+        { text: item.text, images: preview, steer: true },
+      ],
+    },
+    lastError: null,
+  }));
+  steersInFlight.set(sessionId, [...(steersInFlight.get(sessionId) ?? []), item]);
+  try {
+    await dshApi.steerPrompt(sessionId, item.text, imagePayload(item));
+    return true;
+  } catch {
+    // Not an error the reader must see: the caller falls back to `prompt`,
+    // which takes ownership of the item again.
+    dropSteerInFlight(sessionId, item.text);
+    dropPendingPrompt(sessionId, item.text);
+    return false;
+  }
+}
+
+/** The transcript confirmed one steer: it is no longer at risk of a stop. */
+function dropSteerInFlight(sessionId: string, text: string): void {
+  const list = steersInFlight.get(sessionId);
+  if (!list) return;
+  const index = list.findIndex((item) => item.text === text);
+  if (index < 0) return;
+  const next = list.slice();
+  next.splice(index, 1);
+  if (next.length === 0) steersInFlight.delete(sessionId);
+  else steersInFlight.set(sessionId, next);
+}
+
+/**
+ * Returns uncommitted steers to the queue. `agent.cancel` clears the engine's
+ * pending inbox, so without this a message the reader aimed at the stopped turn
+ * would disappear from both sides. They go back to the head in send order and
+ * park with the pause reason, exactly like a stopped queue.
+ */
+function requeueSteers(sessionId: string, pause: QueuePauseReason): void {
+  const steers = steersInFlight.get(sessionId);
+  steersInFlight.delete(sessionId);
+  if (!steers || steers.length === 0) return;
+  // A steer can commit just before the stop lands; its row is already in the
+  // transcript then, and putting it back would duplicate it.
+  const items = agentStore.get().entries[sessionId]?.items ?? [];
+  const remaining = steers.filter(
+    (item) =>
+      !items.some((entry) => entry.kind === "user" && entry.text === item.text),
+  );
+  if (remaining.length === 0) return;
+  update((state) => ({
+    ...state,
+    queuedPrompts: {
+      ...state.queuedPrompts,
+      [sessionId]: [...remaining, ...(state.queuedPrompts[sessionId] ?? [])],
+    },
+    queuePause: { ...state.queuePause, [sessionId]: pause },
+    pendingPrompts: {
+      ...state.pendingPrompts,
+      [sessionId]: (state.pendingPrompts[sessionId] ?? []).filter(
+        (prompt) => !prompt.steer,
+      ),
+    },
+  }));
+  persistQueue(sessionId, true);
 }
 
 /** Pauses every non-empty queue: item lists stay intact and wait for 继续. */
@@ -1786,6 +1892,7 @@ export const agentActions = {
     drafts.delete(sessionId);
     // The row is gone on disk; a late dispatch failure must not write it back.
     bumpQueueGeneration(sessionId);
+    steersInFlight.delete(sessionId);
     activeTurns.delete(sessionId);
     dispatchedAt.delete(sessionId);
     update((state) => {
@@ -1841,6 +1948,9 @@ export const agentActions = {
   cancelTurn: async (sessionId: string): Promise<void> => {
     try {
       await dshApi.cancelTurn(sessionId);
+      // A steer aimed at the stopped turn is cleared engine-side; give it back
+      // to the queue before the pending bubbles go away.
+      requeueSteers(sessionId, "stopped");
       update((state) => ({
         ...state,
         pendingPrompts: { ...state.pendingPrompts, [sessionId]: [] },
@@ -2097,6 +2207,9 @@ export const agentActions = {
       requeueFront(sessionId, item, null);
     }
     queueInFlight.clear();
+    for (const sessionId of [...steersInFlight.keys()]) {
+      requeueSteers(sessionId, "paused");
+    }
     pauseQueues("paused");
     try {
       const status = await dshApi.restart();
@@ -2318,7 +2431,11 @@ export const agentActions = {
     persistQueue(sessionId);
   },
 
-  /** 「立即」: send this item now, ahead of the rest of the queue. */
+  /**
+   * 「立即」: send this item now, ahead of the rest of the queue. A running turn
+   * receives it as a steer (injected at the next step, like ZCode); otherwise
+   * it is an ordinary prompt that starts the next turn.
+   */
   sendQueuedNow: async (sessionId: string, id: string): Promise<void> => {
     if (queueSends.has(sessionId)) return;
     const state = agentStore.get();
@@ -2337,7 +2454,10 @@ export const agentActions = {
       },
     }));
     const running = isSessionRunning(agentStore.get(), sessionId);
-    const delivered = await dispatchQueued(sessionId, item, !running);
+    const delivered = running
+      ? (await dispatchSteer(sessionId, item)) ||
+        (await dispatchQueued(sessionId, item, false))
+      : await dispatchQueued(sessionId, item, true);
     queueSends.delete(sessionId);
     if (queueGenerationOf(sessionId) === generation) {
       queueInFlight.delete(sessionId);
@@ -2565,6 +2685,9 @@ export const agentEvents = {
     // `blocked` and a bare `error` are failures too — the same rule the task
     // workflow uses (`tasks.rs::failed_turn`).
     if (entry.reason === "aborted") {
+      // The stop cleared the engine's pending inbox: uncommitted steers come
+      // back to the queue so the reader can send them again.
+      requeueSteers(sessionId, "stopped");
       update((state) => ({
         ...state,
         queuePause: { ...state.queuePause, [sessionId]: "stopped" },
@@ -2572,6 +2695,9 @@ export const agentEvents = {
       persistQueue(sessionId);
       return;
     }
+    // Any other end leaves an uncommitted steer in the engine's inbox, where
+    // the next turn claims it; nothing to track any more.
+    steersInFlight.delete(sessionId);
     if (
       entry.reason === "error" ||
       entry.reason === "blocked" ||

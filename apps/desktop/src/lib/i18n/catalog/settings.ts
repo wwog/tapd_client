@@ -9,6 +9,12 @@ export const settings = {
     "Models, rules, integrations and built-in plugins",
   ],
   "settings.agent.open": ["打开配置", "Open configuration"],
+  "settings.mcp.title": ["MCP", "MCP"],
+  "settings.mcp.hint": [
+    "外部 AI 客户端接入、调用策略与审计",
+    "External AI clients, call policy and audit",
+  ],
+  "settings.mcp.open": ["打开设置", "Open settings"],
   "settings.runtime.title": ["运行信息", "Runtime info"],
   "settings.runtime.reading": ["正在读取运行信息…", "Reading runtime info…"],
   "settings.runtime.viewDetails": ["查看详情", "View details"],

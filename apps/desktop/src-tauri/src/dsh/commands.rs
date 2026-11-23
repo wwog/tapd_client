@@ -122,6 +122,18 @@ pub async fn dsh_prompt(
     feature::prompt(&app, &session_id, &text, images.unwrap_or_default()).await
 }
 
+/// 「立即」: steers one queued prompt into the running turn (next step) instead
+/// of waiting for it to end. Same payload as `dsh_prompt`.
+#[tauri::command]
+pub async fn dsh_steer_prompt(
+    app: AppHandle,
+    session_id: String,
+    text: String,
+    images: Option<Vec<feature::PromptImage>>,
+) -> Result<(), String> {
+    feature::steer_prompt(&app, &session_id, &text, images.unwrap_or_default()).await
+}
+
 /// The engine's human slash-command catalog (globals plus the session's own
 /// scoped rows). Omit `session_id` for a chat that has no session yet.
 #[tauri::command]

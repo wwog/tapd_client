@@ -247,20 +247,20 @@ test("project pages open as tabs beside each other; global pages share one", () 
 
   // Global navigation only ever owns one tab, and it coexists with projects.
   layout = openPage(layout, "settings");
-  layout = openPage(layout, "mcp");
+  layout = openPage(layout, "account");
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(primary.panels.map((panel) => panel.id), [
     "page:local:local-1",
     "page:bugs:ws-1",
     "page:bugs:ws-2",
-    "page:mcp",
+    "page:account",
   ]);
 
   // Every tab is closable, project pages and the navigation tab alike.
   layout = closePanel(layout, panelId.page("bugs", "ws-2"));
   assert.equal(findPanel(layout.root, panelId.page("bugs", "ws-2")), null);
-  layout = closePanel(layout, panelId.page("mcp"));
-  assert.equal(findPanel(layout.root, panelId.page("mcp")), null);
+  layout = closePanel(layout, panelId.page("account"));
+  assert.equal(findPanel(layout.root, panelId.page("account")), null);
 });
 
 test("project pages and the shared navigation tab coexist", () => {
@@ -274,11 +274,11 @@ test("project pages and the shared navigation tab coexist", () => {
   );
 
   // Switching the navigation tab retargets it in place, project tab stays.
-  layout = openPage(layout, "mcp");
+  layout = openPage(layout, "account");
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:mcp", "page:bugs:ws-1"],
+    ["page:account", "page:bugs:ws-1"],
   );
 
   // Focusing the project tab no longer drops the navigation tab.
@@ -286,7 +286,7 @@ test("project pages and the shared navigation tab coexist", () => {
   primary = findRoleGroup(layout.root, "primary")!;
   assert.deepEqual(
     primary.panels.map((panel) => panel.id),
-    ["page:mcp", "page:bugs:ws-1"],
+    ["page:account", "page:bugs:ws-1"],
   );
   assert.equal(primary.activePanelId, panelId.page("bugs", "ws-1"));
 });
@@ -448,7 +448,7 @@ test("normalize keeps one global page in primary and project pages where they ar
   const projectA = makePanel({ type: "page", view: "bugs", projectId: "ws-1" });
   const settings = makePanel({ type: "page", view: "settings" });
   const projectB = makePanel({ type: "page", view: "local", projectId: "local-1" });
-  const mcp = makePanel({ type: "page", view: "mcp" });
+  const account = makePanel({ type: "page", view: "account" });
 
   const layout: LayoutState = {
     version: 1,
@@ -458,7 +458,7 @@ test("normalize keeps one global page in primary and project pages where they ar
       direction: "row",
       children: [
         createGroup("primary"),
-        createGroup("secondary", [projectA, settings, projectB, mcp]),
+        createGroup("secondary", [projectA, settings, projectB, account]),
       ],
       sizes: [0.66, 0.34],
     },

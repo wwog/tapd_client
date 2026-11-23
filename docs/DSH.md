@@ -384,6 +384,10 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 ```jsonc
 { "type": "assign", "token": "<token>", "sessionId": "probe-1", "cwd": "/repo" }
 { "type": "cancel", "token": "<token>", "sessionId": "probe-1" }
+// 输入框队列的「立即」：把这条插进正在跑的回合，下一次工具调用后模型就能看到；
+// 回合已经结束则自动退化成普通 follow-up（不会丢）
+{ "type": "steer", "token": "<token>", "sessionId": "probe-1",
+  "contentBlocks": [{ "type": "text", "text": "交通怎么样" }] }
 { "type": "team", "token": "<token>", "sessionId": "probe-1", "enabled": true }
 // 会话级模型切换；reasoningEffort 省略 = 适配器默认，不能传 null
 { "type": "select-model", "token": "<token>", "sessionId": "probe-1",
@@ -695,6 +699,7 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_session_dir` | `{ sessionId }` | `{ path, exists }`；会话实际 cwd（worktree / 项目仓库 / chat scratch） |
 | `dsh_pending` | — | `{ requests: PendingRequest[] }`（见 8.7） |
 | `dsh_prompt` | `{ sessionId, text, images? }` | `{ sessionId, receipt }`；必要时先启动运行时。`images` 是 `{ data, mimeType, name? }`（base64，无 `data:` 前缀），只支持 png/jpeg/webp/gif；可以只发图片不发文本 |
+| `dsh_steer_prompt` | `{ sessionId, text, images? }` | `()`；输入框队列的「立即」：走 `steer` 控制帧插进正在跑的回合（下一次工具调用后生效），回合已结束则退化成普通 follow-up；桥接不在线时报错，调用方回退到 `dsh_prompt` |
 | `dsh_commands` | `{ sessionId? }` | `{ commands: [{ name, description, inputHint? }] }`；引擎的指令目录（省略 `sessionId` = 全局层） |
 | `dsh_command_run` | `{ sessionId, line }` | `{ sessionId, name }`；只等准入，结果按 `command` 行回来；未知名字报错而不是退回 prompt |
 | `dsh_attachment_image` | `{ attachmentId, mediaType }` | `data:` URL（`<data_dir>/dsh/home/attachments/v1/objects/<sha[:2]>/<sha>`，同 24 MiB 上限） |

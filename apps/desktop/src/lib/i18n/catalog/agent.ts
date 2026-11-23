@@ -411,6 +411,10 @@ export const agent = {
   "agent.queue.remove": ["移除待发送消息", "Remove queued message"],
   "agent.queue.editing": ["正在编辑排队消息", "Editing a queued message"],
   "agent.queue.editingBelow": ["正在下方编辑", "Editing below"],
+  "agent.queue.steeringPending": [
+    "等待引导当前回合…",
+    "Waiting to steer this turn…",
+  ],
   "agent.queue.image": ["图片", "Image"],
   "agent.queue.placeholder": [
     "继续输入以排队后续修改",

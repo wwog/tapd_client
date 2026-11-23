@@ -34,8 +34,9 @@ const COPY_BUTTON =
   "inline-flex shrink-0 items-center gap-1 rounded border border-border bg-surface px-2 py-1 text-ui-xs text-slate-600 transition hover:border-slate-300";
 
 /**
- * MCP tab: server status, policy/audit, and per-client one-click import
+ * MCP settings: server status, policy/audit, and per-client one-click import
  * (opencode / ZCode / Claude Code / Cursor) with manual project-level config.
+ * Rendered inside the Settings page's MCP card dialog.
  */
 export function McpPage({ workspaces, onCopy, toast }: Props) {
   const [mcp, setMcp] = useState<McpConfigInfo | null>(null);

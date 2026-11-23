@@ -54,6 +54,7 @@ pub static MESSAGES: &[Message] = &[
     ("dsh.node.tooOld", "{}。内置 Agent 需要 Node.js 24.9 或更新版本", "{}. The built-in agent needs Node.js 24.9 or newer"),
     ("dsh.file.invalid", "这个路径无效", "That path is not valid"),
     ("dsh.file.noSession", "找不到这个会话的工作目录", "That session has no working directory"),
+    ("dsh.prompt.empty", "不能发送空消息", "Cannot send an empty message"),
     ("dsh.queue.invalid", "排队消息的内容不是有效的 JSON 数组", "The queued messages are not a valid JSON array"),
     ("dsh.queue.tooLarge", "排队消息太大，无法保存", "The queued messages are too large to save"),
     ("dsh.runtime.exited", "内置 Agent 运行时已退出", "The built-in agent runtime has exited"),

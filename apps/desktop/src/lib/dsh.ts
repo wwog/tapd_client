@@ -563,6 +563,11 @@ export const dshApi = {
    *  prompt is legal, so `text` may be empty when images are present. */
   prompt: (sessionId: string, text: string, images: DshPromptImage[] = []) =>
     invoke<{ receipt: unknown }>("dsh_prompt", { sessionId, text, images }),
+  /** 「立即」: injects one message into the running turn at its next step
+   *  (engine `steer`). Rejects when the bridge is offline, so the caller can
+   *  fall back to a normal prompt. */
+  steerPrompt: (sessionId: string, text: string, images: DshPromptImage[] = []) =>
+    invoke<void>("dsh_steer_prompt", { sessionId, text, images }),
   /** The runtime's own command catalog; omit `sessionId` for a fresh chat. */
   commands: (sessionId?: string | null) =>
     invoke<{ commands: DshCommandDescriptor[] }>("dsh_commands", {

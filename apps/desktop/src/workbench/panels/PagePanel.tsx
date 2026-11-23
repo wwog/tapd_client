@@ -6,7 +6,6 @@ import { AccountPage } from "../../components/AccountPage";
 import { AgentPage } from "../../components/AgentPage";
 import { BugListView } from "../../components/BugListView";
 import { LocalItemsPage } from "../../components/LocalItemsPage";
-import { McpPage } from "../../components/McpPage";
 import { ProjectSettings } from "../../components/ProjectSettings";
 import { QueuePage } from "../../components/QueuePage";
 import { SettingsPage } from "../../components/SettingsPage";
@@ -166,17 +165,6 @@ export function PagePanel({ panel, visible }: PanelProps) {
         />
       );
 
-    case "mcp":
-      return (
-        <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
-          <McpPage
-            workspaces={host.context?.workspaces ?? []}
-            onCopy={host.onCopy}
-            toast={host.toast}
-          />
-        </div>
-      );
-
     case "account":
       return (
         <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -196,6 +184,7 @@ export function PagePanel({ panel, visible }: PanelProps) {
         <div data-component="PagePanel" className="min-h-0 flex-1 overflow-y-auto p-4">
           <SettingsPage
             info={host.info}
+            workspaces={host.context?.workspaces ?? []}
             onOpenPath={host.onOpenPath}
             onCopy={(text) => void host.onCopy(text)}
             onShowOnboarding={host.onShowOnboarding}

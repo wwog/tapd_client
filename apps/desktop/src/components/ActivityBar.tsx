@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import {
   Bot,
   FolderGit2,
-  Plug,
   Settings as SettingsIcon,
   Smartphone,
   SquareTerminal,
@@ -18,14 +17,12 @@ export type View =
   | "local"
   | "agent"
   | "projects"
-  | "mcp"
   | "settings"
   | "account";
 
 const RAIL_ANIM: Record<string, string> = {
   agent: "rail-bot-shake",
   projects: "rail-folder-bounce",
-  mcp: "rail-plug-rise",
   settings: "rail-settings-spin",
   account: "rail-avatar-pop",
 };
@@ -36,12 +33,12 @@ const RAIL_ANIM: Record<string, string> = {
  *
  * 缺陷 has no rail entry: TAPD and local projects both open their own page tab
  * from the project column, which is the single entry point. The workflow queue
- * lives in the title bar, next to the update icon.
+ * lives in the title bar, next to the update icon; MCP is a card inside
+ * Settings.
  */
 const NAV: Array<{ id: View; label: MessageKey; icon: ReactNode }> = [
   { id: "agent", label: "app.nav.agent", icon: <Bot size={15} /> },
   { id: "projects", label: "common.projects", icon: <FolderGit2 size={15} /> },
-  { id: "mcp", label: "app.nav.mcp", icon: <Plug size={15} /> },
   { id: "settings", label: "common.settings", icon: <SettingsIcon size={15} /> },
 ];
 

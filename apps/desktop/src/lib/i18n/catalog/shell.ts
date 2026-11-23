@@ -23,7 +23,6 @@ export const shell = {
   // Navigation rail
   "app.nav.queue": ["工作流队列", "Workflow queue"],
   "app.nav.agent": ["Agent", "Agent"],
-  "app.nav.mcp": ["MCP", "MCP"],
   "app.nav.companion": ["移动端伴侣", "Mobile companion"],
 
   // Title bar and update entry points

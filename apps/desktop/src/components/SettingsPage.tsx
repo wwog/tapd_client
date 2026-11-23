@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Info,
   PackageOpen,
+  Plug,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { agentActions } from "../agent/store";
-import { api, type AppInfo } from "../lib/api";
+import { api, type AppInfo, type Workspace } from "../lib/api";
 import { pickExportDir } from "../lib/exportDir";
 import type { SettingsSectionProps } from "../lib/feature";
 import { t } from "../lib/i18n";
@@ -23,11 +24,14 @@ import { AppearanceCard } from "./AppearanceCard";
 import { CapturesPage } from "./CapturesPage";
 import { CompanionCard } from "./CompanionCard";
 import { Dialog } from "./Dialog";
+import { McpPage } from "./McpPage";
 import { NotificationSettings } from "./NotificationSettings";
 import { Button, cardClass } from "./ui";
 
 type Props = {
   info: AppInfo | null;
+  /** TAPD workspaces, for the MCP policy's per-project allow list. */
+  workspaces: Workspace[];
   onOpenPath: (path: string) => void;
   onCopy: (text: string) => void;
   onShowOnboarding: () => void;
@@ -35,7 +39,8 @@ type Props = {
 };
 
 export function SettingsPage(props: Props) {
-  const { info, onOpenPath, onCopy, onShowOnboarding, toast } = props;
+  const { info, workspaces, onOpenPath, onCopy, onShowOnboarding, toast } = props;
+  const [mcpOpen, setMcpOpen] = useState(false);
   const [capturesOpen, setCapturesOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
@@ -106,6 +111,39 @@ export function SettingsPage(props: Props) {
           </Button>
         </div>
       </section>
+
+      <section className={cardClass}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-ui-base font-normal text-slate-900">
+              <Plug size={15} className="text-slate-400" />
+              {t("settings.mcp.title")}
+            </h2>
+            <p className="mt-1 truncate text-ui-caption text-slate-500">
+              {t("settings.mcp.hint")}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setMcpOpen(true)}
+            icon={<Settings2 size={13} />}
+          >
+            {t("settings.mcp.open")}
+          </Button>
+        </div>
+      </section>
+
+      {mcpOpen ? (
+        <Dialog
+          title={t("settings.mcp.title")}
+          icon={<Plug size={15} className="text-slate-400" />}
+          onClose={() => setMcpOpen(false)}
+          size="wide"
+        >
+          <McpPage workspaces={workspaces} onCopy={onCopy} toast={toast} />
+        </Dialog>
+      ) : null}
 
       <AppearanceCard />
 
