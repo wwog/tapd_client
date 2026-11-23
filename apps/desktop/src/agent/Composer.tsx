@@ -495,15 +495,24 @@ export function Composer() {
           setDragging(false);
           return;
         }
-        // Tauri reports physical pixels; the composer rect is CSS pixels.
+        // wry on macOS reports `draggingLocation` in logical points (it already
+        // matches CSS pixels) even though Tauri types it as a physical
+        // position; other platforms report physical pixels. Try both so the
+        // hit test works either way instead of halving macOS coordinates.
         const rect = cardRef.current?.getBoundingClientRect();
         const ratio = window.devicePixelRatio || 1;
         const inside = Boolean(
           rect &&
-            payload.position.x / ratio >= rect.left &&
-            payload.position.x / ratio <= rect.right &&
-            payload.position.y / ratio >= rect.top &&
-            payload.position.y / ratio <= rect.bottom,
+            [
+              { x: payload.position.x, y: payload.position.y },
+              { x: payload.position.x / ratio, y: payload.position.y / ratio },
+            ].some(
+              (point) =>
+                point.x >= rect.left &&
+                point.x <= rect.right &&
+                point.y >= rect.top &&
+                point.y <= rect.bottom,
+            ),
         );
         if (payload.type === "enter" || payload.type === "over") {
           setDragging(inside);

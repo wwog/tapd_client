@@ -139,12 +139,18 @@ export function ProjectSettings(props: {
         const path = payload.paths?.[0];
         if (!path) return;
 
+        // macOS reports logical points (already CSS pixels); other platforms
+        // report physical ones. Try both instead of halving macOS coordinates.
         const ratio = window.devicePixelRatio || 1;
-        const element = document.elementFromPoint(
-          payload.position.x / ratio,
-          payload.position.y / ratio,
-        );
-        const card = element?.closest?.("[data-project-id]") as HTMLElement | null;
+        let card: HTMLElement | null = null;
+        for (const point of [
+          { x: payload.position.x, y: payload.position.y },
+          { x: payload.position.x / ratio, y: payload.position.y / ratio },
+        ]) {
+          const element = document.elementFromPoint(point.x, point.y);
+          card = element?.closest?.("[data-project-id]") as HTMLElement | null;
+          if (card) break;
+        }
         const workspaceId = card?.dataset.projectId;
         if (!workspaceId) return;
 
