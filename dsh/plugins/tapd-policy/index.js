@@ -10,7 +10,7 @@
  * reads them on the next call, so switching a session never restarts anything:
  *
  *   auto   (default)  hard + soft → ask (our capsule card)
- *   notify            hard + soft → notice card, always allow
+ *   notify            every file change → notice; risky calls → notice; always allow
  *   full              hard → ask, everything else allowed
  *
  * The mode also owns the engine's own sandbox (`sandbox/mode`), because two
@@ -176,19 +176,30 @@ export function apply(ctx) {
       }
     }
     const mode = modeForSession(exec?.agent?.session)
+    const cwd = sessionCwd(ctx, exec)
+    const home = homedir()
     let hit
     try {
-      hit = classifyCall({
-        tool,
-        args: exec?.arguments ?? {},
-        cwd: sessionCwd(ctx, exec),
-        home: homedir(),
-      })
+      hit = classifyCall({ tool, args: exec?.arguments ?? {}, cwd, home })
     } catch (error) {
       ctx.logger.warn(`${name}: classifier failed, allowing ${tool}: ${String(error)}`)
       return next()
     }
-    if (!hit.risk) return next()
+    if (!hit.risk) {
+      // Notify mode promises a notice before *changes*, not just before risky
+      // ones: an in-workspace edit produces no risk hit, but it still changes
+      // files and must announce itself.
+      if (mode === 'notify') {
+        let change
+        try {
+          change = mutationOf({ tool, args: exec?.arguments ?? {}, cwd, home })
+        } catch (error) {
+          ctx.logger.warn(`${name}: change classifier failed for ${tool}: ${String(error)}`)
+        }
+        if (change) raiseNotice(ctx, exec, change)
+      }
+      return next()
+    }
 
     // In auto the engine's sandbox is the boundary for path writes: it denies
     // or escalates them itself, with its own card. Asking here as well would
@@ -244,6 +255,41 @@ export function classifyCall({ tool, args = {}, cwd = '', home = '' }) {
   }
   return { risk: null }
 }
+
+/**
+ * Whether a call changes files, regardless of whether it is risky. Notify mode
+ * uses this for its "notice before changes" promise: an edit inside the
+ * workspace is allowed, but the user still asked to hear about it first.
+ */
+export function mutationOf({ tool, args = {}, cwd = '', home = '' }) {
+  if (FILE_TOOLS.has(tool)) {
+    const paths = writeTargets(tool, args)
+    if (paths.length === 0) return null
+    const absolute = paths.map((path) =>
+      canonical(resolvePath(path, home, cwd)),
+    )
+    return { rule: 'file_write', target: truncate(absolute.join(', ')) }
+  }
+  if (!SHELL_TOOLS.has(tool)) return null
+  const text = String(args.command ?? args.cmd ?? '')
+  // Explicit targets first (`> file`, `rm`, `cp`, ...), then two shapes whose
+  // target is implicit but whose effect is still a file change.
+  const written = shellWriteTargets(text, cwd, home)
+  if (written.length > 0) {
+    return { rule: 'file_write', target: truncate(written.join(', ')) }
+  }
+  if (IN_PLACE_EDIT.test(text) || GIT_TREE_WRITE.test(text)) {
+    return { rule: 'file_write', target: truncate(text) }
+  }
+  return null
+}
+
+/** Editors that rewrite their input file in place (`sed -i`, `perl -pi`). */
+const IN_PLACE_EDIT = /\b(?:sed|perl|ruby)\b[^;&|]*\s-[A-Za-z]*i\b/
+
+/** Git commands that rewrite the working tree (their paths are optional). */
+const GIT_TREE_WRITE =
+  /\bgit\s+(?:-C\s+\S+\s+|--git-dir=\S+\s+|--work-tree=\S+\s+|-c\s+\S+\s+)*(?:apply|restore|checkout|switch|reset|clean|merge|rebase|cherry-pick|revert|stash)\b/
 
 function classifyShell(command, { cwd, home }) {
   const text = command.trim()

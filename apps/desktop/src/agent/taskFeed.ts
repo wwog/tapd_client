@@ -78,6 +78,10 @@ export function taskInterrupted(
   task: DshTask,
   now = Date.now(),
 ): boolean {
+  // A chat has no workflow to resume: `running` is only its neutral value, and
+  // an idle chat is finished, not stopped. Without this guard every chat older
+  // than the grace period painted 已中断.
+  if (task.kind === "chat") return false;
   if (task.workflow !== "running") return false;
   if (task.interrupted) return true;
   const status = state.sessions[task.id]?.status;

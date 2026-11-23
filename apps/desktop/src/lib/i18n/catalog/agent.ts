@@ -394,14 +394,14 @@ export const agent = {
 
   // Composer.
   "agent.composer.placeholder": [
-    "描述要做什么，/ 调用指令",
-    "Describe the task, or type / for commands",
+    "描述要做什么，/ 调用指令 @ 引用文件",
+    "Describe the task, or type / for commands @ for file",
   ],
   "agent.composer.hint": ["Enter 发送，Shift+Enter 换行", "Enter sends, Shift+Enter adds a line"],
-  "agent.composer.attach": ["添加图片", "Attach an image"],
+  "agent.composer.add": ["添加文件或图片", "Add files or images"],
+  "agent.composer.drop": ["松开即可添加", "Drop to add"],
   "agent.composer.preview": ["查看大图", "Open preview"],
   "agent.composer.removeImage": ["移除这张图片", "Remove this image"],
-  "agent.image.failed": ["读取图片失败：{error}", "Could not read the image: {error}"],
 
   // Composer `/` menu: the same eight commands and two groups as dsh desktop.
   "agent.cmd.title": ["调用指令", "Commands"],
@@ -410,7 +410,7 @@ export const agent = {
   "agent.cmd.groupCommand": ["指令", "Commands"],
   "agent.cmd.file": ["文件", "File"],
   "agent.cmd.fileHint": ["插入文件引用", "Reference files"],
-  "agent.cmd.filePick": ["选择要引用的文件", "Choose files to reference"],
+  "agent.cmd.filePick": ["选择文件或图片", "Choose files or images"],
   "agent.cmd.goal": ["目标", "Goal"],
   "agent.cmd.goalHint": ["设置或查看长期目标", "Set or view the long-running goal"],
   "agent.cmd.plan": ["计划", "Plan"],
@@ -589,16 +589,8 @@ export const agent = {
   "agent.model.reasoningLevels": ["推理等级", "Reasoning levels"],
   "agent.model.reasoningMapping": ["推理参数映射", "Reasoning parameter mapping"],
   "agent.model.reasoningHint": [
-    "每行一个推理等级，直接输入或选择，右侧填它发到线上的参数值。「关闭」是隐式下限，无需填写；留空表示该模型无推理能力。",
-    "One reasoning level per row — type or pick a name, then the value sent upstream. Off is an implicit floor and needs no row; leave empty for a model with no reasoning.",
-  ],
-  "agent.model.reasoningLevelInvalid": [
-    "「{level}」不是有效的推理等级",
-    "\"{level}\" is not a valid reasoning level",
-  ],
-  "agent.model.reasoningLevelDuplicate": [
-    "推理等级「{level}」重复了",
-    "Reasoning level \"{level}\" is duplicated",
+    "每行填一个发到线上的参数值；顺序即从低到高的推理等级，第一个最低。关闭是隐式下限，无需填写；留空表示该模型无推理能力。",
+    "One value sent upstream per row; the row order is the low-to-high reasoning ladder, first is lowest. Off is an implicit floor and needs no row; leave empty for a model with no reasoning.",
   ],
   "agent.model.addLevel": ["添加等级", "Add level"],
   "agent.model.removeLevel": ["删除等级", "Remove level"],
@@ -636,8 +628,8 @@ export const agent = {
   ],
   "agent.config.permissionNotify": ["变更前通知", "Notify before changes"],
   "agent.config.permissionNotifyHint": [
-    "全部放行，执行前推一条通知。",
-    "Everything is allowed; a notice is sent before it runs.",
+    "每次改文件或执行风险操作前推一条通知，不拦截。",
+    "A notice before every file change or risky call; nothing is blocked.",
   ],
   "agent.config.permissionFull": ["完全访问", "Full access"],
   "agent.config.permissionFullHint": [

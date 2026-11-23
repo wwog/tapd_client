@@ -862,7 +862,7 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
 | 模式 | 行为 | 判定 |
 | --- | --- | --- |
 | `auto`（默认） | 只在有风险时请求授权 | 命中「硬 / 软」规则 → `ask`；路径类规则交给引擎沙箱 |
-| `notify` | 全部放行，执行前推一条通知 | 命中硬 / 软规则 → 通知（不阻塞） |
+| `notify` | 全部放行，执行前推一条通知 | 每次文件变更 → 通知；命中硬 / 软规则 → 通知（均不阻塞） |
 | `full` | 除硬黑名单外全部放行 | 仅命中硬规则 → `ask` |
 
 - 规则由 `dsh/plugins/tapd-policy` 在 `tools/pre-execute` 判定，返回
@@ -907,7 +907,8 @@ workflow 可能已经是 `awaiting_review`。任务行的状态点、时间和�
   （`canBecomeKeyWindow = NO`），输入框获得焦点时由 `set_answer_focus` 临时
   放开并激活应用，提交后把键盘交还之前的应用；回包是 `answer_item.custom`，
   与主窗口 QuestionSheet 走同一条 `dsh_question_answer`。
-- `notify` 模式：每次写/执行前推一张非阻塞通知卡（不等待）。
+- `notify` 模式：每次文件变更（写/改/应用补丁、带写入的 shell 或 `sed -i` 等）
+  与其它风险操作执行前推一张非阻塞通知卡（不等待）。
 - 手机：任务页可回答审批与提问（`dsh_approval_answer` / `dsh_question_answer`），
   Agent tab 用角标显示待处理数量；PWA 没有系统推送，进程内轮询为准。
 

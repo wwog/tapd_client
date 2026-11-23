@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Cpu, Plus, Trash2 } from "lucide-react";
 
@@ -17,14 +17,14 @@ const clamp = (value: number, min: number, max: number): number =>
 /** Levels that may be offered; `off` is an implicit floor, not an editable row. */
 const OFFERED_LEVELS = REASONING_LEVELS.filter((level) => level !== "off");
 
-/** One editable row. `level` stays free text until it is validated on save. */
-type EditableEffort = { key: number; level: string; wire: string };
+/** One editable row: only the value sent upstream; the level comes from position. */
+type EditableEffort = { key: number; wire: string };
 let nextRowKey = 0;
-const newRow = (level: string, wire: string): EditableEffort => ({
-  key: nextRowKey++,
-  level,
-  wire,
-});
+const newRow = (wire: string): EditableEffort => ({ key: nextRowKey++, wire });
+
+/** Compact inline field; several of these boxes share a line. */
+const compactField =
+  "rounded-md border border-border bg-surface px-1.5 py-0.5 text-ui-xs font-mono text-slate-700 outline-none transition placeholder:text-slate-300";
 
 type Props = {
   /** The entry being edited, or `null` when adding a new one. */
@@ -51,16 +51,16 @@ export function ModelEditorDialog(props: Props) {
   );
   const [image, setImage] = useState(model?.input.includes("image") ?? true);
   // `off` is the implicit floor the backend re-adds; the editor shows only the
-  // real ladder so there is no phantom row that keeps coming back after delete.
+  // real ladder. Each row carries just the wire value — the level is its index
+  // in this list (low → high), so there is no separate "name" to make sense of.
   const [reasoning, setReasoning] = useState<EditableEffort[]>(
     () =>
       model?.reasoning
         .filter((effort) => effort.level !== "off")
-        .map((effort) => newRow(effort.level, effort.wire)) ?? [],
+        .map((effort) => newRow(effort.wire)) ?? [],
   );
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const levelListId = useId();
 
   const edit = (update: (current: EditableEffort[]) => EditableEffort[]) => {
     setReasoning(update);
@@ -69,19 +69,8 @@ export function ModelEditorDialog(props: Props) {
 
   const addLevel = () => {
     if (reasoning.length >= OFFERED_LEVELS.length) return;
-    edit((current) => [...current, newRow("", "")]);
+    edit((current) => [...current, newRow("")]);
   };
-
-  const changeLevel = (key: number, level: string) =>
-    edit((current) =>
-      current.map((effort) => {
-        if (effort.key !== key) return effort;
-        // Keep an untouched wire value in step with the level it names.
-        const wire =
-          effort.wire.trim() === effort.level.trim() ? level : effort.wire;
-        return { ...effort, level, wire };
-      }),
-    );
 
   const changeWire = (key: number, wire: string) =>
     edit((current) =>
@@ -102,20 +91,6 @@ export function ModelEditorDialog(props: Props) {
       return;
     }
 
-    // Normalize and validate the free-text ladder before it reaches the backend.
-    const seen = new Set<string>();
-    for (const effort of reasoning) {
-      const level = effort.level.trim().toLowerCase();
-      if (!OFFERED_LEVELS.some((offered) => offered === level)) {
-        setError(t("agent.model.reasoningLevelInvalid", { level: effort.level || "—" }));
-        return;
-      }
-      if (seen.has(level)) {
-        setError(t("agent.model.reasoningLevelDuplicate", { level }));
-        return;
-      }
-      seen.add(level);
-    }
     if (reasoning.some((effort) => effort.wire.trim().length === 0)) {
       setError(t("agent.model.wireRequired"));
       return;
@@ -123,16 +98,13 @@ export function ModelEditorDialog(props: Props) {
 
     const window = Number.parseInt(context, 10);
     const output = Number.parseInt(maxTokens, 10);
-    // Persist in escalation order so the profile writes a stable ladder.
-    const ladder = reasoning
-      .map((effort) => ({
-        level: effort.level.trim().toLowerCase() as DshReasoningLevel,
-        wire: effort.wire.trim(),
-      }))
-      .sort(
-        (left, right) =>
-          REASONING_LEVELS.indexOf(left.level) - REASONING_LEVELS.indexOf(right.level),
-      );
+    // Level names come from the row's position in the low→high ladder; `off`
+    // is the implicit floor the backend inserts. The wire value is all the
+    // user enters, so a partial ladder (e.g. low/high) keeps its own meaning.
+    const ladder = reasoning.map((effort, index) => ({
+      level: OFFERED_LEVELS[index] as DshReasoningLevel,
+      wire: effort.wire.trim(),
+    }));
     onSubmit({
       id: trimmed,
       contextWindow: clamp(
@@ -247,38 +219,27 @@ export function ModelEditorDialog(props: Props) {
               {t("agent.model.addLevel")}
             </Button>
           </div>
-          <datalist id={levelListId}>
-            {OFFERED_LEVELS.map((level) => (
-              <option key={level} value={level} />
-            ))}
-          </datalist>
           {reasoning.length > 0 ? (
-            <div className="mt-1.5 space-y-1.5">
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
               {reasoning.map((effort) => (
-                <div key={effort.key} className="flex items-center gap-2">
-                  <input
-                    list={levelListId}
-                    value={effort.level}
-                    placeholder="low"
-                    aria-label={t("agent.model.reasoningLevels")}
-                    onChange={(event) => changeLevel(effort.key, event.target.value)}
-                    className={`${inputClass} w-24 shrink-0 py-1 font-mono`}
-                  />
-                  <span className="shrink-0 text-slate-300">→</span>
+                <div
+                  key={effort.key}
+                  className="flex items-center gap-1 rounded-lg border border-border bg-surface p-1"
+                >
                   <input
                     value={effort.wire}
                     placeholder={t("agent.model.wirePlaceholder")}
                     aria-label={t("agent.model.reasoningMapping")}
                     onChange={(event) => changeWire(effort.key, event.target.value)}
-                    className={`${inputClass} font-mono`}
+                    className={`${compactField} w-20`}
                   />
                   <button
                     type="button"
                     title={t("agent.model.removeLevel")}
                     onClick={() => removeLevel(effort.key)}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={11} />
                   </button>
                 </div>
               ))}

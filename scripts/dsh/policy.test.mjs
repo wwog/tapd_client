@@ -221,6 +221,58 @@ test("the permission mode owns the engine sandbox", async () => {
   assert.equal((await run(ROOT, "bash", SOFT)).kind, "ask", "and it stays auto");
 });
 
+test("notify announces ordinary in-workspace file changes", async () => {
+  const { policy, run, notices } = harness({ defaultMode: "auto" });
+  policy.setMode("root", "notify");
+
+  // No risk rule fires for an edit inside the session directory, but notify
+  // mode promises a notice before every change.
+  assert.equal(
+    (await run(ROOT, "write", { file_path: "/repo/a.txt", content: "x" }))
+      .kind,
+    "allow",
+  );
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].tool, "write");
+  assert.match(notices[0].target, /a\.txt$/);
+
+  // Shell writes count too, including the implicit-target editors.
+  assert.equal(
+    (await run(ROOT, "bash", { command: "echo x > /repo/b.txt" })).kind,
+    "allow",
+  );
+  assert.equal(notices.length, 2);
+  assert.equal(
+    (await run(ROOT, "bash", { command: "sed -i '' s/a/b/ /repo/a.txt" }))
+      .kind,
+    "allow",
+  );
+  assert.equal(notices.length, 3);
+
+  // Reads stay silent.
+  assert.equal(
+    (await run(ROOT, "bash", { command: "cat /repo/a.txt" })).kind,
+    "allow",
+  );
+  assert.equal(
+    (await run(ROOT, "read", { file_path: "/repo/a.txt" })).kind,
+    "allow",
+  );
+  assert.equal(notices.length, 3);
+});
+
+test("notify leaves non-mutating tools alone", async () => {
+  const { policy, run, notices } = harness({ defaultMode: "auto" });
+  policy.setMode("root", "notify");
+
+  assert.equal((await run(ROOT, "glob", { pattern: "*.txt" })).kind, "allow");
+  assert.equal(
+    (await run(ROOT, "bash", { command: "git status" })).kind,
+    "allow",
+  );
+  assert.equal(notices.length, 0);
+});
+
 test("a new default reaches a session without its own pick", async () => {
   const { policy, sessions } = harness({ defaultMode: "auto" });
   const other = session("other", "/repo");

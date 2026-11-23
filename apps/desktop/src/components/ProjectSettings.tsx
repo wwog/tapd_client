@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Check, ChevronDown, ChevronUp, Eye, EyeOff, Folder, FolderGit2, FolderOpen, Pencil, Plus, ScrollText, Trash2 } from "lucide-react";
 import clsx from "clsx";
 
@@ -122,7 +122,8 @@ export function ProjectSettings(props: {
   // Dropping a folder (or a file inside it) onto a project card sets its path.
   useTauriSubscription(
     () =>
-      getCurrentWindow().onDragDropEvent((event) => {
+      // Drag events are emitted to the webview, not the window.
+      getCurrentWebview().onDragDropEvent((event) => {
         const payload = event.payload;
         if (payload.type === "enter") {
           setDragging(true);

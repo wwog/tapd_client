@@ -7,13 +7,14 @@ import {
 } from "react";
 import clsx from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   FolderGit2,
   GitBranch,
-  ImagePlus,
   LayoutGrid,
   Loader2,
   MessageSquare,
+  Plus,
   Send,
   Square,
   Users,
@@ -23,6 +24,7 @@ import {
 
 import { t } from "../lib/i18n";
 import { showToast } from "../lib/toast";
+import { useTauriSubscription } from "../lib/tauriEvent";
 import { pickExportDir } from "../lib/exportDir";
 import { api } from "../lib/api";
 import { dshApi } from "../lib/dsh";
@@ -348,14 +350,6 @@ export function Composer() {
     });
   };
 
-  /** Appends a snippet to the current draft (file references, history picks). */
-  const applyInsert = (snippet: string, base: string) => {
-    const head = base.replace(/\s+$/u, "");
-    setText(head === "" ? snippet : `${head} ${snippet}`);
-    setHistoryOpen(false);
-    caretToEnd();
-  };
-
   /** Replaces the active `@token` with the picked path and keeps the caret. */
   const pickMention = (row: MentionRow) => {
     if (!mentionToken) return;
@@ -379,36 +373,26 @@ export function Composer() {
   };
 
   /**
-   * Paths become `@path` references; images become real attachments so the
+   * Routes picked or dropped paths: images become real attachments so the
    * model sees them (`@path` only lets it read the file, which cannot show a
-   * picture). A failed read falls back to the reference.
+   * picture); everything else becomes a readable `@path` reference.
    */
-  const pickFiles = async (args: string) => {
-    const typed = args
-      .split(/\s+/u)
-      .filter(Boolean)
-      .map((path) => path.replace(/^"(.*)"$/u, "$1"));
-    let paths = typed;
-    if (paths.length === 0) {
-      const selected = await openDialog({
-        multiple: true,
-        title: t("agent.cmd.filePick"),
-      });
-      paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    }
+  const addPaths = async (paths: string[]) => {
     if (paths.length === 0) return;
     const base = mentionBase();
     const mentions: string[] = [];
-    const next = [...attachments];
+    const picked: ComposerImage[] = [];
+    // Past the cap an image falls back to a reference instead of vanishing.
+    const room = MAX_IMAGES - (images[sessionId]?.length ?? 0);
     for (const path of paths) {
       const mediaType = imageTypeOf(path);
-      if (mediaType && next.length < MAX_IMAGES) {
+      if (mediaType && picked.length < room) {
         try {
           const dataUrl = await api.imageDataUrl(path);
           const comma = dataUrl.indexOf(",");
           if (comma > 0) {
-            next.push({
-              id: `${Date.now()}-${next.length}`,
+            picked.push({
+              id: `${Date.now()}-${picked.length}`,
               name: fileNameOf(path),
               mediaType,
               data: dataUrl.slice(comma + 1),
@@ -422,47 +406,45 @@ export function Composer() {
       }
       mentions.push(base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : path);
     }
-    if (next.length !== attachments.length) setAttachments(next);
+    if (picked.length > 0) {
+      setImages((current) => ({
+        ...current,
+        [sessionId]: [...(current[sessionId] ?? EMPTY_IMAGES), ...picked].slice(
+          0,
+          MAX_IMAGES,
+        ),
+      }));
+    }
     if (mentions.length > 0) {
-      applyInsert(mentions.map(fileMention).join(" "), "");
+      const snippet = mentions.map(fileMention).join(" ");
+      setDrafts((current) => {
+        const head = (current[sessionId] ?? "").replace(/\s+$/u, "");
+        return {
+          ...current,
+          [sessionId]: head === "" ? snippet : `${head} ${snippet}`,
+        };
+      });
+      caretToEnd();
     } else {
       focusEditor();
     }
   };
 
-  /** Adds bytes as an attachment (paste, or a file chosen through the picker). */
-  const addAttachment = (src: string, mediaType: string, name: string) => {
-    const comma = src.indexOf(",");
-    if (comma < 0) return;
-    setAttachments([
-      ...attachments.slice(0, MAX_IMAGES - 1),
-      {
-        id: `${Date.now()}-${attachments.length}`,
-        name,
-        mediaType,
-        data: src.slice(comma + 1),
-        src,
-      },
-    ]);
-  };
-
-  /** Opens the image file picker used by the paperclip button. */
-  const pickImages = async () => {
-    const selected = await openDialog({
-      multiple: true,
-      title: t("agent.cmd.filePick"),
-      filters: [{ name: "images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
-    });
-    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    for (const path of paths) {
-      const mediaType = imageTypeOf(path);
-      if (!mediaType) continue;
-      try {
-        addAttachment(await api.imageDataUrl(path), mediaType, fileNameOf(path));
-      } catch (error) {
-        showToast("error", t("agent.image.failed", { error: String(error) }));
-      }
+  /** The `+` control and `/file`: one picker, routed by file type. */
+  const pickFiles = async (args: string) => {
+    const typed = args
+      .split(/\s+/u)
+      .filter(Boolean)
+      .map((path) => path.replace(/^"(.*)"$/u, "$1"));
+    let paths = typed;
+    if (paths.length === 0) {
+      const selected = await openDialog({
+        multiple: true,
+        title: t("agent.cmd.filePick"),
+      });
+      paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     }
+    await addPaths(paths);
   };
 
   /** Clipboard pictures paste straight into the draft as attachments. */
@@ -476,11 +458,63 @@ export function Composer() {
       const reader = new FileReader();
       reader.onload = () => {
         const src = typeof reader.result === "string" ? reader.result : "";
-        if (src) addAttachment(src, file.type, file.name || `pasted-${index + 1}.png`);
+        const comma = src.indexOf(",");
+        if (comma < 0) return;
+        setImages((current) => ({
+          ...current,
+          [sessionId]: [
+            ...(current[sessionId] ?? EMPTY_IMAGES).slice(0, MAX_IMAGES - 1),
+            {
+              id: `${Date.now()}-${index}`,
+              name: file.name || `pasted-${index + 1}.png`,
+              mediaType: file.type,
+              data: src.slice(comma + 1),
+              src,
+            },
+          ],
+        }));
       };
       reader.readAsDataURL(file);
     }
   };
+
+  // Dropping files onto the composer is the fast path for both kinds: images
+  // become attachments, other files become `@` references. The ref keeps the
+  // subscription alive across renders while the handler reads the latest draft.
+  const addPathsRef = useRef(addPaths);
+  addPathsRef.current = addPaths;
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  useTauriSubscription(
+    () =>
+      // File drops target the *webview*: Tauri emits them only to Webview
+      // listeners, so `getCurrentWindow().onDragDropEvent` never fires here.
+      getCurrentWebview().onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "leave") {
+          setDragging(false);
+          return;
+        }
+        // Tauri reports physical pixels; the composer rect is CSS pixels.
+        const rect = cardRef.current?.getBoundingClientRect();
+        const ratio = window.devicePixelRatio || 1;
+        const inside = Boolean(
+          rect &&
+            payload.position.x / ratio >= rect.left &&
+            payload.position.x / ratio <= rect.right &&
+            payload.position.y / ratio >= rect.top &&
+            payload.position.y / ratio <= rect.bottom,
+        );
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragging(inside);
+          return;
+        }
+        setDragging(false);
+        if (!inside) return;
+        void addPathsRef.current(payload.paths);
+      }),
+    [],
+  );
 
   const exportLog = async () => {
     const id = agentStore.get().selectedId;
@@ -699,7 +733,20 @@ export function Composer() {
   return (
     <div data-component="Composer" className="px-6 pb-3 pt-2">
       <div className={AGENT_COLUMN}>
-        <div className="relative rounded-2xl border border-border bg-surface transition focus-within:border-slate-300">
+        <div
+          ref={cardRef}
+          className={clsx(
+            "relative rounded-2xl border bg-surface transition",
+            dragging
+              ? "border-sky-300"
+              : "border-border focus-within:border-slate-300",
+          )}
+        >
+          {dragging ? (
+            <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-sky-50/85 text-ui-caption text-sky-700">
+              {t("agent.composer.drop")}
+            </div>
+          ) : null}
           {/* The two keyboard lists float above the card, like dsh desktop:
               they never push the transcript while a draft is being shaped. */}
           {slashOpen ? (
@@ -961,12 +1008,12 @@ export function Composer() {
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
-                title={t("agent.composer.attach")}
-                aria-label={t("agent.composer.attach")}
-                onClick={() => void pickImages()}
+                title={t("agent.composer.add")}
+                aria-label={t("agent.composer.add")}
+                onClick={() => void pickFiles("")}
                 className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-overlay-soft hover:text-slate-600"
               >
-                <ImagePlus size={13} />
+                <Plus size={14} />
               </button>
               <SessionModelPicker openSignal={signals.model} />
               <button
