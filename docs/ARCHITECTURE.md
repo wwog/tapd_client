@@ -98,7 +98,8 @@ Agent 只跑 App 内置的 DeepSeek Harness 运行时。契约与调研结论见
 - **能力接入**：自有 Cordis 插件 `dsh/plugins/{tapd-tools,tapd-bridge,tapd-policy}` 随 App 打包，profile 以
   绝对路径挂载；TAPD 工具走本机 HTTP，不走 MCP；MCP sidecar 只服务外部客户端。
 - **会话、任务与审批**：控制面走官方 SDK JSON-RPC；token 级流式与任务板由桥插件推送；审批 / 提问进通知胶囊，
-  手机也能回答。任务元数据持久化在 `cache.sqlite3` 的 `dsh_tasks`（当前 schema 12，见 `src-tauri/src/cache/migrate.rs`），transcript 仍由 dsh 自己保存。
+  手机也能回答。任务元数据持久化在 `cache.sqlite3` 的 `dsh_tasks`（当前 schema 14，见 `src-tauri/src/cache/migrate.rs`），
+  输入框的待发送队列存在同库的 `dsh_queues`（重启后恢复并暂停，点「继续」接着发），transcript 仍由 dsh 自己保存。
 
 ### 3.5 MCP 调用
 

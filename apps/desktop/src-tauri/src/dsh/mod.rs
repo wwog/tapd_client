@@ -28,6 +28,7 @@ mod mode_store;
 pub mod payload;
 pub mod policy;
 mod prompt_store;
+mod queue_store;
 pub mod runtime;
 pub mod session_log;
 pub mod tasks;

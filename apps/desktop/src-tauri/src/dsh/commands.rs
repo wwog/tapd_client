@@ -192,6 +192,23 @@ pub async fn dsh_prompt_history(app: AppHandle, limit: Option<u32>) -> Result<Va
     feature::prompt_history(&app, limit.unwrap_or(50)).await
 }
 
+/// Every stored composer queue (`{ queues: [...] }`), read once on startup.
+#[tauri::command]
+pub async fn dsh_queue_load(app: AppHandle) -> Result<Value, String> {
+    feature::queue_load(&app).await
+}
+
+/// Replaces one session's queue; an empty `items` array deletes the row.
+#[tauri::command]
+pub async fn dsh_queue_save(
+    app: AppHandle,
+    session_id: String,
+    items: String,
+    pause: Option<String>,
+) -> Result<(), String> {
+    feature::queue_save(&app, &session_id, &items, pause.as_deref()).await
+}
+
 /// Switches one session's model route; the choice is durable in its session log.
 #[tauri::command]
 pub async fn dsh_select_model(

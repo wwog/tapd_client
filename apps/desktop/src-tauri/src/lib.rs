@@ -116,6 +116,8 @@ pub fn run() {
             dsh::commands::dsh_command_run,
             dsh::commands::dsh_session_export,
             dsh::commands::dsh_prompt_history,
+            dsh::commands::dsh_queue_load,
+            dsh::commands::dsh_queue_save,
             dsh::commands::dsh_mentions,
             dsh::commands::dsh_select_model,
             dsh::commands::dsh_file_target,

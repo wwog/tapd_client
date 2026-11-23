@@ -32,9 +32,21 @@ import { agentActions, agentStore, isSessionRunning } from "./store";
 
 const EMPTY_ITEMS: DshEntry[] = [];
 
+/** Within this many pixels of the end, the tail stays pinned. */
+const STICK_DISTANCE = 48;
+
+/**
+ * Where each session's transcript was left. The pane remounts per session, so
+ * the DOM scroll offset cannot survive the switch by itself; remembering the
+ * stick state and offset makes "switch away and back" land where the reader
+ * was — at the bottom for a followed session, at the same place otherwise.
+ */
+const scrollMemory = new Map<string, { stick: boolean; top: number }>();
+
 /**
  * Committed history plus the live attempt on top, grouped per turn. The page
- * remounts this per session (`key`), which also resets the scroll position.
+ * remounts this per session (`key`), and the module-level memory restores the
+ * scroll position the session was left at.
  * `visible` hides the pane for the team board without unmounting it, so the
  * scroll position and the live overlay survive a trip to the board and back.
  *
@@ -276,7 +288,49 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   };
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+  // Restored on mount for a session that was left scrolled away from the tail.
+  const savedScrollRef = useRef(
+    sessionId ? scrollMemory.get(sessionId) : undefined,
+  );
+  const stickRef = useRef(savedScrollRef.current?.stick ?? true);
+  /** Offset to re-apply while the remount's content is still growing. */
+  const restoreTopRef = useRef<number | null>(
+    savedScrollRef.current && !savedScrollRef.current.stick
+      ? savedScrollRef.current.top
+      : null,
+  );
+  /**
+   * Whether the current scroll events come from the reader (wheel, touch,
+   * scrollbar, keys) rather than from layout growth or our own positioning.
+   * Only reader-driven events may change `stick`: a deferred markdown block can
+   * shrink and re-grow the height, and the browser's clamp of `scrollTop` must
+   * not be mistaken for the reader leaving the tail.
+   */
+  const userScrollRef = useRef(false);
+  const userScrollTimer = useRef<number | undefined>(undefined);
+  const markUserScroll = useCallback((ms = 200) => {
+    userScrollRef.current = true;
+    window.clearTimeout(userScrollTimer.current);
+    userScrollTimer.current = window.setTimeout(() => {
+      userScrollRef.current = false;
+    }, ms);
+  }, []);
+  useEffect(() => () => window.clearTimeout(userScrollTimer.current), []);
+
+  /** Reader input wins over a pending restore from the session switch. */
+  const noteUserScroll = (ms?: number) => {
+    restoreTopRef.current = null;
+    markUserScroll(ms);
+  };
+
+  /** Assigns a clamped scroll offset. */
+  const positionScroll = (element: HTMLDivElement, top: number) => {
+    const max = Math.max(0, element.scrollHeight - element.clientHeight);
+    const target = Math.min(Math.max(0, top), max);
+    element.scrollTop = target;
+    return target;
+  };
   // Floating "jump to latest" affordance: only while the reader is away from
   // the bottom, so the tail can keep streaming without dragging them down.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
@@ -332,23 +386,94 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     const pendingStarted = pending.length > pendingLengthRef.current;
     lastUserSeqRef.current = lastUserSeq;
     pendingLengthRef.current = pending.length;
-    if (userStarted || pendingStarted) stickRef.current = true;
+    if (userStarted || pendingStarted) {
+      stickRef.current = true;
+      restoreTopRef.current = null;
+    }
 
     if (!visible) return;
     const element = scrollRef.current;
-    if (!element || !stickRef.current) return;
-    element.scrollTop = element.scrollHeight;
-    setAwayFromBottom(false);
+    if (!element) return;
+    if (stickRef.current) {
+      positionScroll(element, element.scrollHeight);
+      setAwayFromBottom(false);
+      return;
+    }
+    const top = restoreTopRef.current;
+    if (top === null) return;
+    const target = positionScroll(element, top);
+    if (element.scrollHeight - element.clientHeight >= target - 1) {
+      restoreTopRef.current = null;
+    }
+    setAwayFromBottom(true);
   }, [lastUserSeq, pending.length, signature, visible]);
+
+  // A remount renders the committed blocks first and their deferred markdown
+  // (and images) afterwards, so the height keeps growing after the layout
+  // effect above. Follow that growth while the tail is pinned; for a restored
+  // offset, re-apply it until the content is tall enough to hold it.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || !visible) return;
+    const observer = new ResizeObserver(() => {
+      const element = scrollRef.current;
+      if (!element) return;
+      if (stickRef.current) {
+        positionScroll(element, element.scrollHeight);
+        return;
+      }
+      const top = restoreTopRef.current;
+      if (top === null) return;
+      const target = positionScroll(element, top);
+      if (element.scrollHeight - element.clientHeight >= target - 1) {
+        restoreTopRef.current = null;
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [visible]);
 
   const onScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
+    if (!userScrollRef.current) {
+      // Layout growth (or our own positioning) moved the offset. Keep following
+      // the tail when it was pinned, and keep re-applying a pending restore.
+      if (stickRef.current) {
+        positionScroll(element, element.scrollHeight);
+        return;
+      }
+      const top = restoreTopRef.current;
+      if (top === null) return;
+      const target = positionScroll(element, top);
+      if (element.scrollHeight - element.clientHeight >= target - 1) {
+        restoreTopRef.current = null;
+      }
+      return;
+    }
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    const stuck = distance < 48;
+    const stuck = distance < STICK_DISTANCE;
     stickRef.current = stuck;
+    if (sessionId) {
+      scrollMemory.set(sessionId, { stick: stuck, top: element.scrollTop });
+    }
     setAwayFromBottom(!stuck);
-  }, []);
+  }, [sessionId]);
+
+  // The last position can move without a reader scroll (a prompt jump, a
+  // layout clamp), so the definitive copy is taken when the pane unmounts for
+  // the next session. A layout-effect cleanup still sees the live DOM.
+  useLayoutEffect(() => {
+    if (!sessionId) return;
+    return () => {
+      const element = scrollRef.current;
+      if (!element) return;
+      scrollMemory.set(sessionId, {
+        stick: stickRef.current,
+        top: element.scrollTop,
+      });
+    };
+  }, [sessionId]);
 
   // A prompt jump is a positioning action: stop following the tail first so
   // the next streaming delta cannot drag the reader back down.
@@ -371,7 +496,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     if (!element) return;
     stickRef.current = true;
     setAwayFromBottom(false);
-    element.scrollTop = element.scrollHeight;
+    positionScroll(element, element.scrollHeight);
   }, []);
 
   if (!sessionId) {
@@ -417,6 +542,16 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        // Reader input marks the scroll events that follow as intentional; a
+        // layout clamp or our own positioning must not flip the tail-follow.
+        onWheel={() => noteUserScroll()}
+        onTouchStart={() => noteUserScroll(400)}
+        onTouchMove={() => noteUserScroll()}
+        onPointerDown={() => noteUserScroll(400)}
+        onPointerMove={(event) => {
+          if (event.buttons) noteUserScroll();
+        }}
+        onKeyDown={() => noteUserScroll(300)}
         // The transcript owns its own bottom-follow. Leaving the browser's
         // scroll anchoring on made a fold's height animation drag the scroll
         // position with it, which reads as a stutter/jump under the pointer.
@@ -424,6 +559,7 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4"
       >
         <div
+          ref={contentRef}
           className={clsx(
             "flex flex-col gap-5",
             AGENT_COLUMN,

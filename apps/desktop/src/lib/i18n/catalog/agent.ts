@@ -403,6 +403,53 @@ export const agent = {
   "agent.composer.preview": ["查看大图", "Open preview"],
   "agent.composer.removeImage": ["移除这张图片", "Remove this image"],
 
+  // Composer queue (ZCode 队列): messages typed during a reply wait here.
+  "agent.queue.title": ["待发送消息（{count}）", "Queued messages ({count})"],
+  "agent.queue.drag": ["拖拽排序", "Drag to reorder"],
+  "agent.queue.sendNow": ["立即", "Send now"],
+  "agent.queue.edit": ["编辑", "Edit"],
+  "agent.queue.remove": ["移除待发送消息", "Remove queued message"],
+  "agent.queue.editing": ["正在编辑排队消息", "Editing a queued message"],
+  "agent.queue.editingBelow": ["正在下方编辑", "Editing below"],
+  "agent.queue.image": ["图片", "Image"],
+  "agent.queue.placeholder": [
+    "继续输入以排队后续修改",
+    "Keep typing to queue follow-up changes",
+  ],
+  "agent.queue.composerHint": [
+    "Enter 加入队列，⌘Enter 立即发送",
+    "Enter queues the message, ⌘Enter sends it now",
+  ],
+  "agent.queue.pausedStopped": [
+    "由于你中断了当前响应，队列已暂停",
+    "The queue is paused because you stopped the response",
+  ],
+  "agent.queue.pausedError": [
+    "由于当前响应出错，队列已暂停（内容未丢失）",
+    "The queue is paused because the response failed (nothing was lost)",
+  ],
+  "agent.queue.pausedGeneric": ["队列已暂停", "The queue is paused"],
+  "agent.queue.resume": ["继续", "Continue"],
+  "agent.queue.resumeHint": [
+    "继续按顺序自动发送队列中的内容",
+    "Continue sending queued items in order",
+  ],
+  "agent.queue.itemGone": [
+    "原排队消息已不在队列中，发送将作为新消息",
+    "The queued message is gone; sending will create a new message",
+  ],
+  "agent.queue.sendConfirmTitle": ["发送消息？", "Send message?"],
+  "agent.queue.sendConfirmBody": [
+    "你即将发送一条消息。要清除之前已排队的 {count} 条消息吗？",
+    "You're about to send a message. Clear the {count} queued messages?",
+  ],
+  "agent.queue.sendConfirmClear": ["清空队列", "Clear queue"],
+  "agent.queue.sendConfirmKeep": ["发送消息", "Send message"],
+  "agent.queue.tooLarge": [
+    "排队消息太大，未能保存（重启后会丢失）",
+    "The queued messages are too large to save (they will be lost on restart)",
+  ],
+
   // Composer `/` menu: the same eight commands and two groups as dsh desktop.
   "agent.cmd.title": ["调用指令", "Commands"],
   "agent.cmd.empty": ["没有匹配的指令", "No matching command"],

@@ -700,6 +700,8 @@ TTFT 取 `ttftMs ÷ ttftSteps` —— 两者都按**整段会话**累积，单�
 | `dsh_attachment_image` | `{ attachmentId, mediaType }` | `data:` URL（`<data_dir>/dsh/home/attachments/v1/objects/<sha[:2]>/<sha>`，同 24 MiB 上限） |
 | `dsh_session_export` | `{ sessionId, dir }` | `{ sessionId, path, bytes, zipped }`；把原始会话日志打成 ZIP（没有 `ditto` 时保留目录） |
 | `dsh_prompt_history` | `{ limit? }` | `{ prompts: string[] }`；跨会话最近的输入（`dsh_prompts` 表，去重、倒序） |
+| `dsh_queue_load` | — | `{ queues: [{ sessionId, items, pause }] }`；上次运行留下的输入框队列（`dsh_queues` 表，`items` 是 UI 的 JSON 数组，图片字节在里面） |
+| `dsh_queue_save` | `{ sessionId, items, pause? }` | `()`；整体替换该会话的队列，`items: "[]"` 删除该行 |
 | `dsh_select_model` | `{ sessionId, provider, model, reasoningEffort? }` | `{ ok: true }`；会话级切换，写进该会话日志；路由不在运行中的目录里时报可读错误（先保存模型设置，目录会热更新） |
 | `dsh_models_discover` | `{ provider?, baseUrl, api, apiKey? }` | `{ models: [{ id, name?, contextWindow?, maxTokens? }] }`；宿主直接 `GET` 端点列表，**不依赖运行时**（openai-completions / openai-responses / anthropic-messages / google-generative-ai） |
 | `dsh_worktrees` | — | `{ root, worktrees: [{ sessionId, path, updatedAt, title, project, repoPath, orphan }] }`；磁盘上残留 / 使用中的 worktree |

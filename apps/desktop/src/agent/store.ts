@@ -47,6 +47,8 @@ import {
   defaultSelection,
   type DshModelsConfig,
 } from "../lib/agentSettings";
+import { t } from "../lib/i18n";
+import { showToast } from "../lib/toast";
 import { isWorkflowTask } from "./workflow";
 
 export type AgentTeamView = "chat" | "board";
@@ -60,6 +62,23 @@ export type PendingPrompt = {
   text: string;
   images?: { name?: string; mediaType: string; src: string }[];
 };
+
+/**
+ * One message held in the composer's send queue, ZCode-style: while a turn is
+ * running a new prompt is not handed to the runtime, it waits here so it can
+ * still be edited, reordered or removed. `images` keeps the encoded bytes as
+ * well as the thumbnail, because the item is resent later.
+ */
+export type QueuedPrompt = {
+  id: string;
+  text: string;
+  images?: { name?: string; mediaType: string; src: string; data: string }[];
+};
+
+/** Why the queue stopped draining itself: the user interrupted the turn, the
+ *  turn failed, or the runtime restarted underneath it. Every reason keeps the
+ *  items; `resumeQueue` puts the queue back to work. */
+export type QueuePauseReason = "stopped" | "error" | "paused";
 
 /** The session's panes: the task's own record, the transcript, the trajectory
  *  ledger. A workflow task opens on its task record; a free chat has no task
@@ -140,6 +159,13 @@ export type AgentState = {
   committedAttempts: Record<string, string | undefined>;
   /** Prompts accepted by the runtime but not yet echoed as a user entry. */
   pendingPrompts: Record<string, PendingPrompt[] | undefined>;
+  /** Prompts the composer holds back while a turn runs, in send order. */
+  queuedPrompts: Record<string, QueuedPrompt[] | undefined>;
+  /** Absent means the queue drains itself after every finished turn. */
+  queuePause: Record<string, QueuePauseReason | undefined>;
+  /** The item loaded into the composer for editing; the queue must not send
+   *  it out from under the editor. */
+  queueEditing: Record<string, string | undefined>;
   /** Model picked before a session exists; applied to the next allocation. */
   draftSelection: ModelSelection | null;
   /** Team collaboration for the next free chat. Chats default off even when
@@ -217,6 +243,9 @@ const initialState: AgentState = {
   live: {},
   committedAttempts: {},
   pendingPrompts: {},
+  queuedPrompts: {},
+  queuePause: {},
+  queueEditing: {},
   draftSelection: null,
   selectionOverrides: {},
   approvals: [],
@@ -314,6 +343,9 @@ function mergeEntries(fetched: DshEntry[], live: DshEntry[]): DshEntry[] {
  *  authority; live content covers the moment before the first status event. */
 export function isSessionRunning(state: AgentState, sessionId: string | null): boolean {
   if (!sessionId) return false;
+  // `turn/start` lands before the session row flips to running, and the row
+  // lags the end the other way; the turn markers are the authoritative signal.
+  if (activeTurns.has(sessionId)) return true;
   if (state.sessions[sessionId]?.status === "running") return true;
   const live = state.live[sessionId];
   return Boolean(live && (live.text || live.reasoning || live.tools.length > 0));
@@ -496,6 +528,10 @@ function adoptTasks(tasks: DshTask[]): void {
 
 function clearSelection(sessionId: string): void {
   drafts.delete(sessionId);
+  // Nothing may put a dispatched item back into a session that is going away.
+  bumpQueueGeneration(sessionId);
+  activeTurns.delete(sessionId);
+  dispatchedAt.delete(sessionId);
   update((state) => {
     const entries = { ...state.entries };
     delete entries[sessionId];
@@ -505,6 +541,12 @@ function clearSelection(sessionId: string): void {
     delete committedAttempts[sessionId];
     const pendingPrompts = { ...state.pendingPrompts };
     delete pendingPrompts[sessionId];
+    const queuedPrompts = { ...state.queuedPrompts };
+    delete queuedPrompts[sessionId];
+    const queuePause = { ...state.queuePause };
+    delete queuePause[sessionId];
+    const queueEditing = { ...state.queueEditing };
+    delete queueEditing[sessionId];
     const sessionModes = { ...state.sessionModes };
     delete sessionModes[sessionId];
     const planOverrides = { ...state.planOverrides };
@@ -517,6 +559,9 @@ function clearSelection(sessionId: string): void {
       live,
       committedAttempts,
       pendingPrompts,
+      queuedPrompts,
+      queuePause,
+      queueEditing,
       sessionModes,
       planOverrides,
     };
@@ -1070,6 +1115,339 @@ function rememberEffort(selection: ModelSelection): void {
   effortSaveTimer = window.setTimeout(() => void flushEffort(), EFFORT_SAVE_DELAY_MS);
 }
 
+// ---------------------------------------------------------------------------
+// Composer send queue (ZCode 交互行为 = 队列)
+// ---------------------------------------------------------------------------
+
+/** Sessions whose queued prompt is already on its way to the runtime. */
+const queueSends = new Set<string>();
+
+/**
+ * Sessions between `turn/start` and `turn/end`, with the running turn's number.
+ * The queue only advances on a finished turn, so this — not the lagging session
+ * status — decides whether a drain would land in the middle of a reply. The
+ * number lets a late end from a turn the reader already resumed past be
+ * recognised instead of re-pausing the queue.
+ */
+const activeTurns = new Map<string, number>();
+
+/** When the newest prompt was handed to the runtime (epoch ms), per session.
+ *  A turn end stamped before it belongs to the turn that prompt replaced. */
+const dispatchedAt = new Map<string, number>();
+
+/**
+ * Queue items out of the in-memory list but not yet acknowledged by the
+ * runtime. They stay in the disk snapshot (at-least-once): a restart may resend
+ * one, which is safer than silently losing it.
+ */
+const queueInFlight = new Map<string, QueuedPrompt>();
+
+/** Bumped when a queue is cleared or its session deleted, so a late dispatch
+ *  failure cannot resurrect what the reader removed. */
+const queueGeneration = new Map<string, number>();
+
+function queueGenerationOf(sessionId: string): number {
+  return queueGeneration.get(sessionId) ?? 0;
+}
+
+function bumpQueueGeneration(sessionId: string): void {
+  queueGeneration.set(sessionId, queueGenerationOf(sessionId) + 1);
+  queueInFlight.delete(sessionId);
+}
+
+let queuedSeq = 0;
+
+function queuedId(): string {
+  queuedSeq += 1;
+  return `q${Date.now().toString(36)}-${queuedSeq}`;
+}
+
+/** Set by `loadQueue`; the disk copy is read once per app session. */
+let queueRestored = false;
+
+/**
+ * Writes one session's queue to `dsh_queues` (the restart-survival copy).
+ *
+ * One write per session at a time: a payload with images easily outlives the
+ * debounce, and two overlapping saves could land in the opposite order (the
+ * older snapshot winning). A change that arrives while a write is running marks
+ * the writer dirty; it re-serialises the newest state right after.
+ *
+ * The in-flight item is prepended to the snapshot, so a concurrent change cannot
+ * erase a prompt the runtime has not acknowledged yet.
+ */
+type QueueWriter = { running: boolean; dirty: boolean; timer?: number };
+
+const queueWriters = new Map<string, QueueWriter>();
+
+/** Matches the backend's cap (`queue_store::MAX_QUEUE_BYTES`); a larger queue
+ *  cannot be stored and the reader is told once. */
+const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
+
+const queueSizeWarned = new Set<string>();
+
+function persistQueue(sessionId: string, immediate = false): void {
+  let writer = queueWriters.get(sessionId);
+  if (!writer) {
+    writer = { running: false, dirty: false };
+    queueWriters.set(sessionId, writer);
+  }
+  if (writer.timer !== undefined) {
+    window.clearTimeout(writer.timer);
+    writer.timer = undefined;
+  }
+  if (writer.running) {
+    writer.dirty = true;
+    return;
+  }
+  const start = () => void flushQueue(sessionId, writer!);
+  if (immediate) start();
+  else writer.timer = window.setTimeout(start, 150);
+}
+
+/** Best-effort flush for a window that is closing; the invoke may not land. */
+function flushQueueWrites(): void {
+  for (const [sessionId, writer] of queueWriters) {
+    if (writer.timer !== undefined) {
+      window.clearTimeout(writer.timer);
+      writer.timer = undefined;
+    }
+    if (!writer.running) void flushQueue(sessionId, writer);
+    else writer.dirty = true;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushQueueWrites);
+}
+
+async function flushQueue(sessionId: string, writer: QueueWriter): Promise<void> {
+  if (writer.running) {
+    writer.dirty = true;
+    return;
+  }
+  writer.running = true;
+  try {
+    const state = agentStore.get();
+    const inFlight = queueInFlight.get(sessionId);
+    const queue = state.queuedPrompts[sessionId] ?? [];
+    const items = (inFlight ? [inFlight, ...queue] : queue).map((item) => ({
+      id: item.id,
+      text: item.text,
+      ...(item.images?.length
+        ? {
+            images: item.images.map(({ name, mediaType, data }) => ({
+              ...(name ? { name } : {}),
+              mediaType,
+              data,
+            })),
+          }
+        : {}),
+    }));
+    const payload = JSON.stringify(items);
+    if (payload.length > MAX_QUEUE_BYTES) {
+      // The queue still works; only the restart copy is refused.
+      if (!queueSizeWarned.has(sessionId)) {
+        queueSizeWarned.add(sessionId);
+        showToast("error", t("agent.queue.tooLarge"));
+      }
+      return;
+    }
+    queueSizeWarned.delete(sessionId);
+    await dshApi.queueSave(sessionId, payload, state.queuePause[sessionId] ?? null);
+  } catch {
+    // A failed write only costs the restart copy; the next change retries.
+  } finally {
+    writer.running = false;
+    if (writer.dirty) {
+      writer.dirty = false;
+      await flushQueue(sessionId, writer);
+    }
+  }
+}
+
+/** Rebuilds one stored item; the thumbnail comes back from the bytes. */
+function storedQueueItem(value: unknown): QueuedPrompt | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  const text = typeof entry.text === "string" ? entry.text : "";
+  const images: NonNullable<QueuedPrompt["images"]> = [];
+  if (Array.isArray(entry.images)) {
+    for (const raw of entry.images) {
+      if (!raw || typeof raw !== "object") continue;
+      const image = raw as Record<string, unknown>;
+      if (typeof image.data !== "string" || typeof image.mediaType !== "string") continue;
+      images.push({
+        ...(typeof image.name === "string" ? { name: image.name } : {}),
+        mediaType: image.mediaType,
+        data: image.data,
+        src: `data:${image.mediaType};base64,${image.data}`,
+      });
+    }
+  }
+  if (!text.trim() && images.length === 0) return null;
+  return {
+    id: typeof entry.id === "string" && entry.id ? entry.id : queuedId(),
+    text,
+    ...(images.length > 0 ? { images } : {}),
+  };
+}
+
+function storedQueueItems(raw: unknown[]): QueuedPrompt[] {
+  const items: QueuedPrompt[] = [];
+  for (const value of raw) {
+    const item = storedQueueItem(value);
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+/**
+ * Hands one queue item to the runtime. `resetLive` is false when the current
+ * turn keeps streaming (steer / 立即): wiping the overlay there would erase the
+ * answer the queue is supposed to follow.
+ */
+async function dispatchQueued(
+  sessionId: string,
+  item: QueuedPrompt,
+  resetLive: boolean,
+): Promise<boolean> {
+  // A turn end stamped before this moment belongs to the turn this prompt
+  // replaces; it must not pause the queue the prompt just resumed.
+  dispatchedAt.set(sessionId, Date.now());
+  const preview = item.images?.map(({ name, mediaType, src }) => ({
+    ...(name ? { name } : {}),
+    mediaType,
+    src,
+  }));
+  update((state) => ({
+    ...state,
+    live: resetLive ? { ...state.live, [sessionId]: undefined } : state.live,
+    committedAttempts: resetLive
+      ? { ...state.committedAttempts, [sessionId]: undefined }
+      : state.committedAttempts,
+    pendingPrompts: {
+      ...state.pendingPrompts,
+      [sessionId]: [
+        ...(state.pendingPrompts[sessionId] ?? []),
+        { text: item.text, images: preview },
+      ],
+    },
+    lastError: null,
+  }));
+  try {
+    await dshApi.prompt(
+      sessionId,
+      item.text,
+      (item.images ?? []).map((image) => ({
+        data: image.data,
+        mimeType: image.mediaType,
+        ...(image.name ? { name: image.name } : {}),
+      })),
+    );
+    return true;
+  } catch (error) {
+    // Drop only the placeholder this call added; an older identical prompt
+    // stays where it was.
+    update((state) => {
+      const queue = state.pendingPrompts[sessionId] ?? [];
+      let index = -1;
+      for (let i = queue.length - 1; i >= 0; i -= 1) {
+        if (queue[i]?.text === item.text) {
+          index = i;
+          break;
+        }
+      }
+      if (index < 0) return state;
+      const next = queue.slice();
+      next.splice(index, 1);
+      return { ...state, pendingPrompts: { ...state.pendingPrompts, [sessionId]: next } };
+    });
+    setError(error);
+    return false;
+  }
+}
+
+/** Pauses every non-empty queue: item lists stay intact and wait for 继续. */
+function pauseQueues(reason: QueuePauseReason): void {
+  const paused = new Set<string>();
+  update((state) => {
+    const queuePause = { ...state.queuePause };
+    for (const [sessionId, items] of Object.entries(state.queuedPrompts)) {
+      if ((items?.length ?? 0) === 0 || queuePause[sessionId]) continue;
+      queuePause[sessionId] = reason;
+      paused.add(sessionId);
+    }
+    return paused.size > 0 ? { ...state, queuePause } : state;
+  });
+  for (const sessionId of paused) persistQueue(sessionId);
+}
+
+/** Puts a rejected item back at the head and stops the automatic drain. */
+function requeueFront(
+  sessionId: string,
+  item: QueuedPrompt,
+  pause: QueuePauseReason | null,
+): void {
+  update((state) => ({
+    ...state,
+    queuedPrompts: {
+      ...state.queuedPrompts,
+      [sessionId]: [item, ...(state.queuedPrompts[sessionId] ?? [])],
+    },
+    queuePause: pause
+      ? { ...state.queuePause, [sessionId]: pause }
+      : state.queuePause,
+  }));
+  persistQueue(sessionId);
+}
+
+/**
+ * Sends the next queued prompt, exactly one per call. A finished turn calls
+ * this, so the queue advances one item per reply; a paused queue is left alone
+ * until the reader resumes it.
+ */
+async function drainQueue(
+  sessionId: string,
+  options: { turnEnded?: boolean } = {},
+): Promise<void> {
+  const state = agentStore.get();
+  if (state.queuePause[sessionId]) return;
+  if (queueSends.has(sessionId)) return;
+  if (activeTurns.has(sessionId)) return;
+  // A resume can arrive before the session row reflects the ending turn; the
+  // turn-end caller knows the reply just finished, so only explicit drains
+  // consult the (possibly lagging) status.
+  if (!options.turnEnded && isSessionRunning(state, sessionId)) return;
+  const next = (state.queuedPrompts[sessionId] ?? [])[0];
+  if (!next) return;
+  // The editor owns the head item until the edit is applied or dropped.
+  if (state.queueEditing[sessionId] === next.id) return;
+  queueSends.add(sessionId);
+  const generation = queueGenerationOf(sessionId);
+  queueInFlight.set(sessionId, next);
+  // Take it out before the request so a concurrent drain can never send it
+  // twice; a rejected prompt puts it back at the head.
+  update((current) => ({
+    ...current,
+    queuedPrompts: {
+      ...current.queuedPrompts,
+      [sessionId]: (current.queuedPrompts[sessionId] ?? []).filter(
+        (item) => item.id !== next.id,
+      ),
+    },
+  }));
+  const delivered = await dispatchQueued(sessionId, next, false);
+  queueSends.delete(sessionId);
+  if (queueGenerationOf(sessionId) === generation) {
+    queueInFlight.delete(sessionId);
+    if (!delivered) requeueFront(sessionId, next, "error");
+    // Written after the runtime answered, so a quit mid-dispatch keeps the
+    // item on disk instead of dropping it.
+    persistQueue(sessionId, true);
+  }
+}
+
 export const agentActions = {
   /** Re-reads status, tasks and settings; called when the page mounts. */
   bootstrap: async (): Promise<void> => {
@@ -1085,6 +1463,8 @@ export const agentActions = {
       // A blocking ask can arrive before this page was ever opened; seed the
       // same reducers the live events use so the cards render on first paint.
       agentActions.loadPending(),
+      // Queued drafts from the previous run (they come back paused).
+      agentActions.loadQueue(),
     ]);
     // A selection restored from preferences is not a move, so `adoptTasks`
     // did not read its board.
@@ -1404,6 +1784,10 @@ export const agentActions = {
       return;
     }
     drafts.delete(sessionId);
+    // The row is gone on disk; a late dispatch failure must not write it back.
+    bumpQueueGeneration(sessionId);
+    activeTurns.delete(sessionId);
+    dispatchedAt.delete(sessionId);
     update((state) => {
       const tasks = (state.tasks ?? []).filter((task) => task.id !== sessionId);
       const selectedId =
@@ -1416,6 +1800,12 @@ export const agentActions = {
       delete committedAttempts[sessionId];
       const pendingPrompts = { ...state.pendingPrompts };
       delete pendingPrompts[sessionId];
+      const queuedPrompts = { ...state.queuedPrompts };
+      delete queuedPrompts[sessionId];
+      const queuePause = { ...state.queuePause };
+      delete queuePause[sessionId];
+      const queueEditing = { ...state.queueEditing };
+      delete queueEditing[sessionId];
       const sessionModes = { ...state.sessionModes };
       delete sessionModes[sessionId];
       const planOverrides = { ...state.planOverrides };
@@ -1432,6 +1822,9 @@ export const agentActions = {
         live,
         committedAttempts,
         pendingPrompts,
+        queuedPrompts,
+        queuePause,
+        queueEditing,
         sessionModes,
         planOverrides,
         selectionOverrides,
@@ -1451,7 +1844,11 @@ export const agentActions = {
       update((state) => ({
         ...state,
         pendingPrompts: { ...state.pendingPrompts, [sessionId]: [] },
+        // ZCode pauses the queue when the reader interrupts: continuing on
+        // their behalf right after a stop is the opposite of stopping.
+        queuePause: { ...state.queuePause, [sessionId]: "stopped" },
       }));
+      persistQueue(sessionId);
     } catch (error) {
       setError(error);
     }
@@ -1469,6 +1866,16 @@ export const agentActions = {
         lastError: null,
       }));
       await dshApi.retryTurn(sessionId);
+      // Retrying is a manual round of its own: the banner from the failed turn
+      // no longer describes the queue's state.
+      if (agentStore.get().queuePause[sessionId] !== undefined) {
+        update((state) => {
+          const queuePause = { ...state.queuePause };
+          delete queuePause[sessionId];
+          return { ...state, queuePause };
+        });
+        persistQueue(sessionId);
+      }
     } catch (error) {
       setError(error);
     }
@@ -1485,39 +1892,51 @@ export const agentActions = {
   continueTask: async (sessionId: string, prompt: string): Promise<void> => {
     const text = prompt.trim();
     if (!text) return;
-    update((state) => ({
-      ...state,
-      live: { ...state.live, [sessionId]: undefined },
-      committedAttempts: { ...state.committedAttempts, [sessionId]: undefined },
-      pendingPrompts: {
-        ...state.pendingPrompts,
-        [sessionId]: [...(state.pendingPrompts[sessionId] ?? []), { text }],
-      },
-      tasks:
-        state.tasks?.map((task) =>
-          task.id === sessionId
-            ? {
-                ...task,
-                interrupted: false,
-                status: "running",
-                // Keep the age fallback from re-flagging it while the turn
-                // starts and the live session row lands.
-                updatedAt: new Date().toISOString(),
-              }
-            : task,
-        ) ?? null,
-      // A failed session row would otherwise make `taskInterrupted` true again
-      // immediately, before the turn-start event lands.
-      sessions: state.sessions[sessionId]
-        ? {
-            ...state.sessions,
-            [sessionId]: { ...state.sessions[sessionId], status: "running" },
-          }
-        : state.sessions,
-      lastError: null,
-    }));
+    update((state) => {
+      return {
+        ...state,
+        live: { ...state.live, [sessionId]: undefined },
+        committedAttempts: { ...state.committedAttempts, [sessionId]: undefined },
+        pendingPrompts: {
+          ...state.pendingPrompts,
+          [sessionId]: [...(state.pendingPrompts[sessionId] ?? []), { text }],
+        },
+        tasks:
+          state.tasks?.map((task) =>
+            task.id === sessionId
+              ? {
+                  ...task,
+                  interrupted: false,
+                  status: "running",
+                  // Keep the age fallback from re-flagging it while the turn
+                  // starts and the live session row lands.
+                  updatedAt: new Date().toISOString(),
+                }
+              : task,
+          ) ?? null,
+        // A failed session row would otherwise make `taskInterrupted` true again
+        // immediately, before the turn-start event lands.
+        sessions: state.sessions[sessionId]
+          ? {
+              ...state.sessions,
+              [sessionId]: { ...state.sessions[sessionId], status: "running" },
+            }
+          : state.sessions,
+        lastError: null,
+      };
+    });
     try {
       await dshApi.prompt(sessionId, text);
+      // Only an accepted prompt starts a fresh round; a rejection keeps the
+      // banner that explains why the queue is parked.
+      if (agentStore.get().queuePause[sessionId] !== undefined) {
+        update((state) => {
+          const queuePause = { ...state.queuePause };
+          delete queuePause[sessionId];
+          return { ...state, queuePause };
+        });
+        persistQueue(sessionId);
+      }
     } catch (error) {
       update((state) => {
         const queue = state.pendingPrompts[sessionId] ?? [];
@@ -1669,6 +2088,16 @@ export const agentActions = {
   restartRuntime: async (): Promise<void> => {
     if (agentStore.get().starting) return;
     update((state) => ({ ...state, starting: true, lastError: null }));
+    activeTurns.clear();
+    dispatchedAt.clear();
+    // A prompt already on its way belongs to the process being replaced; keep
+    // its item (at-least-once) and unpark the session so a later resume works.
+    queueSends.clear();
+    for (const [sessionId, item] of queueInFlight) {
+      requeueFront(sessionId, item, null);
+    }
+    queueInFlight.clear();
+    pauseQueues("paused");
     try {
       const status = await dshApi.restart();
       update((state) => ({
@@ -1738,6 +2167,210 @@ export const agentActions = {
     return saved;
   },
 
+  /**
+   * Restores the queues the previous run left behind (`dsh_queues`). A restart
+   * kills the turn they were waiting on, so they come back paused: the reader
+   * sees 「队列已暂停 · 继续」 instead of a surprise send. Read once per app
+   * session; an in-memory queue always wins.
+   */
+  loadQueue: async (): Promise<void> => {
+    if (queueRestored) return;
+    queueRestored = true;
+    try {
+      const { queues } = await dshApi.queueLoad();
+      if (queues.length === 0) return;
+      update((state) => {
+        const queuedPrompts = { ...state.queuedPrompts };
+        const queuePause = { ...state.queuePause };
+        for (const row of queues) {
+          if ((queuedPrompts[row.sessionId]?.length ?? 0) > 0) continue;
+          const items = storedQueueItems(row.items);
+          if (items.length === 0) continue;
+          queuedPrompts[row.sessionId] = items;
+          queuePause[row.sessionId] =
+            row.pause === "stopped" || row.pause === "error"
+              ? row.pause
+              : "paused";
+        }
+        return { ...state, queuedPrompts, queuePause };
+      });
+    } catch {
+      // No cache row (fresh install, older database) means nothing to restore.
+    }
+  },
+
+  /**
+   * Holds the current draft for after the running turn instead of prompting
+   * mid-turn, so it can still be edited, reordered or removed. Returns false
+   * for an empty prompt or when there is no session to queue it on.
+   */
+  enqueuePrompt: (
+    text: string,
+    images: QueuedPrompt["images"] = [],
+  ): string | null => {
+    const sessionId = agentStore.get().selectedId;
+    const trimmed = text.trim();
+    if (!sessionId || (!trimmed && images.length === 0)) return null;
+    const item: QueuedPrompt = {
+      id: queuedId(),
+      text: trimmed,
+      ...(images.length > 0 ? { images } : {}),
+    };
+    update((state) => ({
+      ...state,
+      queuedPrompts: {
+        ...state.queuedPrompts,
+        [sessionId]: [...(state.queuedPrompts[sessionId] ?? []), item],
+      },
+      lastError: null,
+    }));
+    persistQueue(sessionId);
+    return item.id;
+  },
+
+  removeQueuedPrompt: (sessionId: string, id: string): void => {
+    update((state) => {
+      const queue = state.queuedPrompts[sessionId] ?? [];
+      if (!queue.some((item) => item.id === id)) return state;
+      return {
+        ...state,
+        queuedPrompts: {
+          ...state.queuedPrompts,
+          [sessionId]: queue.filter((item) => item.id !== id),
+        },
+      };
+    });
+    // A removal must reach disk before the app can quit, or the restart copy
+    // would still hold the prompt that was just dropped.
+    persistQueue(sessionId, true);
+  },
+
+  /** Applies an edit in place: the item keeps its position and stays queued. */
+  updateQueuedPrompt: (
+    sessionId: string,
+    id: string,
+    text: string,
+    images: QueuedPrompt["images"] = [],
+  ): boolean => {
+    const trimmed = text.trim();
+    if (!trimmed && images.length === 0) return false;
+    let found = false;
+    update((state) => {
+      const queue = state.queuedPrompts[sessionId] ?? [];
+      if (!queue.some((item) => item.id === id)) return state;
+      found = true;
+      return {
+        ...state,
+        queuedPrompts: {
+          ...state.queuedPrompts,
+          [sessionId]: queue.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  text: trimmed,
+                  ...(images.length > 0 ? { images } : { images: undefined }),
+                }
+              : item,
+          ),
+        },
+      };
+    });
+    if (found) persistQueue(sessionId);
+    return found;
+  },
+
+  /** Marks which item the composer has open for editing (`null` closes it).
+   *  A blocked head stays in place until the edit lands, so the text being
+   *  edited is never sent behind the reader's back. */
+  setQueueEditing: (sessionId: string, id: string | null): void => {
+    update((state) => ({
+      ...state,
+      queueEditing: { ...state.queueEditing, [sessionId]: id ?? undefined },
+    }));
+  },
+
+  /** Lets a blocked queue continue once an edit is applied or dropped. */
+  advanceQueue: (sessionId: string): void => {
+    void drainQueue(sessionId);
+  },
+
+  /** Drag reorder: move `id` in front of `beforeId`, or to the end for null. */
+  moveQueuedPrompt: (
+    sessionId: string,
+    id: string,
+    beforeId: string | null,
+  ): void => {
+    update((state) => {
+      const queue = state.queuedPrompts[sessionId] ?? [];
+      const from = queue.findIndex((item) => item.id === id);
+      if (from < 0) return state;
+      const next = queue.slice();
+      const [item] = next.splice(from, 1);
+      if (!item) return state;
+      const to = beforeId ? next.findIndex((entry) => entry.id === beforeId) : -1;
+      if (to < 0) next.push(item);
+      else next.splice(to, 0, item);
+      return {
+        ...state,
+        queuedPrompts: { ...state.queuedPrompts, [sessionId]: next },
+      };
+    });
+    persistQueue(sessionId);
+  },
+
+  /** 「立即」: send this item now, ahead of the rest of the queue. */
+  sendQueuedNow: async (sessionId: string, id: string): Promise<void> => {
+    if (queueSends.has(sessionId)) return;
+    const state = agentStore.get();
+    const item = (state.queuedPrompts[sessionId] ?? []).find((it) => it.id === id);
+    if (!item) return;
+    queueSends.add(sessionId);
+    const generation = queueGenerationOf(sessionId);
+    queueInFlight.set(sessionId, item);
+    update((current) => ({
+      ...current,
+      queuedPrompts: {
+        ...current.queuedPrompts,
+        [sessionId]: (current.queuedPrompts[sessionId] ?? []).filter(
+          (it) => it.id !== id,
+        ),
+      },
+    }));
+    const running = isSessionRunning(agentStore.get(), sessionId);
+    const delivered = await dispatchQueued(sessionId, item, !running);
+    queueSends.delete(sessionId);
+    if (queueGenerationOf(sessionId) === generation) {
+      queueInFlight.delete(sessionId);
+      if (!delivered) requeueFront(sessionId, item, "error");
+      persistQueue(sessionId, true);
+    }
+  },
+
+  /** 「继续」: the queue may advance again, starting with the head item. */
+  resumeQueue: (sessionId: string): void => {
+    update((state) => {
+      if (state.queuePause[sessionId] === undefined) return state;
+      const queuePause = { ...state.queuePause };
+      delete queuePause[sessionId];
+      return { ...state, queuePause };
+    });
+    persistQueue(sessionId);
+    void drainQueue(sessionId);
+  },
+
+  clearQueue: (sessionId: string): void => {
+    // A dispatch already on its way must not put its item back afterwards.
+    bumpQueueGeneration(sessionId);
+    update((state) => {
+      const queuedPrompts = { ...state.queuedPrompts };
+      delete queuedPrompts[sessionId];
+      const queuePause = { ...state.queuePause };
+      delete queuePause[sessionId];
+      return { ...state, queuedPrompts, queuePause };
+    });
+    persistQueue(sessionId, true);
+  },
+
   /** Returns false when the runtime rejected the prompt, so the composer keeps
    *  the text for a retry. */
   sendPrompt: async (
@@ -1758,8 +2391,8 @@ export const agentActions = {
       const targetId = sessionId;
       update((state) => ({
         ...state,
-        // A new prompt starts a new attempt; anything the previous one left in
-        // the overlay is stale before the first delta arrives.
+        // A new prompt starts a new attempt; anything the previous one left
+        // in the overlay is stale before the first delta arrives.
         live: { ...state.live, [targetId]: undefined },
         committedAttempts: { ...state.committedAttempts, [targetId]: undefined },
         pendingPrompts: {
@@ -1784,6 +2417,17 @@ export const agentActions = {
         }
       }
       await dshApi.prompt(targetId, trimmed, images);
+      // A manual send starts a fresh round of its own: a pause left over from
+      // an earlier stop/failure no longer describes this session. Cleared only
+      // once the runtime accepted the prompt, so a rejection keeps the banner.
+      if (agentStore.get().queuePause[targetId] !== undefined) {
+        update((state) => {
+          const queuePause = { ...state.queuePause };
+          delete queuePause[targetId];
+          return { ...state, queuePause };
+        });
+        persistQueue(targetId);
+      }
       if (draftTeam !== undefined) {
         update((state) => {
           const drafts = { ...state.chatTeamDrafts };
@@ -1869,6 +2513,14 @@ export const agentActions = {
 /** Handlers registered once per app session by `useAgentRuntime`. */
 export const agentEvents = {
   status: (status: DshStatus): void => {
+    // A dead process cannot finish the turn it was running: without clearing
+    // this, the queue would believe a reply is still on its way. Nothing will
+    // ever end that turn either, so the queue is parked with a banner instead
+    // of waiting silently for a drain that cannot come.
+    if (status.phase !== "ready") {
+      activeTurns.clear();
+      pauseQueues("paused");
+    }
     update((state) => {
       const ready = status.phase === "ready";
       return {
@@ -1887,7 +2539,53 @@ export const agentEvents = {
       };
     });
   },
-  entry: (payload: DshEntryEvent): void => applyEntry(payload),
+  entry: (payload: DshEntryEvent): void => {
+    applyEntry(payload);
+    const { entry, sessionId } = payload;
+    if (entry.kind !== "turn") return;
+    if (entry.state === "start") {
+      activeTurns.set(sessionId, entry.turn);
+      return;
+    }
+    const running = activeTurns.get(sessionId);
+    // A late end from a turn a resume already replaced must not clear the new
+    // turn's marker or touch the queue.
+    if (running !== undefined && entry.turn < running) return;
+    activeTurns.delete(sessionId);
+    // The event time, not the delivery time: a stop's end can be in flight
+    // while the reader resumes and sends the next prompt, and that prompt's
+    // end is stamped later. An older stamp describes the turn it replaced.
+    const endedAt = Date.parse(entry.at);
+    const sentAt = dispatchedAt.get(sessionId);
+    const replaced =
+      sentAt !== undefined && Number.isFinite(endedAt) && endedAt < sentAt;
+    if (replaced) return;
+    // The queue advances one prompt per finished reply. A stop or a failed
+    // turn pauses it instead (ZCode keeps the items and waits for 继续).
+    // `blocked` and a bare `error` are failures too — the same rule the task
+    // workflow uses (`tasks.rs::failed_turn`).
+    if (entry.reason === "aborted") {
+      update((state) => ({
+        ...state,
+        queuePause: { ...state.queuePause, [sessionId]: "stopped" },
+      }));
+      persistQueue(sessionId);
+      return;
+    }
+    if (
+      entry.reason === "error" ||
+      entry.reason === "blocked" ||
+      entry.error
+    ) {
+      update((state) => ({
+        ...state,
+        queuePause: { ...state.queuePause, [sessionId]: "error" },
+      }));
+      persistQueue(sessionId);
+      return;
+    }
+    void drainQueue(sessionId, { turnEnded: true });
+  },
   stream: (payload: DshSessionEvent): void => applyStream(payload),
   approval: (payload: DshApprovalEvent): void => applyApproval(payload),
   question: (payload: DshQuestionEvent): void => applyQuestion(payload),

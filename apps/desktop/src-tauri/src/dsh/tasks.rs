@@ -3737,6 +3737,12 @@ async fn delete_session(app: &AppHandle, request: SessionRequest) -> Result<Valu
         let id = request.session_id.clone();
         let _ = blocking(move || super::prompt_store::delete_for_session(&cache, &id)).await;
     }
+    // A deleted conversation has nothing left to send: drop its queued drafts.
+    if let Ok(state) = shared(app) {
+        let cache = state.cache.clone();
+        let id = request.session_id.clone();
+        let _ = blocking(move || super::queue_store::delete(&cache, &id)).await;
+    }
     if let Ok(bridge) = bridge(app) {
         bridge.forget_session(app, &request.session_id);
     }

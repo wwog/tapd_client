@@ -8,7 +8,7 @@ use rusqlite::Connection;
 
 /// Schema version. Bumped when the stored shape changes; a mismatched database
 /// is recreated rather than migrated.
-pub(super) const SCHEMA_VERSION: i64 = 13;
+pub(super) const SCHEMA_VERSION: i64 = 14;
 
 pub(super) fn run(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
@@ -155,6 +155,16 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
         );
 
         CREATE INDEX IF NOT EXISTS dsh_prompts_text ON dsh_prompts(text);
+
+        -- Composer send queue (ZCode 队列): one row per session, the ordered
+        -- items as JSON. Images ride inside the JSON so a restart keeps them;
+        -- an empty queue has no row.
+        CREATE TABLE IF NOT EXISTS dsh_queues (
+            session_id TEXT PRIMARY KEY,
+            items TEXT NOT NULL,
+            pause TEXT,
+            updated_at INTEGER NOT NULL
+        );
         "#,
     )
     .map_err(|error| error.to_string())

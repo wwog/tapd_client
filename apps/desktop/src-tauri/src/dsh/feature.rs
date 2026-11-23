@@ -383,6 +383,46 @@ pub async fn prompt_history(app: &AppHandle, limit: u32) -> Result<Value, String
     Ok(json!({ "prompts": texts }))
 }
 
+/// Every stored composer queue, so a restart keeps what was waiting to send.
+pub async fn queue_load(app: &AppHandle) -> Result<Value, String> {
+    let state = app
+        .try_state::<Arc<crate::state::AppState>>()
+        .ok_or_else(|| tr("dsh.state.unavailable").to_string())?;
+    let cache = state.inner().cache.clone();
+    let queues = tauri::async_runtime::spawn_blocking(move || super::queue_store::load(&cache))
+        .await
+        .map_err(|error| error.to_string())??;
+    Ok(json!({ "queues": queues }))
+}
+
+/// Replaces one session's queue. `items` is the UI's ordered JSON array, kept
+/// as a string so the backend stays ignorant of the item shape.
+pub async fn queue_save(
+    app: &AppHandle,
+    session_id: &str,
+    items: &str,
+    pause: Option<&str>,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<Arc<crate::state::AppState>>()
+        .ok_or_else(|| tr("dsh.state.unavailable").to_string())?;
+    let cache = state.inner().cache.clone();
+    let session = session_id.to_string();
+    let items = items.to_string();
+    let pause = pause.map(str::to_string);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        super::queue_store::save(&cache, &session, &items, pause.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Err(error) = &result {
+        // The queue still works in memory; only the restart copy is missing,
+        // so this must not fail the keystroke that triggered it.
+        tracing::warn!(%error, session = %session_id, "queued drafts were not written");
+    }
+    result
+}
+
 /// Packs one session's raw log into `dir` (`/export`).
 pub async fn export_session(
     app: &AppHandle,

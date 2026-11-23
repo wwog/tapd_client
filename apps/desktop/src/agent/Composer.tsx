@@ -14,6 +14,7 @@ import {
   LayoutGrid,
   Loader2,
   MessageSquare,
+  Pencil,
   Plus,
   Send,
   Square,
@@ -28,12 +29,15 @@ import { useTauriSubscription } from "../lib/tauriEvent";
 import { pickExportDir } from "../lib/exportDir";
 import { api } from "../lib/api";
 import { dshApi } from "../lib/dsh";
+import { Button } from "../components/ui";
+import { Dialog } from "../components/Dialog";
 import { ScrollingName } from "../components/ScrollingName";
 import { openMediaPreview } from "../components/MediaPreviewHost";
 import { GoalChip } from "./GoalChip";
 import { AGENT_COLUMN } from "./layout";
 import { moveIndex } from "./listNav";
 import { MentionPalette } from "./MentionPalette";
+import { QueuedPrompts } from "./QueuedPrompts";
 import {
   activeMention,
   applyMention,
@@ -67,6 +71,7 @@ import {
   sessionPermissionMode,
   sessionPlan,
   taskReviewable,
+  type QueuedPrompt,
 } from "./store";
 import { isWorkflowTask } from "./workflow";
 
@@ -87,6 +92,8 @@ type ComposerImage = {
 };
 
 const EMPTY_IMAGES: ComposerImage[] = [];
+
+const EMPTY_QUEUE: QueuedPrompt[] = [];
 
 /** dsh admits exactly these four image types (attachment store allowlist). */
 const IMAGE_TYPES: Record<string, string> = {
@@ -184,9 +191,27 @@ export function Composer() {
   const [mentionIndex, setMentionIndex] = useState(0);
   /** Rising counters that open the composer's own model / mode sheets. */
   const [signals, setSignals] = useState({ model: 0, mode: 0 });
+  /** A draft submitted while the paused queue needs a decision first. */
+  const [sendConfirm, setSendConfirm] = useState<{
+    text: string;
+    images: ComposerImage[];
+  } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  /** What the composer held before a queued item was loaded for editing. */
+  const editStash = useRef<
+    Record<string, { text: string; images: ComposerImage[] } | undefined>
+  >({});
   const text = drafts[sessionId] ?? "";
   const attachments = images[sessionId] ?? EMPTY_IMAGES;
+  const queue =
+    (state.selectedId ? state.queuedPrompts[state.selectedId] : undefined) ??
+    EMPTY_QUEUE;
+  const queuePaused = state.selectedId
+    ? state.queuePause[state.selectedId]
+    : undefined;
+  const editingQueueId = state.selectedId
+    ? state.queueEditing[state.selectedId]
+    : undefined;
   const setText = (value: string) =>
     setDrafts((current) => ({ ...current, [sessionId]: value }));
   /** Empties this chat's draft, including the slot a send may have outgrown
@@ -222,6 +247,7 @@ export function Composer() {
     (isWorkflowTask(task) ||
       task.messageCount > 0 ||
       (state.pendingPrompts[task.id]?.length ?? 0) > 0 ||
+      (state.queuedPrompts[task.id]?.length ?? 0) > 0 ||
       task.status === "running");
   const canChoose = Boolean(task && project && !started);
 
@@ -615,24 +641,112 @@ export function Composer() {
     }
   };
 
-  const send = async () => {
-    const hasImages = attachments.length > 0;
-    if (block !== null || sending || (!text.trim() && !hasImages)) return;
-    // From the task pane (or the review section) a message means "keep
-    // editing": show the transcript first, so the reply lands where the reader
-    // can follow it.
-    if (task && (reviewing || paneView === "task")) {
-      agentActions.setTaskView(task.id, "chat");
+  /** The draft's bytes in the shape the queue stores (and resends) them. */
+  const queueImages = (): NonNullable<QueuedPrompt["images"]> =>
+    attachments.map((image) => ({
+      name: image.name,
+      mediaType: image.mediaType,
+      data: image.data,
+      src: image.src,
+    }));
+
+  const queueToComposerImages = (
+    id: string,
+    item: QueuedPrompt,
+  ): ComposerImage[] =>
+    (item.images ?? []).map((image, index) => ({
+      id: `queue-${id}-${index}`,
+      name: image.name ?? t("agent.queue.image"),
+      mediaType: image.mediaType,
+      data: image.data,
+      src: image.src,
+    }));
+
+  /** Loads a queued item into the composer; the queue keeps it and waits. */
+  const editQueued = (id: string) => {
+    const session = state.selectedId;
+    const item = queue.find((entry) => entry.id === id);
+    if (!session || !item) return;
+    // One item at a time: the composer holds the edit, and switching targets
+    // would silently drop it (the row's button is disabled while editing).
+    if (editingQueueId && editingQueueId !== id) return;
+    // The draft that predates the edit is stashed, so applying or cancelling
+    // returns the composer to what the reader was writing.
+    editStash.current[session] = { text, images: attachments };
+    agentActions.setQueueEditing(session, id);
+    setDrafts((current) => ({ ...current, [session]: item.text }));
+    setImages((current) => ({
+      ...current,
+      [session]: queueToComposerImages(id, item),
+    }));
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    });
+  };
+
+  /** Leaves edit mode; `restore` puts the pre-edit draft back (取消). */
+  const closeEdit = (restore: boolean) => {
+    const session = state.selectedId;
+    if (!session) return;
+    const saved = editStash.current[session];
+    delete editStash.current[session];
+    agentActions.setQueueEditing(session, null);
+    if (restore) {
+      setDrafts((current) => ({ ...current, [session]: saved?.text ?? "" }));
+      setImages((current) => ({
+        ...current,
+        [session]: saved?.images ?? EMPTY_IMAGES,
+      }));
     }
+    agentActions.advanceQueue(session);
+  };
+
+  /**
+   * Applies the composer's text to the item being edited. Returns false when
+   * the item vanished meanwhile: ZCode then treats the send as a new message.
+   */
+  const applyEdit = (): boolean => {
+    const session = state.selectedId;
+    const id = session ? editingQueueId : undefined;
+    if (!session || !id) return false;
+    const exists = queue.some((item) => item.id === id);
+    if (!exists) {
+      // Keep the text that was being edited: ZCode sends it as a new message.
+      closeEdit(false);
+      showToast("error", t("agent.queue.itemGone"));
+      return false;
+    }
+    const updated = agentActions.updateQueuedPrompt(
+      session,
+      id,
+      text,
+      queueImages(),
+    );
+    if (updated) {
+      // The draft that predated the edit comes back: editing a queued item
+      // must not swallow a message the reader was still writing.
+      closeEdit(true);
+    }
+    return updated;
+  };
+
+  /** Hands the current draft to the runtime now (idle / 立即发送). */
+  const deliverNow = async (
+    payloadText: string,
+    payloadImages: ComposerImage[],
+  ): Promise<void> => {
     setSending(true);
     const accepted = await agentActions.sendPrompt(
-      text,
-      attachments.map((image) => ({
+      payloadText,
+      payloadImages.map((image) => ({
         data: image.data,
         mimeType: image.mediaType,
         name: image.name,
       })),
-      attachments.map((image) => ({
+      payloadImages.map((image) => ({
         name: image.name,
         mediaType: image.mediaType,
         src: image.src,
@@ -645,16 +759,68 @@ export function Composer() {
     setSending(false);
   };
 
+  /** Queue items handed to the runtime but not echoed yet still mean a reply
+   *  is on its way; `running` alone misses that admission window. */
+  const pendingCount = state.selectedId
+    ? (state.pendingPrompts[state.selectedId]?.length ?? 0)
+    : 0;
+  const busy = running || sending || pendingCount > 0;
+
+  /** Holds the draft for after this reply; the queue keeps it editable. */
+  const queueDraft = async (sendNow: boolean) => {
+    const session = state.selectedId;
+    if (!session) return;
+    const id = agentActions.enqueuePrompt(text, queueImages());
+    if (!id) return;
+    clearDraft();
+    clearImages();
+    if (sendNow) await agentActions.sendQueuedNow(session, id);
+  };
+
+  /** Delivers an idle draft. Only `submit`'s non-queue paths call this, so a
+   *  pending edit has already been applied (or rejected) above. */
+  const send = async () => {
+    const hasImages = attachments.length > 0;
+    if (block !== null || sending || (!text.trim() && !hasImages)) return;
+    // From the task pane (or the review section) a message means "keep
+    // editing": show the transcript first, so the reply lands where the reader
+    // can follow it.
+    if (task && (reviewing || paneView === "task")) {
+      agentActions.setTaskView(task.id, "chat");
+    }
+    // ZCode asks before a manual send discards a paused queue.
+    if (queuePaused && queue.length > 0) {
+      setSendConfirm({ text, images: attachments });
+      return;
+    }
+    await deliverNow(text, attachments);
+  };
+
   /**
    * Enter. A line that names a known command takes the command path; anything
    * else (including `/unknown`) is an ordinary message, which is exactly what
    * dsh does with text it cannot resolve.
+   *
+   * While a reply is streaming, a plain send joins the queue instead of
+   * interrupting the turn (ZCode's 队列 behaviour); the modified shortcut
+   * (`sendNow`) steers it into the running turn right away, exactly like
+   * ZCode's 「立即」.
    */
-  const submit = async () => {
+  const submit = async (sendNow = false) => {
     const draft = text.trim();
+    // An edit lands first: submitting while a queued item is loaded applies
+    // the change instead of starting a turn.
+    if (editingQueueId && (draft || attachments.length > 0)) {
+      if (applyEdit()) return;
+      // The item is gone: fall through and treat the text as a new message.
+    }
     if (!draft) {
-      // An image-only prompt has no command line to route: straight to send.
-      if (attachments.length > 0) await send();
+      // An image-only prompt has no command line to route. While a reply is on
+      // its way it still joins the queue like any other message.
+      if (attachments.length > 0) {
+        if (busy) await queueDraft(sendNow);
+        else await send();
+      }
       return;
     }
     const intent = slashIntent(draft, runtimeNames);
@@ -675,6 +841,10 @@ export function Composer() {
     }
     if (intent.kind === "runtime") {
       if (await agentActions.runCommand(intent.line)) clearDraft();
+      return;
+    }
+    if (busy) {
+      await queueDraft(sendNow);
       return;
     }
     await send();
@@ -785,6 +955,32 @@ export function Composer() {
               onHover={setHistoryIndex}
             />
           ) : null}
+          {/* Messages typed while a reply streams wait here (ZCode queue):
+              they are not in the transcript yet, so they stay editable. */}
+          <QueuedPrompts
+            items={queue}
+            paused={queuePaused}
+            editingId={editingQueueId}
+            onMove={(id, beforeId) => {
+              if (state.selectedId) {
+                agentActions.moveQueuedPrompt(state.selectedId, id, beforeId);
+              }
+            }}
+            onSendNow={(id) => {
+              if (state.selectedId) {
+                void agentActions.sendQueuedNow(state.selectedId, id);
+              }
+            }}
+            onEdit={editQueued}
+            onRemove={(id) => {
+              if (state.selectedId) {
+                agentActions.removeQueuedPrompt(state.selectedId, id);
+              }
+            }}
+            onResume={() => {
+              if (state.selectedId) agentActions.resumeQueue(state.selectedId);
+            }}
+          />
           {project ? (
             <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
               {/* The task pane above already names the project and branch. */}
@@ -890,15 +1086,34 @@ export function Composer() {
               ))}
             </div>
           ) : null}
+          {editingQueueId ? (
+            <div className="flex items-center gap-1.5 border-b border-border px-3 py-1.5 text-ui-2xs text-slate-500">
+              <Pencil size={11} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {t("agent.queue.editing")}
+              </span>
+              <button
+                type="button"
+                onClick={() => closeEdit(true)}
+                className="shrink-0 rounded-md px-1 text-ui-2xs text-slate-500 transition hover:bg-overlay-soft hover:text-slate-700"
+              >
+                {t("common.cancel")}
+              </button>
+            </div>
+          ) : null}
           <textarea
             ref={editorRef}
             value={text}
             rows={3}
-            title={t("agent.composer.hint")}
+            title={
+              running ? t("agent.queue.composerHint") : t("agent.composer.hint")
+            }
             placeholder={
-              reviewing
-                ? t("agent.review.continuePlaceholder")
-                : t("agent.composer.placeholder")
+              running
+                ? t("agent.queue.placeholder")
+                : reviewing
+                  ? t("agent.review.continuePlaceholder")
+                  : t("agent.composer.placeholder")
             }
             onChange={(event) => {
               setText(event.target.value);
@@ -1004,9 +1219,10 @@ export function Composer() {
 
               if (key !== "Enter" || event.shiftKey) return;
               event.preventDefault();
-              // Enter always sends (the runtime queues it); only the button
-              // carries the send/stop state, so a keystroke never kills a run.
-              void submit();
+              // Enter always sends or queues; only the button carries the
+              // send/stop state, so a keystroke never kills a run. The
+              // modifier sends at once instead of joining the queue.
+              void submit(event.metaKey || event.ctrlKey);
             }}
             className="block w-full resize-none bg-transparent px-3 pb-1 pt-2 text-ui-caption leading-6 text-slate-700 placeholder:text-slate-300 focus:outline-none"
           />
@@ -1031,7 +1247,9 @@ export function Composer() {
                 aria-label={running ? t("agent.task.stop") : t("common.send")}
                 aria-pressed={running}
                 disabled={primaryDisabled}
-                onClick={() => (running ? void stop() : void send())}
+                // Same path as Enter: an edit applies, a running turn queues,
+                // a paused queue asks first, and slash lines route.
+                onClick={() => (running ? void stop() : void submit())}
                 className={clsx(
                   // Semantic primary, not `bg-slate-900`: the dark theme
                   // inverts slate, so that painted a white block under a white
@@ -1063,6 +1281,43 @@ export function Composer() {
           ) : null}
         </div>
       </div>
+      {sendConfirm ? (
+        <Dialog
+          title={t("agent.queue.sendConfirmTitle")}
+          icon={<Send size={15} className="text-slate-500" />}
+          onClose={() => setSendConfirm(null)}
+        >
+          <p className="text-ui-caption leading-6 text-slate-600">
+            {t("agent.queue.sendConfirmBody", {
+              count: String(queue.length),
+            })}
+          </p>
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                const payload = sendConfirm;
+                setSendConfirm(null);
+                if (state.selectedId) agentActions.clearQueue(state.selectedId);
+                if (payload) void deliverNow(payload.text, payload.images);
+              }}
+            >
+              {t("agent.queue.sendConfirmClear")}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                const payload = sendConfirm;
+                setSendConfirm(null);
+                if (payload) void deliverNow(payload.text, payload.images);
+              }}
+            >
+              {t("agent.queue.sendConfirmKeep")}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

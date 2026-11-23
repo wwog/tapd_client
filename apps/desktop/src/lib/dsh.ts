@@ -578,6 +578,12 @@ export const dshApi = {
   /** Newest distinct prompts across sessions, newest first (↑ history). */
   promptHistory: (limit = 50) =>
     invoke<{ prompts: string[] }>("dsh_prompt_history", { limit }),
+  /** Composer queues written by the previous run (`dsh_queues`). */
+  queueLoad: () => invoke<{ queues: DshStoredQueue[] }>("dsh_queue_load"),
+  /** Replaces one session's stored queue; an empty list deletes the row.
+   *  `items` is the UI's ordered JSON so the backend need not know the shape. */
+  queueSave: (sessionId: string, items: string, pause: string | null) =>
+    invoke<void>("dsh_queue_save", { sessionId, items, pause }),
   /** Workspace files the composer's `@` panel may mention, ranked. */
   mentions: (params: {
     sessionId?: string | null;
@@ -624,6 +630,16 @@ export type DshMentionItem = { path: string; kind: "file" | "plugin" | "conversa
 
 /** One encoded image sent with a prompt (canonical base64, no `data:` prefix). */
 export type DshPromptImage = { data: string; mimeType: string; name?: string };
+
+/**
+ * One persisted composer queue. `items` is opaque to Rust (the UI's
+ * `QueuedPrompt[]`); `pause` is the reason text the panel shows.
+ */
+export type DshStoredQueue = {
+  sessionId: string;
+  items: unknown[];
+  pause: string | null;
+};
 
 /** One session's raw log, packed for `/export`. */
 export type DshSessionExport = {

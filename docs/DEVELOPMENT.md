@@ -163,7 +163,7 @@ opencode mcp list     # ✓ tapd connected
 - 通知状态：`<数据目录>/cache.sqlite3` 的 `notification_*` 表
 - MCP 审计：`<数据目录>/cache.sqlite3` 的 `mcp_audit` 表（最近 500 条，可导出到 `exports/`）
 - 诊断包：`<数据目录>/diagnostics/` 下的 zip（导出后自动在 Finder 中定位目录）
-- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `notification_*` / `mcp_audit` / `dsh_tasks`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
+- 离线缓存：`<数据目录>/cache.sqlite3`（项目 / 缺陷快照 + `notification_*` / `mcp_audit` / `dsh_tasks` / `dsh_queues`；退出登录清 TAPD 数据与通知条目/去重状态，保留通知设置）
 - 内置 Agent：`<数据目录>/dsh/<version>/`（payload 解压结果，可安全删除，下次启动重建）、`<数据目录>/dsh/home/`（`DSH_HOME`，dsh 自己的会话与 profile）
 - Agent 配置：`<数据目录>/agent.json`（项目仓库与规则、提示词模板、Worktree 与团队协作/同事选择、模型供应商与模型目录、权限模式）；会话 transcript 由 dsh 运行时自己保存
 - 本地项目 / 事项：`<数据目录>/local.sqlite3` 的 `local_projects` / `local_work_items`（纯本机数据，与 TAPD 登录无关；schema v3，项目含 `rule`，事项含 `importance`；本地事项交给 Agent 时导出 `quest.json`）
