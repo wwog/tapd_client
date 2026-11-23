@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import {
+  AlertTriangle,
+  ListPlus,
+  Loader2,
+  MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, type BugSummary, type OpenMediaMode } from "./lib/api";
@@ -10,7 +17,11 @@ import {
   SESSION_WORKSPACE_PREFIX,
   type FileTabTarget,
 } from "./lib/fs";
-import type { LocalProject } from "./lib/local";
+import {
+  LOCAL_PROJECTS_EVENT,
+  openLocalItemCreate,
+  type LocalProject,
+} from "./lib/local";
 import {
   markCompanionOnline,
   refreshCompanionStatus,
@@ -24,7 +35,7 @@ import { startUpdateStore } from "./lib/update";
 import { ActivityBar, type View } from "./components/ActivityBar";
 import { AgentConfigHost } from "./agent/AgentConfigTab";
 import { useQueueBadge, useQueueBatchRuntime } from "./agent/queueBatch";
-import { agentActions } from "./agent/store";
+import { agentActions, agentStore } from "./agent/store";
 import { useTaskFeedRuntime } from "./agent/useAgentRuntime";
 import { AgentOpenButton } from "./components/AgentOpenButton";
 import { CompanionDialog } from "./components/CompanionDialog";
@@ -37,6 +48,7 @@ import { MediaPreviewHost } from "./components/MediaPreviewHost";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectOpenButton } from "./components/ProjectOpenButton";
 import { ProjectSidebar } from "./components/ProjectSidebar";
+import { TabExtraAction } from "./components/TabExtraAction";
 import { TitleBar } from "./components/TitleBar";
 import { ToastHost } from "./components/ToastHost";
 import { Button } from "./components/ui";
@@ -136,6 +148,15 @@ export default function App() {
   const local = useLocalProjects();
   const localProject =
     local.projects.find((project) => project.id === local.selectedId) ?? null;
+  /**
+   * Projects a free conversation can be created under (a repository is
+   * configured). The project tabs'「新建会话」is offered only for these, the
+   * same rule the Agent page's project groups follow.
+   */
+  const sessionProjects = useSyncExternalStore(
+    agentStore.subscribe,
+    () => agentStore.get().projects,
+  );
   /** Create (`project: null`) / edit dialog, opened from the side bar or projects page. */
   const [localProjectDialog, setLocalProjectDialog] = useState<{
     project: LocalProject | null;
@@ -147,6 +168,9 @@ export default function App() {
   useEffect(() => {
     startUpdateStore();
     void refreshCompanionStatus();
+    // The project tabs offer「新建会话」before the Agent page is ever opened,
+    // so the project list is primed here instead of waiting for that mount.
+    void agentActions.refreshProjects();
   }, []);
 
   // Closing the window with unsaved edits asks first. `destroy` in the dialog
@@ -176,6 +200,13 @@ export default function App() {
   );
   useTauriEvent("companion://paired", () => markCompanionOnline());
   useTauriEvent("companion://presence", () => markCompanionOnline());
+
+  // A local folder created here (or on the paired phone) must join the Agent
+  // page's project groups and its「新建会话」targets without a remount.
+  useTauriEvent(LOCAL_PROJECTS_EVENT, () => {
+    void local.refresh();
+    void agentActions.refreshProjects();
+  });
 
   // The capsule asked to land on a specific page (the update state opens the
   // account page, which owns 立即更新). Anything else is ignored rather than
@@ -612,6 +643,23 @@ export default function App() {
     layoutRef.current.openPage("agent");
   }, []);
 
+  /**
+   * 「新建会话」in a project tab's extra: allocates a free conversation bound
+   * to that project (its repo, branch and worktree switch) and reveals it on
+   * the Agent page. `newSession` reports its own failure in the runtime notice,
+   * so the page still opens and the reader sees why.
+   */
+  const newProjectSession = useCallback(
+    async (project: { kind: "tapd" | "local"; id: string }) => {
+      await agentActions.newSession(project);
+      if (layoutRef.current.layout.maximizedGroupId) {
+        layoutRef.current.maximizeGroup(null);
+      }
+      layoutRef.current.openPage("agent");
+    },
+    [],
+  );
+
   /** Opens one local item in the secondary dock, like the bug detail panel. */
   const openLocalItem = useCallback(
     (projectId: string, itemId: string, label?: string) => {
@@ -745,22 +793,71 @@ export default function App() {
 
   /**
    * Trailing slot of the tab strip (`ActiveTabExtra`): the focused tab in a
-   * group declares its own action there. The 缺陷列表 opens the bound project
-   * folder; Agent opens the selected session's working directory. Pages without
-   * such an action declare nothing and the slot stays empty.
+   * group declares its own actions there. A project page (TAPD or local) can
+   * start a conversation bound to that project; a local project can also add a
+   * work item without scrolling back to the page's header. The 缺陷列表 opens
+   * the bound folder and Agent opens the selected session's working directory.
+   * Pages without such an action declare nothing and the slot stays empty.
    */
   const activeTabExtra = (panel: PanelRef) => {
     if (panel.resource.type !== "page") return null;
     const { view: panelView, projectId } = panel.resource;
+    if (panelView === "local") {
+      // A tab for a deleted project has no page behind it and must not offer
+      // a conversation that cannot resolve its repository.
+      const project =
+        local.projects.find((item) => item.id === (projectId ?? local.selectedId)) ??
+        null;
+      if (!project) return null;
+      return (
+        <div className="flex items-center gap-1">
+          <TabExtraAction
+            label={t("agent.task.newInProject", { name: project.name })}
+            onClick={() => void newProjectSession({ kind: "local", id: project.id })}
+          >
+            <MessageSquarePlus size={14} />
+          </TabExtraAction>
+          <TabExtraAction
+            label={t("local.items.create")}
+            onClick={() => openLocalItemCreate(project.id)}
+          >
+            <ListPlus size={14} />
+          </TabExtraAction>
+        </div>
+      );
+    }
     if (panelView === "bugs") {
       const targetId = projectId ?? workspace?.id;
-      return targetId ? (
+      if (!targetId) return null;
+      const open = (
         <ProjectOpenButton
           key={targetId}
           workspaceId={targetId}
           onError={(text) => showToast("error", text)}
         />
-      ) : null;
+      );
+      // A TAPD project without a bound repository cannot host a session.
+      const canStart =
+        sessionProjects?.some(
+          (item) => item.kind === "tapd" && item.id === targetId,
+        ) ?? false;
+      if (!canStart) return open;
+      const name = context?.workspaces.find((item) => item.id === targetId)?.name;
+      return (
+        <div className="flex items-center gap-1">
+          <TabExtraAction
+            label={
+              name
+                ? t("agent.task.newInProject", { name })
+                : t("agent.task.newSession")
+            }
+            onClick={() => void newProjectSession({ kind: "tapd", id: targetId })}
+          >
+            <MessageSquarePlus size={14} />
+          </TabExtraAction>
+          {open}
+        </div>
+      );
     }
     if (panelView === "agent") {
       return <AgentOpenButton toast={showToast} />;

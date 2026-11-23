@@ -66,6 +66,9 @@ export type WorkItemPatch = {
 /** Tauri event emitted when a task changes an item's status or task link. */
 export const LOCAL_ITEMS_EVENT = "local://items";
 
+/** Tauri event emitted after a local project is created, edited or deleted. */
+export const LOCAL_PROJECTS_EVENT = "local://projects";
+
 export type LocalItemsEvent = {
   /** Missing/null means every open project page should refresh. */
   projectId?: string | null;
@@ -74,6 +77,32 @@ export type LocalItemsEvent = {
   /** Null when the item was deleted. */
   status?: WorkItemStatus | null;
 };
+
+/**
+ * Imperative opener for one project's「新增事项」dialog. The button lives in
+ * the tab strip (`ActiveTabExtra`), while the dialog state belongs to the page,
+ * so the mounted page registers itself here and the tab simply asks for it.
+ */
+const itemCreateOpeners = new Map<string, () => void>();
+
+/** Registers the page's dialog opener; returns the effect cleanup. */
+export function registerLocalItemCreate(
+  projectId: string,
+  open: () => void,
+): () => void {
+  itemCreateOpeners.set(projectId, open);
+  return () => {
+    if (itemCreateOpeners.get(projectId) === open) itemCreateOpeners.delete(projectId);
+  };
+}
+
+/** Opens the project page's create dialog; false when no page is mounted. */
+export function openLocalItemCreate(projectId: string): boolean {
+  const open = itemCreateOpeners.get(projectId);
+  if (!open) return false;
+  open();
+  return true;
+}
 
 export const localApi = {
   listProjects: () =>

@@ -34,6 +34,7 @@ export const agent = {
   ],
   "agent.task.loadFailed": ["任务列表读取失败", "Could not load tasks"],
   "agent.task.newInProject": ["在「{name}」中新建会话", "New conversation in “{name}”"],
+  "agent.task.newSession": ["新建会话", "New conversation"],
   "agent.task.workflowQueued": ["排队中", "Queued"],
   "agent.task.workflowRunning": ["进行中", "Running"],
   "agent.task.workflowAwaitingReview": ["待审核", "In review"],

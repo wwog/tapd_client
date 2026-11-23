@@ -21,6 +21,16 @@ pub use store::LocalStore;
 /// desktop item page keeps its tab counts live from this instead of polling.
 pub(crate) const EVENT_ITEMS: &str = "local://items";
 
+/// Emitted after a local project is created, renamed/re-pathed or deleted. The
+/// Agent page groups conversations by project and offers「在项目中新建会话」,
+/// so its project list must pick up a folder immediately instead of waiting for
+/// the next page mount.
+pub(crate) const EVENT_PROJECTS: &str = "local://projects";
+
+pub(crate) fn emit_projects_changed(app: &AppHandle) {
+    let _ = app.emit(EVENT_PROJECTS, json!({}));
+}
+
 /// `projectId` scopes the refresh; `itemId`/`status` let a page that is showing
 /// the item follow it into its new tab. Anything absent means "refresh all".
 pub(crate) fn emit_items_changed(

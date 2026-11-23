@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Check,
   Pencil,
-  Plus,
   RefreshCw,
   Trash2,
   Undo2,
@@ -16,6 +15,7 @@ import { t } from "../lib/i18n";
 import {
   localApi,
   LOCAL_ITEMS_EVENT,
+  registerLocalItemCreate,
   type LocalItemsEvent,
   type LocalProject,
   type WorkItem,
@@ -130,6 +130,13 @@ export function LocalItemsPage({ project, toast, onOpenItem }: Props) {
     };
   }, [load, project.id]);
 
+  // The tab strip's「新增事项」action is outside this component but belongs to
+  // this page: the page lends its dialog out for the focused project tab.
+  useEffect(
+    () => registerLocalItemCreate(project.id, () => setDialog({ item: null })),
+    [project.id],
+  );
+
   // 处理中 is no longer its own tab: in-progress items are unfinished, so
   // they stay in the pending bucket with a status badge. Their agent tasks are
   // tracked in the global workflow queue.
@@ -214,15 +221,6 @@ export function LocalItemsPage({ project, toast, onOpenItem }: Props) {
             },
           ]}
         />
-        <Button
-          size="sm"
-          variant="primary"
-          className="ml-auto"
-          icon={<Plus size={12} />}
-          onClick={() => setDialog({ item: null })}
-        >
-          {t("local.items.create")}
-        </Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">

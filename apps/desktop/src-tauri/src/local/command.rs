@@ -22,8 +22,8 @@ pub async fn dispatch(
 ) -> Result<Value, String> {
     match name {
         "local_projects_list" => projects_list(state).await,
-        "local_project_create" => project_create(state, &payload).await,
-        "local_project_update" => project_update(state, &payload).await,
+        "local_project_create" => project_create(app, state, &payload).await,
+        "local_project_update" => project_update(app, state, &payload).await,
         "local_project_delete" => project_delete(app, state, &payload).await,
         "local_items_list" => items_list(state, &payload).await,
         "local_item_get" => item_get(state, &payload).await,
@@ -45,7 +45,11 @@ async fn projects_list(state: &SharedState) -> Result<Value, String> {
     Ok(json!({ "projects": projects }))
 }
 
-async fn project_create(state: &SharedState, payload: &Value) -> Result<Value, String> {
+async fn project_create(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
     let repo_path = required_str(payload, "repoPath")?;
     let name = optional_str(payload, "name").filter(|name| !name.is_empty());
     let rule = optional_str(payload, "rule");
@@ -53,10 +57,17 @@ async fn project_create(state: &SharedState, payload: &Value) -> Result<Value, S
     let project =
         blocking(move || store.create_project(name.as_deref(), &repo_path, rule.as_deref()))
             .await?;
+    // The Agent page's project list (and the folder's session group) is read
+    // from this store, so it must learn about the new row right away.
+    super::emit_projects_changed(app);
     Ok(json!({ "project": project }))
 }
 
-async fn project_update(state: &SharedState, payload: &Value) -> Result<Value, String> {
+async fn project_update(
+    app: &AppHandle,
+    state: &SharedState,
+    payload: &Value,
+) -> Result<Value, String> {
     let id = required_str(payload, "id")?;
     let name = optional_str(payload, "name");
     let repo_path = optional_str(payload, "repoPath");
@@ -71,6 +82,9 @@ async fn project_update(state: &SharedState, payload: &Value) -> Result<Value, S
         store.update_project(&id, name.as_deref(), repo_path.as_deref(), rule.as_deref())
     })
     .await?;
+    // A renamed folder or a moved repository changes the Agent page's group
+    // header and the directory a new conversation would start in.
+    super::emit_projects_changed(app);
     Ok(json!({ "project": project }))
 }
 
@@ -86,6 +100,8 @@ async fn project_delete(
     // The project cascade removed its items; open detail panels must learn
     // that their record is gone.
     super::emit_items_changed(app, Some(&project_id), None, None);
+    // Its session group must disappear with it.
+    super::emit_projects_changed(app);
     Ok(json!({ "deleted": true }))
 }
 
