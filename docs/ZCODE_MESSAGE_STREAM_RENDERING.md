@@ -686,9 +686,11 @@ text-ui-base text-foreground-subtle
 
 ```text
 FOLLOWING（贴底） ⇄ DETACHED（离底）
-  离底 > 48px          → DETACHED
-  回到底部 / 点按钮 / 发送新消息 → FOLLOWING
-  live delta / 折叠 / 测高      → 保持当前意图
+  任何向上的滚动输入（滚轮上滚 / ↑ PageUp Home / 手指下拉）→ DETACHED
+  离底后的小幅上移不再被吸回；回到离底 48px 内 → FOLLOWING
+  live delta / 测高              → 保持当前意图
+  折叠展开/收起                  → 让位 420ms，落定后仍把底部推远则 DETACHED
+  嵌套滚动区（工具输出、diff）内的滚轮 → 不影响 FOLLOWING
   查找 / 导航 / fork 定位        → 先 DETACHED 再定位
 ```
 

@@ -102,7 +102,7 @@ WebView 被遮挡时 rAF 会暂停，但 React commit 仍会执行；这一路�
 - 虚拟化单位是 **turn**，不是 row：用户气泡、流程、最终说明、文件摘要、操作栏不能被拆散；
 - **live tail 不进虚拟列表**：正在运行的一轮留在普通文档流，结束后再迁入虚拟历史；
 - 高度用 `ResizeObserver` / `measureElement` 实测，不估算；
-- 保留现有滚动所有权：`overflow-anchor: none`、底部跟随、离底保护、滚动记忆、查找/轮次导航的定位型滚动；
+- 保留现有滚动所有权（§7 是当前实现，虚拟化不能替换掉其中任何一条）：`overflow-anchor: none`、底部跟随、向上的滚动输入即脱离、滚动记忆、查找/轮次导航的定位型滚动；
 - 滚动容器只负责纵向滚动，横向滚动留在表格/代码块内部；
 - 首屏和 `content-visibility` 都不算替代方案：前者不解决 DOM 增长，后者仍会布局所有行。
 
@@ -136,6 +136,9 @@ WebView 被遮挡时 rAF 会暂停，但 React commit 仍会执行；这一路�
 
 - `Collapse`：单 rAF、`grid-template-rows` 高度动画 + 内容淡入/上移、收起后卸载、reduced motion 直接切换；
 - `MessageStream`：`overflow-anchor: none`、`useLayoutEffect` 吸底、新 prompt 强制吸底、派生/回调 memo；
-- `TurnBlock` / `FlowBlock` / `LeafRow` / `ThinkingBlock` / `SubagentRow` / `AnswerBlock`：memo + 稳定引用；
+- 跟尾状态机（`shared/agent/scrollFollow.ts`，两端共用）：向上输入（滚轮上滚 / ↑ PageUp Home / 手指下拉）**在输入事件上**就脱离，不等 scroll —— 否则下一帧的 token 会在 scroll 事件前把视图钉回底部，小幅上滚等于没滚；离底后由 `released` 标记挡住 1~2px 的回弹，只有回到底部 48px 内（或点「跳到最新」、发新消息）才重新吸附。浏览器因内容变矮而夹取 `scrollTop` 不算读者移动。
+- 折叠：点开/收起任意 `aria-expanded` 折叠后让位 420ms，落定后若把底部推远就停在原处（不跟），否则继续跟；「跳到最新」会清掉这个让位，不会在 420ms 后被计时器甩开。
+- 24px 是「跳到最新」箭头的显示阈值；48px 是重新吸附的距离。嵌套滚动区（工具输出、diff）里的滚轮不改变跟尾状态。
+- `TurnBlock` / `FlowBlock` / `LeafRow` / `ThinkingBlock` / `SubagentRow` / `AnswerBlock`：memo + 稳定引用；运行中的思考预览取整行**末尾** 80 字（省略号在前），`truncate` 只裁尾，取头部会让预览在长句上看起来卡住；
 - `flows.ts`：已提交流程冻结，live 只克隆最后一个未闭合流程；
-- `perf.ts` + `perf.html` + `scripts/agent-perf-lab.mjs`：本文的检测入口。
+- `perf.ts` + `perf.html` + `scripts/agent-perf-lab.mjs`：本文的检测入口。注意实验台把折叠放在中部、不跑跟尾状态机，所以 §3 的 `scrollTop` 漂移预算覆盖的是「折叠自身不移动偏移」，跟尾的脱离/吸附要手工回归。

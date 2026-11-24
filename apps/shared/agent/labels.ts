@@ -49,6 +49,12 @@ const LABELS = {
   "turn.changesCollapse": ["收起改动清单", "Hide the changed files"],
   "turn.changesOpen": ["打开文件", "Open the file"],
 
+  // The review diff: line-numbered rows shared by both hosts.
+  "diff.rowsCapped": [
+    "仅显示前 {shown} 行（共 {total} 行）",
+    "Showing the first {shown} of {total} lines",
+  ],
+
   // Flow: the steps between two 说明, folded under one summary line.
   "flow.reads": ["已查阅 {count} 项", "{count} reads"],
   "flow.commands": ["已执行 {count} 命令", "{count} commands"],

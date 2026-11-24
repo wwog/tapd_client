@@ -22,7 +22,6 @@ import {
   type LatestStep,
 } from "./flows";
 import { duration } from "./format";
-import { ScrollingName } from "./ScrollingName";
 import { ActionKindIcon, LeafRow, ThinkingBlock } from "./TraceRows";
 import { AnswerBlock } from "./MessageParts";
 import { Collapse } from "./Collapse";
@@ -217,6 +216,20 @@ const ThinkingStep = memo(function ThinkingStep({
   );
 });
 
+/**
+ * Characters of the live reasoning line kept in the folded preview. The line
+ * grows at its end, and `truncate` would clip exactly there — the row would
+ * look frozen while the model is still thinking — so the newest tail is what
+ * the preview shows.
+ */
+const THINKING_PREVIEW_TAIL = 80;
+
+function livePreview(text: string): string {
+  return text.length > THINKING_PREVIEW_TAIL
+    ? `…${text.slice(-THINKING_PREVIEW_TAIL)}`
+    : text;
+}
+
 /** The flow's folded summary line: `已查阅 n 项, 已执行 n 命令, …`. */
 function SummaryHeader({
   flow,
@@ -292,10 +305,11 @@ function StepHeader({
         {step.verb}
       </span>
       {step.kind === "thinking" ? (
-        <ScrollingName
-          text={step.target}
-          className="min-w-0 flex-1 text-slate-400"
-        />
+        // The reasoning preview is rewritten on every delta: sliding it under
+        // the pointer fights the stream, so the row clips instead.
+        <span className="min-w-0 flex-1 truncate text-slate-400">
+          {livePreview(step.target)}
+        </span>
       ) : (
         <span
           className={clsx(

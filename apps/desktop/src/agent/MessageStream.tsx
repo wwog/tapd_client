@@ -24,6 +24,7 @@ import { TaskDoneCard } from "./TaskDoneCard";
 import { UserBubble } from "./MessageParts";
 import { PromptNavigator } from "./PromptNavigator";
 import { buildPromptItems, type PromptNavItem } from "./promptNav";
+import { sticksAfterScroll } from "../../../shared/agent/scrollFollow";
 import { TurnBlock } from "./TurnBlock";
 import { groupTurns } from "./turns";
 import { assembleSessionSubagents, isPendingChild } from "./subagents";
@@ -34,6 +35,16 @@ const EMPTY_ITEMS: DshEntry[] = [];
 
 /** Within this many pixels of the end, the tail stays pinned. */
 const STICK_DISTANCE = 48;
+
+/**
+ * How long a fold the reader toggled owns the scroll position. The height
+ * animation adds rows over ~200ms; pinning to the bottom on every frame of it
+ * dragged the view off what was just opened, and the next token kept it there.
+ */
+const FOLD_HOLD_MS = 420;
+
+/** How far up the reader has to be before the arrow is worth showing. */
+const AWAY_DISTANCE = 24;
 
 /**
  * Where each session's transcript was left. The pane remounts per session, so
@@ -303,11 +314,12 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
   /**
    * Whether the current scroll events come from the reader (wheel, touch,
    * scrollbar, keys) rather than from layout growth or our own positioning.
-   * Only reader-driven events may change `stick`: a deferred markdown block can
-   * shrink and re-grow the height, and the browser's clamp of `scrollTop` must
-   * not be mistaken for the reader leaving the tail.
+   * Only reader-driven events may change `stick` by their own position; the
+   * fold hold below is the one deliberate exception.
    */
   const userScrollRef = useRef(false);
+  /** The reader left the tail on purpose; only the end re-attaches them. */
+  const releasedRef = useRef(false);
   const userScrollTimer = useRef<number | undefined>(undefined);
   const markUserScroll = useCallback((ms = 200) => {
     userScrollRef.current = true;
@@ -324,16 +336,116 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     markUserScroll(ms);
   };
 
+  /**
+   * Last offset and height seen, to tell a reader's scroll from the browser
+   * clamping the offset because content shrank. Seeded from the live DOM so the
+   * first scroll event is not compared against a fake zero-height page.
+   */
+  const metricsRef = useRef({ top: 0, height: 0 });
+  const sampleMetrics = (element: HTMLDivElement) => {
+    metricsRef.current = {
+      top: element.scrollTop,
+      height: element.scrollHeight,
+    };
+  };
+  /** Previous touch Y, so a downward finger drag releases the tail. */
+  const touchYRef = useRef<number | null>(null);
+  /** Deadline until which a reader-toggled fold owns the scroll position. */
+  const foldHoldRef = useRef(0);
+  const foldHoldTimer = useRef<number | undefined>(undefined);
+
   /** Assigns a clamped scroll offset. */
   const positionScroll = (element: HTMLDivElement, top: number) => {
     const max = Math.max(0, element.scrollHeight - element.clientHeight);
     const target = Math.min(Math.max(0, top), max);
     element.scrollTop = target;
+    sampleMetrics(element);
     return target;
   };
   // Floating "jump to latest" affordance: only while the reader is away from
   // the bottom, so the tail can keep streaming without dragging them down.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
+
+  /**
+   * Leaves the tail at once, on any upward input.
+   *
+   * Waiting for the 48px "at the end" threshold meant a small nudge up was
+   * still treated as following, so the next token pinned the view back to the
+   * bottom and only a large drag escaped. Following resumes when the reader
+   * lands back within the threshold or asks for it.
+   */
+  const releaseTail = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    // Nothing to leave: the whole transcript fits, so every scroll input is
+    // already looking at the tail.
+    if (element.scrollTop <= 0 && element.scrollHeight <= element.clientHeight) {
+      return;
+    }
+    stickRef.current = false;
+    releasedRef.current = true;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    // A few pixels up is not yet worth an arrow; the scroll handler refines it.
+    setAwayFromBottom(distance > AWAY_DISTANCE);
+  }, []);
+
+  /** Re-attaches the tail explicitly: a new prompt, or the reader asking. */
+  const attachTail = useCallback(() => {
+    stickRef.current = true;
+    releasedRef.current = false;
+    foldHoldRef.current = 0;
+    window.clearTimeout(foldHoldTimer.current);
+    setAwayFromBottom(false);
+  }, []);
+
+  /**
+   * Whether a wheel/touch inside the transcript belongs to a nested scroller
+   * (tool output, a long diff). That gesture is not about the transcript, so it
+   * must not stop the tail-follow.
+   */
+  const nestedScrollerOwns = (target: EventTarget | null): boolean => {
+    const root = scrollRef.current;
+    if (!(target instanceof Element) || !root) return false;
+    for (
+      let node: Element | null = target;
+      node && node !== root;
+      node = node.parentElement
+    ) {
+      const overflowY = window.getComputedStyle(node).overflowY;
+      if (
+        (overflowY === "auto" || overflowY === "scroll") &&
+        node.scrollHeight > node.clientHeight
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * A fold the reader clicked is a reading action: the tail stands down while
+   * its rows land, then follows again only if the fold did not push the bottom
+   * away. Collapsing a fold counts too — the clamp must not be mistaken for a
+   * reason to jump.
+   */
+  const holdTailForFold = useCallback(() => {
+    foldHoldRef.current = performance.now() + FOLD_HOLD_MS;
+    window.clearTimeout(foldHoldTimer.current);
+    foldHoldTimer.current = window.setTimeout(() => {
+      foldHoldRef.current = 0;
+      const element = scrollRef.current;
+      if (!element || !stickRef.current) return;
+      const distance =
+        element.scrollHeight - element.scrollTop - element.clientHeight;
+      // The fold settled at the tail: keep following. It pushed the bottom
+      // away: leave the reader where the fold opened.
+      if (distance < STICK_DISTANCE) return;
+      stickRef.current = false;
+      releasedRef.current = true;
+      setAwayFromBottom(true);
+    }, FOLD_HOLD_MS);
+  }, []);
+  useEffect(() => () => window.clearTimeout(foldHoldTimer.current), []);
 
   const lastUserSeq = useMemo(() => {
     for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -387,14 +499,17 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     lastUserSeqRef.current = lastUserSeq;
     pendingLengthRef.current = pending.length;
     if (userStarted || pendingStarted) {
-      stickRef.current = true;
+      // A prompt the reader just sent outranks a fold they were reading.
       restoreTopRef.current = null;
+      attachTail();
     }
 
     if (!visible) return;
     const element = scrollRef.current;
     if (!element) return;
     if (stickRef.current) {
+      // Let a fold the reader just toggled land before following again.
+      if (performance.now() < foldHoldRef.current) return;
       positionScroll(element, element.scrollHeight);
       setAwayFromBottom(false);
       return;
@@ -405,7 +520,9 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     if (element.scrollHeight - element.clientHeight >= target - 1) {
       restoreTopRef.current = null;
     }
-    setAwayFromBottom(true);
+    setAwayFromBottom(
+      element.scrollHeight - target - element.clientHeight > AWAY_DISTANCE,
+    );
   }, [lastUserSeq, pending.length, signature, visible]);
 
   // A remount renders the committed blocks first and their deferred markdown
@@ -419,9 +536,15 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       const element = scrollRef.current;
       if (!element) return;
       if (stickRef.current) {
+        // A fold's animation is shaping the height; let it land first.
+        if (performance.now() < foldHoldRef.current) return;
         positionScroll(element, element.scrollHeight);
         return;
       }
+      // Not following: the growth only changes whether the arrow is worth it.
+      const grown = element.scrollHeight - element.scrollTop - element.clientHeight;
+      setAwayFromBottom(grown > AWAY_DISTANCE);
+      sampleMetrics(element);
       const top = restoreTopRef.current;
       if (top === null) return;
       const target = positionScroll(element, top);
@@ -440,24 +563,41 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
       // Layout growth (or our own positioning) moved the offset. Keep following
       // the tail when it was pinned, and keep re-applying a pending restore.
       if (stickRef.current) {
+        // A fold's animation owns the offset until it lands.
+        if (performance.now() < foldHoldRef.current) return;
         positionScroll(element, element.scrollHeight);
         return;
       }
       const top = restoreTopRef.current;
-      if (top === null) return;
+      if (top === null) {
+        sampleMetrics(element);
+        return;
+      }
       const target = positionScroll(element, top);
       if (element.scrollHeight - element.clientHeight >= target - 1) {
         restoreTopRef.current = null;
       }
       return;
     }
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    const stuck = distance < STICK_DISTANCE;
+    const top = element.scrollTop;
+    const height = element.scrollHeight;
+    const previous = metricsRef.current;
+    metricsRef.current = { top, height };
+    const stuck = sticksAfterScroll(
+      previous,
+      { top, height },
+      element.clientHeight,
+      STICK_DISTANCE,
+      releasedRef.current,
+    );
     stickRef.current = stuck;
+    // Landing back at the end is what re-attaches a released reader.
+    if (stuck) releasedRef.current = false;
     if (sessionId) {
-      scrollMemory.set(sessionId, { stick: stuck, top: element.scrollTop });
+      scrollMemory.set(sessionId, { stick: stuck, top });
     }
-    setAwayFromBottom(!stuck);
+    const distance = height - top - element.clientHeight;
+    setAwayFromBottom(!stuck && distance > AWAY_DISTANCE);
   }, [sessionId]);
 
   // The last position can move without a reader scroll (a prompt jump, a
@@ -475,12 +615,21 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
     };
   }, [sessionId]);
 
+  // Seed the follow rule's sample from the live DOM: a switch restores an
+  // offset before any scroll event, and comparing against a zero-height page
+  // would read the first growth as a clamp (or a reader move).
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element) sampleMetrics(element);
+  }, [sessionId]);
+
   // A prompt jump is a positioning action: stop following the tail first so
   // the next streaming delta cannot drag the reader back down.
   const jumpToPrompt = useCallback((item: PromptNavItem) => {
     const element = scrollRef.current;
     if (!element) return;
     stickRef.current = false;
+    releasedRef.current = true;
     setAwayFromBottom(true);
     const target =
       element.querySelector<HTMLElement>(`[data-agent-user="${item.seq}"]`) ??
@@ -490,14 +639,14 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
 
   // An instant jump, not a smooth one: the bottom-follow pins the tail on the
   // next delta anyway, and a long animation would leave the arrow visible
-  // mid-flight.
+  // mid-flight. Attaching clears a pending fold hold too, so the reader who
+  // asked for the tail is not detached by a timer they never saw.
   const jumpToLatest = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
-    stickRef.current = true;
-    setAwayFromBottom(false);
+    attachTail();
     positionScroll(element, element.scrollHeight);
-  }, []);
+  }, [attachTail]);
 
   if (!sessionId) {
     return (
@@ -544,14 +693,67 @@ export function MessageStream({ visible = true }: { visible?: boolean }) {
         onScroll={onScroll}
         // Reader input marks the scroll events that follow as intentional; a
         // layout clamp or our own positioning must not flip the tail-follow.
-        onWheel={() => noteUserScroll()}
-        onTouchStart={() => noteUserScroll(400)}
-        onTouchMove={() => noteUserScroll()}
+        onWheel={(event) => {
+          noteUserScroll();
+          // Release at the input, not at the scroll event: a token landing in
+          // between used to pin the view back before the nudge was seen.
+          if (event.deltaY < 0 && !nestedScrollerOwns(event.target)) {
+            releaseTail();
+          }
+        }}
+        onTouchStart={(event) => {
+          noteUserScroll(400);
+          touchYRef.current = event.touches[0]?.clientY ?? null;
+        }}
+        onTouchMove={(event) => {
+          noteUserScroll();
+          const y = event.touches[0]?.clientY;
+          const last = touchYRef.current;
+          if (y === undefined) return;
+          // A finger moving down scrolls back through the transcript.
+          if (last !== null && y > last + 1 && !nestedScrollerOwns(event.target)) {
+            releaseTail();
+          }
+          touchYRef.current = y;
+        }}
         onPointerDown={() => noteUserScroll(400)}
         onPointerMove={(event) => {
           if (event.buttons) noteUserScroll();
         }}
-        onKeyDown={() => noteUserScroll(300)}
+        onKeyDown={(event) => {
+          const target = event.target;
+          // A caret key inside a card's field is not a scroll: the transcript
+          // must keep following while the reader edits an answer.
+          if (
+            target instanceof HTMLElement &&
+            (target.isContentEditable ||
+              target.tagName === "INPUT" ||
+              target.tagName === "TEXTAREA" ||
+              target.tagName === "SELECT")
+          ) {
+            return;
+          }
+          noteUserScroll(300);
+          if (
+            (event.key === "ArrowUp" ||
+              event.key === "PageUp" ||
+              event.key === "Home") &&
+            !nestedScrollerOwns(target)
+          ) {
+            releaseTail();
+          }
+          // A fold's chevron turns Enter/Space into a click, which the capture
+          // handler below turns into the hold; no second entry point here.
+        }}
+        // Every fold in the transcript is an `aria-expanded` control. Toggling
+        // one is the reader choosing what to look at, so the tail stands down
+        // for the length of the height animation instead of pinning the view.
+        onClickCapture={(event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest("[aria-expanded]")) {
+            holdTailForFold();
+          }
+        }}
         // The transcript owns its own bottom-follow. Leaving the browser's
         // scroll anchoring on made a fold's height animation drag the scroll
         // position with it, which reads as a stutter/jump under the pointer.

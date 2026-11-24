@@ -9,9 +9,10 @@ import { StreamHudCard } from "./StreamHud";
 
 /**
  * The session's plan in the stream's attention corner. Folded it is a small
- * capsule: the task being worked on, or just the progress once nothing is
- * running. Open it lists every task with the same rows the companion's inline
- * `TodoCard` uses.
+ * capsule that only carries the count — `任务 1/4` — with the glyph saying
+ * whether one is running; the running task's own text belongs to the panel,
+ * not to a capsule sitting beside the transcript. Open it lists every task
+ * with the same rows the companion's inline `TodoCard` uses.
  */
 export const TodoHud = memo(function TodoHud({
   todos,
@@ -37,7 +38,11 @@ export const TodoHud = memo(function TodoHud({
         ) : (
           <ListChecks size={16} className="text-slate-400" />
         ),
-        label: active?.content ?? `${agentLabel("todo.title", locale)} ${progress}`,
+        label: (
+          <span className={done === total ? "text-emerald-600" : undefined}>
+            {`${agentLabel("todo.title", locale)} ${progress}`}
+          </span>
+        ),
       }}
     >
       <div className="mb-0.5 flex h-8 min-w-0 items-center gap-1.5 px-2 pr-8">

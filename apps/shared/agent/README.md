@@ -2,7 +2,9 @@
 
 桌面（`apps/desktop`）与伴侣端（`apps/companion`）渲染同一套会话视图：
 以「流程」为单位的对话、todo 卡片、根级子 agent、轨迹。组件在这里，两端的
-差异只留在数据获取（桌面事件推送、移动端轮询）和注入的回调上。
+差异只留在数据获取（桌面事件推送、移动端轮询）、注入的回调，以及滚动容器本身
+（桌面有「跳到最新」按钮，手机没有）——跟尾的判定规则两端共用
+`scrollFollow.ts`，不要各写一份。
 
 ## 契约
 
@@ -23,7 +25,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `TodoCard` | 会话级 todo 列表卡片（`todo/write`），不属于任何轮次；伴侣端放在轮次上方的整宽卡（`TodoCard` 收起/展开）+ 共用的 `TodoList` 行 |
-| `TodoHud` | 桌面「对话 / 轨迹」行右侧浮动的 todo：收起是「当前任务 / 任务 x/y」的小胶囊（不遮挡对话），展开是 `w-80` 面板（标题 + 进度 + 同一份 `TodoList`） |
+| `TodoHud` | 桌面「对话 / 轨迹」行右侧浮动的 todo：收起只有 `任务 x/y`（进行中为箭头、其余为清单图标，全部完成时计数转绿，胶囊不带任务正文），展开是 `w-80` 面板（标题 + 进度 + 同一份 `TodoList`） |
 | `StreamHud` | 视图 tab 行右侧的浮动提示区：宿主把它放进「对话 / 轨迹」那一行（`items` 是 `{ id, content }` 列表，容器 `pointer-events-none`，卡片自己接管点击）；`StreamHudCard` 是**一个壳**——收起 `h-8` 胶囊，点开时同一右上角长成 `w-80` 面板（WAAPI 量前后尺寸做 width/height 动画），右上「收起为胶囊」、Escape 收起；终端数 / 子 agent 数按同一契约往里加 |
 | `TurnBlock` | 一个轮次的壳：完成态 `已工作`（过程折叠，收起后只剩它和最后一段说明）/ 展开后的根级子 agent + 流程列表 / 运行态 `工作中` / 失败重试 |
 | `FlowBlock` | 一个流程：概要行（或运行中的最新步骤）+ 按执行顺序的步骤（思考行 / 工具叶子行）+ 说明（流程自身不折叠说明；整轮 `已工作` 收起时随过程一起隐藏） |
@@ -36,7 +38,9 @@
 | `subagents.ts` | 子 agent 根行纯组装（call↔notice 顺序配对、description、`pending:` 占位、orphans）；宿主经 `ChildSessionInfo` 查询回调解自己的 store，两端配对结果完全一致 |
 | `format.ts` | `duration(ms, locale)` / `clock(at)` |
 | `clipboard.ts` | `copyText`（纯 DOM，两端的 WebView 都可用） |
-| `ScrollingName` | 悬停滑动的单行文本（仅思考预览/标签；工具行用省略号） |
+| `ScrollingName` | 悬停滑动的单行文本（仅标签；工具行与运行中的思考预览都用省略号） |
+| `DiffView` / `diff.ts` | 审核用的统一 diff：`diff.ts` 把 `git diff` 切成带新旧行号的行，`DiffView` 渲染双行号 + 改动行底色（两端审核面板共用，超 5000 行只渲染前段） |
+| `scrollFollow.ts` | 跟尾判定（纯函数）：任何向上的滚动输入即脱离，回到底部若干像素内再吸附；浏览器因内容变矮而夹取偏移不算读者移动 |
 | `trajectory/` | 轨迹面板（时间轴 + 台账 + 检查器 + JSON 树） |
 | `turns.ts` | `groupTurns` 轮次切分 |
 | `types.ts` | 结构契约 |
@@ -90,6 +94,32 @@ export function LeafRow(props: {
   result?: unknown; locale: AgentLocale;
 });
 export function ThinkingBlock(props: { text: string; locale: AgentLocale });
+
+// diff.ts / DiffView.tsx — 审核 diff 的投影与只读渲染（两端共用）
+export type DiffRow = {
+  kind: "hunk" | "add" | "del" | "context" | "note";
+  oldNo?: number; newNo?: number; text: string;
+};
+export function diffRows(diff: string): DiffRow[];
+export function DiffView(props: {
+  text: string;
+  /** 共用文案的语言（行数上限提示走 `labels.ts`）。 */
+  locale: AgentLocale;
+  /** 没有任何行时的占位文案（空 diff）；非 hunk 的 diff（二进制、chmod）会作为 note 行显示 */
+  placeholder?: string;
+  /** 高度上限与滚动由调用方按面板定（桌面 45vh、手机 max-h-72） */
+  className?: string;
+});
+/** 单次渲染行数上限；超出只渲染前 5000 行并追加一行提示。 */
+
+// scrollFollow.ts — 跟尾判定（纯函数，两端共用）
+export type ScrollStep = { top: number; height: number };
+export function sticksAfterScroll(
+  previous: ScrollStep, current: ScrollStep,
+  viewport: number, stickDistance: number,
+  /** 读者已显式脱离（向上输入）：只有回到底部才重新吸附 */
+  released?: boolean,
+): boolean;
 
 // TurnBlock.tsx — 递归渲染子会话轮次也用它
 export type LiveTrace = { text: string; reasoning: string; tools: Array<{ callId?: string; name: string; args: string }> };

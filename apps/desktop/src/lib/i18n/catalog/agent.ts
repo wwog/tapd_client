@@ -116,6 +116,7 @@ export const agent = {
   "agent.task.changesHint": ["相对任务起点的改动", "Changes since the task started"],
   "agent.task.hideDiff": ["收起改动", "Hide changes"],
   "agent.task.diffEmpty": ["没有改动", "No changes"],
+  "agent.task.diffFailed": ["读取改动失败", "Could not read the changes"],
   "agent.task.diffTruncated": [
     "改动过大，只显示前一部分。",
     "The diff is too large; only the first part is shown.",

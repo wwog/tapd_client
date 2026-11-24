@@ -30,6 +30,7 @@ import {
 } from "../lib/agentModels";
 import { BottomSheet } from "../components/BottomSheet";
 import { TodoCard } from "../../../shared/agent/TodoCard";
+import { DiffView } from "../../../shared/agent/DiffView";
 import { AgentHostProvider } from "../../../shared/agent/host";
 import type { AgentLocale } from "../../../shared/agent/types";
 import {
@@ -68,9 +69,12 @@ import { TurnStack } from "./agent/TurnStack";
 import { TrajectoryView } from "./agent/trajectory";
 import { agentHostCapabilities } from "./agent/markdown";
 import { isPendingChild } from "../../../shared/agent/subagents";
+import { sticksAfterScroll } from "../../../shared/agent/scrollFollow";
 
 /** Runtime status cadence; the task/approval feed is polled once by `App`. */
 const SESSION_POLL_MS = 3_000;
+/** How close to the end still counts as "following the tail", in px. */
+const FOLLOW_DISTANCE = 64;
 /**
  * Session rows (todos/usage/selection/status) tolerate a slower cadence than
  * the transcript: the desktop's feature proxy allows a fixed budget per
@@ -178,6 +182,7 @@ function ReviewField(props: { label: string; text: string }) {
 function ReviewPanel(props: {
   task: DshTask;
   sessionId: string;
+  locale: AgentLocale;
   files: DshTaskFile[] | null;
   filesTruncated: boolean;
   filesLoading: boolean;
@@ -372,9 +377,12 @@ function ReviewPanel(props: {
                   </p>
                 ) : diff ? (
                   <>
-                    <pre className="max-h-72 select-text overflow-auto overscroll-contain whitespace-pre rounded-lg border border-border bg-slate-50 px-3 py-2 font-mono text-ui-2xs leading-5 text-slate-700">
-                      {diff.text || t("mobile.agent.diffEmpty")}
-                    </pre>
+                    <DiffView
+                      text={diff.text ?? ""}
+                      locale={props.locale}
+                      placeholder={t("mobile.agent.diffEmpty")}
+                      className="max-h-72"
+                    />
                     {diff.truncated ? (
                       <p className="mt-1 text-ui-2xs text-amber-700">
                         {t("mobile.agent.reviewTruncated")}
@@ -1244,6 +1252,14 @@ export function AgentSessionPage(props: { id: string }) {
    * never fire.
    */
   const followSeq = useRef(0);
+  /**
+   * Whether new rows should be scrolled into view. The reader owns it through
+   * the transcript's scroll events (see `onTranscriptScroll`), so an upward
+   * swipe stays where it landed instead of being undone by the next poll.
+   */
+  const followRef = useRef(true);
+  /** Last offset/height, so a clamp after a shrink is not read as a swipe. */
+  const scrollMetrics = useRef({ top: 0, height: 0 });
 
   useEffect(() => {
     alive.current = true;
@@ -1711,7 +1727,10 @@ export function AgentSessionPage(props: { id: string }) {
     } finally {
       if (alive.current) setSending(false);
     }
-    // The prompt is queued; entry polling picks the committed rows up.
+    // The prompt is queued; entry polling picks the committed rows up. Sending
+    // always re-attaches the tail: the reply the reader just asked for must be
+    // visible, even if they had swiped away.
+    followRef.current = true;
     void loadEntries(true);
   }, [draft, sending, id, loadEntries]);
 
@@ -1853,7 +1872,26 @@ export function AgentSessionPage(props: { id: string }) {
     [entries],
   );
 
-  // Follow new rows only when the reader was already at the bottom.
+  // Follow new rows only while the reader has not left the tail. The rule is
+  // the desktop's (`shared/agent/scrollFollow`): any upward swipe detaches at
+  // once, and only scrolling back to the end re-attaches — so a small nudge is
+  // not undone by the next polled row.
+  const onTranscriptScroll = () => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const top = scroller.scrollTop;
+    const height = scroller.scrollHeight;
+    const previous = scrollMetrics.current;
+    scrollMetrics.current = { top, height };
+    followRef.current = sticksAfterScroll(
+      previous,
+      { top, height },
+      scroller.clientHeight,
+      FOLLOW_DISTANCE,
+      !followRef.current,
+    );
+  };
+
   useEffect(() => {
     if (!sorted || sorted.length === 0) return;
     const element = bottomRef.current;
@@ -1866,8 +1904,12 @@ export function AgentSessionPage(props: { id: string }) {
     const nearBottom =
       !scroller ||
       element.getBoundingClientRect().top <=
-        scroller.getBoundingClientRect().bottom + 64;
-    if (firstLoad || (latest > followSeq.current && nearBottom)) {
+        scroller.getBoundingClientRect().bottom + FOLLOW_DISTANCE;
+    if (firstLoad) {
+      followRef.current = true;
+      followSeq.current = latest;
+    }
+    if (firstLoad || (latest > followSeq.current && followRef.current && nearBottom)) {
       // Scroll the box itself, then once more after the frame settles: the
       // first pass runs before late layout (wrapped markdown, cards), which
       // used to leave the last ~20px below the fold.
@@ -1886,10 +1928,17 @@ export function AgentSessionPage(props: { id: string }) {
   // scroll anchoring otherwise pulls the new shorter pane back down.
   useEffect(() => {
     const scroller = scrollRef.current;
-    if (!scroller || pane === "chat") return;
+    // A pane switch re-attaches the tail: the reset below is ours, not a swipe,
+    // and the chat must not arrive with following switched off.
+    followRef.current = true;
+    if (!scroller) return;
+    scrollMetrics.current = { top: scroller.scrollTop, height: scroller.scrollHeight };
+    if (pane === "chat") return;
     scroller.scrollTop = 0;
+    scrollMetrics.current = { top: 0, height: scroller.scrollHeight };
     requestAnimationFrame(() => {
       scroller.scrollTop = 0;
+      scrollMetrics.current = { top: 0, height: scroller.scrollHeight };
     });
   }, [pane]);
 
@@ -1993,6 +2042,7 @@ export function AgentSessionPage(props: { id: string }) {
 
       <div
         ref={scrollRef}
+        onScroll={onTranscriptScroll}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       >
       {/* The review gate sits at the top of the message area, so the summary
@@ -2001,6 +2051,7 @@ export function AgentSessionPage(props: { id: string }) {
         <ReviewPanel
           task={task}
           sessionId={id}
+          locale={agentLocale}
           files={reviewFiles}
           filesTruncated={reviewFilesTruncated}
           filesLoading={reviewFilesLoading}

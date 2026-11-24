@@ -4,15 +4,15 @@ import { api } from "../lib/api";
 import { dshFileApi } from "../lib/dsh";
 import type { DshTask, DshTaskFile, DshTaskFileStatus } from "../lib/dsh";
 import type { FileTabTarget } from "../lib/fs";
-import { t, type MessageKey } from "../lib/i18n";
+import { t, useLocale, type MessageKey } from "../lib/i18n";
 import { showToast } from "../lib/toast";
 import { Spinner } from "../components/ui";
 import { ScrollingName } from "../components/ScrollingName";
+import { DiffView } from "../../../shared/agent/DiffView";
 import { agentActions } from "./store";
 
-/** Diff surface: monospace, read-only and copyable inside the cap the backend keeps. */
-const DIFF_CLASS =
-  "max-h-[45vh] select-text overflow-auto overscroll-contain whitespace-pre rounded-lg border border-border bg-slate-50 px-3 py-2 font-mono text-ui-xs leading-5 text-slate-700";
+/** The diff scrolls inside the pane; the backend's char cap is much taller. */
+const DIFF_HEIGHT = "max-h-[45vh]";
 
 const STATUS: Record<DshTaskFileStatus, MessageKey> = {
   added: "agent.review.statusAdded",
@@ -61,6 +61,7 @@ export function TaskDiffSection({
   onOpenFile: (target: FileTabTarget) => void;
 }) {
   const base = reviewBase(task);
+  const locale = useLocale();
   const [files, setFiles] = useState<{
     files: DshTaskFile[];
     truncated: boolean;
@@ -68,8 +69,9 @@ export function TaskDiffSection({
   const [filesError, setFilesError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** A failed fetch is kept apart from the diff text, so it never renders as content. */
   const [diffs, setDiffs] = useState<
-    Record<string, { text: string; truncated: boolean }>
+    Record<string, { text: string; truncated: boolean; error?: string }>
   >({});
 
   // The file list is per task; refreshing on workflow changes picks up the
@@ -145,7 +147,7 @@ export function TaskDiffSection({
     } catch (error) {
       setDiffs((current) => ({
         ...current,
-        [file.path]: { text: String(error), truncated: false },
+        [file.path]: { text: "", truncated: false, error: String(error) },
       }));
     }
   };
@@ -243,9 +245,23 @@ export function TaskDiffSection({
                   <div className="px-2 pb-2">
                     {diff ? (
                       <>
-                        <pre className={DIFF_CLASS}>
-                          {diff.text || t("agent.task.diffEmpty")}
-                        </pre>
+                        {diff.error ? (
+                          // A failed read is not diff content: say so plainly
+                          // instead of tinting the error like a removed line.
+                          <p
+                            className="select-text rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-ui-xs leading-5 text-rose-700"
+                            title={diff.error}
+                          >
+                            {t("agent.task.diffFailed")}
+                          </p>
+                        ) : (
+                          <DiffView
+                            text={diff.text}
+                            locale={locale}
+                            placeholder={t("agent.task.diffEmpty")}
+                            className={DIFF_HEIGHT}
+                          />
+                        )}
                         {diff.truncated ? (
                           <div className="mt-1 text-ui-xs text-amber-700">
                             {t("agent.task.diffTruncated")}
