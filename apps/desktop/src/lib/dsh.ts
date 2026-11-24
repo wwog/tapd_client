@@ -454,6 +454,19 @@ export type DshTaskFile = {
   binary: boolean;
 };
 
+/**
+ * One file's two sides for the review's inline diff (backend `FileSides`).
+ * `null` means the file does not exist on that side — added, deleted, or a
+ * repository without a baseline. `truncated` marks a side cut at the cap;
+ * `binary` means there is no text to diff.
+ */
+export type DshFileSides = {
+  base: string | null;
+  current: string | null;
+  truncated: boolean;
+  binary: boolean;
+};
+
 /** The revisions a finished round reports (backend `TaskGit`). */
 export type DshTaskGit = {
   /** The round's starting revision (worktree baseline or repo HEAD). */
@@ -697,6 +710,7 @@ type DshFeatureCommand =
   | "dsh_task_cancel"
   | "dsh_task_changes"
   | "dsh_task_diff"
+  | "dsh_task_file_sides"
   | "dsh_task_resume"
   | "dsh_task_delete"
   | "dsh_new_session"
@@ -761,6 +775,12 @@ export const dshTaskApi = {
       sessionId,
       ...(file ? { file } : {}),
     }),
+  /**
+   * Both text sides of one file, for the viewer's inline diff. The editor
+   * diffs them itself; a side is `null` when the file does not exist there.
+   */
+  fileSides: (sessionId: string, file: string) =>
+    feature<DshFileSides>("dsh_task_file_sides", { sessionId, file }),
   resume: (sessionId: string) =>
     feature<{ task: DshTask }>("dsh_task_resume", { sessionId }),
   /** Creates a free chat, optionally already grouped under a project. */

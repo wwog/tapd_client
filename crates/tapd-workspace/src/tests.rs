@@ -412,3 +412,80 @@ fn several_untracked_files_keep_their_own_line_counts() {
     assert!(counts.contains(&("b.txt".to_string(), 3, ChangeKind::Added)));
     assert!(counts.contains(&("dir/c.txt".to_string(), 1, ChangeKind::Added)));
 }
+
+#[test]
+fn file_sides_carry_the_baseline_and_the_working_copy() {
+    let temp = TempDir::new("sides");
+    let repo = init_repo(&temp.path);
+    write(&repo, "note.txt", b"one\ntwo\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    write(&repo, "note.txt", b"one\nTWO\n");
+    write(&repo, "added.txt", b"fresh\n");
+
+    let workspace = workspace(&repo, &repo, None, Some(&baseline), Vec::new());
+
+    let edited = workspace.file_sides("note.txt").unwrap();
+    assert_eq!(edited.base.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(edited.current.as_deref(), Some("one\nTWO\n"));
+    assert!(!edited.truncated);
+    assert!(!edited.binary);
+
+    // A file the baseline never had: no base side, not an error.
+    let added = workspace.file_sides("added.txt").unwrap();
+    assert_eq!(added.base, None);
+    assert_eq!(added.current.as_deref(), Some("fresh\n"));
+}
+
+#[test]
+fn file_sides_report_a_deleted_file_and_a_binary_one() {
+    let temp = TempDir::new("sides-bin");
+    let repo = init_repo(&temp.path);
+    write(&repo, "gone.txt", b"bye\n");
+    write(&repo, "pixel.bin", b"\x00\x01\x02binary\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    fs::remove_file(repo.join("gone.txt")).unwrap();
+
+    let workspace = workspace(&repo, &repo, None, Some(&baseline), Vec::new());
+
+    let gone = workspace.file_sides("gone.txt").unwrap();
+    assert_eq!(gone.base.as_deref(), Some("bye\n"));
+    assert_eq!(gone.current, None);
+
+    let binary = workspace.file_sides("pixel.bin").unwrap();
+    assert!(binary.binary);
+    assert_eq!(binary.base, None);
+    assert_eq!(binary.current, None);
+}
+
+#[test]
+fn file_sides_read_the_branch_tip_after_the_worktree_is_gone() {
+    let temp = TempDir::new("sides-branch");
+    let repo = init_repo(&temp.path);
+    write(&repo, "base.txt", b"base\n");
+    commit_all(&repo, "base");
+    let baseline = head(&repo);
+    let worktree = temp.path.join("feature-wt");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+            &baseline,
+        ],
+    );
+    write(&worktree, "base.txt", b"base\nmore\n");
+    commit_all(&worktree, "feature work");
+    fs::remove_dir_all(&worktree).unwrap();
+
+    // The worktree directory is gone, so only the branch carries the change.
+    let workspace = workspace(&repo, &worktree, Some("feature"), Some(&baseline), Vec::new());
+    let sides = workspace.file_sides("base.txt").unwrap();
+    assert_eq!(sides.base.as_deref(), Some("base\n"));
+    assert_eq!(sides.current.as_deref(), Some("base\nmore\n"));
+}

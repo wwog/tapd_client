@@ -108,7 +108,7 @@ export function TaskDiffSection({
     }
   };
 
-  /** 「应用内查看」: the app's own read-only viewer owns the file tab. */
+  /** 「应用内查看」: the viewer tab shows this file against the task baseline. */
   const openInViewer = async (relative: string) => {
     const absolute = joinUnder(base, relative);
     if (!absolute) {
@@ -125,6 +125,9 @@ export function TaskDiffSection({
         workspaceId: target.workspaceId,
         path: target.path,
         label: target.label,
+        // The tab diffs the file against the task's baseline itself; only the
+        // file identity travels, never line numbers.
+        review: { sessionId: task.id, file: relative },
       });
     } catch (error) {
       showToast("error", t("agent.review.openFailed", { error: String(error) }));

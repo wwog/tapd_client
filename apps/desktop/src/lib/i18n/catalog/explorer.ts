@@ -53,4 +53,15 @@ export const explorer = {
   ],
   "file.reload": ["重新加载", "Reload"],
   "file.overwrite": ["覆盖保存", "Overwrite"],
+  // Review tab: the same file against the task's baseline.
+  "file.diffAgainstTask": ["对比任务起点", "Against the task baseline"],
+  "file.diffTruncated": [
+    "文件较大，仅对比前一部分",
+    "Large file - only the beginning is compared",
+  ],
+  "file.diffBinary": [
+    "二进制文件，无法对比",
+    "Binary file - nothing to compare",
+  ],
+  "file.diffDeleted": ["这个文件已被删除", "This file was deleted"],
 } as const satisfies Catalog;

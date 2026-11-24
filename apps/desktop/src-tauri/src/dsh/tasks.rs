@@ -568,6 +568,7 @@ pub async fn command(app: &AppHandle, name: &str, payload: Value) -> Result<Valu
         "dsh_task_cancel" => cancel(app, parse(payload, name)?).await,
         "dsh_task_changes" => changes(app, parse(payload, name)?).await,
         "dsh_task_diff" => diff(app, parse(payload, name)?).await,
+        "dsh_task_file_sides" => file_sides(app, parse(payload, name)?).await,
         "dsh_task_resume" => resume(app, parse(payload, name)?).await,
         "dsh_task_delete" => delete_session(app, parse(payload, name)?).await,
         // `dsh_task_merge` is gone: the finishing chain owns the merge and the
@@ -641,6 +642,14 @@ struct DiffRequest {
     session_id: String,
     #[serde(default)]
     file: Option<String>,
+}
+
+/// One file's two sides; the viewer's inline diff diffs the text itself.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileSidesRequest {
+    session_id: String,
+    file: String,
 }
 
 /// One project a free conversation can be created under.
@@ -3070,6 +3079,29 @@ async fn diff(app: &AppHandle, request: DiffRequest) -> Result<Value, String> {
     .await?;
     debug_assert!(view.text.chars().count() <= tapd_workspace::MAX_DIFF_CHARS);
     Ok(json!({ "diff": view.text, "truncated": view.truncated }))
+}
+
+/// Both sides of one file for the viewer's inline diff. The editor does the
+/// diffing, so the payload is two texts plus what cannot be diffed (binary,
+/// or a side cut at the char cap) — never line numbers or hunk headers.
+async fn file_sides(app: &AppHandle, request: FileSidesRequest) -> Result<Value, String> {
+    let Some(record) = load_record(app, &request.session_id).await? else {
+        return Err(not_found(&request.session_id));
+    };
+    let workspace = workspace_for(&record);
+    let file = request.file;
+    let sides = blocking(move || {
+        workspace
+            .file_sides(&file)
+            .map_err(|error| error.message().to_string())
+    })
+    .await?;
+    Ok(json!({
+        "base": sides.base,
+        "current": sides.current,
+        "truncated": sides.truncated,
+        "binary": sides.binary,
+    }))
 }
 
 // ---------------------------------------------------------------------------

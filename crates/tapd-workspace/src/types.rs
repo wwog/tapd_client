@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 pub const MAX_LISTED_FILES: usize = 200;
 /// Diff text is cut at this many characters, not bytes.
 pub const MAX_DIFF_CHARS: usize = 120_000;
+/// One side of a file, as shipped for the review's inline diff. Larger files
+/// are cut and flagged rather than refused: the first part still diffs.
+pub const MAX_FILE_CHARS: usize = 512_000;
 /// The canonical empty tree, used when a task has no baseline commit.
 pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -85,6 +88,22 @@ pub struct DiffView {
     pub text: String,
     pub truncated: bool,
     pub empty: bool,
+}
+
+/// Both sides of one file, for the review's inline diff.
+///
+/// The editor diffs these itself, so no line numbers or hunks travel through
+/// the command channel; each side is `None` when the file does not exist there
+/// (added, deleted or new repository).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSides {
+    pub base: Option<String>,
+    pub current: Option<String>,
+    /// A side was cut at [`MAX_FILE_CHARS`].
+    pub truncated: bool,
+    /// A side is not UTF-8 text, so there is nothing to diff.
+    pub binary: bool,
 }
 
 /// A workspace failure with an already-localised message.

@@ -58,24 +58,33 @@ export const TurnChangesCard = memo(function TurnChangesCard({
       </button>
       {open ? (
         <div className="max-h-56 overflow-y-auto overscroll-contain border-t border-border">
-          {changes.files.map((file) => (
-            <button
-              key={file.path}
-              type="button"
-              title={`${file.path} · ${agentLabel("turn.changesOpen", locale)}`}
-              onClick={() => host.openPath?.(file.path)}
-              className={clsx(
-                "flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui-2xs",
-                host.openPath ? "hover:bg-overlay-soft" : "cursor-default",
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-slate-600">
-                {file.path}
-              </span>
-              <span className="shrink-0 tabular-nums text-emerald-600">+{file.added}</span>
-              <span className="shrink-0 tabular-nums text-rose-500">−{file.removed}</span>
-            </button>
-          ))}
+          {changes.files.map((file) => {
+            // A host that can diff opens the change; otherwise the file itself.
+            const openDiff = host.openDiff;
+            const openFile = openDiff ?? host.openPath;
+            return (
+              <button
+                key={file.path}
+                type="button"
+                title={`${file.path} · ${
+                  openDiff
+                    ? agentLabel("turn.changesOpenDiff", locale)
+                    : agentLabel("turn.changesOpen", locale)
+                }`}
+                onClick={() => openFile?.(file.path)}
+                className={clsx(
+                  "flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui-2xs",
+                  openFile ? "hover:bg-overlay-soft" : "cursor-default",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-slate-600">
+                  {file.path}
+                </span>
+                <span className="shrink-0 tabular-nums text-emerald-600">+{file.added}</span>
+                <span className="shrink-0 tabular-nums text-rose-500">−{file.removed}</span>
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>

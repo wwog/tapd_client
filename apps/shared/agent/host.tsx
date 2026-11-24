@@ -24,6 +24,12 @@ export type AgentHost = {
   }) => Promise<string>;
   /** Reveals a `@path` mention in the host file system. */
   openPath?: (path: string) => void;
+  /**
+   * Opens a changed file as a diff against the task's baseline. Hosts that can
+   * show diffs (the desktop workbench) inject it; the change card falls back to
+   * `openPath` when they do not.
+   */
+  openDiff?: (path: string) => void;
   /** Opens the source record a task came from (bug detail, local item page). */
   openTaskDetail?: (
     target:

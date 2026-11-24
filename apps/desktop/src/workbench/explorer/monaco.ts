@@ -65,6 +65,15 @@ monaco.editor.defineTheme("tapd-light", {
     "editorSuggestWidget.border": "#0f172a14",
     "editorHoverWidget.background": "#ffffff",
     "editorHoverWidget.border": "#0f172a14",
+    // Inline review diff: the same emerald/rose language as the review card,
+    // not Monaco's default olive/pink.
+    "diffEditor.border": "#0f172a14",
+    "diffEditor.insertedLineBackground": "#ecfdf5b3",
+    "diffEditor.removedLineBackground": "#fff1f2b3",
+    "diffEditor.insertedTextBackground": "#10b9811f",
+    "diffEditor.removedTextBackground": "#f43f5e1f",
+    "diffEditorGutter.insertedLineBackground": "#d1fae5",
+    "diffEditorGutter.removedLineBackground": "#ffe4e6",
   },
 });
 
@@ -90,6 +99,14 @@ monaco.editor.defineTheme("tapd-dark", {
     "editorSuggestWidget.border": "#ffffff1a",
     "editorHoverWidget.background": "#17191e",
     "editorHoverWidget.border": "#ffffff1a",
+    // Dark diff tints: the dark emerald/rose surfaces from styles.css.
+    "diffEditor.border": "#ffffff1a",
+    "diffEditor.insertedLineBackground": "#0c241c99",
+    "diffEditor.removedLineBackground": "#2a151999",
+    "diffEditor.insertedTextBackground": "#10b98126",
+    "diffEditor.removedTextBackground": "#f43f5e26",
+    "diffEditorGutter.insertedLineBackground": "#0f3226",
+    "diffEditorGutter.removedLineBackground": "#3a1a20",
   },
 });
 

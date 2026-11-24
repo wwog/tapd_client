@@ -734,6 +734,7 @@ export default function App() {
         type: "file",
         workspaceId: target.workspaceId,
         path: target.path,
+        ...(target.review ? { review: target.review } : {}),
       },
       preview: false,
       target: "secondary",

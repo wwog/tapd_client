@@ -18,7 +18,9 @@
 - **轮次**：`groupTurns`（`turns.ts`）是唯一的轮次切分实现；
   desktop 的 `src/agent/turns.ts` 只是 re-export。
 - **宿主能力**：`host.tsx` 的 `AgentHostProvider` 注入 app 特有的能力
-  （Markdown 渲染、用量 chip、本地图片读取）；不注入时全部有纯文本降级。
+  （Markdown 渲染、用量 chip、本地图片读取、`openPath` / `openDiff`）；不注入时
+  全部有纯文本降级。变更卡优先用 `openDiff`（桌面打开「对比任务起点」的 diff
+  页签），没有就退回 `openPath`。
 
 ## 组件
 

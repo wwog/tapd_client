@@ -9,6 +9,7 @@ import {
   Bug,
   ClipboardList,
   FileCode2,
+  FileDiff,
   FolderGit2,
   FolderTree,
   ListChecks,
@@ -119,7 +120,13 @@ export const PANEL_DEFINITIONS: Record<PanelKind, PanelDefinition> = {
     title: (panel) =>
       panel.label ??
       (panel.resource.type === "file" ? basename(panel.resource.path) : t("explorer.fileFallback")),
-    icon: () => <FileCode2 size={13} />,
+    // A review tab is a diff of the same file, so the icon says which it is.
+    icon: (panel) =>
+      panel.resource.type === "file" && panel.resource.review ? (
+        <FileDiff size={13} />
+      ) : (
+        <FileCode2 size={13} />
+      ),
     minSize: PANEL_MIN_SIZE.file,
     closable: () => true,
     singleton: "id",

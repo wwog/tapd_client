@@ -69,7 +69,7 @@ DOM 标记（验收 / 自动化用）：`data-workbench-region="layout-area|sash
 | `page`（项目） | `page:<view>:<projectId>` | 缺陷列表（`bugs`）/ 事项列表（`local`） | 是 | 每个项目一个 |
 | `bug` | `bug:<ws>:<bugId>` | 缺陷详情 | 是 | 全局一个，再次打开改目标 |
 | `explorer` | `explorer:<ws>` | 资源管理器 | 是 | 按 id（每个项目一个） |
-| `file` | `file:<ws>:<path>` | 文本/Markdown/图片/音视频/二进制 | 是 | 按 id |
+| `file` | `file:<ws>:<path>`（审核页签 `file-diff:<sessionId>:<ws>:<path>`） | 文本/Markdown/图片/音视频/二进制；带 `review` 资源字段时不读缓冲区，而是用 Monaco 内联 diff 对比任务起点（只读，基线取任务的 baseline 提交，当前侧取 worktree 或分支尖端） | 是 | 按 id |
 | `terminal` | `terminal:<sessionId>` | 一个 PTY 一个标签 | 是 | 按 id |
 
 ## 3. 不变量

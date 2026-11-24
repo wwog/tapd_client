@@ -9,4 +9,5 @@ pub static MESSAGES: &[Message] = &[
     ("workspace.workdir.missing", "工作目录不存在：{}", "The working directory does not exist: {}"),
     ("workspace.git.exec", "无法执行 git：{}", "Failed to run git: {}"),
     ("workspace.git.failed", "git {} 失败：{}", "git {} failed: {}"),
+    ("workspace.file.read", "读取文件失败：{}（{}）", "Could not read the file: {} ({})"),
 ];

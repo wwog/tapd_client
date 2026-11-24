@@ -16,8 +16,8 @@ use std::process::{Command, Output};
 use tapd_i18n::{tr, tr_args};
 
 use crate::types::{
-    ChangeKind, ChangeSummary, ChangedFile, DiffView, TaskWorkspace, WorkspaceError, EMPTY_TREE,
-    MAX_DIFF_CHARS, MAX_LISTED_FILES,
+    ChangeKind, ChangeSummary, ChangedFile, DiffView, FileSides, TaskWorkspace, WorkspaceError,
+    EMPTY_TREE, MAX_DIFF_CHARS, MAX_FILE_CHARS, MAX_LISTED_FILES,
 };
 
 impl TaskWorkspace {
@@ -57,6 +57,42 @@ impl TaskWorkspace {
             Target::Ref(branch) => {
                 let repo = Git::new(&self.repo_path);
                 Ok(Some(repo.branch_tip(&branch)?))
+            }
+        }
+    }
+
+    /// Both sides of one file, for the review's inline diff.
+    ///
+    /// The base is the task's baseline commit (the empty tree when there is
+    /// none); the current side is the worktree, or the branch tip once the
+    /// worktree is gone. The caller diffs the two strings itself, so no line
+    /// numbers or hunks travel through the command channel.
+    pub fn file_sides(&self, file: &str) -> Result<FileSides, WorkspaceError> {
+        let ish = self.baseline_ish().unwrap_or(EMPTY_TREE);
+        match self.target()? {
+            Target::Dir(root) => {
+                let git = Git::new(&root);
+                let path = self.checked_file_path(file, &root)?;
+                let base = git.blob(ish, &path)?;
+                let current = match fs::read(root.join(&path)) {
+                    Ok(bytes) => Some(bytes),
+                    // A deleted file is a side, not an error.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => {
+                        return Err(WorkspaceError::new(tr_args(
+                            "workspace.file.read",
+                            &[&path, &error],
+                        )))
+                    }
+                };
+                Ok(file_sides(base, current))
+            }
+            Target::Ref(branch) => {
+                let git = Git::new(&self.repo_path);
+                let path = self.checked_file_path(file, Path::new(&self.repo_path))?;
+                let base = git.blob(ish, &path)?;
+                let current = git.blob(&branch, &path)?;
+                Ok(file_sides(base, current))
             }
         }
     }
@@ -574,6 +610,57 @@ impl Git {
     fn is_tracked(&self, path: &str) -> Result<bool, WorkspaceError> {
         let listed = self.stdout(&["ls-files", "--cached", "--", path])?;
         Ok(!listed.trim().is_empty())
+    }
+
+    /// One blob's raw bytes at a revision; `None` when the path is not there.
+    ///
+    /// `git cat-file` exits 128 for an unknown object, which is the normal shape
+    /// of a side that does not exist yet (an added file, or no baseline).
+    fn blob(&self, rev: &str, path: &str) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        let spec = format!("{rev}:{path}");
+        let output = self.run(&["cat-file", "blob", &spec], &[128])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(output.stdout))
+    }
+}
+
+/// One side of a file as text, flagging what the editor cannot diff.
+///
+/// A NUL byte in the first block is git's own binary test; anything that is not
+/// UTF-8 is treated the same way. Text past [`MAX_FILE_CHARS`] is cut, because
+/// the first part still diffs and the panel says the rest is missing.
+fn text_side(bytes: Option<Vec<u8>>, sides: &mut FileSides) -> Option<String> {
+    let bytes = bytes?;
+    if bytes.iter().take(8192).any(|byte| *byte == 0) {
+        sides.binary = true;
+        return None;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => {
+            if text.chars().count() > MAX_FILE_CHARS {
+                sides.truncated = true;
+                Some(text.chars().take(MAX_FILE_CHARS).collect())
+            } else {
+                Some(text)
+            }
+        }
+        Err(_) => {
+            sides.binary = true;
+            None
+        }
+    }
+}
+
+fn file_sides(base: Option<Vec<u8>>, current: Option<Vec<u8>>) -> FileSides {
+    let mut sides = FileSides::default();
+    let base_text = text_side(base, &mut sides);
+    let current_text = text_side(current, &mut sides);
+    FileSides {
+        base: base_text,
+        current: current_text,
+        ..sides
     }
 }
 

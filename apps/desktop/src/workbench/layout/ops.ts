@@ -105,7 +105,15 @@ function isPanelResource(value: unknown): value is PanelResource {
         typeof value.workspaceId === "string" &&
         value.workspaceId.length > 0 &&
         typeof value.path === "string" &&
-        value.path.length > 0
+        value.path.length > 0 &&
+        // Older persisted tabs have no review field; a present one must be
+        // complete, so a corrupted payload cannot open a half-review tab.
+        (value.review === undefined ||
+          (isRecord(value.review) &&
+            typeof value.review.sessionId === "string" &&
+            value.review.sessionId.length > 0 &&
+            typeof value.review.file === "string" &&
+            value.review.file.length > 0))
       );
     case "terminal":
       return typeof value.sessionId === "string" && value.sessionId.length > 0;

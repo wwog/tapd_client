@@ -15,6 +15,6 @@ mod types;
 mod tests;
 
 pub use types::{
-    ChangeKind, ChangeSummary, ChangedFile, DiffView, TaskWorkspace, WorkspaceError, EMPTY_TREE,
-    MAX_DIFF_CHARS, MAX_LISTED_FILES,
+    ChangeKind, ChangeSummary, ChangedFile, DiffView, FileSides, TaskWorkspace, WorkspaceError,
+    EMPTY_TREE, MAX_DIFF_CHARS, MAX_FILE_CHARS, MAX_LISTED_FILES,
 };

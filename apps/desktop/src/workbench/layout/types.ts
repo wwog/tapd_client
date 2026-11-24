@@ -43,7 +43,13 @@ export type PanelResource =
   | { type: "bug"; workspaceId: string; bugId: string }
   | { type: "local_item"; projectId: string; itemId: string }
   | { type: "explorer"; workspaceId: string }
-  | { type: "file"; workspaceId: string; path: string }
+  | {
+      type: "file";
+      workspaceId: string;
+      path: string;
+      /** Review mode: show this file against a task's baseline (inline diff). */
+      review?: { sessionId: string; file: string };
+    }
   | { type: "terminal"; sessionId: string };
 
 export type PanelRef = {
@@ -193,7 +199,15 @@ export const panelId = {
   localItem: (projectId: string, itemId: string): string =>
     `local_item:${projectId}:${itemId}`,
   explorer: (workspaceId: string): string => `explorer:${workspaceId}`,
-  file: (workspaceId: string, path: string): string => `file:${workspaceId}:${path}`,
+  /**
+   * One file tab per path. A review tab is a different tab on purpose: it is a
+   * read-only diff against the task baseline, so the same path opened from the
+   * explorer keeps its own editable tab (VS Code does the same for diffs).
+   */
+  file: (workspaceId: string, path: string, reviewSessionId?: string): string =>
+    reviewSessionId
+      ? `file-diff:${reviewSessionId}:${workspaceId}:${path}`
+      : `file:${workspaceId}:${path}`,
   terminal: (sessionId: string): string => `terminal:${sessionId}`,
 };
 
@@ -212,7 +226,11 @@ export function makePanel(
           : resource.type === "explorer"
             ? panelId.explorer(resource.workspaceId)
             : resource.type === "file"
-              ? panelId.file(resource.workspaceId, resource.path)
+              ? panelId.file(
+                  resource.workspaceId,
+                  resource.path,
+                  resource.review?.sessionId,
+                )
               : panelId.terminal(resource.sessionId);
   return {
     id,

@@ -38,6 +38,7 @@ import {
 
 import { OpenWithButton, type OpenKind } from "../../components/OpenWithButton";
 import { formatBytes, formatTimestamp } from "../../lib/format";
+import { dshTaskApi, type DshFileSides } from "../../lib/dsh";
 import {
   basename,
   dirname,
@@ -57,6 +58,11 @@ import { setPanelDirty } from "./dirty";
 const MonacoView = lazy(() =>
   import("../explorer/MonacoView").then((module) => ({
     default: module.MonacoView,
+  })),
+);
+const MonacoDiffView = lazy(() =>
+  import("../explorer/MonacoDiffView").then((module) => ({
+    default: module.MonacoDiffView,
   })),
 );
 
@@ -99,6 +105,7 @@ export function FilePanel({ panel, active }: PanelProps) {
   const workspaceId =
     resource.type === "file" ? resource.workspaceId : services.currentWorkspaceId;
   const path = resource.type === "file" ? resource.path : "";
+  const review = resource.type === "file" ? resource.review : undefined;
   const projectName =
     services.workspaceName(workspaceId) || t("explorer.root");
 
@@ -123,6 +130,12 @@ export function FilePanel({ panel, active }: PanelProps) {
   const loadedMtime = useRef<number | null>(null);
   /** Read by the activation check without re-subscribing the effect. */
   const dirtyRef = useRef(false);
+  /** Review tab: both sides of the file, fetched once per open/refresh. */
+  const [sides, setSides] = useState<
+    | { status: "loading" }
+    | { status: "ready"; value: DshFileSides }
+    | { status: "error"; error: string }
+  >({ status: "loading" });
 
   // Reset view toggles and the buffer when the panel switches files.
   useEffect(() => {
@@ -134,7 +147,31 @@ export function FilePanel({ panel, active }: PanelProps) {
     setConflict(false);
   }, [workspaceId, path]);
 
+  const reviewSessionId = review?.sessionId;
+  const reviewFile = review?.file;
+
+  // A review tab does not read the file as a buffer: both sides come from the
+  // task's baseline and its worktree, and the editor diffs them itself.
   useEffect(() => {
+    if (!reviewSessionId || !reviewFile) return;
+    let cancelled = false;
+    setSides({ status: "loading" });
+    dshTaskApi
+      .fileSides(reviewSessionId, reviewFile)
+      .then((value) => {
+        if (!cancelled) setSides({ status: "ready", value });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setSides({ status: "error", error: String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewSessionId, reviewFile, reloadToken]);
+
+  useEffect(() => {
+    // A review tab has no editable buffer; its own effect fetches the sides.
+    if (review) return;
     let cancelled = false;
     setState({ status: "loading" });
     setDraft(null);
@@ -155,7 +192,7 @@ export function FilePanel({ panel, active }: PanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, path, reloadToken]);
+  }, [workspaceId, path, reloadToken, review]);
 
   // Re-read on activation when the file changed on disk. Depending only on
   // `active` / `path` keeps an actively-written log from triggering a reload
@@ -209,6 +246,7 @@ export function FilePanel({ panel, active }: PanelProps) {
   dirtyRef.current = dirty;
   /** Editing needs a complete UTF-8 body; truncated/binary/media stay read-only. */
   const editable =
+    !review &&
     content !== null &&
     !content.truncated &&
     (content.kind === "text" || content.kind === "markdown");
@@ -297,6 +335,7 @@ export function FilePanel({ panel, active }: PanelProps) {
   );
 
   const showsText =
+    review !== undefined ||
     content?.kind === "text" ||
     (content?.kind === "markdown" && !markdownPreview);
 
@@ -322,7 +361,80 @@ export function FilePanel({ panel, active }: PanelProps) {
     </div>
   );
 
+  /** Review tab: the file against the task baseline, diffed by Monaco. */
+  const reviewView = (() => {
+    if (sides.status === "loading") {
+      return (
+        <div className="flex flex-1 items-center justify-center gap-2 text-ui-sm text-slate-400">
+          <Loader2 size={13} className="animate-spin" />
+          {t("file.loading")}
+        </div>
+      );
+    }
+    if (sides.status === "error") {
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+          <p className="break-all text-ui-sm leading-5 text-rose-600">
+            {t("file.loadFailed", { error: sides.error })}
+          </p>
+          <button
+            type="button"
+            onClick={reload}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-ui-xs text-slate-600 transition hover:bg-overlay"
+          >
+            <RefreshCw size={10} />
+            {t("explorer.refresh")}
+          </button>
+        </div>
+      );
+    }
+    const { base, current, truncated, binary } = sides.value;
+    if (binary) {
+      return (
+        <div
+          className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+          data-workbench-file="diff-binary"
+        >
+          <AlertTriangle size={20} className="text-slate-300" />
+          <p className="text-ui-caption text-slate-600">{t("file.diffBinary")}</p>
+        </div>
+      );
+    }
+    return (
+      <div className="flex min-h-0 flex-1 flex-col" data-workbench-file="review">
+        {current === null ? (
+          <div className="shrink-0 border-b border-amber-100 bg-amber-50 px-3 py-1 text-ui-xs text-amber-700">
+            {t("file.diffDeleted")}
+          </div>
+        ) : null}
+        {truncated ? (
+          <div className="shrink-0 border-b border-amber-100 bg-amber-50 px-3 py-1 text-ui-xs text-amber-700">
+            {t("file.diffTruncated")}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1">
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center gap-2 text-ui-sm text-slate-400">
+                <Loader2 size={13} className="animate-spin" />
+                {t("file.loading")}
+              </div>
+            }
+          >
+            <MonacoDiffView
+              base={base}
+              current={current}
+              language={monacoLanguageFor(path)}
+              wrap={wrap}
+            />
+          </Suspense>
+        </div>
+      </div>
+    );
+  })();
+
   const body = (() => {
+    if (review) return reviewView;
     if (state.status === "loading") {
       return (
         <div className="flex flex-1 items-center justify-center gap-2 text-ui-sm text-slate-400">
@@ -468,7 +580,7 @@ export function FilePanel({ panel, active }: PanelProps) {
         <FileGlyph path={path} />
         <span
           className="min-w-0 flex-1 truncate text-ui-sm text-slate-700"
-          title={path}
+          title={review ? `${path} · ${t("file.diffAgainstTask")}` : path}
         >
           {basename(path)}
         </span>
@@ -585,7 +697,11 @@ export function FilePanel({ panel, active }: PanelProps) {
 
       <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-border px-2">
         <Breadcrumb rootLabel={projectName} path={dirname(path)} />
-        {content ? (
+        {review ? (
+          <span className="shrink-0 text-ui-xs text-slate-400">
+            {t("file.diffAgainstTask")}
+          </span>
+        ) : content ? (
           <span className="shrink-0 text-ui-xs text-slate-400">
             {formatBytes(content.size)}
             {" · "}

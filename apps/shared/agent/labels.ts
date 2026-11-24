@@ -48,6 +48,7 @@ const LABELS = {
   "turn.changesExpand": ["展开看改了哪些文件", "Show the changed files"],
   "turn.changesCollapse": ["收起改动清单", "Hide the changed files"],
   "turn.changesOpen": ["打开文件", "Open the file"],
+  "turn.changesOpenDiff": ["对比改动", "Show the change"],
 
   // The review diff: line-numbered rows shared by both hosts.
   "diff.rowsCapped": [

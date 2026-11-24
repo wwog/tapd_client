@@ -19,7 +19,7 @@ import { TaskPanel } from "./TaskPanel";
 import { TeamBoard } from "./TeamBoard";
 import { useTaskListLayout } from "./useTaskListLayout";
 import { Sash } from "../workbench/components/Sash";
-import { openAgentPath, resolveAgentImage } from "./localOpen";
+import { openAgentDiff, openAgentPath, resolveAgentImage } from "./localOpen";
 import { AGENT_COLUMN } from "./layout";
 import { installAgentPerf, recordAgentCommit } from "./perf";
 import { MessageUsageChip } from "./usage/MessageUsageChip";
@@ -112,6 +112,13 @@ function useAgentHost(
       openPath: sessionId
         ? (path: string) => {
             void openAgentPath(sessionId, path, { toast, openFile: onOpenFile });
+          }
+        : undefined,
+      // The change card's rows: same resolution, but the tab diffs the file
+      // against the task baseline instead of editing it.
+      openDiff: sessionId
+        ? (path: string) => {
+            void openAgentDiff(sessionId, path, { toast, openFile: onOpenFile });
           }
         : undefined,
       openTaskDetail: (target) => {

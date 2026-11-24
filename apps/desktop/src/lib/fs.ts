@@ -24,6 +24,12 @@ export type FileTabTarget = {
   path: string;
   /** Tab label; the panel falls back to the file name. */
   label?: string;
+  /**
+   * Opened from a task review: the tab shows the file against the task
+   * baseline (Monaco's inline diff) instead of a plain, editable buffer.
+   * `file` is the task-relative path the sides are read for.
+   */
+  review?: { sessionId: string; file: string };
 };
 
 export type FsEntryKind = "dir" | "file" | "symlink";
